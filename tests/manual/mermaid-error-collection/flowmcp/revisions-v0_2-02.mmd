@@ -1,0 +1,11 @@
+%% Source: 007-testing-debugging-mcp-ui/revisions/v0.2.md
+%% Heading: Phase 2: MCP Apps Extension
+%% Line: 184
+flowchart TD
+    A[AgentToolsServer] --> B[EventEmitter]
+    B --> C[SSE Endpoint Phase 1]
+    B --> D[MCP Apps Extension Phase 2]
+    D --> E[Tool deklariert ui:// Resource]
+    E --> F[MCP Client rendert iframe]
+    F --> G[PostMessageTransport]
+    G --> H[Bidirektionale Events]

@@ -1,0 +1,26 @@
+%% Source: 109-flowmcp-schema-sop/revisions/REV-01.md
+%% Heading: 9. Uebersicht: Skalierung & Sub-Agent-Topologie [Diagramme]
+%% Line: 188
+flowchart TD
+    B[Kanban Board #2<br/>Provider Grading]
+
+    B -->|Prospect-Issue| EP1[schema-prospect<br/>Entrypoint 1]
+    B -->|Anwaerter via kanban-readonly| EP2[schema-grade<br/>Entrypoint 2]
+
+    subgraph SOP[FlowMCP Schema-SOP Dach]
+        EP1 --> G1[Generate<br/>Fetch+Build bis det-gruen]
+        G1 --> X1[Execute<br/>Repair-Loop]
+        X1 --> E1[Evaluate<br/>fwd/bwd + ProviderProof]
+
+        EP2 --> G2[Generate<br/>emit-prompts + Task-ID]
+        G2 --> X2[Execute<br/>Area-Sub-Agents scoren]
+        X2 --> E2[Evaluate<br/>Score >= 3.5 Ziellinie]
+    end
+
+    E1 --> SYNC[Board-Sync<br/>deterministisch]
+    E2 --> SYNC
+    SYNC --> B
+
+    G1 -.parallel ~N.-> POOL[Sub-Agent-Pool<br/>1 Namespace je Agent]
+    X2 -.parallel je Area.-> POOL
+    E1 -.frischer Kontext.-> POOL

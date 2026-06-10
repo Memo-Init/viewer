@@ -1,0 +1,21 @@
+%% Source: 092-geo-eintrittspunkt-ortsdaten/revisions/REV-11.md
+%% Heading: 5. Die vier Handgriffe [Diagramme]
+%% Line: 71
+flowchart TD
+    E1[1 Text] --> Q{Punkt schon da?}
+    E2[2 Anschrift] --> Q
+    E4[4 in der Naehe von X] --> Q
+    E3[3 Geo-Position] --> P[Punkt lat/lon]
+    E5[5 Zeitraum] --> ZT[Handgriff 4: Zeitraum -> Zeit-Filter]
+    Q -->|nein| H1[Handgriff 1: Ort -> Punkt]
+    Q -->|ja| P
+    H1 --> P
+    P --> A[Anker-Hierarchie Haus->Strasse->Punkt]
+    A --> AGS[Verwaltungs-Anker AGS]
+    A --> F{Was will ich?}
+    F -->|was ist hier| H3[Handgriff 3: Punkt -> Adresse]
+    F -->|was drumherum| H2[Handgriff 2: Punkt -> Umgebung]
+    H2 --> ZT
+    ZT --> N[Normalisierung + Dedup]
+    AGS --> N
+    N --> R[einheitliches Ergebnis]

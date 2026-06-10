@@ -1,0 +1,12 @@
+%% Source: 022-flowmcp-selections-and-skills-architecture/revisions/REV-08.md
+%% Heading: 13. Rueckwaertssuche
+%% Line: 909
+graph BT
+    T["etherscan/tool/getSmartContractAbi"] --> NS["Namespace-Skill:<br/>etherscan/contract-lookup"]
+    T --> SEL["Selection: evm-contract-research"]
+    SEL --> SK["Skill: contract-deep-dive"]
+    SEL --> A["Agent: crypto-researcher"]
+
+    style T fill:#238636,color:#fff
+    style SEL fill:#1f6feb,color:#fff
+    style A fill:#8957e5,color:#fff

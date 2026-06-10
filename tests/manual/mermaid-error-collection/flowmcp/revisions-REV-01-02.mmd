@@ -1,0 +1,10 @@
+%% Source: 084-oparl-flowmcp-target/revisions/REV-01.md
+%% Heading: 6. Architektur-Entscheidungsbaum [Diagramme]
+%% Line: 157
+flowchart TD
+    Start["OParl als FlowMCP-Target?"] --> Q1{"Live-Abfrage\nausreichend?"}
+    Q1 -->|"Ja — Standardfall"| A["Option A:\nGenerisches Tools-Schema\noparl.v1, Base-URL = serverParam"]
+    Q1 -->|"Nein — offline/Index noetig"| Q2{"Wiederverwendbar\nals eigenes Repo?"}
+    Q2 -->|"Nein — schema-lokal genuegt"| B["Option B:\nResource-Schema mit\nSQLite-Snapshot"]
+    Q2 -->|"Ja — Konverter-Pattern"| C["Option C:\noparl-sqlite-toolkit\n(analog gtfs-sqlite-toolkit)"]
+    A --> Next["Erstschritt empfohlen.\nB/C nur bei belegtem Bedarf."]

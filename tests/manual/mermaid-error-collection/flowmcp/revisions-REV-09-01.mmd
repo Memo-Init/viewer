@@ -1,0 +1,22 @@
+%% Source: 097-schema-aufwertung/revisions/REV-09.md
+%% Heading: 12. Uebersicht-Diagramm [Diagramme]
+%% Line: 382
+flowchart TD
+    subgraph GEN [Skill-Generator statt 33 Skills - Kap.9]
+      Q[questions.json + templates + output-schemas + policies + persona] --> PB[PromptBuilder.build]
+      PB --> CLI[CLI --emit-prompts: prompts.json.areas]
+      CLI --> SA[1 Subagent / Area]
+      X[33 SKILL.md ENTFERNT nach Wissens-Extraktion]
+    end
+    subgraph PH [Phase A+B: Pipeline + Spec-Haertung ZUERST - F3]
+      I[eine globale Config; Sweep via CLI]
+      H[schemaHash derived-only + strikte Validierung]
+      T[ToS/Docs MUST + robots.txt]
+      N[Namespace flowmcp-* + Einstiegspunkt flowmcp-schema; Skills in flowmcp-spec/skills]
+      W[worklist-Command + Orchestrierung]
+    end
+    L[Kap.8/9: Lebenszyklus + Skill-Architektur als Referenz]
+    GEN --> G[dann Graden: Phase 0 -> 1 -> 2 -> 3]
+    PH --> G
+    L -. orientiert .-> G
+    G -->|re-grade bei schemaHash-Aenderung| G

@@ -1,0 +1,32 @@
+%% Source: 049-spec-internal-refs-cleanup/revisions/REV-04.md
+%% Heading: 11.1 Spec-Repo als Generierungs-Hoheit (zentrales Bild)
+%% Line: 1006
+graph TD
+    USER["User-Vision:<br/>Spec-Repo hat Hoheit ueber Inhalt + Generierung.<br/>Verbreitung ist Konsumenten-Aufgabe."]
+    USER --> SPEC["flowmcp-spec<br/>SoT + Generierungs-Hoheit"]
+
+    SPEC --> HARD["Hard Facts<br/>spec/v4.0.0/ + CHANGELOG.md"]
+    SPEC --> SOFT["Soft-Kriterien<br/>personas/ + examples/ + skills/"]
+    SPEC --> GEN["Generated<br/>generated/llms.txt<br/>generated/docs-payload/<br/>generated/custom-gpt/ (Roadmap)"]
+    SPEC --> META["Repo-Meta<br/>README.md + workflows/"]
+
+    HARD -->|Input fuer| GEN
+    GEN -->|notify| K1["flowmcp.github.io<br/>(Konsument)"]
+    GEN -.->|notify, geplant| K2["flowmcp-cli<br/>(Konsument)"]
+    GEN -.->|notify, geplant| K3["Custom-GPT-Bot<br/>(Roadmap)"]
+
+    K1 -->|sync-spec.mjs| K1A["public/spec-source/<br/>+ public/spec-generated/"]
+    K1A -->|Astro Build| K1B["/docs/specification/<br/>+ /llms-*.txt"]
+
+    K2 -.->|Self-update| K2A["CLI-Local-Cache"]
+    K3 -.->|Bundle laden| K3A["GPT-Knowledge-Base"]
+
+    style USER fill:#fff7b3,stroke:#333
+    style SPEC fill:#cfe6ff,stroke:#333,stroke-width:3px
+    style HARD fill:#cfe6ff,stroke:#333
+    style SOFT fill:#fff7b3,stroke:#333
+    style GEN fill:#cfc,stroke:#333
+    style META fill:#e8e8e8,stroke:#333
+    style K1 fill:#ffe7c2,stroke:#333
+    style K2 fill:#ffe7c2,stroke:#333
+    style K3 fill:#ffe7c2,stroke:#333,stroke-dasharray: 5 5

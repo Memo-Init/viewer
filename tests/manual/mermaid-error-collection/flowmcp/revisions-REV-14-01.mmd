@@ -1,0 +1,13 @@
+%% Source: 085-real-world-grading-produktionsreife/revisions/REV-14.md
+%% Heading: 22. Uebersicht-Diagramme [Diagramme]
+%% Line: 431
+flowchart TD
+    SRC["Quelle: providers/<ns>/*.mjs"] -->|grading import Stage0| INTAKE[validate+snapshot+normalize]
+    INTAKE -->|Stage1 CLI| DET["DataPretest (HTTP, Request NICHT speichern)\n+ det. Grader -> Prompt-Artefakte (+Goal-Block)"]
+    DET -->|Stage2 Harness| GOAL["/goal: pro Turn naechste un-gegradete Area\nstart-grade->evaluate->apply-improvement (Agent())\n[GRADING]-Zeilen ins Transkript"]
+    GOAL -->|Haiku-Evaluator liest Transkript| GOAL
+    GOAL -->|alle Areas finalisiert| FIN["Stage3 CLI: consume-scores\n-> rebuild*Index (5-Status) -> state/export"]
+    FIN --> IDX["index.json (Namespace/Selection)"]
+    SEL["Selection-Flow"] --> GATE{alle Member stable?\nindex.json lockSnapshot}
+    GATE -- nein --> F16[Dependency-Resolver F16]
+    GATE -- ja --> GOAL

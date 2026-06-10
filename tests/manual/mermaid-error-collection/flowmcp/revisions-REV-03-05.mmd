@@ -1,0 +1,17 @@
+%% Source: 049-spec-internal-refs-cleanup/revisions/REV-03.md
+%% Heading: 11.2 Konventions-Stack (was wird beim Lesen sofort klar)
+%% Line: 1002
+graph LR
+    A[Wiedereinsteiger] --> B[README.md liest sich]
+    B --> C{Konventionen klar?}
+    C -->|ja| D["Conventions & Quality Standards"<br/>Sektion: RFC2119, Hard vs Soft, Generation Authority"]
+    D --> E[00-overview.md mit Conformance Block]
+    E --> F[09-validation-rules.md fuer Codes]
+    F --> G[personas/overview.md fuer Zielgruppe]
+    G --> H[generated/README.md fuer Pipelines]
+    H --> I[Versions-README fuer aktuellen Stand]
+    I --> J[Bereit zur Arbeit]
+
+    style A fill:#fff7b3,stroke:#333
+    style J fill:#cfc,stroke:#333
+    style D fill:#cfe6ff,stroke:#333

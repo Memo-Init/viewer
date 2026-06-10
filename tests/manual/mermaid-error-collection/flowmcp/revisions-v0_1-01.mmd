@@ -1,0 +1,9 @@
+%% Source: 008-hackathon-chat-ui/revisions/v0.1.md
+%% Heading: Architektur
+%% Line: 78
+flowchart LR
+    A[Browser Chat UI] -->|StreamableHTTP| B[Express Server :4100]
+    B --> C[/mcp/main — Main Agent]
+    B --> D[/mcp/bahnhof — Bahnhof Agent]
+    B --> E[/mcp/tickets — Ticket Agent]
+    A -->|SSE| F[/events — Echtzeit-Updates]

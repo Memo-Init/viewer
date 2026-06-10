@@ -1,0 +1,14 @@
+%% Source: 085-real-world-grading-produktionsreife/revisions/REV-08.md
+%% Heading: 10. Uebersicht-Diagramm [Diagramme]
+%% Line: 209
+flowchart TD
+    NS["providers/defillama/\nindex.json (Rollup, Namespace-Status)"]
+    NS --> NSG["_gradings/ (tools-aggregate-namespace, namespace-description)"]
+    NS --> SC["prices/ (Schema)\n_gradings: tools-aggregate-schema"]
+    SC --> SCH["schema/ prices--ts--hash.mjs"]
+    SC --> AB["resources/about/ + _gradings(about-namespace)"]
+    SC --> SK["skills/‹skill›/ + _gradings(namespace-skills)"]
+    SC --> TO["tools/‹tool›/ tests + _gradings(single-test)"]
+    NSG --> ROLL["rebuildNamespaceIndex\nrollt alle neuesten Grades hoch"]
+    SC --> ROLL
+    ROLL --> NS

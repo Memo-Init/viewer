@@ -1,0 +1,21 @@
+%% Source: 044-ai-native-ausbau/revisions/REV-07.md
+%% Heading: 4.10 Workflow-Integration mit Schema-Lifecycle (Memo 027) [NEU]
+%% Line: 484
+graph LR
+    R["Research"] --> CR["Creation"]
+    CR --> AT["API-Test<br/>(dev test single)"]
+    AT --> VA["Validation<br/>(dev validate)"]
+    VA --> GR["Grade<br/>(dev grade + Pipeline)"]
+    GR --> P{"Schema-Grade B+<br/>UND Data-Grade B+?"}
+    P -->|Ja| PR["Production<br/>(c5-deploy)"]
+    P -->|Nein| H["Hold / Blocked"]
+
+    GR -.Pipeline.-> P1["Phase 1 Call"]
+    P1 -.-> P2["Phase 2 Analyse"]
+    P2 -.-> P3["Phase 3 Evaluate"]
+    P3 -.Push.-> KB["Kanban Project 1"]
+
+    style GR fill:#fff7b3,stroke:#333
+    style PR fill:#cfc,stroke:#333
+    style H fill:#fcc,stroke:#333
+    style KB fill:#ffe4b5,stroke:#333

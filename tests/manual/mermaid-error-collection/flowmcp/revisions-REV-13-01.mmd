@@ -1,0 +1,12 @@
+%% Source: 085-real-world-grading-produktionsreife/revisions/REV-13.md
+%% Heading: 8. Uebersicht-Diagramm [Diagramme]
+%% Line: 143
+flowchart TD
+    S0["Stage 0 Intake (CLI)\nimport+validate+snapshot"] --> S1["Stage 1 Deterministisch (CLI)\nDataPretest (Request NICHT speichern) + det. Grader\n-> Prompt-Artefakte (inkl. Goal-Block)"]
+    S1 --> G["/goal <Bedingung>"]
+    G --> T{Turn: naechste un-gegradete Area}
+    T --> AREA["Skill: start-grade->evaluate->apply-improvement (Agent())\nsurft [GRADING]-Statuszeile ins Transkript"]
+    AREA --> EVAL{Haiku-Evaluator\nliest Transkript: alle Areas finalisiert?}
+    EVAL -- nein --> T
+    EVAL -- ja --> S3["Stage 3 Abschluss (CLI)\nconsume-scores -> rebuild*Index (5-Status) -> state/export"]
+    S3 --> IDX["index.json"]

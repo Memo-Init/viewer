@@ -1,0 +1,19 @@
+%% Source: 093-provider-zentrierte-schema-pipeline/revisions/REV-05.md
+%% Heading: 10. Soll-Ablauf: Provider-Lebenszyklus (uniform) [Diagramme]
+%% Line: 203
+flowchart TD
+    A[Backlog + Inventar] --> B[Provider-Parent-Issue = Namespace]
+    B --> C[Schema-Sub-Issues je Schema, immer]
+    C --> D{Schritt 1: Creation v4-Skills}
+    D -->|create / batch / diagnose-fix-inspect| E[flowmcp validate]
+    E -->|FAIL| D
+    E -->|PASS = spec-konform| F{Schritt 2: Grading}
+    F --> G[Phase 0 Gate: >=3 Tests/Tool]
+    G --> H[Deterministisch: single-test, aggregates]
+    H --> I[Nicht-det: about-namespace, namespace-skills]
+    I --> J[Schema-Grade + namespaceAggregate]
+    J --> K[Bridge: Provider-Grade am Parent-Issue]
+    K --> L[Board: Provider-Status Roll-up]
+    L --> M{Alle Provider stable?}
+    M -->|nein| A
+    M -->|ja| N([Selection-Problem — SEPARATES Memo])

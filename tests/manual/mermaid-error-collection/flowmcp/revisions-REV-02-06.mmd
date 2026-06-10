@@ -1,0 +1,8 @@
+%% Source: 006-mcp-agent-server-production-ready/revisions/REV-02.md
+%% Heading: Deployment-Ziel: DigitalOcean App Platform
+%% Line: 500
+flowchart LR
+    A[GitHub Push] --> B[DO App Platform]
+    B --> C[Build: npm run build]
+    C --> D[Start: npm run start:staging]
+    D --> E[Health Check: GET /health]

@@ -1,0 +1,30 @@
+%% Source: 049-spec-internal-refs-cleanup/revisions/REV-02.md
+%% Heading: 10.1 Source of Truth Hierarchie
+%% Line: 690
+graph TD
+    USER["User-Vision: Spec ist unterste Schicht.<br/>Fehler propagieren sich verhundertfacht."]
+    USER --> SPEC["flowmcp-spec (Source of Truth)"]
+
+    SPEC --> SECT1["spec/v4.0.0/<br/>23 normative Files<br/>+ Conformance Block<br/>+ Versions-README"]
+    SPEC --> SECT2["personas/<br/>4 Personas + Overview"]
+    SPEC --> SECT3["examples/v4.0.0/<br/>Reference Schemas"]
+    SPEC --> SECT4["CHANGELOG.md<br/>(ohne Memo-Refs)"]
+    SPEC --> SECT5["README.md<br/>+ Quality Standards Section"]
+
+    SPEC -.->|wird gelesen von| CORE["flowmcp-core<br/>implementiert Spec"]
+    SPEC -.->|wird gelesen von| CLI["flowmcp-cli<br/>nutzt Core"]
+    SPEC -.->|wird gelesen von| DOCS["flowmcp.github.io<br/>rendert Spec"]
+    SPEC -.->|wird gelesen von| SCH["flowmcp-schemas-*<br/>folgt Spec"]
+
+    SECT1 -->|GH Action| BUNDLE["spec/v4.0.0/llms.txt<br/>(autogen)"]
+    SECT1 -->|repository_dispatch| MIRROR["flowmcp.github.io<br/>public/spec-source/v4.0.0/<br/>(autogen)"]
+    MIRROR -->|Astro Build| RENDER["/docs/specification/*<br/>(autogen)"]
+    MIRROR -->|generate-llms-txt.mjs| LAYER["public/llms-schema-spec.txt<br/>(autogen)"]
+
+    style USER fill:#fff7b3,stroke:#333
+    style SPEC fill:#cfe6ff,stroke:#333,stroke-width:3px
+    style SECT1 fill:#cfe6ff,stroke:#333
+    style BUNDLE fill:#cfc,stroke:#333
+    style MIRROR fill:#cfc,stroke:#333
+    style RENDER fill:#cfc,stroke:#333
+    style LAYER fill:#cfc,stroke:#333

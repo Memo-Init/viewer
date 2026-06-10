@@ -1,0 +1,94 @@
+import { describe, it, expect, beforeAll } from '@jest/globals'
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import vm from 'node:vm'
+
+
+// Phase 5 (Memo 016 Kap 11) render-side changes live inside the single inline <script> of
+// the HTML page that #buildHtmlPage emits as a template literal. Rather than booting the
+// full server (which opens a browser via `open` and starts watchers), we read the source,
+// isolate the inline <script> body, and reproduce the template-literal escape processing.
+// That yields the EXACT string the browser receives — which is what matters for PRD-025's
+// escape-level fix. We then (a) assert that emitted browser script parses (vm.Script catches
+// escape/syntax bugs) and (b) assert each Phase-5 render hook is present.
+describe( 'Question widget render — Phase 5 (Memo 016 Kap 11)', () => {
+    let emittedScript = ''
+
+
+    beforeAll( async () => {
+        const here = dirname( fileURLToPath( import.meta.url ) )
+        const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
+        const source = await readFile( sourcePath, 'utf8' )
+
+        // The inline app script sits between the last "<script>" that is NOT a CDN include
+        // and its closing "</script>". The widget functions carry no ${} interpolation, so
+        // evaluating the raw slice as a template literal faithfully applies backslash
+        // collapsing exactly as production does — giving the real browser string.
+        const open = source.lastIndexOf( '<script>' )
+        const close = source.indexOf( '</script>', open )
+        const rawSlice = source.slice( open + '<script>'.length, close )
+
+        expect( rawSlice.includes( '${' ) ).toBe( false )
+
+        // eslint-disable-next-line no-new-func — controlled, no interpolation, escape-faithful.
+        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
+        emittedScript = toRuntime()
+    } )
+
+
+    it( 'emits a syntactically valid inline browser script', () => {
+        let message = ''
+        try {
+            new vm.Script( emittedScript )
+        } catch( err ) {
+            message = err.message
+        }
+        expect( message ).toBe( '' )
+    } )
+
+
+    it( 'labels Hintergrund, Frage and KI-Empfehlung as distinct blocks (PRD-023)', () => {
+        expect( emittedScript.includes( 'qw-hintergrund-label' ) ).toBe( true )
+        expect( emittedScript.includes( 'qw-frage-label' ) ).toBe( true )
+        expect( emittedScript.includes( 'qw-ai-label' ) ).toBe( true )
+        expect( emittedScript.includes( "'FRAGE'" ) ).toBe( true )
+        expect( emittedScript.includes( "'KI-EMPFEHLUNG'" ) ).toBe( true )
+    } )
+
+
+    it( 'keeps the existing block classes as hooks (PRD-023)', () => {
+        expect( emittedScript.includes( 'qw-hintergrund' ) ).toBe( true )
+        expect( emittedScript.includes( 'qw-frage' ) ).toBe( true )
+        expect( emittedScript.includes( 'qw-ai-line' ) ).toBe( true )
+    } )
+
+
+    it( 'uses circular modulo wrap in the Shift+Up/Down handler (PRD-024)', () => {
+        expect( emittedScript.includes( '( ( questionNav.active + delta ) % n + n ) % n' ) ).toBe( true )
+        // The old clamping lines must be gone.
+        expect( emittedScript.includes( 'if( next < 0 ) { next = 0 }' ) ).toBe( false )
+    } )
+
+
+    it( 'emits a valid, matching scrollToTopic RegExp (PRD-025)', () => {
+        expect( emittedScript.includes( 'function findTopicTarget' ) ).toBe( true )
+        // The emitted browser string must be single-escaped, not the broken quad-escape.
+        expect( emittedScript.includes( "'kap(itel)?\\\\.?" ) ).toBe( false )
+        expect( emittedScript.includes( "'kap(itel)?\\.?\\s*'" ) ).toBe( true )
+
+        // Reproduce the exact RegExp the browser builds and prove it matches real headings.
+        const pos = '11.7'
+        const re = new RegExp( 'kap(itel)?\\.?\\s*' + String( pos ).replace( '.', '\\.' ) + '\\b', 'i' )
+        expect( re.test( 'Kapitel 11.7 Lessons' ) ).toBe( true )
+        expect( re.test( 'Kap. 11.7' ) ).toBe( true )
+        expect( re.test( 'Kap 11.7' ) ).toBe( true )
+        expect( re.test( 'Kap 11.70' ) ).toBe( false )
+    } )
+
+
+    it( 'marks topic chips without a jump target as inert (PRD-025)', () => {
+        expect( emittedScript.includes( 'qw-topic-dead' ) ).toBe( true )
+        // The dead-cursor CSS rule is rendered in the page <style>, outside the inline script.
+    } )
+} )

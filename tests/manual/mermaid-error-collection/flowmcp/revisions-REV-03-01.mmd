@@ -1,0 +1,10 @@
+%% Source: 109-flowmcp-schema-sop/revisions/REV-03.md
+%% Heading: 7. Die Schwelle: vom Prospect zum Board-Anwaerter (Einspielen) [Code]
+%% Line: 173
+flowchart TD
+    DET[grading deterministic gruen] --> GJ[grade.json geschrieben<br/>ProviderProof.write, AUTO]
+    GJ --> COMMIT[grade.json committen + pushen<br/>halb-automatisch]
+    COMMIT --> ACT[GitHub-Action provider-proof-sync.yml<br/>Trigger: providers/**/grade.json]
+    ACT --> ISSUE[Issue 'Grading: ns' erstellt/aktualisiert<br/>Body = Schema-Tabelle = das Summary]
+    ISSUE --> BOARD[Board #2 Item + Felder<br/>Provider/Status/Grade/Score/Blocked-Reason]
+    BOARD --> CAND[Anwaerter -> kanban-readonly -> schema-grade]

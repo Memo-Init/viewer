@@ -1,0 +1,27 @@
+%% Source: 109-flowmcp-schema-sop/revisions/REV-02.md
+%% Heading: 11. Uebersicht: Skalierung & Sub-Agent-Topologie [Diagramme]
+%% Line: 256
+flowchart TD
+    B[Kanban Board #2<br/>Provider Grading]
+
+    B -->|Prospect-Issue| EP1[schema-prospect]
+    B -->|Anwaerter via kanban-readonly| EP2[schema-grade]
+
+    EP1 --> DISC[Discovery<br/>Tools enumerieren -> Schema-Plan/Queue]
+    DISC --> G1[Generate<br/>per-Schema frischer Kontext]
+    G1 --> X1[Execute<br/>det-Gate + Repair-Loop]
+    X1 --> E1[Evaluate<br/>Vollstaendigkeit + fwd/bwd]
+
+    EP2 --> G2[Generate<br/>emit-prompts + Task-ID]
+    G2 --> X2[Execute<br/>Area-Sub-Agents scoren]
+    X2 --> E2[Evaluate<br/>Score >= 3.5 Ziellinie]
+
+    E1 --> SYNC[Board-Sync deterministisch]
+    E2 --> SYNC
+    SYNC --> B
+
+    G1 -.Schemas parallel je Namespace.-> POOL[Sub-Agent-Pool<br/>1 frischer Kontext je Schema, Default ~8]
+    X2 -.parallel je Area.-> POOL
+    E1 -.frischer Kontext.-> POOL
+
+    POOL --> OBS[Observability<br/>log/phase/State-File/workflows]

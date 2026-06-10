@@ -1,0 +1,24 @@
+%% Source: 049-spec-internal-refs-cleanup/revisions/REV-06.md
+%% Heading: 13.4 Doku-Payload Schnittstellen-Flow (NEU REV-06)
+%% Line: 1072
+sequenceDiagram
+    participant SP as flowmcp-spec
+    participant W as Workflow generate-docs-payload.yml
+    participant GH as GitHub Repo
+    participant DS as flowmcp.github.io (Memo 52)
+    participant U as User-Browser
+
+    Note over SP: Editor schreibt 13-resources.md
+    SP->>W: Push trigger
+    W->>W: Generator liest spec/v4.0.0/13-resources.md
+    W->>W: Extrahiert Title, Description, Cross-Refs
+    W->>W: Schreibt docs-payload/13-resources.md mit Frontmatter
+    W->>W: Aktualisiert manifest.json
+    W->>GH: Push generated/docs-payload/
+    GH->>DS: repository_dispatch (notify-docs-site.yml)
+    DS->>GH: sync-spec.mjs holt docs-payload/
+    DS->>DS: Astro Build mit Content Collection
+    DS->>DS: Rendert /docs/specification/resources/
+    DS->>U: HTML mit aktuellem Spec-Inhalt
+
+    Note over SP,U: Source ist immer flowmcp-spec/spec/v4.0.0/<br/>Konsument macht KEINE eigene Inhaltsgenerierung

@@ -1,0 +1,22 @@
+%% Source: 049-spec-internal-refs-cleanup/revisions/REV-03.md
+%% Heading: 11.3 `generated/` Folder-Struktur (Soll)
+%% Line: 1021
+graph TD
+    GEN["generated/"]
+    GEN --> GENR["README.md<br/>'Auto-generated, do not edit'"]
+    GEN --> LLMS["llms.txt<br/>Konkatenation (LLM-Bundle)"]
+    GEN --> LSCS["llms-schema-spec.txt<br/>Alias (Doku-Site-Konvention)"]
+    GEN --> DPL["docs-payload/<br/>Astro-ready Markdown"]
+    GEN --> CGPT["custom-gpt/<br/>Roadmap"]
+
+    DPL --> D1["README.md<br/>Format-Erklaerung"]
+    DPL --> D2["00-overview.md"]
+    DPL --> D3["01-schema-format.md"]
+    DPL --> D4["...23 Files mit Frontmatter"]
+
+    CGPT --> C1["README.md<br/>Pipeline-Plan"]
+    CGPT -.- C2["Implementierung folgt"]
+
+    style GEN fill:#cfc,stroke:#333,stroke-width:2px
+    style DPL fill:#cfc,stroke:#333
+    style CGPT fill:#cfc,stroke:#333,stroke-dasharray: 5 5

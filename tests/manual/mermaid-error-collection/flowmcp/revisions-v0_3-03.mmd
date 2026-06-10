@@ -1,0 +1,10 @@
+%% Source: 007-testing-debugging-mcp-ui/revisions/v0.3.md
+%% Heading: Phasen-Plan
+%% Line: 310
+flowchart TD
+    A[Phase 1: CLI Bug Fix + Logger] --> B[Phase 2: Integration Tests]
+    B --> C[Phase 3: E2E Tests mit echtem LLM]
+    C --> D[Phase 4: Evals + Response Capturing]
+    A --> E[Phase 5: ngrok Setup]
+    E --> F[Phase 6: MCP UI Phase 2]
+    C --> F

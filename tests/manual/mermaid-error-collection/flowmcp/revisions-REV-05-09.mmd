@@ -1,0 +1,13 @@
+%% Source: 006-mcp-agent-server-production-ready/revisions/REV-05.md
+%% Heading: Phasen-Plan
+%% Line: 698
+flowchart TD
+    A[Phase 1: TypeScript Migration + Vitest] --> B[Phase 1.5: InProcessToolClient v2 Migration]
+    B --> C[Phase 2: Validierung + Error Codes]
+    C --> D[Phase 3: LLM Provider generisch]
+    A --> E[Phase 4: Event System + SSE]
+    D --> F[Phase 5: Environment Manager]
+    E --> F
+    F --> G[Phase 6: Staging Ready]
+    E --> H[Phase 7: MCP Apps UI]
+    G --> H

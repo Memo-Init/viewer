@@ -1,0 +1,17 @@
+%% Source: 044-ai-native-ausbau/revisions/REV-09.md
+%% Heading: 4.2 Phasen-Trennung (Konzept-Skizze)
+%% Line: 334
+graph LR
+    T["Tool/Resource Tests"] --> P1["Phase 1 Call<br/>Tests ausfuehren<br/>Responses speichern"]
+    P1 --> ST["Speicher<br/>~/.flowmcp/grading/<br/>{tool}/responses/{YYYY-MM-DD}/"]
+    ST --> P2["Phase 2 Analyse<br/>Output-Struktur extrahieren<br/>Konsistenz pruefen"]
+    P2 --> P3["Phase 3 Evaluate<br/>Drei Grades pro Tool/Resource<br/>Schema-Grade + Aggregate<br/>Schema-Vorschlaege"]
+    P3 --> SC["Schema-Update<br/>Output-Spec + Beschreibung"]
+    P3 --> KB["Kanban-Push<br/>4 Custom Fields + Body-Tabelle + Failing-Issues"]
+
+    style P1 fill:#cfe6ff,stroke:#333
+    style P2 fill:#cfe6ff,stroke:#333
+    style P3 fill:#cfe6ff,stroke:#333
+    style ST fill:#fff7b3,stroke:#333
+    style SC fill:#cfc,stroke:#333
+    style KB fill:#ffe4b5,stroke:#333

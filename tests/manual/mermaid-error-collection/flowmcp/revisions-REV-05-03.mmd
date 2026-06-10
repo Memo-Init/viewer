@@ -1,0 +1,29 @@
+%% Source: 049-spec-internal-refs-cleanup/revisions/REV-05.md
+%% Heading: 12.1 Spec-Repo als Generierungs-Hoheit
+%% Line: 821
+graph TD
+    USER["User-Vision:<br/>Spec-Repo hat Hoheit ueber Inhalt + Generierung + Pruefung."]
+    USER --> SPEC["flowmcp-spec<br/>SoT + Generierungs-Hoheit"]
+
+    SPEC --> HARD["Hard Facts<br/>spec/v4.0.0/ + CHANGELOG.md"]
+    SPEC --> SOFT["Soft-Kriterien<br/>personas/ + examples/ + skills/"]
+    SPEC --> GEN["Generated<br/>generated/"]
+    SPEC --> META["Repo-Meta"]
+
+    SOFT --> SQ["skills/spec-quality/<br/>Evaluator-Skills"]
+    SQ -.->|prueft| HARD
+
+    HARD -->|Input fuer| GEN
+    GEN -->|notify| K1["flowmcp.github.io"]
+    GEN -.->|notify, geplant| K3["Custom-GPT-Bot (Roadmap)"]
+
+    K1 -->|sync| K1A["public/spec-generated/"]
+    K1A -->|Astro Build| K1B["/docs/specification/"]
+
+    style USER fill:#fff7b3,stroke:#333
+    style SPEC fill:#cfe6ff,stroke:#333,stroke-width:3px
+    style HARD fill:#cfe6ff,stroke:#333
+    style SOFT fill:#fff7b3,stroke:#333
+    style SQ fill:#ffd700,stroke:#333,stroke-width:2px
+    style GEN fill:#cfc,stroke:#333
+    style META fill:#e8e8e8,stroke:#333

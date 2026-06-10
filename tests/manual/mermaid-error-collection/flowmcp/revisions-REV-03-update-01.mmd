@@ -1,0 +1,21 @@
+%% Source: 079-repo-hygiene-triage/revisions/REV-03-update.md
+%% Heading: 8. Uebersicht-Diagramm [Diagramme] (geaendert)
+%% Line: 114
+flowchart TD
+    Input[User-Transcript + kontaminierte silent-default.txt]
+    Input --> P0[Phase 0: Scope + Kritikalitaet fixieren]
+    P0 --> P1[Phase 1: Ecken-Liste finalisieren]
+    P1 --> P2[Phase 2: Bestandsaufnahme repo-zentriert nach Kritikalitaets-Prio]
+    P2 --> P3[Phase 3: Triage-Tabelle fuellen Ecke x Kritikalitaet]
+    P3 --> Klass{Klassifikation pro Befund}
+    Klass -->|Sofort-Fix| F1[Phase 4: Direkte Fixes]
+    Klass -->|Direkt im Memo| F2[Phase 4: Im Rahmen dieses Memos abarbeiten]
+    Klass -->|On-Hold| F3[Im Memo dokumentieren mit Begruendung 'spaeter']
+    Klass -->|Verworfen| F4[Markieren mit Begruendung]
+    F1 --> P5[Phase 5: Praevention + Skill-Ableitung]
+    F2 --> P5
+    F3 --> P5
+    F4 --> P5
+    P5 --> Out1[Skills fuer Ecken-Monitoring]
+    P5 --> Out2[Memory feedback_language_outside_english + Querverweis]
+    P5 --> Out3[Workbench-Audit-Erweiterung]

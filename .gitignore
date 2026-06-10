@@ -1,11 +1,14 @@
 node_modules/
-.DS_Store
-*.log
-npm-debug.log*
-.env
-.env.*
-!.env.example
 coverage/
-dist/
-.astro/
-.cache/
+.DS_Store
+# PRD-002 (Memo 024 Kap 2): repo-local, isolated test-home for transcript integration tests.
+# NEVER written to the user home — and never committed (re-created per test run).
+.test-home/
+.test-tmp/
+tests/manual/test-results/
+tests/manual/mermaid-error-collection/extracted/
+# PRD-004 (Memo 022 Kap 8): the root .gitignore ignores every "data/" dir broadly. Un-ignore the
+# editor config source dir so config.mjs is tracked, but keep the local override out of git.
+!src/data/
+!src/data/config.mjs
+src/data/config.local.mjs

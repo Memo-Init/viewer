@@ -1,0 +1,14 @@
+%% Source: 007-testing-debugging-mcp-ui/revisions/v0.2.md
+%% Heading: Soll-Zustand: Structured Logging
+%% Line: 112
+flowchart LR
+    A[AgentToolsServer] --> B[Logger]
+    B --> C{Log Level}
+    C -->|debug| D[Volle Request/Response Bodies]
+    C -->|info| E[Timestamps + Methoden + Status]
+    C -->|warn| F[Unerwartete Zustaende]
+    C -->|error| G[Fehler mit Stack Trace]
+    D --> H[stdout / Datei]
+    E --> H
+    F --> H
+    G --> H

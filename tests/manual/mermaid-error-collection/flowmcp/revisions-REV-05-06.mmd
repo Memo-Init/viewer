@@ -1,0 +1,19 @@
+%% Source: 006-mcp-agent-server-production-ready/revisions/REV-05.md
+%% Heading: FlowMCP Execution Engine: v1 vs v2/v3 (RECHERCHIERT — FAKT)
+%% Line: 492
+flowchart TD
+    subgraph V1["V1 Execution Engine (VERALTET)"]
+        A1[schema.routes] --> B1[prepareServerTool]
+        B1 --> C1[Validation.routes + Modifiers]
+        C1 --> D1[Fetch.from — Phase: pre→execute→post]
+        D1 --> E1[toolName + description + zod + func]
+    end
+
+    subgraph V2["V2/V3 Execution Engine (AKTUELL)"]
+        A2[main.tools] --> B2[FlowMCP.loadSchema]
+        B2 --> C2[Pipeline: Security + Validation + Handler]
+        C2 --> D2[FlowMCP.fetch — Handlers: preRequest→executeRequest→postRequest]
+        D2 --> E2[struct mit status + data + dataAsString]
+    end
+
+    V1 -.->|"NICHT kompatibel"| V2

@@ -1,0 +1,15 @@
+%% Source: 107-deterministisches-grading-spec-konform/revisions/REV-05.md
+%% Heading: 11. Ablauf-Diagramm [Diagramme]
+%% Line: 332
+flowchart TD
+    A[Sweep fertig<br/>tests erhalten, nicht neu laden] --> B{Folderstruktur<br/>spec-konform?}
+    B -->|Nein: Spec-Fixes 2.4<br/>+ CLI schreibt zu wenig| C[Schritt 2: Spec UND<br/>Erzeuger fixen]
+    B -->|Teil-ja| D[Schritt 3: Migrations-Script<br/>Summaries neu]
+    C --> D
+    D --> E[Schritt 4: CLI-Upgrade minimal-custom<br/>_gradings/ + index + grade<br/>6 Guards, bare-NS, F6/F7]
+    E --> F[Schritt 5: Re-Sweep bestehende ~350]
+    F --> G{spec-konform<br/>+ deterministic-green?}
+    G -->|Nein| H[Remediation: Bar NICHT senken]
+    H --> F
+    G -->|Ja| I[Readiness: _gradings/ + Grade bis B<br/>Einzel-Schema-Verbesserung]
+    I --> J[Praevention: doctor + Layout-Schema<br/>→ bereit fuer 500er-Folge-Memo]

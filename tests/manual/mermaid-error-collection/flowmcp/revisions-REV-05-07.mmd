@@ -1,0 +1,16 @@
+%% Source: 006-mcp-agent-server-production-ready/revisions/REV-05.md
+%% Heading: InProcessToolClient Migration (Kern-Umbau)
+%% Line: 560
+flowchart LR
+    subgraph ALT["Aktuell (v1)"]
+        A1[schemas Array] --> B1[schema.routes iterieren]
+        B1 --> C1[FlowMCP.prepareServerTool v1]
+        C1 --> D1[func → Fetch.from]
+    end
+
+    subgraph NEU["Neu (v2/v3)"]
+        A2[schema Pfade] --> B2[FlowMCP.loadSchema]
+        B2 --> C2[main.tools iterieren]
+        C2 --> D2[FlowMCP.prepareServerTool v2]
+        D2 --> E2[func → FlowMCP.fetch]
+    end

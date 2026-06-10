@@ -1,0 +1,33 @@
+%% Source: 044-ai-native-ausbau/revisions/REV-08.md
+%% Heading: 7. Architektur-Diagramm [Diagramme]
+%% Line: 738
+graph TD
+    USER["Memo-System LLM"] --> CLI["FlowMCP CLI"]
+    CLI --> S1["Suche + Default-Filter (Modell E)<br/>+ Kategorie + Fuzzy inline"]
+    CLI --> S2["flowmcp-provider-add<br/>11 Sub-Skills"]
+    CLI --> S3["flowmcp feedback add"]
+    CLI --> S4["flowmcp dev resource check/sync"]
+    CLI --> S5["flowmcp dev grade<br/>Pipeline 1-3 + Schema/Tool/Resource-Grades"]
+    CLI --> S6["flowmcp inspect tool/schema"]
+
+    S1 -.loggt.-> LOG["~/.flowmcp/logs/<br/>+ searches.jsonl"]
+    S3 --> FB["~/.flowmcp/feedback/"]
+    S4 -.User-Prompt + Backup.-> RDB["ResourceDatabaseManager<br/>+ Metadata + Atomic-Swap"]
+    S5 -.Phasen 1-3.-> GR["~/.flowmcp/grading/<br/>grades.json<br/>(schema + per_tool + per_resource + aggregates)"]
+    S5 -.Push GraphQL + Body.-> KB["GitHub Project 1<br/>4 Custom Fields:<br/>Schema-Grade, Schema-Score<br/>Data-Grade-Worst, Latency-Grade-Worst<br/>+ Body-Tabelle"]
+    S5 -.Failing Tool < B.-> FI["Failing-Tool-Issues<br/>(Memo 027 Pattern)"]
+    GR -.Schema-Vorschlaege.-> UF[".unfinished/<br/>{tool}-grading-{date}.diff"]
+    FB -.fliesst in.-> GR
+    S2 -.Mustertraeger.-> M043["Memo 043 GTFS"]
+
+    KB -.Schema-Lifecycle.-> SL["Memo 027<br/>Research → Creation → API-Test<br/>→ Validation → Grade → Production<br/>(mit Partial-Production)"]
+    FI -.Parent-Link.-> KB
+
+    style USER fill:#fff7b3,stroke:#333
+    style CLI fill:#cfe6ff,stroke:#333
+    style M043 fill:#e6d9ff,stroke:#333
+    style GR fill:#cfc,stroke:#333
+    style FB fill:#cfc,stroke:#333
+    style KB fill:#ffe4b5,stroke:#333,stroke-width:2px
+    style FI fill:#fdd,stroke:#333
+    style SL fill:#ffd700,stroke:#333

@@ -1,0 +1,14 @@
+%% Source: 022-flowmcp-selections-and-skills-architecture/revisions/REV-07.md
+%% Heading: 10.2 Tool-Resolution
+%% Line: 659
+graph TD
+    A[Agent geladen] --> B[Selections aufloesen]
+    B --> C["Primitives aus Selections sammeln"]
+    C --> D[agent.tools hinzufuegen]
+    D --> E{Key existiert bereits?}
+    E -->|Ja| F["WARNING: Override"]
+    E -->|Nein| G[Hinzufuegen]
+    F --> G
+    G --> H[Registrieren + Skills laden]
+
+    style F fill:#d29922,color:#fff

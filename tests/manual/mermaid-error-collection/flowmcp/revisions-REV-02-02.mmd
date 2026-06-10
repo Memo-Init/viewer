@@ -1,0 +1,14 @@
+%% Source: 087-grading-workflow-orchestrierung/revisions/REV-02.md
+%% Heading: 8.5 Empfohlener Trade-off (die Antwort)
+%% Line: 242
+flowchart TD
+    A["1. DataPretest EINMAL<br/>(0 LLM-Tokens)"] --> B{"Gate bestanden?<br/>(>=3 Tests/Tool)"}
+    B -->|nein| F["Struktur/Test fixen<br/>— kein LLM bis gruen"]
+    F --> A
+    B -->|ja| C["2. EIN FULL-Baseline-Grade<br/>Antworten aufsteigend nach Score sortieren"]
+    C --> D["3. Schema-TEXT der<br/>niedrigsten billigen Areas verbessern<br/>(description, tool-docs)"]
+    D --> E["4. PARTIAL-Regrade NUR<br/>der angefassten Areas<br/>gegen den Snapshot (keine API)"]
+    E --> G{"5. Mittelwert >= 3.5 (B)?<br/>ODER Stop?"}
+    G -->|"weiter & Budget/Runden frei & kein Plateau"| D
+    G -->|"Ziel erreicht"| H["6. EIN finaler FULL-Grade<br/>→ lockt stable (threshold=B)"]
+    G -->|"Budget/Plateau/Runden-Limit"| X["Sauberer Abbruch<br/>= legitimes Ergebnis"]

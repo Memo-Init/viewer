@@ -1,0 +1,17 @@
+%% Source: 102-schema-validitaet-testing-automatisierung/revisions/REV-08.md
+%% Heading: 9. Soll-Architektur: ein deterministischer Grading-Pfad [Diagramme]
+%% Line: 195
+flowchart TD
+    S[Schema in schemaFolders<br/>ns / ns/schema / ns/tool/name / selection<br/>optional source:ns... bei Multi-Folder] --> G[flowmcp grading deterministic ID]
+    G --> V[Deterministisch: validate]
+    V --> P[Deterministisch: DataPretest<br/>HTTP200 + Daten, Bar pro Tool<br/>parameterlos + key-gated als eigene Klasse]
+    P --> R{Ergebnis}
+    R -->|parameterlos / key-gated| PL[klare Meldung<br/>eigene Klasse, kein FALSE-FAIL]
+    R -->|kaputt/Duplikat| FX[schema-diagnose to schema-fix to inspect]
+    R -->|gruen| SAVE{--no-save?}
+    SAVE -->|nein default| W[Gradings auto in _grading<br/>index.json + _gradings]
+    SAVE -->|ja| RES[nur Ergebnis + Hints<br/>kein Island-Write, kein Rebuild]
+    W --> GATE{deterministic-green?<br/>alle Tools >= 2 working}
+    GATE -->|nein| HALT[nur deterministisch<br/>Namespace-Areas gegated]
+    GATE -->|ja| N[flowmcp grading non-deterministic ID<br/>AreaScorer]
+    FX --> G

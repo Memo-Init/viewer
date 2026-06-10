@@ -1,0 +1,12 @@
+%% Source: 109-flowmcp-schema-sop/revisions/REV-04.md
+%% Heading: 10. Unbekannte Namespace-Groesse: Discovery → Schema-Plan → Queue [Code]
+%% Line: 287
+flowchart TD
+    P[Prospect: Name/URL] --> R[Discovery/Research]
+    R --> T[Tools VOLLSTAENDIG enumerieren + kategorisieren<br/>aus API-Doku/OpenAPI]
+    T --> BIN[In <=8-Tool-Schemas binnen<br/>nach Kategorie; Komplexitaet markieren]
+    BIN --> Q[Schema-Plan = Queue + Soll-Tool-Liste]
+    Q --> FAN[Pro Schema: frischer Kontext<br/>parallel innerhalb des Namespace]
+    FAN --> MERGE[Zusammenfuehren]
+    MERGE --> CE[Vollstaendigkeits-Evaluator: alle Tools da?]
+    CE --> DET[grading deterministic]

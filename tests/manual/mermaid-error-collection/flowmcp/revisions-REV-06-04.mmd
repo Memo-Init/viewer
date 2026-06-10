@@ -1,0 +1,19 @@
+%% Source: 049-spec-internal-refs-cleanup/revisions/REV-06.md
+%% Heading: 13.2 Evaluator-Skill-Workflow
+%% Line: 1030
+graph LR
+    A["Spec-File<br/>13-resources.md"] --> B["evaluator-spec-rfc2119<br/>(SKILL.md, Auto-Discovery)"]
+    B --> C["Regel-Katalog<br/>RFC-001..RFC-008"]
+    C --> D["Pruefung"]
+    D --> E["JSON-Output<br/>grade + issues"]
+    E --> F{"Grade >= 4?"}
+    F -->|Ja| G["✓ akzeptiert"]
+    F -->|Nein| H["Issue-Liste"]
+    H --> I["User fixt"]
+    I --> A
+
+    style A fill:#cfe6ff,stroke:#333
+    style B fill:#ffd700,stroke:#333,stroke-width:2px
+    style E fill:#fff7b3,stroke:#333
+    style G fill:#cfc,stroke:#333
+    style H fill:#fcc,stroke:#333

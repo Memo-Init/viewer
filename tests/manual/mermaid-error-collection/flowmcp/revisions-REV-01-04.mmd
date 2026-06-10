@@ -1,0 +1,11 @@
+%% Source: 006-mcp-agent-server-production-ready/revisions/REV-01.md
+%% Heading: Architektur-Entscheidung: Middleware-Pattern
+%% Line: 201
+flowchart TD
+    A[AgentToolsServer] --> B[EventEmitter]
+    B --> C{UI Middleware angeschlossen?}
+    C -->|Ja| D[SSE Endpoint /events]
+    C -->|Ja| E[MCP Apps UI Resource]
+    C -->|Nein| F[Events gehen ins Leere]
+    D --> G[Browser: EventSource]
+    E --> H[MCP Client: iframe]

@@ -1,0 +1,18 @@
+%% Source: 080-grading-iteration-2/revisions/REV-02-update.md
+%% Heading: 8. Uebersicht-Diagramm: Source of Truth + Flywheel + Lockfile [Diagramme]
+%% Line: 328
+flowchart TD
+    SCHEMA[schemas/etherscan/<br/>a1b2--v4.0.0.mjs<br/>e5f6--v4.1.0.mjs]
+    SCHEMA --> SINGLE[single/etherscan--getContract/<br/>gradings/a1b2--T1.json]
+    SCHEMA --> SELECTION[selection/crypto-domain-full/<br/>selection.lock.json]
+    SELECTION --> SLOCK[Lockfile bindet:<br/>a1b2 etherscan, c3d4 jupiter, ...]
+    SLOCK --> SGRADE[selection/.../gradings/<br/>sel-hash--T1.json]
+    SINGLE --> CHECK{Grade A/B?}
+    CHECK -->|nein| FIX[Schema verbessern]
+    FIX --> V[Version-Bump<br/>v4.0.0 → v4.1.0]
+    V --> NEWHASH[Neuer Hash: e5f6]
+    NEWHASH --> SCHEMA
+    CHECK -->|partial| PART[gradings/e5f6--T2--partial.json]
+    PART --> CHECK
+    CHECK -->|ja, Full| STABLE[Status: stable]
+    STABLE --> SLOCK

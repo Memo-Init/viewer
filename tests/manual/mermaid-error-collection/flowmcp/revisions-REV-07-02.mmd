@@ -1,0 +1,33 @@
+%% Source: 052-webseite-content-audit/revisions/REV-07.md
+%% Heading: 12. Uebersicht-Diagramm [Diagramme]
+%% Line: 849
+flowchart TD
+    M48["Memo 048<br/>Personas (DONE)"]:::done
+    M45["Memo 045<br/>Aussenkommunikation (DONE)"]:::done
+    M50["Memo 050<br/>Pencil-Parity (DONE)"]:::done
+    M49["Memo 049<br/>Spec-Generierungs-Hoheit<br/>(REV-06 DONE)"]:::done
+    M51["Memo 051<br/>SQLite GTFS<br/>(parallel)"]:::active
+    M47["Memo 047<br/>Content-Strategie<br/>(SKELETT)"]:::pending
+    M52["Memo 052<br/>Webseite Content-Audit<br/>HIER (REV-07)"]:::current
+
+    M48 -->|Persona-Definitionen| M52
+    M45 -->|Funnel-Pfade| M52
+    M50 -->|Komponenten + URLs| M52
+    M49 -->|Doku-Payload-Schnittstelle<br/>(Kap. 6)| M52
+    M51 -->|Reihenfolge: nach M51| M52
+    M52 -.->|Blog-Hand-off| M47
+
+    M52 --> PB["Phase B (PRD-01..03)"]
+    M52 --> PC["Phase C (PRD-04..18)"]
+    M52 --> PC2["Phase C2 (PRD-19..21)"]
+    M52 --> PD["Phase D (PRD-22..32)"]
+    M52 --> PE["Phase E (PRD-33..40)"]
+
+    PC --> PC2
+    PC2 --> PD
+    PD --> PE
+
+    classDef done fill:#cfc,stroke:#333
+    classDef active fill:#fff7b3,stroke:#333
+    classDef pending fill:#e8e8e8,stroke:#333
+    classDef current fill:#fbb,stroke:#333,stroke-width:3px

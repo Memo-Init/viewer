@@ -1,0 +1,27 @@
+{
+    "name": "memo-view",
+    "version": "1.0.0",
+    "description": "Local live-preview server (port 3333) for memos, revisions and transcripts, with Mermaid-SVG rendering and the deterministic questions-json question format.",
+    "license": "MIT",
+    "type": "module",
+    "repository": {
+        "type": "git",
+        "url": "memo-init/viewer"
+    },
+    "bin": {
+        "memo-view": "./src/cli.mjs"
+    },
+    "scripts": {
+        "test": "node --experimental-vm-modules node_modules/.bin/jest",
+        "test:coverage:src": "node --experimental-vm-modules node_modules/.bin/jest --coverage --collectCoverageFrom='src/**/*.mjs'",
+        "test:file": "node --experimental-vm-modules node_modules/.bin/jest",
+        "test:scripts": "node --experimental-vm-modules node_modules/.bin/jest --rootDir=../scripts"
+    },
+    "dependencies": {
+        "ws": "^8.18.0"
+    },
+    "devDependencies": {
+        "@jest/globals": "^30.0.0",
+        "jest": "^30.0.0"
+    }
+}

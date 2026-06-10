@@ -1,0 +1,27 @@
+%% Source: 091-bibliotheks-apis-deutschland/revisions/REV-06.md
+%% Heading: 13. Übersichts-Diagramm der Landschaft [Diagramme]
+%% Line: 350
+flowchart TD
+    A[Bibliotheks-API-Landschaft DE] --> K1[Öffentliche Bibl.\n6.727 DBS]
+    A --> K2[Wissenschaftliche Bibl.\n238 DBS]
+    A --> K3[Nationale Dienste]
+
+    K1 --> P0[ILS: BIBLIOTHECA #1 / WinBIAP #2\nmeist kein API · kein Scraping]
+    K1 --> P2[ÖVK — 278 ÖB\nSRU key-frei ✅]
+
+    K2 --> S0[Verbund-Gateways]
+    S0 --> S1[K10plus opac-de-627\nBestand + 924-Holdings]
+    S0 --> S2[lobid / hbz · hasItem]
+    S0 --> S3[hebis / B3Kat-KOBV]
+    S1 --> AV[DAIA — Verfügbarkeit\nnur GBV]
+
+    K3 --> N1[DNB existiert]
+    K3 --> N2[ZDB ✅ / DDB ✅]
+    K3 --> N3[IIIF SBB/MDZ/DDB · Volltext]
+    K3 --> N4[Kalliope / DDB-Zeitungsportal]
+
+    P2 --> Z[Bestand]
+    S1 --> Z
+    S2 --> Z
+    AV --> Z2[Zugang/Verfügbarkeit]
+    N3 --> Z2

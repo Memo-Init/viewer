@@ -29,9 +29,13 @@ describe( 'PRD-008 — Sticky-Header answers-only bar (Zone 2)', () => {
     } )
 
 
-    it( 'defines mountAnswersOnlyBarInHeader that targets the Zone-2 element', () => {
+    it( 'defines mountAnswersOnlyBarInHeader as the stray-bar stripper (Memo 024 Kap 7)', () => {
+        // Memo 024 Kap 7 REMOVED the answers-only bar entirely (redundant with the
+        // "Prompt bearbeiten" popup's "Übernehmen"). mountAnswersOnlyBarInHeader() no longer
+        // mounts anything into .hdr-zone-2 — it only strips any stray bar left over from an
+        // earlier render so #main-header:empty can hide itself again.
         expect( emittedScript.includes( 'function mountAnswersOnlyBarInHeader' ) ).toBe( true )
-        expect( emittedScript.includes( ".querySelector( '.hdr-zone-2' )" ) ).toBe( true )
+        expect( emittedScript.includes( "document.getElementById( 'qw-answers-only-bar' )" ) ).toBe( true )
     } )
 
 
@@ -52,9 +56,9 @@ describe( 'PRD-008 — Sticky-Header answers-only bar (Zone 2)', () => {
     } )
 
 
-    it( 'AC-06: the bar is only mounted while there are open questions, removed otherwise', () => {
-        expect( emittedScript.includes( 'questionNav.questions.length > 0' ) ).toBe( true )
-        // When not relevant, a stray bar is removed so #main-header:empty can hide itself.
+    it( 'AC-06: any stray bar is removed so #main-header:empty can hide itself (Memo 024 Kap 7)', () => {
+        // The bar is never mounted anymore (Memo 024 Kap 7), so the question-count gate is gone.
+        // The only remaining behaviour is the unconditional strip of a leftover bar.
         expect( emittedScript.includes( "removeChild( existing )" ) ).toBe( true )
     } )
 

@@ -100,8 +100,13 @@ describe( 'Sidebar + Sticky-Header v4 — PRD-006 / PRD-007 (Memo 019 Kap 6+7)',
             expect( emittedScript.includes( "var z1Kb = viewedRev && viewedRev.sizeKb ? ( viewedRev.sizeKb + ' KB' ) : ''" ) ).toBe( true )
         } )
 
-        it( 'the doc-type label is "Implementierung"', () => {
-            expect( emittedScript.includes( '>Implementierung</span>' ) ).toBe( true )
+        it( 'the doc-type label defaults to "Implementierung" via lookupMemoType', () => {
+            // PRD-008 F12 replaced the hardcoded ">Implementierung</span>" literal with a dynamic
+            // type read from the memo header ("Memo-Typ"/"Typ" row), falling back to the documented
+            // default "Implementierung" when no row exists. The span is now emitted as
+            // escapeAttr( z1Type ), so the static source carries the binding, not the literal text.
+            expect( emittedScript.includes( "var z1Type = lookupMemoType() || 'Implementierung'" ) ).toBe( true )
+            expect( emittedScript.includes( '<span class="z1-type" data-zone1-type>' + "' + escapeAttr( z1Type ) + '" + '</span>' ) ).toBe( true )
         } )
     } )
 

@@ -4812,6 +4812,10 @@ class MemoView {
         function phaseRowFromPhase( phase, namespace, memoId ) {
             var headCommit = phase.headCommit || ''
             var isDone = phase.status === 'done'
+            // PRD-017 US-1: surface the HEAD-Commit for in-progress rows too, not only on
+            // completion — a commit pointer that appears only at the end arrives too late.
+            // Falls back to the empty cell when plan-status.json carries no headCommit.
+            var isInProgress = phase.status === 'in-progress'
             var prds = Array.isArray( phase.prds ) ? phase.prds : []
             var out = []
 
@@ -4822,7 +4826,7 @@ class MemoView {
                     generate: isDone ? 'done' : phase.status,
                     execute: isDone ? 'done' : ( phase.status === 'in-progress' ? 'in-progress' : 'pending' ),
                     evaluate: isDone ? 'done' : 'pending',
-                    headCommit: isDone ? headCommit : '',
+                    headCommit: ( isDone || isInProgress ) ? headCommit : '',
                     future: ( phase.status !== 'done' && phase.status !== 'in-progress' )
                 } )
             } else {
@@ -4830,19 +4834,76 @@ class MemoView {
                     var prdId = prd.id || prd.prdId || ''
                     var prdName = prd.name || ''
                     var prdDone = prd.execute === 'done' && prd.evaluate === 'done'
+                    var prdInProgress = prd.generate === 'in-progress' || prd.execute === 'in-progress' || prd.evaluate === 'in-progress'
+                    var prdCommit = prd.headCommit || headCommit
                     out.push( {
                         namespace: namespace,
                         strang: ( memoId ? memoId + ' · ' : '' ) + phase.id + ' · ' + prdId + ( prdName ? ' ' + prdName : '' ),
                         generate: prd.generate || 'pending',
                         execute: prd.execute || 'pending',
                         evaluate: prd.evaluate || 'pending',
-                        headCommit: prdDone ? headCommit : '',
+                        headCommit: ( prdDone || prdInProgress ) ? prdCommit : '',
                         future: ( prd.generate !== 'done' && prd.generate !== 'in-progress' && prd.execute !== 'in-progress' )
                     } )
                 } )
             }
 
             return out
+        }
+
+        // PRD-017 US-2: a phaseRef string identifies a row's phase on the plan-wide
+        // execution axis. Built from namespace/memo/phase so it can be matched against the
+        // entries in plan.executionOrder (which may be plain strings or objects).
+        function rowPhaseRef( namespace, memoId, phaseId ) {
+            return [ namespace || '', memoId || '', phaseId || '' ]
+                .filter( function( part ) { return part !== '' } )
+                .join( ' · ' )
+        }
+
+        // PRD-017 US-2: normalise one executionOrder entry (string OR object with phaseRef/
+        // namespace/memoId/phaseId) into a comparable ref-key, matching rowPhaseRef's shape.
+        function executionOrderKey( entry ) {
+            if( typeof entry === 'string' ) { return entry }
+            if( entry && typeof entry === 'object' ) {
+                if( entry.phaseRef ) { return entry.phaseRef }
+                return rowPhaseRef( entry.namespace, entry.memoId, entry.phaseId || entry.phase || entry.id )
+            }
+            return ''
+        }
+
+        // PRD-017 US-2: stable, purely presentational sort of trace rows by plan.executionOrder.
+        // Rows whose phaseRef matches an order entry come first in that order; unmatched rows
+        // keep their original array order at the end. Without executionOrder it is the identity.
+        function orderRows( rows, executionOrder ) {
+            var list = Array.isArray( rows ) ? rows : []
+            var order = Array.isArray( executionOrder ) ? executionOrder : []
+            if( order.length === 0 ) { return list.slice() }
+
+            var rank = {}
+            order.forEach( function( entry, idx ) {
+                var key = executionOrderKey( entry )
+                if( key !== '' && !( key in rank ) ) { rank[ key ] = idx }
+            } )
+
+            var ranked = []
+            var unranked = []
+            list.forEach( function( row, idx ) {
+                var hit = ( row && row.phaseRef && ( row.phaseRef in rank ) )
+                if( hit ) {
+                    ranked.push( { row: row, sort: rank[ row.phaseRef ], idx: idx } )
+                } else {
+                    unranked.push( { row: row, idx: idx } )
+                }
+            } )
+
+            ranked.sort( function( a, b ) {
+                if( a.sort !== b.sort ) { return a.sort - b.sort }
+                return a.idx - b.idx
+            } )
+
+            return ranked
+                .map( function( e ) { return e.row } )
+                .concat( unranked.map( function( e ) { return e.row } ) )
         }
 
         function collectTraceRows( plan ) {
@@ -4856,20 +4917,32 @@ class MemoView {
                     var memoId = m.memoId || ''
                     var phases = Array.isArray( m.phases ) ? m.phases : []
                     phases.forEach( function( phase ) {
+                        var ref = rowPhaseRef( ns, memoId, phase.id )
                         phaseRowFromPhase( phase, ns, memoId )
-                            .forEach( function( r ) { rows.push( r ) } )
+                            .forEach( function( r ) {
+                                r.phaseRef = ref
+                                rows.push( r )
+                            } )
                     } )
                 } )
             } else {
                 // legacy schema: top-level phases
                 var legacyPhases = Array.isArray( plan.phases ) ? plan.phases : []
                 legacyPhases.forEach( function( phase ) {
-                    phaseRowFromPhase( phase, phase.namespace || phase.projectId || '', phase.memoId || '' )
-                        .forEach( function( r ) { rows.push( r ) } )
+                    var ns = phase.namespace || phase.projectId || ''
+                    var memoId = phase.memoId || ''
+                    var ref = rowPhaseRef( ns, memoId, phase.id )
+                    phaseRowFromPhase( phase, ns, memoId )
+                        .forEach( function( r ) {
+                            r.phaseRef = ref
+                            rows.push( r )
+                        } )
                 } )
             }
 
-            return rows
+            // PRD-017 US-2: presentational-only ordering by the plan's executionOrder; without
+            // it (single-memo / legacy plans) this is the identity and array order is kept.
+            return orderRows( rows, plan.executionOrder )
         }
 
         function collectMemoTiles( plan ) {
@@ -5024,6 +5097,35 @@ class MemoView {
             return meta ? meta.label : ( type || 'Unbekannt' )
         }
 
+        // PRD-018 US-2: the only primary type is the one the user actually uses ("Memo
+        // erstellen" -> memo-init); frei/revision/plan-start are the nachrangige history.
+        function isPrimaryTranscriptType( type ) {
+            return type === 'memo-init'
+        }
+
+        // PRD-018 US-2: sort transcript sidebar entries by recency (mtime desc, then sequence
+        // desc) so the long history list is ordered instead of arbitrary. Pure — no DOM, copies
+        // the input. Entries without an mtime/sequence sort stably after dated ones.
+        function sortTranscriptEntries( entries ) {
+            var list = Array.isArray( entries ) ? entries.slice() : []
+            list.sort( function( a, b ) {
+                var ma = a && a.mtime ? Date.parse( a.mtime ) : NaN
+                var mb = b && b.mtime ? Date.parse( b.mtime ) : NaN
+                var va = isNaN( ma ) ? -Infinity : ma
+                var vb = isNaN( mb ) ? -Infinity : mb
+                if( va !== vb ) { return vb - va }
+                var sa = Number( a && a.sequence )
+                var sb = Number( b && b.sequence )
+                var na = isNaN( sa ) ? -Infinity : sa
+                var nb = isNaN( sb ) ? -Infinity : sb
+                if( na !== nb ) { return nb - na }
+
+                return 0
+            } )
+
+            return list
+        }
+
         // PRD-008: Transcript-View sidebar — lists the latest transcripts of ALL storage
         // locations (free transcripts from .memo/transcripts/ via /api/other/transcripts,
         // memo-bound ones via /api/transcripts). Each entry shows type + origin so storage
@@ -5032,8 +5134,20 @@ class MemoView {
             var navEl = document.getElementById( 'doc-sidebar-body' )
             if( !navEl ) { return }
 
+            // PRD-018 US-2: the actually-used entry point ("Memo erstellen") is hoisted to the
+            // top as the dominant affordance; the long, rarely-used history list is secondary
+            // below it. No transcript is removed — only re-ordered and de-emphasised.
             navEl.innerHTML = '<div class="sb-group-header">&#9662; Transcripts</div>'
+                + '<button id="transcript-sb-new" class="transcript-sb-new" title="Neues Memo aus einem Transcript erstellen (Namespace waehlen)" style="display:block;width:calc(100% - 8px);margin:4px;padding:7px 8px;cursor:pointer;font-size:12px;font-weight:600;text-align:left;border:1px solid #4493f8;border-radius:6px;background:rgba(68,147,248,0.10);color:var(--text-1)">&#43; Memo erstellen</button>'
+                + '<div class="sb-group-subheader" style="padding:6px 6px 2px;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted)">Verlauf</div>'
                 + '<div id="transcript-sb-list" style="padding:2px 4px;color:var(--text-muted);font-size:11px">Lade Transcripts...</div>'
+
+            var newBtn = document.getElementById( 'transcript-sb-new' )
+            if( newBtn ) {
+                newBtn.addEventListener( 'click', function() {
+                    if( typeof openTranscriptModal === 'function' ) { openTranscriptModal( {} ) }
+                } )
+            }
 
             if( !lastContent && contentEl ) {
                 contentEl.innerHTML = '<p style="color:#888">Transcript auswaehlen...</p>'
@@ -5093,12 +5207,20 @@ class MemoView {
                 return
             }
 
+            // PRD-018 US-2: order the history newest-first so "sehr viele Transcripts" no longer
+            // appear in arbitrary order. Purely presentational — no entry is dropped.
+            var sortedEntries = sortTranscriptEntries( entries )
+
             var html = ''
-            entries.forEach( function( e ) {
+            sortedEntries.forEach( function( e ) {
                 var seq = e.sequence ? ' · #' + escapeAttr( String( e.sequence ) ) : ''
-                html += '<div class="transcript-entry" data-transcript-id="' + escapeAttr( e.transcriptId ) + '" data-type="' + escapeAttr( e.type ) + '" title="' + escapeAttr( e.origin ) + '" style="padding:4px 4px;cursor:pointer;border-bottom:1px solid var(--border,#222)">'
+                // PRD-018 US-2: lift the primary type (memo-init) above the nachrangige rest.
+                var primary = isPrimaryTranscriptType( e.type )
+                var entryCls = primary ? 'transcript-entry transcript-entry-primary' : 'transcript-entry'
+                var badgeCls = primary ? 'transcript-type-badge transcript-type-badge-primary' : 'transcript-type-badge'
+                html += '<div class="' + entryCls + '" data-transcript-id="' + escapeAttr( e.transcriptId ) + '" data-type="' + escapeAttr( e.type ) + '" title="' + escapeAttr( e.origin ) + '" style="padding:4px 4px;cursor:pointer;border-bottom:1px solid var(--border,#222)' + ( primary ? ';border-left:2px solid #4493f8' : '' ) + '">'
                 html += '<div style="font-size:12px">' + escapeAttr( e.label ) + seq + '</div>'
-                html += '<div style="font-size:10px;color:var(--text-muted)"><span class="transcript-type-badge">' + escapeAttr( transcriptTypeLabel( e.type ) ) + '</span> · ' + escapeAttr( e.origin ) + '</div>'
+                html += '<div style="font-size:10px;color:var(--text-muted)"><span class="' + badgeCls + '">' + escapeAttr( transcriptTypeLabel( e.type ) ) + '</span> · ' + escapeAttr( e.origin ) + '</div>'
                 // PRD-012: transform action only for free transcripts (frei -> memo-init).
                 if( e.canTransform ) {
                     html += '<button class="transcript-transform-btn" data-transcript-id="' + escapeAttr( e.transcriptId ) + '" title="Freies Transcript als Quelle fuer ein neues Memo verwenden (Re-Injection)" style="margin-top:4px;font-size:10px;padding:2px 6px;cursor:pointer">Als Memo-Init verwenden</button>'

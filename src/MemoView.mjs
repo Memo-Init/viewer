@@ -9570,6 +9570,16 @@ class MemoView {
                 return
             }
 
+            if( url === '/api/mission-control' && req.method === 'GET' ) {
+
+                const { plans } = await MemoView.#aggregatePlansFromRegistry()
+                const { projects, totals } = MemoView.computeMissionControl( { plans } )
+
+                sendJson( res, 200, { projects, totals } )
+
+                return
+            }
+
             if( url.startsWith( '/api/' ) ) {
                 sendJson( res, 404, { 'error': 'Not Found', 'path': url } )
 
@@ -10327,6 +10337,46 @@ class MemoView {
     static #planWatcher = null
     static #plansRootPath = null
     static #planRegistry = null
+
+
+    static computeMissionControl( { plans } ) {
+        // Mission-Control start (Memo 005 Kap 9, U4 — minimal read-only increment).
+        // Pure + deterministic: reduces the already-aggregated plans (each with
+        // projectId, planId, status, phases[]) to a flat phase overview. No file/
+        // net access here — the route does the I/O, this method only counts.
+        // Phase status follows the canonical kebab vocabulary (PRD-022); unknown
+        // values go to "other" (no loss, no crash); a missing phases[] counts 0.
+        const safePlans = Array.isArray( plans ) ? plans : []
+
+        const projects = safePlans
+            .map( ( plan ) => {
+                const phases = Array.isArray( plan && plan[ 'phases' ] ) ? plan[ 'phases' ] : []
+                const counts = phases
+                    .reduce( ( acc, phase ) => {
+                        const key = [ 'pending', 'in-progress', 'done', 'blocked' ].includes( phase && phase[ 'status' ] )
+                            ? phase[ 'status' ]
+                            : 'other'
+                        acc[ key ] = ( acc[ key ] || 0 ) + 1
+
+                        return acc
+                    }, {} )
+
+                return {
+                    'projectId': plan[ 'projectId' ] || 'unknown',
+                    'planId': plan[ 'planId' ] || plan[ 'folder' ] || 'unknown',
+                    'planStatus': plan[ 'status' ] || 'unknown',
+                    'phaseCounts': counts,
+                    'phaseTotal': phases.length
+                }
+            } )
+
+        const totals = projects
+            .reduce( ( acc, p ) => {
+                return { 'projects': acc[ 'projects' ] + 1, 'phases': acc[ 'phases' ] + p[ 'phaseTotal' ] }
+            }, { 'projects': 0, 'phases': 0 } )
+
+        return { 'projects': projects, 'totals': totals }
+    }
 
 
     static computeOpenFinalizedMemos( { projectId, plans, documents } ) {

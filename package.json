@@ -9,7 +9,8 @@
         "url": "memo-init/viewer"
     },
     "bin": {
-        "memo-view": "./src/cli.mjs"
+        "memo-view": "./src/cli.mjs",
+        "memo-init": "./bin/memo-init.mjs"
     },
     "scripts": {
         "test": "node --experimental-vm-modules node_modules/.bin/jest",

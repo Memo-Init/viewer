@@ -1,4 +1,5 @@
 import { DocumentRegistry } from './DocumentRegistry.mjs'
+import { BlockMeta } from './BlockMeta.mjs'
 
 
 // PRD-036/037/038 (Memo 016, Kap 13): deterministic, server-side, STRUCTURAL validation of
@@ -19,6 +20,7 @@ import { DocumentRegistry } from './DocumentRegistry.mjs'
 //   JSON-Block    MEMO-050–059   Fragen-JSON-Codeblock malformed (PRD-039)
 //   Dateiname     MEMO-060–069   Revisions-Dateiname-Suffix malformed (Memo 012, Kap 3)
 //   Lifecycle     MEMO-070–079   Restmarker im finalen Dokument (Memo 012, Kap 3)
+//   Block-Meta    MEMO-080–089   block-meta Overlay-Feld malformed (Memo 012, Kap 7)
 //   Advisory      INFO-001–099   Hinweise ohne Blockierung
 //
 // Memo 012, Kap 3 (F-Forensik §5): four error classes the validator did NOT catch before
@@ -41,6 +43,7 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'MEMO-032', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Duplicate option within a question (duplicate key, or an authored option duplicates the injected custom/topic default)' },
     { 'code': 'MEMO-060', 'severity': 'ERROR', 'theme': 'filename', 'description': 'Revision filename suffix malformed (expected REV-NN.md, REV-NN-prepare.md or REV-NN-update.md)' },
     { 'code': 'MEMO-070', 'severity': 'ERROR', 'theme': 'lifecycle', 'description': 'Unresolved "[Research offen]" marker present outside code spans' },
+    { 'code': 'MEMO-080', 'severity': 'ERROR', 'theme': 'block-meta', 'description': 'block-meta overlay block is malformed (invalid JSON, or topic/prd ids not in T001 / PRD-001 shape)' },
     { 'code': 'INFO-010', 'severity': 'INFO', 'theme': 'header', 'description': 'Schema-Version marker missing (advisory until writing skills set it)' }
 ]
 
@@ -433,6 +436,34 @@ class MemoValidator {
                 'info': struct[ 'info' ]
             } )
         }
+
+        // MEMO-080 (Memo 012 Kap 7): the Block overlay's machine-readable block-meta field.
+        // Additive — a memo with no block-meta fence parses to an empty list and never trips this.
+        // A block-meta fence must be valid JSON AND its topic/prd ids must be in T001 / PRD-001 shape.
+        const { blocks, errors } = BlockMeta.parse( { doc } )
+
+        errors.forEach( ( entry ) => {
+            MemoValidator.#route( {
+                'code': 'MEMO-080',
+                'feldPfad': `block-meta.${ entry.chapter === null ? '(top)' : entry.chapter.replace( /\s+/g, '' ) }`,
+                'description': entry.reason,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ]
+            } )
+        } )
+
+        blocks.forEach( ( block ) => {
+            const { messages } = BlockMeta.validateShape( { block } )
+            messages.forEach( ( message ) => {
+                MemoValidator.#route( {
+                    'code': 'MEMO-080',
+                    'feldPfad': `block-meta.${ block.chapter === null ? '(top)' : block.chapter.replace( /\s+/g, '' ) }`,
+                    'description': message,
+                    'messages': struct[ 'messages' ],
+                    'info': struct[ 'info' ]
+                } )
+            } )
+        } )
 
         return struct
     }

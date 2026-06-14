@@ -1,8 +1,13 @@
 // PRD-001 (Memo 011 Kap 10) — `memo init` CLI core. Removes the manual folder/number bookkeeping
 // (friction root F11): scan the highest existing memo number in .memo/, assign the next zero-padded
-// 3-digit number, derive the slug, and lay down .memo/{XXX}-{slug}/revisions/REV-01.md from the
+// 3-digit number, derive the slug, and lay down .memo/memos/{XXX}-{slug}/revisions/REV-01.md from the
 // shared template (templates/REV.md.template, PRD-002). NO-OVERWRITE is a hard rule
 // (~/.claude/CLAUDE.md § .env / Memo 032): an existing target folder or REV-01.md is never clobbered.
+//
+// PRD-002 (Memo 013 Kap 9) — dual-scan migration awareness. Memos moved from the legacy flat layout
+// (.memo/NNN-slug) into the co-located layout (.memo/memos/NNN-slug). scanHighestNumber now scans BOTH
+// layouts (the maximum number across <root>/memos AND <root>) so a fresh memo gets the next free number
+// across the migration boundary; createMemoStructure WRITES into <root>/memos (never the flat root).
 //
 // No for/while loops anywhere — array methods only (map/filter/reduce).
 
@@ -10,14 +15,25 @@ import { readdir, mkdir, readFile, writeFile, access } from 'node:fs/promises'
 import { join } from 'node:path'
 
 
-class MemoInit {
-    // Scan { memoDir } for sub-folders matching `^(\d{3})-` and return { highest } (the largest
-    // 3-digit prefix found, or 0). A missing .memo/ directory is graceful: { highest: 0 } — the
-    // numbering then starts at 001 (Spec Z.136). Non-numeric folders are ignored (no crash).
-    static async scanHighestNumber( { memoDir } ) {
-        const { entries } = await MemoInit.#readEntries( { memoDir } )
+// The co-located write target / scan layer. Mirrors memo-locator.mjs SEARCH_LAYOUTS (new layout
+// first, flat root as legacy fallback) — the single source of truth for the `memos/` knowledge.
+const MEMOS_SUBDIR = 'memos'
 
-        const numbers = entries
+
+class MemoInit {
+    // Scan { memoDir } DUAL-LAYOUT for sub-folders matching `^(\d{3})-` and return { highest } (the
+    // largest 3-digit prefix across <memoDir>/memos AND <memoDir>, or 0). A missing directory on
+    // either side is graceful (#readEntries -> []). Non-numeric folders are ignored (no crash).
+    // The maximum over both layouts is the next-free anchor across the migration boundary (PRD-002).
+    static async scanHighestNumber( { memoDir } ) {
+        const candidates = [ join( memoDir, MEMOS_SUBDIR ), memoDir ]
+
+        const reads = await Promise.all(
+            candidates.map( ( dir ) => MemoInit.#readEntries( { memoDir: dir } ) )
+        )
+
+        const numbers = reads
+            .flatMap( ( read ) => read.entries )
             .map( ( name ) => {
                 const matched = name.match( /^(\d{3})-/ )
 
@@ -53,10 +69,12 @@ class MemoInit {
     }
 
 
-    // Full init: scan -> next number -> slug -> mkdir -p revisions/ -> copy template with
-    // placeholders filled. NO-OVERWRITE: aborts (throws) if the target folder OR REV-01.md exists.
-    // `date` is injected (default 'TBD') so this stays a pure, testable function — never Date.now()
-    // inside the logic. Returns { number, slug, path, revPath }.
+    // Full init: dual-scan -> next number -> slug -> mkdir -p memos/<folder>/revisions/ -> copy
+    // template with placeholders filled. The WRITE TARGET is the co-located layer (<memoDir>/memos),
+    // never the flat root — this fixes the Memo 013 Kap 9 root-pollution bug. NO-OVERWRITE: aborts
+    // (throws) if the target folder OR REV-01.md exists. `date` is injected (default 'TBD') so this
+    // stays a pure, testable function — never Date.now() inside the logic.
+    // Returns { number, slug, path, revPath } with path/revPath now under memos/.
     //
     // Andock-Punkt (Kap 4): Topic-Anlage + Tag-Auto-Attach hooks here — NOT built in this PRD.
     // Andock-Punkt (Kap 9): the SQL-Gate as a second CLI function docks here — NOT built in this PRD.
@@ -66,7 +84,7 @@ class MemoInit {
         const { slug } = MemoInit.slugFromTopic( { topic } )
 
         const folderName = `${ number }-${ slug }`
-        const path = join( memoDir, folderName )
+        const path = join( memoDir, MEMOS_SUBDIR, folderName )
         const revisionsDir = join( path, 'revisions' )
         const revPath = join( revisionsDir, 'REV-01.md' )
 

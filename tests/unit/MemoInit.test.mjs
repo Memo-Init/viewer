@@ -55,7 +55,7 @@ describe( 'MemoInit — PRD-001 (Memo 011 Kap 10)', () => {
         } )
 
 
-        it( 'AC: filters folders by ^(\\d{3})- and returns the highest number', async () => {
+        it( 'AC: filters folders by ^(\\d{3})- and returns the highest number (legacy flat layout)', async () => {
             await mkdir( join( memoDir, '001-first' ) )
             await mkdir( join( memoDir, '007-seventh' ) )
             await mkdir( join( memoDir, '011-eleventh' ) )
@@ -75,6 +75,28 @@ describe( 'MemoInit — PRD-001 (Memo 011 Kap 10)', () => {
             const result = await MemoInit.scanHighestNumber( { memoDir } )
 
             expect( result ).toEqual( { highest: 3 } )
+        } )
+
+
+        // PRD-002 (Memo 013 Kap 9): dual-scan migration awareness.
+        it( 'AC: scans the co-located memos/ layer (new layout)', async () => {
+            await mkdir( join( memoDir, 'memos', '001-first' ), { recursive: true } )
+            await mkdir( join( memoDir, 'memos', '013-thirteenth' ), { recursive: true } )
+
+            const result = await MemoInit.scanHighestNumber( { memoDir } )
+
+            expect( result ).toEqual( { highest: 13 } )
+        } )
+
+
+        it( 'AC: dual-layout takes the maximum across <root>/memos AND <root> (legacy + new)', async () => {
+            // legacy flat 005 + co-located 012 -> max wins (12), so next is 013
+            await mkdir( join( memoDir, '005-legacy' ) )
+            await mkdir( join( memoDir, 'memos', '012-newish' ), { recursive: true } )
+
+            const result = await MemoInit.scanHighestNumber( { memoDir } )
+
+            expect( result ).toEqual( { highest: 12 } )
         } )
     } )
 
@@ -118,7 +140,8 @@ describe( 'MemoInit — PRD-001 (Memo 011 Kap 10)', () => {
 
 
     describe( 'createMemoStructure', () => {
-        it( 'AC: creates .memo/{NNN}-{slug}/revisions/REV-01.md with the next free number', async () => {
+        it( 'AC: creates .memo/memos/{NNN}-{slug}/revisions/REV-01.md with the next free number', async () => {
+            // legacy flat 011 present -> next is 012, but the WRITE lands under memos/ (PRD-002)
             await mkdir( join( memoDir, '011-eleventh' ) )
 
             const result = await MemoInit.createMemoStructure( {
@@ -131,13 +154,13 @@ describe( 'MemoInit — PRD-001 (Memo 011 Kap 10)', () => {
             expect( result.number ).toBe( '012' )
             expect( result.slug ).toBe( 'oauth-integration' )
 
-            const expectedRev = join( memoDir, '012-oauth-integration', 'revisions', 'REV-01.md' )
+            const expectedRev = join( memoDir, 'memos', '012-oauth-integration', 'revisions', 'REV-01.md' )
             expect( result.revPath ).toBe( expectedRev )
             expect( await exists( expectedRev ) ).toBe( true )
         } )
 
 
-        it( 'AC: starts numbering at 001 when .memo/ has no numbered folders', async () => {
+        it( 'AC: starts numbering at 001 when .memo/ has no numbered folders (writes under memos/)', async () => {
             const result = await MemoInit.createMemoStructure( {
                 memoDir,
                 topic: 'First Memo',
@@ -146,7 +169,43 @@ describe( 'MemoInit — PRD-001 (Memo 011 Kap 10)', () => {
             } )
 
             expect( result.number ).toBe( '001' )
-            expect( await exists( join( memoDir, '001-first-memo', 'revisions', 'REV-01.md' ) ) ).toBe( true )
+            expect( await exists( join( memoDir, 'memos', '001-first-memo', 'revisions', 'REV-01.md' ) ) ).toBe( true )
+        } )
+
+
+        // PRD-002 (Memo 013 Kap 9): next number resolves over the co-located memos/ layer.
+        it( 'AC: next number is computed over the memos/ layer (013 present -> 014)', async () => {
+            await mkdir( join( memoDir, 'memos', '013-thirteenth' ), { recursive: true } )
+
+            const result = await MemoInit.createMemoStructure( {
+                memoDir,
+                topic: 'Probe',
+                templatePath,
+                date: '2026-06-14'
+            } )
+
+            expect( result.number ).toBe( '014' )
+
+            const expectedRev = join( memoDir, 'memos', '014-probe', 'revisions', 'REV-01.md' )
+            expect( result.revPath ).toBe( expectedRev )
+            expect( await exists( expectedRev ) ).toBe( true )
+        } )
+
+
+        // PRD-002: the write target is under memos/, NEVER directly in the flat root (anti-pollution).
+        it( 'AC: write target is under memos/ and does NOT pollute the flat root', async () => {
+            const result = await MemoInit.createMemoStructure( {
+                memoDir,
+                topic: 'Root Pollution Check',
+                templatePath,
+                date: '2026-06-14'
+            } )
+
+            expect( result.path ).toBe( join( memoDir, 'memos', '001-root-pollution-check' ) )
+            // NO folder directly in the flat root
+            expect( await exists( join( memoDir, '001-root-pollution-check' ) ) ).toBe( false )
+            // it lives under memos/
+            expect( await exists( join( memoDir, 'memos', '001-root-pollution-check' ) ) ).toBe( true )
         } )
 
 
@@ -200,10 +259,11 @@ describe( 'MemoInit — PRD-001 (Memo 011 Kap 10)', () => {
             // The scan is collision-free by construction (next = max+1), so the guard is only
             // reachable when the scan under-reports — a TOCTOU / concurrent-run race. Force that
             // race with a spy that reports highest=0 while the 001-folder already exists on disk.
+            // The target now lives under memos/ (PRD-002), so the collision folder is seeded there.
             const topic = 'Collision Topic'
             const { slug } = MemoInit.slugFromTopic( { topic } )
 
-            const targetFolder = join( memoDir, `001-${ slug }` )
+            const targetFolder = join( memoDir, 'memos', `001-${ slug }` )
             const targetRev = join( targetFolder, 'revisions', 'REV-01.md' )
             await mkdir( join( targetFolder, 'revisions' ), { recursive: true } )
             const sentinel = 'DO NOT OVERWRITE'

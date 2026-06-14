@@ -403,3 +403,59 @@ describe( 'MemoValidator on a real finalized memo (positive smoke)', () => {
         expect( result[ 'status' ] ).toBe( true )
     } )
 } )
+
+
+// Memo 012, Kap 3: four error classes the validator did not catch before (F-Forensik §5).
+// Each test mutates the otherwise-valid VALID_DOC so the new code is isolated.
+describe( 'MemoValidator — Memo 012 lint extensions (MEMO-031/032/060/070)', () => {
+    it( 'MEMO-031: bold-wrapped option markers (**A)**) are flagged', () => {
+        const doc = VALID_DOC
+            .replace( 'A) Erste Option\nB) Zweite Option', '**A)** Erste Option\n**B)** Zweite Option' )
+        const result = MemoValidator.validate( { doc } )
+
+        expect( result[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-031' ) ) ).toBe( true )
+    } )
+
+    it( 'MEMO-032: an authored option duplicating the injected custom default is flagged', () => {
+        const doc = VALID_DOC.replace( 'B) Zweite Option', 'B) ablehnen' )
+        const result = MemoValidator.validate( { doc } )
+
+        expect( result[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-032' ) ) ).toBe( true )
+    } )
+
+    it( 'MEMO-060: a malformed revision filename suffix is flagged when fileName is given', () => {
+        const result = MemoValidator.validate( { doc: VALID_DOC, fileName: 'REV-5.md' } )
+
+        expect( result[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-060' ) ) ).toBe( true )
+    } )
+
+    it( 'MEMO-060: well-formed suffixes (REV-NN, -prepare, -update) pass', () => {
+        const a = MemoValidator.validate( { doc: VALID_DOC, fileName: 'REV-01.md' } )
+        const b = MemoValidator.validate( { doc: VALID_DOC, fileName: 'REV-02-prepare.md' } )
+        const c = MemoValidator.validate( { doc: VALID_DOC, fileName: 'REV-03-update.md' } )
+
+        expect( a[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-060' ) ) ).toBe( false )
+        expect( b[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-060' ) ) ).toBe( false )
+        expect( c[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-060' ) ) ).toBe( false )
+    } )
+
+    it( 'MEMO-070: a [Research offen] marker outside code spans is flagged', () => {
+        const doc = VALID_DOC.replace( 'kontext text', 'kontext text [Research offen]' )
+        const result = MemoValidator.validate( { doc } )
+
+        expect( result[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-070' ) ) ).toBe( true )
+    } )
+
+    it( 'MEMO-070: the same marker inside a code span is documentation, not flagged', () => {
+        const doc = VALID_DOC.replace( 'kontext text', 'kontext text `[Research offen]`' )
+        const result = MemoValidator.validate( { doc } )
+
+        expect( result[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-070' ) ) ).toBe( false )
+    } )
+
+    it( 'a clean VALID_DOC with a good fileName stays status=true', () => {
+        const result = MemoValidator.validate( { doc: VALID_DOC, fileName: 'REV-01.md' } )
+
+        expect( result[ 'status' ] ).toBe( true )
+    } )
+} )

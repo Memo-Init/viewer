@@ -17,7 +17,14 @@ import { DocumentRegistry } from './DocumentRegistry.mjs'
 //   Optionen      MEMO-030–039   Optionen nicht parsebar (Klammern statt Zeilen)
 //   Typ-Badge     MEMO-040–049   Typ single/multi inkonsistent (Checkliste = multi)
 //   JSON-Block    MEMO-050–059   Fragen-JSON-Codeblock malformed (PRD-039)
+//   Dateiname     MEMO-060–069   Revisions-Dateiname-Suffix malformed (Memo 012, Kap 3)
+//   Lifecycle     MEMO-070–079   Restmarker im finalen Dokument (Memo 012, Kap 3)
 //   Advisory      INFO-001–099   Hinweise ohne Blockierung
+//
+// Memo 012, Kap 3 (F-Forensik §5): four error classes the validator did NOT catch before
+// but memo-revision-evaluate relies on. MEMO-031/032 extend the per-question Optionen checks;
+// MEMO-060 needs the file name; MEMO-070 needs the raw doc. All four feed the same `messages`
+// channel as the existing ERROR codes, so `memo lint` (the SSOT CLI wrapper) inherits them.
 const ERROR_CODE_CATALOG = [
     { 'code': 'MEMO-001', 'severity': 'ERROR', 'theme': 'sections', 'description': 'Required section missing' },
     { 'code': 'MEMO-002', 'severity': 'ERROR', 'theme': 'input', 'description': 'Document is empty or not a string' },
@@ -30,12 +37,16 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'MEMO-030', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Options not parseable (use discrete lines, not inline parentheses)' },
     { 'code': 'MEMO-040', 'severity': 'ERROR', 'theme': 'typ', 'description': 'Checklist must be typ=multi' },
     { 'code': 'MEMO-050', 'severity': 'ERROR', 'theme': 'json-block', 'description': 'Questions JSON codeblock is malformed' },
+    { 'code': 'MEMO-031', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option marker is bold-wrapped (e.g. "**A)**" / "**A:**") and does not parse as an option' },
+    { 'code': 'MEMO-032', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Duplicate option within a question (duplicate key, or an authored option duplicates the injected custom/topic default)' },
+    { 'code': 'MEMO-060', 'severity': 'ERROR', 'theme': 'filename', 'description': 'Revision filename suffix malformed (expected REV-NN.md, REV-NN-prepare.md or REV-NN-update.md)' },
+    { 'code': 'MEMO-070', 'severity': 'ERROR', 'theme': 'lifecycle', 'description': 'Unresolved "[Research offen]" marker present outside code spans' },
     { 'code': 'INFO-010', 'severity': 'INFO', 'theme': 'header', 'description': 'Schema-Version marker missing (advisory until writing skills set it)' }
 ]
 
 
 class MemoValidator {
-    static validate( { doc } ) {
+    static validate( { doc, fileName } ) {
         const struct = { 'status': false, 'messages': [], 'info': [] }
 
         if( typeof doc !== 'string' || doc.length === 0 ) {
@@ -58,18 +69,21 @@ class MemoValidator {
         const header = MemoValidator.#validateHeaderFields( { doc } )
         const json = MemoValidator.#validateJsonBlock( { doc, jsonFound, jsonError } )
         const questions = MemoValidator.#validateQuestions( { doc, questionSchema } )
+        const lintExt = MemoValidator.#validateLintExtensions( { doc, fileName } )
 
         const messages = []
             .concat( sections[ 'messages' ] )
             .concat( header[ 'messages' ] )
             .concat( json[ 'messages' ] )
             .concat( questions[ 'messages' ] )
+            .concat( lintExt[ 'messages' ] )
 
         const info = []
             .concat( sections[ 'info' ] )
             .concat( header[ 'info' ] )
             .concat( json[ 'info' ] )
             .concat( questions[ 'info' ] )
+            .concat( lintExt[ 'info' ] )
 
         struct[ 'messages' ] = messages
         struct[ 'info' ] = info
@@ -325,6 +339,46 @@ class MemoValidator {
                     } )
                 }
 
+                // MEMO-031 (Memo 012 Kap 3): bold-wrapped option markers like "**A)**" or
+                // "**A:**" never parse as options (the marker regex requires start/space/[/(
+                // before the letter, not "*"). The author intent is clearly options, so a
+                // bold marker with zero parsed real options is a defect — not a false positive
+                // on prose, because this only inspects the question's own raw block.
+                const boldMarkers = rawBlock.match( /\*\*[A-H][):]\*\*/g ) || []
+                if( boldMarkers.length > 0 && realOptions.length === 0 && !safe[ 'answered' ] ) {
+                    MemoValidator.#route( {
+                        'code': 'MEMO-031',
+                        'feldPfad': `${ id }.options`,
+                        'description': `Option marker is bold-wrapped (${ boldMarkers[ 0 ] }) and does not parse — use plain "A) ..." lines`,
+                        'messages': struct[ 'messages' ],
+                        'info': struct[ 'info' ]
+                    } )
+                }
+
+                // MEMO-032 (Memo 012 Kap 3): duplicate options. Two failure modes — a duplicate
+                // key among the real options, or an authored option whose label duplicates a
+                // parser-injected default ("ablehnen" / "Über das Topic springen" / legacy
+                // "Frage ablösen"), which yields 7-instead-of-5 options that still pass today.
+                const optionKeyList = realOptions.map( ( option ) => option[ 'key' ] )
+                const duplicateKey = optionKeyList
+                    .find( ( key, index ) => optionKeyList.indexOf( key ) !== index )
+                const injectedLabels = [ 'ablehnen', 'über das topic springen', 'frage ablösen' ]
+                const duplicatesInjected = realOptions
+                    .some( ( option ) => injectedLabels.includes( String( option[ 'label' ] ).trim().toLowerCase() ) )
+
+                if( ( duplicateKey !== undefined || duplicatesInjected === true ) && !safe[ 'answered' ] ) {
+                    const detail = duplicateKey !== undefined
+                        ? `duplicate option key "${ duplicateKey }"`
+                        : 'an authored option duplicates the injected custom/topic default'
+                    MemoValidator.#route( {
+                        'code': 'MEMO-032',
+                        'feldPfad': `${ id }.options`,
+                        'description': `Duplicate option within the question (${ detail })`,
+                        'messages': struct[ 'messages' ],
+                        'info': struct[ 'info' ]
+                    } )
+                }
+
                 // Typ consistency — checklist (>= 2 checkbox items) must be typ=multi.
                 const checkboxItems = rawBlock.match( /^[ \t]*[-*]\s+\[[ xX]\]/gm ) || []
 
@@ -338,6 +392,47 @@ class MemoValidator {
                     } )
                 }
             } )
+
+        return struct
+    }
+
+
+    static #validateLintExtensions( { doc, fileName } ) {
+        const struct = { 'messages': [], 'info': [] }
+
+        // MEMO-060 (Memo 012 Kap 3): the revision filename suffix. Only checked when a file
+        // name is supplied (the server write-gate validates raw doc strings without one). The
+        // accepted forms are REV-NN.md (Full), REV-NN-prepare.md and REV-NN-update.md.
+        if( typeof fileName === 'string' && fileName.length > 0 ) {
+            const base = fileName.split( '/' ).pop()
+            const wellFormed = /^REV-\d{2}(-prepare|-update)?\.md$/.test( base )
+
+            if( wellFormed !== true ) {
+                MemoValidator.#route( {
+                    'code': 'MEMO-060',
+                    'feldPfad': `file.${ base }`,
+                    'description': 'Revision filename suffix malformed (expected REV-NN.md, REV-NN-prepare.md or REV-NN-update.md)',
+                    'messages': struct[ 'messages' ],
+                    'info': struct[ 'info' ]
+                } )
+            }
+        }
+
+        // MEMO-070 (Memo 012 Kap 3): an unresolved "[Research offen]" lifecycle marker must not
+        // survive into a delivered revision. Markers inside inline code spans (`[Research offen]`)
+        // or fenced code blocks are documentation about the marker, not an active marker — strip
+        // those first, then look for a residual occurrence.
+        const withoutFences = doc.replace( /```[\s\S]*?```/g, '' )
+        const withoutInlineCode = withoutFences.replace( /`[^`]*`/g, '' )
+        if( /\[Research offen\]/i.test( withoutInlineCode ) === true ) {
+            MemoValidator.#route( {
+                'code': 'MEMO-070',
+                'feldPfad': 'lifecycle.research',
+                'description': 'Unresolved "[Research offen]" marker present — resolve the open research before delivering',
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ]
+            } )
+        }
 
         return struct
     }

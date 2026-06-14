@@ -307,6 +307,12 @@ Das Frage-Widget (PRD-012/015, Memo 014 Kap 12/18) rendert nach dem Format-Fix k
 
 ---
 
+## Vorwort
+
+Diese Revision finalisiert die server-seitige Revisions-Validierung mit Error-Codes.
+
+---
+
 ## Offene Fragen
 
 keine

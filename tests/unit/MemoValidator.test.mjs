@@ -29,6 +29,9 @@ const VALID_DOC = [
     '## Kontext',
     'kontext text',
     '',
+    '## Vorwort',
+    'vorwort text',
+    '',
     '## Offene Fragen',
     '',
     '### F1 — Eine Frage',
@@ -52,7 +55,19 @@ const VALID_DOC = [
     '## Phase-Hints',
     '| phase-id | depends-on |',
     '|----------|-----------|',
-    '| P1 | — |'
+    '| P1 | — |',
+    '',
+    '## Finalisierungs-Checkliste',
+    'checkliste',
+    '',
+    '## Ancillary Files',
+    'keine',
+    '',
+    '## Rollout-Entry-Points',
+    '1. `pfad/datei.mjs` — start',
+    '',
+    '## Lessons-Learned',
+    'noch leer'
 ].join( '\n' )
 
 
@@ -140,14 +155,73 @@ describe( 'MemoValidator catalogue, classify & message-builder (PRD-037)', () =>
 } )
 
 
-describe( 'MemoValidator required sections (MEMO-001)', () => {
-    it( 'flags each missing required section', () => {
+describe( 'MemoValidator required sections (MEMO-001, PRD-002 — 10 sections)', () => {
+    // PRD-002 (Memo 011, Kap 10): the validator enforces 10 mandatory sections =
+    // the 9 canonical Pflicht-Sections PLUS `Beantwortete Fragen`.
+    const REQUIRED_SECTIONS = [
+        { 'heading': 'Kontext', 'feldPfad': 'section.Kontext' },
+        { 'heading': 'Vorwort', 'feldPfad': 'section.Vorwort' },
+        { 'heading': 'Offene Fragen', 'feldPfad': 'section.OffeneFragen' },
+        { 'heading': 'Beantwortete Fragen', 'feldPfad': 'section.BeantworteteFragen' },
+        { 'heading': 'Phasen', 'feldPfad': 'section.Phasen' },
+        { 'heading': 'Phase-Hints', 'feldPfad': 'section.Phase-Hints' },
+        { 'heading': 'Finalisierungs-Checkliste', 'feldPfad': 'section.Finalisierungs-Checkliste' },
+        { 'heading': 'Ancillary Files', 'feldPfad': 'section.AncillaryFiles' },
+        { 'heading': 'Rollout-Entry-Points', 'feldPfad': 'section.Rollout-Entry-Points' },
+        { 'heading': 'Lessons-Learned', 'feldPfad': 'section.Lessons-Learned' }
+    ]
+
+
+    it( 'a complete doc has all 10 sections present (no MEMO-001)', () => {
+        const result = MemoValidator.validate( { doc: VALID_DOC } )
+        const sectionMsgs = result[ 'messages' ].filter( ( m ) => m.startsWith( 'MEMO-001' ) )
+
+        expect( sectionMsgs ).toEqual( [] )
+    } )
+
+
+    REQUIRED_SECTIONS
+        .forEach( ( { heading, feldPfad } ) => {
+            it( `flags exactly one MEMO-001 ${ feldPfad } when "## ${ heading }" is missing`, () => {
+                const doc = VALID_DOC.replace( `## ${ heading }`, `## Removed-${ heading }` )
+                const result = MemoValidator.validate( { doc } )
+                const sectionMsgs = result[ 'messages' ].filter( ( m ) => m.startsWith( 'MEMO-001' ) )
+
+                expect( sectionMsgs.length ).toBe( 1 )
+                expect( sectionMsgs[ 0 ] ).toContain( `${ feldPfad }:` )
+                expect( result[ 'status' ] ).toBe( false )
+            } )
+        } )
+
+
+    it( 'a doc with only "## Kontext" flags the other 9 sections (9 MEMO-001)', () => {
         const result = MemoValidator.validate( { doc: '## Kontext\nx\nSchema-Version: 2' } )
         const sectionMsgs = result[ 'messages' ].filter( ( m ) => m.startsWith( 'MEMO-001' ) )
 
-        // Offene Fragen, Beantwortete Fragen, Phasen, Phase-Hints all missing -> 4.
-        expect( sectionMsgs.length ).toBe( 4 )
+        expect( sectionMsgs.length ).toBe( 9 )
         expect( result[ 'status' ] ).toBe( false )
+    } )
+
+
+    it( 'accepts the "## Claude-Vorwort" alias for the Vorwort section (SKILL.md Z.413)', () => {
+        const doc = VALID_DOC.replace( '## Vorwort', '## Claude-Vorwort' )
+        const result = MemoValidator.validate( { doc } )
+        const vorwortMsgs = result[ 'messages' ].filter( ( m ) => m.includes( 'section.Vorwort' ) )
+
+        expect( vorwortMsgs ).toEqual( [] )
+    } )
+} )
+
+
+describe( 'MemoValidator template round-trip (PRD-002)', () => {
+    it( 'the REV.md.template passes validation with no MEMO-001 section finding', async () => {
+        const here = dirname( fileURLToPath( import.meta.url ) )
+        const templatePath = resolve( here, '../../templates/REV.md.template' )
+        const content = await readFile( templatePath, 'utf-8' )
+        const result = MemoValidator.validate( { doc: content } )
+        const sectionMsgs = result[ 'messages' ].filter( ( m ) => m.startsWith( 'MEMO-001' ) )
+
+        expect( sectionMsgs ).toEqual( [] )
     } )
 } )
 

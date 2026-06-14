@@ -116,12 +116,27 @@ class MemoValidator {
 
     static #validateRequiredSections( { doc } ) {
         const struct = { 'messages': [], 'info': [] }
-        const required = [ 'Kontext', 'Offene Fragen', 'Beantwortete Fragen', 'Phasen', 'Phase-Hints' ]
+        // PRD-002 (Memo 011, Kap 10): enforce the 10 mandatory sections = the 9 canonical
+        // Pflicht-Sections from memo-init/SKILL.md ("Pflicht-Sections (PRD-029)" table)
+        // PLUS `Beantwortete Fragen`. `Beantwortete Fragen` is kept (validation finding
+        // REV-05) because the REV format uses it throughout (F1–F18) — the validator must
+        // not stop checking a section the REV format actually uses (silent regression drift).
+        const required = [ 'Kontext', 'Vorwort', 'Offene Fragen', 'Beantwortete Fragen', 'Phasen', 'Phase-Hints', 'Finalisierungs-Checkliste', 'Ancillary Files', 'Rollout-Entry-Points', 'Lessons-Learned' ]
+
+        // Some sections allow alternative headings (SKILL.md Z.413): `## Vorwort` may also
+        // appear as `## Claude-Vorwort`. A section counts as present if ANY of its accepted
+        // headings is found. Sections without an alias map to a single-element list.
+        const aliases = { 'Vorwort': [ 'Vorwort', 'Claude-Vorwort' ] }
 
         required
             .forEach( ( heading ) => {
-                const pattern = new RegExp( `^##\\s+${ heading }\\s*$`, 'im' )
-                const present = pattern.test( doc )
+                const accepted = Array.isArray( aliases[ heading ] ) ? aliases[ heading ] : [ heading ]
+                const present = accepted
+                    .some( ( candidate ) => {
+                        const pattern = new RegExp( `^##\\s+${ candidate }\\s*$`, 'im' )
+
+                        return pattern.test( doc )
+                    } )
 
                 if( !present ) {
                     MemoValidator.#route( {

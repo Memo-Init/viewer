@@ -40,6 +40,7 @@ const VALID_DOC = [
     '| **Memo** | 019 |', '| **Memo-Name** | Test |', '| **Revision** | REV-01 |',
     '| **Datum** | 2026-05-27 |', '| **Status** | Entwurf |', 'Schema-Version: 2', '',
     '## Kontext', 'kontext text', '',
+    '## Vorwort', 'vorwort text', '',
     '## Offene Fragen', '',
     '### F1 — Eine Frage', '',
     '**Hintergrund:** Hier der Hintergrund.', '',
@@ -48,7 +49,11 @@ const VALID_DOC = [
     'A) Erste Option', 'B) Zweite Option', '',
     '## Beantwortete Fragen', 'keine', '',
     '## Phasen', '### Phase 1: Test', '- [ ] etwas', '',
-    '## Phase-Hints', '| phase-id | depends-on |', '|----------|-----------|', '| P1 | — |'
+    '## Phase-Hints', '| phase-id | depends-on |', '|----------|-----------|', '| P1 | — |', '',
+    '## Finalisierungs-Checkliste', 'checkliste', '',
+    '## Ancillary Files', 'keine', '',
+    '## Rollout-Entry-Points', '1. `pfad/datei.mjs` — start', '',
+    '## Lessons-Learned', 'noch leer'
 ].join( '\n' )
 
 

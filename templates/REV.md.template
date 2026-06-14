@@ -1,0 +1,150 @@
+# {TOPIC}
+
+| Feld | Wert |
+|------|------|
+| **Memo** | {XXX} |
+| **Memo-Name** | {TOPIC} |
+| **Revision** | REV-01 |
+| **Datum** | {YYYY-MM-DD HH:MM} |
+| **Status** | Entwurf |
+| **Memo-Typ** | {Strategie / Implementierung / Sortierung} |
+| **Typ** | Full |
+| **Aenderungen** | Initiale Erstellung |
+
+<!-- Kontaminations-Metadaten (Memo 017 Kap 4) — Pflichtfelder seit PRD-007 -->
+| Kontaminations-Metadaten | Wert |
+|--------------------------|------|
+| **Transcript-Input** | {Ja / Nein} |
+| **Erstellungs-Kontext** | {leer / mittel / voll} |
+| **Session-Phase** | {frueh / mittel / spaet} |
+| **Session-ID** | `{$CLAUDE_CODE_SESSION_ID}` |
+
+---
+
+## Kontext
+
+| Key | Wert |
+|-----|------|
+| **Projekt** | {Projektname und Pfad} |
+| **Repos** | {Betroffene Repositories} |
+| **Betroffene Bereiche** | {Module, Seiten, APIs, etc.} |
+| **Referenzmaterial** | {Verlinkte Dokumente, Dateien, URLs} |
+
+---
+
+## 1. {Kapitel 1} [{Kategorie-Tag}]
+
+{Inhalt aus User-Input, strukturiert und aufbereitet}
+
+{Nur bei Typ Implementierung, wenn Kapitel einen Output hat:}
+**PRD-Vorbereitung:**
+| PRD | Benoetigt aus diesem Kapitel | Benoetigt zusaetzlich |
+|-----|------------------------------|----------------------|
+| {PRD-Name} | {Daten/Entscheidungen} | {Externe Quellen/APIs} |
+
+---
+
+## 2. {Kapitel 2} [{Kategorie-Tag}]
+
+{Inhalt aus User-Input, strukturiert und aufbereitet}
+
+---
+
+## Vorwort
+
+{Claudes einleitende Zusammenfassung zu dieser Revision — was wurde erstellt/geaendert, warum, worauf der User als naechstes achten soll. Heading exakt `## Vorwort` (Alias `## Claude-Vorwort` erlaubt). Steht direkt oberhalb der "Offene Fragen". Leerer Body erlaubt — der Viewer rendert die Section dann unsichtbar.}
+
+---
+
+## Offene Fragen
+
+> ⛔ NUR die realen Optionen schreiben (A, B, C, …). NIEMALS `D) Eigene Antwort` / `E) Ueber Topic` als Zeilen anhaengen — der Viewer-Parser injiziert `custom` + `topic` IMMER selbst.
+
+### F1 — {Kurztitel mit 2-4 Woerter}
+
+**Hintergrund:** {1-2 Saetze die den Kontext rekonstruieren}
+
+**Frage:** {1-2 vollstaendige Saetze. Bei mehreren Optionen werden alle explizit ausformuliert.}
+
+**AI-Empfehlung:** {1-2 Saetze plus 1 Satz Begruendung. Verweist auf eine reale Option, z. B. A.}
+
+A) {Erste ausformulierte Antwortmoeglichkeit}
+B) {Zweite ausformulierte Antwortmoeglichkeit}
+C) {Dritte ausformulierte Antwortmoeglichkeit}
+
+---
+
+## Beantwortete Fragen
+
+<!-- Diese Section wird auch leer gerendert. Format pro Eintrag: -->
+
+### F{N} — {Kurztitel}
+
+- **Frage (Original):** {Wortlaut}
+- **AI-Empfehlung war:** {Original-Empfehlung}
+- **User-Entscheidung:** {Antwort + ggf. Korrektur der AI-Empfehlung}
+- **Beantwortet in:** REV-{XX}
+- **Anmerkung:** {optional}
+
+---
+
+## Phasen
+
+### Phase 1: {Name}
+- [ ] Eintrag 1 [{Tag}] — {Was gemacht wird}
+- [ ] Eintrag 2 [{Tag}] — {Was gemacht wird}
+
+### Phase 2: {Name}
+- [ ] Eintrag 3 [{Tag}] — {Was gemacht wird}
+
+---
+
+## Phase-Hints
+
+<!-- Pflicht-Section (PRD-017). Memo-Hoheit ueber Reihenfolge: depends-on und can-parallel-with steuern memo-plan-execute. -->
+<!-- Felder leer = sequenziell (Default). can-parallel-with ist symmetrisch. -->
+
+| phase-id | depends-on | can-parallel-with | begruendung |
+|----------|-----------|-------------------|-------------|
+| P1 | — | — | Sequenziell, Default |
+<!-- Weitere Phasen hier ergaenzen. Memo-Hoheit ueber Reihenfolge. -->
+
+---
+
+## Finalisierungs-Checkliste
+
+| Quality-Skill | Status | Relevant? | AI-Empfehlung | User |
+|---------------|--------|-----------|---------------|------|
+| memo-evidence | ⬜ | {Ja/Nein} | {Empfehlung} | — |
+| memo-balance | ⬜ | {Ja/Nein} | {Empfehlung} | — |
+| memo-coherence | ⬜ | {Ja/Nein} | {Empfehlung} | — |
+| memo-references | ⬜ | {Ja/Nein} | {Empfehlung} | — |
+| git-security | ⬜ | {Ja/Nein} | {Empfehlung} | — |
+| ralph-loop | ⬜ | {Ja/Nein} | {Empfehlung} | — |
+
+---
+
+## Ancillary Files
+
+| Datei | Beschreibung | Relativer Pfad |
+|-------|--------------|----------------|
+| — | — | — |
+
+---
+
+## Rollout-Entry-Points
+
+<!-- Pflicht-Section (PRD-029). Beim Start des Rollouts (leerer Kontext) lese in dieser Reihenfolge. -->
+<!-- Wird beim spaeteren memo-plan-init in den Plan-Header uebernommen (PRD-030). -->
+
+Beim Start des Rollouts (leerer Kontext) lese in dieser Reihenfolge:
+
+1. `{relativer/pfad/zur/datei1.mjs}` — {Was die Datei enthaelt, warum sie zuerst gelesen wird}
+2. `{relativer/pfad/zur/datei2.json}` — {...}
+3. `{relativer/pfad/zum/ordner/}` — {Was im Ordner gebraucht wird}
+
+---
+
+## Lessons-Learned
+
+{Wird im Laufe der Revisionen befuellt}

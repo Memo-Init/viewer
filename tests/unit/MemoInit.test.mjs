@@ -188,6 +188,11 @@ describe( 'MemoInit — PRD-001 (Memo 011 Kap 10)', () => {
 
             // No mandatory section is missing (same contract as PRD-002 template round-trip).
             expect( sectionMsgs ).toEqual( [] )
+            // Full clean: a freshly scaffolded memo must pass validation outright (status=true),
+            // not merely lack missing-section findings. Guards against the MEMO-040 question-block
+            // bleed (F1 absorbing the Phasen checkboxes) regressing silently.
+            expect( validated[ 'status' ] ).toBe( true )
+            expect( validated[ 'messages' ] ).toEqual( [] )
         } )
 
 

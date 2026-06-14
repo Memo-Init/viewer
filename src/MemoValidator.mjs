@@ -370,20 +370,32 @@ class MemoValidator {
         const struct = { 'blocks': {} }
         const lines = doc.split( '\n' )
         const headingPattern = /^###\s+(F\d+)\b/
+        const sectionPattern = /^##\s+/
 
+        // A question block ends at the next "### F{N}" heading OR the next "## " section
+        // heading (whichever comes first), so a question never bleeds across a section
+        // boundary into the following section's content (e.g. the "## Phasen" checkboxes).
         const starts = []
+        const boundaries = []
         lines
             .forEach( ( line, index ) => {
                 const matched = line.match( headingPattern )
 
                 if( matched !== null ) {
                     starts.push( { 'id': matched[ 1 ], index } )
+                    boundaries.push( index )
+                } else if( sectionPattern.test( line ) === true ) {
+                    boundaries.push( index )
                 }
             } )
 
         starts
-            .forEach( ( entry, position ) => {
-                const endIndex = position + 1 < starts.length ? starts[ position + 1 ][ 'index' ] : lines.length
+            .forEach( ( entry ) => {
+                const laterBoundaries = boundaries
+                    .filter( ( boundaryIndex ) => boundaryIndex > entry[ 'index' ] )
+                const endIndex = laterBoundaries.length > 0
+                    ? Math.min( ...laterBoundaries )
+                    : lines.length
                 const block = lines
                     .slice( entry[ 'index' ], endIndex )
                     .join( '\n' )

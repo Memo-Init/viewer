@@ -10,7 +10,8 @@
     },
     "bin": {
         "memo-view": "./src/cli.mjs",
-        "memo-init": "./bin/memo-init.mjs"
+        "memo-init": "./bin/memo-init.mjs",
+        "memo-findings": "./bin/memo-findings.mjs"
     },
     "scripts": {
         "test": "node --experimental-vm-modules node_modules/.bin/jest",

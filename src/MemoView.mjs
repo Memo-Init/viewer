@@ -10,6 +10,7 @@ import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { MemoValidator } from './MemoValidator.mjs'
 import { PlanRegistry } from './PlanRegistry.mjs'
 import { TranscriptRegistry } from './TranscriptRegistry.mjs'
+import { RequirementsStore } from './RequirementsStore.mjs'
 import { Config } from './data/config.mjs'
 
 
@@ -323,6 +324,34 @@ class MemoView {
 
     static getRegistry() {
         return MemoView.#registry
+    }
+
+
+    // PRD-012 (Memo 011 Kap 4, F16=A): resolve the sibling .memo/requirements/ store directory and
+    // the eval-set name (memo-<NNN>) for a registered memo. The requirements store lives at
+    // <projectRoot>/.memo/requirements/ — the same /.memo/ marker the documents POST handler uses.
+    // The eval-set name is derived from the leading number of the memo folder name (e.g.
+    // "011-systemverbesserung..." -> "memo-011"). Returns { status, requirementsDir, memoName }.
+    static resolveRequirementsLocation( { memoPath, memoName } ) {
+        const struct = { 'status': false, 'requirementsDir': null, 'memoName': null }
+
+        if( typeof memoPath !== 'string' ) { return struct }
+
+        const memoMarkerIndex = memoPath.indexOf( '/.memo/' )
+
+        if( memoMarkerIndex === -1 ) { return struct }
+
+        const projectRoot = memoPath.slice( 0, memoMarkerIndex )
+        const requirementsDir = resolve( projectRoot, '.memo', 'requirements' )
+
+        const numberMatch = ( typeof memoName === 'string' ? memoName : '' ).match( /^(\d{1,})/ )
+        const setName = numberMatch !== null ? `memo-${ numberMatch[ 1 ] }` : null
+
+        struct[ 'status' ] = true
+        struct[ 'requirementsDir' ] = requirementsDir
+        struct[ 'memoName' ] = setName
+
+        return struct
     }
 
 
@@ -2344,6 +2373,36 @@ class MemoView {
             color: var(--text-muted-2);
         }
 
+        /* PRD-012 (Memo 011 Kap 4, F16=A): Requirements-Ansicht. Chips + Gruppen-Container.
+           Bewusst KEINE position:fixed / Overlay-Regel hier — das Detail-Popup wiederverwendet
+           ausschliesslich die bestehenden .t-modal*-Klassen. */
+        .req-view { display: flex; flex-direction: column; gap: 16px; }
+        .req-section-title { font-size: 14px; font-weight: 700; color: var(--text-1); }
+        .req-group { display: flex; flex-direction: column; gap: 6px; }
+        .req-group-head { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+        .req-items { display: flex; flex-wrap: wrap; gap: 8px; }
+
+        .req-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 4px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .req-item:hover { border-color: var(--accent); color: var(--text-1); }
+        .req-item .req-item-id { color: var(--text-muted); font-size: 11px; font-weight: 600; }
+        .req-item .req-item-short { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .req-detail-row { display: flex; flex-direction: column; gap: 2px; }
+        .req-detail-label { font-size: 11px; font-weight: 700; color: var(--text-muted); }
+        .req-detail-value { font-size: 13px; color: var(--text-1); }
+
         /* Tab bar inside transcript modal (Tab 1 / Tab 2) */
         .t-tabs {
             display: flex;
@@ -3469,6 +3528,19 @@ class MemoView {
             </div>
         </div>
     </div>
+    <!-- PRD-012 (Memo 011 Kap 4, F16=A): requirement detail popup. REUSES the existing
+         .t-modal / .t-modal-content / .t-modal-header / .t-modal-body classes (centered via
+         .t-modal { display:flex; align-items:center; justify-content:center }). NO new overlay CSS. -->
+    <div id="requirement-modal" class="t-modal t-hidden">
+        <div class="t-modal-content">
+            <div class="t-modal-header">
+                <span class="t-title" id="req-modal-title">Requirement</span>
+                <span class="t-header-spacer"></span>
+                <button class="t-close" id="req-modal-close" title="Schliessen">&times;</button>
+            </div>
+            <div class="t-modal-body" id="req-modal-body"></div>
+        </div>
+    </div>
     <div id="layout">
         <nav id="doc-sidebar">
             <div id="doc-sidebar-body"></div>
@@ -3566,6 +3638,9 @@ class MemoView {
         let notifyAudioCtx = null
         let currentFileName = ''
         let currentMemoName = ''
+        // PRD-012 (Memo 011 Kap 4, F16=A): track the active documentId so the requirements view
+        // can fetch /api/documents/<id>/requirements for the currently selected memo.
+        let currentDocumentId = ''
         let reconnectAttempts = 0
         const collapsedProjects = new Set()
         const collapsedMemos = new Set()
@@ -4026,6 +4101,8 @@ class MemoView {
             // Statuszeile. Gleiche ID #diff-toggle -> bindDiffToggle findet ihn weiterhin per ID.
             // Startzustand display:none; bindDiffToggle blendet ihn ein, wenn ein Diff vorliegt.
             z1Line1 += '<button id="diff-toggle" style="display:none" title="Diff anzeigen/ausblenden">Diff</button>'
+            // PRD-012 (Memo 011 Kap 4, F16=A): Requirements-Ansicht oeffnen (PRD-Ebene + Memo-Aggregat).
+            z1Line1 += '<button id="req-view-toggle" title="Requirements anzeigen">Requirements</button>'
             z1Line1 += '</div>'
 
             // Zeile 2 (9I8kz): aktuelles Dokument — "ressources · 019 · REV-NN" + Kalender-Icon
@@ -4166,6 +4243,15 @@ class MemoView {
 
             // Rebind the diff-toggle (re-created on each render) to the existing diff logic.
             bindDiffToggle()
+
+            // PRD-012 (Memo 011 Kap 4, F16=A): rebind the Requirements-view toggle (re-created on
+            // each header render). Opens the PRD-level + Memo-aggregate view for the active memo.
+            var reqViewToggle = document.getElementById( 'req-view-toggle' )
+            if( reqViewToggle ) {
+                reqViewToggle.addEventListener( 'click', function() {
+                    loadRequirementsView( currentDocumentId )
+                } )
+            }
 
             // PRD-008 (Kap 9.5): the single entrypoint — "Prompt bearbeiten" opens the combined
             // popup (Transcript-Abschnitt + Fragen-Abschnitt). Bound per render (header rebuilt).
@@ -6280,6 +6366,147 @@ class MemoView {
             document.getElementById( 'plan-modal' ).classList.add( 't-hidden' )
         }
 
+        // PRD-012 (Memo 011 Kap 4, F16=A): Requirements-Ansicht.
+        // Build a single requirement chip. Stable DOM hooks for Playwright/jsdom assertions:
+        //   - class "req-item", attribute data-req-id (US-1 PRD-level item)
+        //   - title attribute = derived short name (US-2 hover -> Kurzname)
+        //   - click -> openRequirementModal (US-3 click -> centered reused popup)
+        function buildRequirementChip( req ) {
+            var chip = document.createElement( 'div' )
+            chip.className = 'req-item'
+            chip.setAttribute( 'data-req-id', req.id )
+            var shortName = req.shortName || req.title || req.id
+            chip.setAttribute( 'title', shortName )
+
+            var idSpan = document.createElement( 'span' )
+            idSpan.className = 'req-item-id'
+            idSpan.textContent = req.id
+            chip.appendChild( idSpan )
+
+            var shortSpan = document.createElement( 'span' )
+            shortSpan.className = 'req-item-short'
+            shortSpan.textContent = shortName
+            chip.appendChild( shortSpan )
+
+            chip.addEventListener( 'click', function() {
+                openRequirementModal( req )
+            } )
+
+            return chip
+        }
+
+        // Render the requirements view model into the given container. payload = the /requirements
+        // API shape { groups[], aggregate[] }. Renders BOTH levels:
+        //   - PRD-level: one .req-group per scope group, items carry data-req-id.
+        //   - Memo-aggregate: a single container with attribute data-req-aggregate holding ALL items.
+        function renderRequirementsView( payload, container ) {
+            container.textContent = ''
+            var root = document.createElement( 'div' )
+            root.className = 'req-view'
+
+            var groups = ( payload && payload.groups ) ? payload.groups : []
+            var aggregate = ( payload && payload.aggregate ) ? payload.aggregate : []
+
+            var prdTitle = document.createElement( 'div' )
+            prdTitle.className = 'req-section-title'
+            prdTitle.textContent = 'Requirements (PRD-Ebene)'
+            root.appendChild( prdTitle )
+
+            groups.forEach( function( group ) {
+                var groupEl = document.createElement( 'div' )
+                groupEl.className = 'req-group'
+                groupEl.setAttribute( 'data-req-group', group.groupKey )
+
+                var head = document.createElement( 'div' )
+                head.className = 'req-group-head'
+                head.textContent = group.groupKey
+                groupEl.appendChild( head )
+
+                var items = document.createElement( 'div' )
+                items.className = 'req-items'
+                ;( group.requirements || [] ).forEach( function( req ) {
+                    items.appendChild( buildRequirementChip( req ) )
+                } )
+                groupEl.appendChild( items )
+                root.appendChild( groupEl )
+            } )
+
+            var aggTitle = document.createElement( 'div' )
+            aggTitle.className = 'req-section-title'
+            aggTitle.textContent = 'Memo-Aggregat (' + aggregate.length + ')'
+            root.appendChild( aggTitle )
+
+            var aggEl = document.createElement( 'div' )
+            aggEl.className = 'req-items'
+            aggEl.setAttribute( 'data-req-aggregate', payload && payload.memoName ? payload.memoName : 'aggregate' )
+            aggregate.forEach( function( req ) {
+                aggEl.appendChild( buildRequirementChip( req ) )
+            } )
+            root.appendChild( aggEl )
+
+            container.appendChild( root )
+
+            return root
+        }
+
+        // US-3: open the REUSED .t-modal popup with requirement details. Toggles t-hidden only —
+        // centering is inherited from .t-modal (align-items/justify-content center). NO new modal CSS.
+        function openRequirementModal( req ) {
+            var modal = document.getElementById( 'requirement-modal' )
+            var title = document.getElementById( 'req-modal-title' )
+            var body = document.getElementById( 'req-modal-body' )
+            if( !modal || !body ) { return }
+
+            if( title ) { title.textContent = req.id + ' · ' + ( req.shortName || req.title || '' ) }
+
+            body.textContent = ''
+            var scope = req.scope || {}
+            var repos = ( scope.repos && scope.repos.length > 0 ) ? scope.repos.join( ', ' ) : '(alle)'
+            var rows = [
+                { label: 'Statement', value: req.statement || req.title || '' },
+                { label: 'Scope (repos)', value: repos },
+                { label: 'Severity', value: req.severity || '' },
+                { label: 'Origin', value: req.origin || '' }
+            ]
+            rows.forEach( function( row ) {
+                var rowEl = document.createElement( 'div' )
+                rowEl.className = 'req-detail-row'
+                var labelEl = document.createElement( 'div' )
+                labelEl.className = 'req-detail-label'
+                labelEl.textContent = row.label
+                var valueEl = document.createElement( 'div' )
+                valueEl.className = 'req-detail-value'
+                valueEl.textContent = row.value
+                rowEl.appendChild( labelEl )
+                rowEl.appendChild( valueEl )
+                body.appendChild( rowEl )
+            } )
+
+            modal.classList.remove( 't-hidden' )
+
+            return modal
+        }
+
+        function closeRequirementModal() {
+            var modal = document.getElementById( 'requirement-modal' )
+            if( modal ) { modal.classList.add( 't-hidden' ) }
+        }
+
+        // US-1: fetch the requirements view model for the active memo and render it into #content.
+        // Read-only: GET /api/documents/<id>/requirements. No-op without an active documentId.
+        async function loadRequirementsView( documentId ) {
+            var contentTarget = document.getElementById( 'content' )
+            if( !documentId || !contentTarget ) { return }
+
+            try {
+                var resp = await fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/requirements' )
+                var payload = await resp.json()
+                renderRequirementsView( payload, contentTarget )
+            } catch( err ) {
+                contentTarget.textContent = 'Requirements konnten nicht geladen werden.'
+            }
+        }
+
         function allMemosByNamespace() {
             // All memos grouped by namespace; finalized = selectable, others = greyed/not selectable.
             var groups = {}
@@ -6485,6 +6712,22 @@ class MemoView {
 
         var pCloseBtn = document.getElementById( 'p-close' )
         if( pCloseBtn ) { pCloseBtn.addEventListener( 'click', closePlanModal ) }
+
+        // PRD-012 (Memo 011 Kap 4, F16=A): requirement-modal close wiring — X button, Esc,
+        // overlay click. Same toggle mechanic (.t-hidden) as the existing transcript/plan modals.
+        var reqCloseBtn = document.getElementById( 'req-modal-close' )
+        if( reqCloseBtn ) { reqCloseBtn.addEventListener( 'click', closeRequirementModal ) }
+
+        var reqModalEl = document.getElementById( 'requirement-modal' )
+        if( reqModalEl ) {
+            reqModalEl.addEventListener( 'click', function( ev ) {
+                if( ev.target === reqModalEl ) { closeRequirementModal() }
+            } )
+        }
+
+        document.addEventListener( 'keydown', function( ev ) {
+            if( ev.key === 'Escape' ) { closeRequirementModal() }
+        } )
 
         function playNotification() {
             try {
@@ -8453,6 +8696,7 @@ class MemoView {
                     if( data.fileName ) {
                         currentFileName = data.fileName
                         currentMemoName = data.memoName || ''
+                        currentDocumentId = data.documentId || currentDocumentId
                         updateSidebarSticky( data.memoName, data.fileName )
                         var h1 = contentEl.querySelector( 'h1' )
                         var heading = h1 ? h1.textContent.trim() : data.fileName
@@ -8712,6 +8956,59 @@ class MemoView {
                 }
 
                 sendJson( res, 200, { documents } )
+
+                return
+            }
+
+            // PRD-012 (Memo 011 Kap 4, F16=A): read-only requirements view model for one memo —
+            // PRD-level groups + memo aggregate, resolved from the sibling .memo/requirements/ store.
+            // MUST be matched BEFORE the generic /api/documents/<id> GET below (the suffix is more
+            // specific; otherwise the generic route would swallow "<id>/requirements" as the id).
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/requirements' ) && req.method === 'GET' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/requirements'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                const doc = result[ 'document' ]
+                const location = MemoView.resolveRequirementsLocation( {
+                    'memoPath': doc[ 'memoPath' ],
+                    'memoName': doc[ 'memoName' ]
+                } )
+
+                if( !location[ 'status' ] || location[ 'memoName' ] === null ) {
+                    sendJson( res, 200, {
+                        'status': 'ok',
+                        'documentId': documentId,
+                        'memoName': null,
+                        'groups': [],
+                        'aggregate': [],
+                        'count': 0,
+                        'missingIds': []
+                    } )
+
+                    return
+                }
+
+                const view = await RequirementsStore.aggregate( {
+                    'requirementsDir': location[ 'requirementsDir' ],
+                    'memoName': location[ 'memoName' ]
+                } )
+
+                sendJson( res, 200, {
+                    'status': 'ok',
+                    'documentId': documentId,
+                    'memoName': view[ 'memoName' ],
+                    'groups': view[ 'groups' ],
+                    'aggregate': view[ 'aggregate' ],
+                    'count': view[ 'count' ],
+                    'missingIds': view[ 'missingIds' ]
+                } )
 
                 return
             }
@@ -9735,7 +10032,7 @@ class MemoView {
                                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
                                     const { validation } = MemoView.#computeValidation( { content } )
 
-                                    ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'diff': diff, questionSchema, vorwort, validation } ) )
+                                    ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'documentId': msg.documentId, 'diff': diff, questionSchema, vorwort, validation } ) )
 
                                     const { tree, latest } = MemoView.buildDocumentListPayload()
                                     clients.forEach( ( c ) => {

@@ -7576,6 +7576,11 @@ class MemoView {
             body.appendChild( optsWrap )
 
             // PRD-005 (#25): green AI recommendation line fed from the preselected single option.
+            // PRD-004 (Memo 011 Kap 11, Bug B): render the FULL aiRecommendation reasoning, not
+            // just the preselected option label — the bare label never explained WHY the AI
+            // recommends it. Prefer the reasoning string; fall back to the option label when no
+            // reasoning text is present (e.g. a bare "A" recommendation).
+            var aiReasoning = typeof q.aiRecommendation === 'string' ? q.aiRecommendation.trim() : ''
             if( q.typ === 'single' && Array.isArray( q.preselected ) && q.preselected.length > 0 ) {
                 var aiIdx = q.preselected[ 0 ]
                 var aiOpt = ( q.options || [] )[ aiIdx ]
@@ -7590,7 +7595,8 @@ class MemoView {
                     aiLabel.textContent = 'KI-EMPFEHLUNG'
                     var aiText = document.createElement( 'span' )
                     aiText.className = 'qw-ai-text'
-                    aiText.textContent = ( aiOpt.kind === 'option' ? aiOpt.key + ') ' : '' ) + aiOpt.label
+                    var aiKeyPrefix = ( aiOpt.kind === 'option' ? aiOpt.key + ') ' : '' )
+                    aiText.textContent = aiReasoning.length > 0 ? ( aiKeyPrefix + aiReasoning ) : ( aiKeyPrefix + aiOpt.label )
                     aiLine.appendChild( aiLabel )
                     aiLine.appendChild( document.createTextNode( ' ' ) )
                     aiLine.appendChild( aiText )

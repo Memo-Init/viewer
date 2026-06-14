@@ -91,4 +91,16 @@ describe( 'Question widget render — Phase 5 (Memo 016 Kap 11)', () => {
         expect( emittedScript.includes( 'qw-topic-dead' ) ).toBe( true )
         // The dead-cursor CSS rule is rendered in the page <style>, outside the inline script.
     } )
+
+
+    it( 'renders the full aiRecommendation reasoning in the KI-EMPFEHLUNG block (PRD-004 Bug B)', () => {
+        // The widget must feed the qw-ai-text span from q.aiRecommendation (the reasoning),
+        // not only from the preselected option label. Prove the reasoning string is read.
+        expect( emittedScript.includes( 'q.aiRecommendation' ) ).toBe( true )
+        expect( emittedScript.includes( 'var aiReasoning' ) ).toBe( true )
+        // The reasoning, when present, is written into the qw-ai-text span.
+        expect( emittedScript.includes( "aiText.className = 'qw-ai-text'" ) ).toBe( true )
+        expect( emittedScript.includes( 'aiReasoning.length > 0' ) ).toBe( true )
+        expect( emittedScript.includes( 'aiKeyPrefix + aiReasoning' ) ).toBe( true )
+    } )
 } )

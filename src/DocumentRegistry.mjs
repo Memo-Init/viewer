@@ -791,14 +791,35 @@ class DocumentRegistry {
                 }
             } )
 
+        const typ = safe[ 'typ' ] === 'multi' ? 'multi' : 'single'
+        const aiRecommendation = typeof safe[ 'aiRecommendation' ] === 'string' ? safe[ 'aiRecommendation' ] : ''
+
+        // PRD-004 (Memo 011 Kap 11, Bug A): the JSON path previously never set `preselected`,
+        // so the KI-recommendation was never pre-selected or shown. Mirror the markdown path
+        // (#parseSingleQuestion Z.926-934): append the custom/topic default options, then derive
+        // `preselected` from `aiRecommendation` via #resolvePreselected.
+        const optionsWithDefaults = [ ...options ]
+        optionsWithDefaults.push( { 'key': 'custom', 'label': 'ablehnen', 'kind': 'custom' } )
+        optionsWithDefaults.push( { 'key': 'topic', 'label': 'Über das Topic springen', 'kind': 'topic' } )
+
+        // An explicit `preselected` array on the JSON entry wins (the author already decided);
+        // otherwise derive it from the AI recommendation. Empty recommendation -> [] (no crash).
+        const explicitPreselected = Array.isArray( safe[ 'preselected' ] )
+            ? safe[ 'preselected' ].filter( ( index ) => Number.isInteger( index ) )
+            : null
+        const { preselected: derivedPreselected } = DocumentRegistry.#resolvePreselected( { typ, aiRecommendation, options: optionsWithDefaults } )
+        const preselected = explicitPreselected !== null ? explicitPreselected : derivedPreselected
+
         const question = {
             'id': typeof safe[ 'id' ] === 'string' ? safe[ 'id' ] : '',
             'title': typeof safe[ 'title' ] === 'string' ? safe[ 'title' ] : '',
             'hintergrund': typeof safe[ 'hintergrund' ] === 'string' ? safe[ 'hintergrund' ] : '',
             'frage': typeof safe[ 'frage' ] === 'string' ? safe[ 'frage' ] : '',
-            'aiRecommendation': typeof safe[ 'aiRecommendation' ] === 'string' ? safe[ 'aiRecommendation' ] : '',
-            'typ': safe[ 'typ' ] === 'multi' ? 'multi' : 'single',
-            options,
+            aiRecommendation,
+            typ,
+            'options': optionsWithDefaults,
+            preselected,
+            'allowCustomEntries': typ === 'multi',
             'answered': safe[ 'answered' ] === true
         }
 
@@ -1053,7 +1074,15 @@ class DocumentRegistry {
                 // Marker grammar (start anchor): optional "Option ", then either a bare
                 // letter followed by ) : or . — OR — a parenthesised letter "(A)" optionally
                 // followed by : or . — in both cases trailing whitespace.
-                const markerPart = '(?:Option\\s+)?(?:([A-H])[):.]|\\(([A-H])\\)[:.]?)\\s+'
+                //
+                // PRD-004 (Memo 011 Kap 11, Bug C): the bare-letter branch needs a LEFT
+                // boundary too. Without it the engine matched a letter glued to the end of a
+                // word — "INCONCLUSIVE:" produced a phantom option "E" (the final E of the word
+                // followed by the colon). The non-consuming `(?:^|(?<=[\s(]))` prefix requires
+                // the marker to begin at the string start or right after whitespace / an opening
+                // paren, so a letter inside a word never starts a marker. (The lookbehind keeps
+                // `lastIndex` correct — no character is consumed by the boundary itself.)
+                const markerPart = '(?:^|(?<=[\\s(]))(?:Option\\s+)?(?:([A-H])[):.]|\\(([A-H])\\)[:.]?)\\s+'
                 const markerLookahead = '(?:Option\\s+)?(?:[A-H][):.]|\\([A-H]\\)[:.]?)\\s+'
                 const optionPattern = new RegExp(
                     markerPart + '([^]*?)(?=(?:\\s' + markerLookahead + ')|$)',
@@ -1223,8 +1252,24 @@ class DocumentRegistry {
         }
 
         // The AI recommendation often names option keys, e.g. "Option C", "A+B", "C —".
+        //
+        // PRD-004 (Memo 011 Kap 11, Bug C): the old key regex `/\b([A-H])\b/g` matched ANY
+        // bare A-H letter — including letters that only appear in prose ("Variante A wäre
+        // denkbar", "INCONCLUSIVE:"). Those phantom matches pre-selected options that the AI
+        // never recommended. Anchor the marker so a letter only counts when it sits at a
+        // recommendation boundary: at the string start, after "Option ", or after a separator
+        // (space, "+", "/", ",", "—", "-", "("), AND is immediately followed by a recommendation
+        // delimiter (")", ":", ".", "—", "-", "+", "/", ",", whitespace, or string end). A
+        // letter buried inside a word ("INCONCLUSIVE") never satisfies the leading boundary.
         const recommendation = aiRecommendation.toUpperCase()
-        const keyMatches = recommendation.match( /\b([A-H])\b/g ) || []
+        const keyPattern = /(?:^|[\s+/,(—-]|OPTION\s+)([A-H])(?=[):.,+/—\s-]|$)/g
+        const keyMatches = ( recommendation.match( keyPattern ) || [] )
+            .map( ( token ) => {
+                const found = token.match( /([A-H])(?=[):.,+/—\s-]|$)/ )
+
+                return found !== null ? found[ 1 ] : ''
+            } )
+            .filter( ( key ) => key.length > 0 )
 
         const matchedIndices = []
         options

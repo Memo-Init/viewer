@@ -89,6 +89,41 @@ describe( 'PRD-001 Parser-Härtung — Count == Parse (kein stiller Mismatch)', 
 } )
 
 
+describe( 'PRD-004 (Memo 011 Kap 11) — Optionen-/Key-Regex verankert (Bug C)', () => {
+    it( 'does not turn a bare A-H letter buried in prose into a phantom option', async () => {
+        const { content } = await loadFixture( 'prose-phantom.md' )
+        const { questions } = DocumentRegistry.parseQuestionSchema( { content } )
+
+        expect( questions.length ).toBe( 1 )
+
+        const realOptions = questions[ 0 ][ 'options' ]
+            .filter( ( option ) => option[ 'kind' ] === 'option' )
+
+        // The word "INCONCLUSIVE:" ends with an "E" right before a colon — the old unanchored
+        // marker matched it as a phantom option "E". After anchoring only the two real,
+        // line-leading options survive.
+        const keys = realOptions.map( ( option ) => option[ 'key' ] ).sort()
+        expect( keys ).toEqual( [ 'A', 'B' ] )
+
+        const hasPhantomLabel = realOptions
+            .some( ( option ) => /INCONCLUSIVE|Variante|denkbar/i.test( option[ 'label' ] ) )
+        expect( hasPhantomLabel ).toBe( false )
+    } )
+
+
+    it( 'does not preselect a phantom key from a bare prose letter', async () => {
+        const { content } = await loadFixture( 'prose-phantom.md' )
+        const { questions } = DocumentRegistry.parseQuestionSchema( { content } )
+
+        // AI-Empfehlung is "B" -> the second real option. "Variante A" in the Hintergrund prose
+        // must NOT pull A into preselected.
+        const real = questions[ 0 ][ 'options' ].filter( ( option ) => option[ 'kind' ] === 'option' )
+        const bIndex = real.findIndex( ( option ) => option[ 'key' ] === 'B' )
+        expect( questions[ 0 ][ 'preselected' ] ).toEqual( [ bIndex ] )
+    } )
+} )
+
+
 describe( 'PRD-001 Parser-Härtung — multi-question aliases & mixed casing', () => {
     it( 'binds AI- and KI-Empfehlung across three questions with mixed casing/spacing', async () => {
         const { content } = await loadFixture( 'multi-question.md' )

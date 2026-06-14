@@ -103,6 +103,141 @@ describe( 'DocumentRegistry.renderQuestionsMarkdown (PRD-039)', () => {
 } )
 
 
+describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselected (Bug A)', () => {
+    it( 'derives preselected from aiRecommendation for a single question', () => {
+        const questions = [
+            {
+                'id': 'F1',
+                'title': 'Single mit Empfehlung',
+                'frage': 'Was tun?',
+                'aiRecommendation': 'C — weil das langfristig wartbarer ist',
+                'typ': 'single',
+                'options': [
+                    { 'key': 'A', 'label': 'Erste', 'kind': 'option' },
+                    { 'key': 'B', 'label': 'Zweite', 'kind': 'option' },
+                    { 'key': 'C', 'label': 'Dritte', 'kind': 'option' }
+                ],
+                'answered': false
+            }
+        ]
+        const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
+        const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( Array.isArray( parsed[ 0 ][ 'preselected' ] ) ).toBe( true )
+        // C is the third real option (index 2). custom/topic defaults are appended AFTER the
+        // real options, so the index of C is stable at 2.
+        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [ 2 ] )
+    } )
+
+
+    it( 'appends custom and topic default options (no loss of defaults)', () => {
+        const questions = [
+            {
+                'id': 'F1',
+                'frage': 'Was tun?',
+                'aiRecommendation': 'A',
+                'typ': 'single',
+                'options': [ { 'key': 'A', 'label': 'Erste', 'kind': 'option' } ],
+                'answered': false
+            }
+        ]
+        const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
+        const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        const kinds = parsed[ 0 ][ 'options' ].map( ( option ) => option[ 'kind' ] )
+        expect( kinds ).toContain( 'custom' )
+        expect( kinds ).toContain( 'topic' )
+        // preselected still points at the real option A (index 0), not at a default.
+        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [ 0 ] )
+    } )
+
+
+    it( 'returns preselected [] for an empty aiRecommendation (no crash)', () => {
+        const questions = [
+            {
+                'id': 'F1',
+                'frage': 'Was tun?',
+                'aiRecommendation': '',
+                'typ': 'single',
+                'options': [ { 'key': 'A', 'label': 'Erste', 'kind': 'option' } ],
+                'answered': false
+            }
+        ]
+        const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
+        const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [] )
+    } )
+
+
+    it( 'matches all recommended indices for a multi question', () => {
+        const questions = [
+            {
+                'id': 'F1',
+                'frage': 'Welche treffen zu?',
+                'aiRecommendation': 'A+C',
+                'typ': 'multi',
+                'options': [
+                    { 'key': 'A', 'label': 'Alpha', 'kind': 'option' },
+                    { 'key': 'B', 'label': 'Beta', 'kind': 'option' },
+                    { 'key': 'C', 'label': 'Gamma', 'kind': 'option' }
+                ],
+                'answered': false
+            }
+        ]
+        const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
+        const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [ 0, 2 ] )
+    } )
+
+
+    it( 'respects an explicit preselected array on the JSON entry', () => {
+        const questions = [
+            {
+                'id': 'F1',
+                'frage': 'Was tun?',
+                'aiRecommendation': 'A',
+                'typ': 'single',
+                'preselected': [ 1 ],
+                'options': [
+                    { 'key': 'A', 'label': 'Erste', 'kind': 'option' },
+                    { 'key': 'B', 'label': 'Zweite', 'kind': 'option' }
+                ],
+                'answered': false
+            }
+        ]
+        const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
+        const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [ 1 ] )
+    } )
+
+
+    it( 'does NOT treat a bare A-H letter buried in prose as a recommended key (Bug C)', () => {
+        const questions = [
+            {
+                'id': 'F1',
+                'frage': 'Was tun?',
+                // The token "INCONCLUSIVE:" ends with an "E" right before a colon — the old
+                // unanchored regex matched it as key "E". With anchoring it must NOT preselect.
+                'aiRecommendation': 'INCONCLUSIVE: das Ergebnis ist offen',
+                'typ': 'single',
+                'options': [
+                    { 'key': 'A', 'label': 'Erste', 'kind': 'option' },
+                    { 'key': 'E', 'label': 'Fuenfte', 'kind': 'option' }
+                ],
+                'answered': false
+            }
+        ]
+        const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
+        const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [] )
+    } )
+} )
+
+
 describe( 'Round-trip JSON -> Markdown -> parseQuestionSchema (PRD-039)', () => {
     it( 'preserves id, typ and real options through the full cycle', () => {
         const { markdown } = DocumentRegistry.renderQuestionsMarkdown( { questions: QUESTIONS } )

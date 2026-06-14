@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { readFile, access, readdir } from 'node:fs/promises'
-import { watch } from 'node:fs'
+import { watch, existsSync } from 'node:fs'
 import { resolve, basename, dirname } from 'node:path'
 import { exec } from 'node:child_process'
 
@@ -342,7 +342,10 @@ class MemoView {
         if( memoMarkerIndex === -1 ) { return struct }
 
         const projectRoot = memoPath.slice( 0, memoMarkerIndex )
-        const requirementsDir = resolve( projectRoot, '.memo', 'requirements' )
+        // Dual-scan (Memo 012, Kap 12): the store may be the F16-convention .memo/_requirements/
+        // (underscore = shared system folder) or the legacy .memo/requirements/. Underscore wins.
+        const underscoredDir = resolve( projectRoot, '.memo', '_requirements' )
+        const requirementsDir = existsSync( underscoredDir ) === true ? underscoredDir : resolve( projectRoot, '.memo', 'requirements' )
 
         const numberMatch = ( typeof memoName === 'string' ? memoName : '' ).match( /^(\d{1,})/ )
         const setName = numberMatch !== null ? `memo-${ numberMatch[ 1 ] }` : null

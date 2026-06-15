@@ -30,6 +30,16 @@
 const FENCE = /```block-meta\s*\n([\s\S]*?)\n```/g
 const T_ID = /^T\d{3}$/
 const PRD_ID = /^PRD-\d{3}$/
+const B_ID = /^B\d{3}$/
+
+// PRD-008 body sections: the three structured Markdown headings a Block carries below its fence.
+// Mapped to flat fields problem/solution/openQuestions so the downstream PRD derivation (Kap 8)
+// can read them machine-readably without re-parsing prose.
+const BODY_SECTIONS = [
+    { field: 'problem', heading: 'Problem-Beschreibung' },
+    { field: 'solution', heading: 'Loesungsansatz' },
+    { field: 'openQuestions', heading: 'Offene Fragen' }
+]
 
 
 class BlockMeta {
@@ -44,6 +54,7 @@ class BlockMeta {
         const parsed = matches.map( ( match ) => {
             const raw = match[ 1 ]
             const offset = match.index
+            const fenceEnd = offset + match[ 0 ].length
             const chapter = BlockMeta.#chapterBefore( { doc, offset } )
 
             const json = ( () => {
@@ -59,8 +70,9 @@ class BlockMeta {
             }
 
             const value = json.value !== null && typeof json.value === 'object' ? json.value : {}
+            const body = BlockMeta.#bodySections( { doc, fenceEnd } )
 
-            return BlockMeta.#classify( { value, chapter } )
+            return BlockMeta.#classify( { value, chapter, body } )
         } )
 
         const blocks = parsed.filter( ( entry ) => entry.ok === true )
@@ -101,20 +113,29 @@ class BlockMeta {
 
     // ---- private ----
 
-    static #classify( { value, chapter } ) {
+    static #classify( { value, chapter, body } ) {
         const hasChildMarker = typeof value.topic === 'string' && value.topic.length > 0
         const role = hasChildMarker ? 'child' : 'parent'
 
+        // PRD-008: id (B-id) and tags are additive block-meta fields; the three body sections are
+        // merged in as flat fields. A "strand" key is deliberately NOT read — the strand is emergent
+        // (PRD-009), so a fence carrying strand:"x" produces NO strand field on the parsed block.
         return {
             ok: true,
             chapter,
             role,
+            id: typeof value.id === 'string' ? value.id : null,
             topic: typeof value.topic === 'string' ? value.topic : null,
             topics: BlockMeta.#stringArray( { value: value.topics } ),
             repos: BlockMeta.#stringArray( { value: value.repos } ),
+            tags: BlockMeta.#stringArray( { value: value.tags } ),
             prds: BlockMeta.#stringArray( { value: value.prds } ),
             requirements: BlockMeta.#stringArray( { value: value.requirements } ),
             requirementsPlus: BlockMeta.#stringArray( { value: value[ 'requirements+' ] } ),
+            problem: body.problem,
+            solution: body.solution,
+            openQuestions: body.openQuestions,
+            hasIdKey: Object.prototype.hasOwnProperty.call( value, 'id' ),
             hasPrdsKey: Object.prototype.hasOwnProperty.call( value, 'prds' ),
             hasTopicsKey: Object.prototype.hasOwnProperty.call( value, 'topics' ),
             hasRequirementsKey: Object.prototype.hasOwnProperty.call( value, 'requirements' ),
@@ -129,11 +150,16 @@ class BlockMeta {
         const badTopic = ( typeof block.topic === 'string' && T_ID.test( block.topic ) === false )
             ? [ block.topic ]
             : []
+        // PRD-008: a block id, when present, must be a B-id (B001). Absent id stays valid (additive).
+        const badBlockId = ( typeof block.id === 'string' && B_ID.test( block.id ) === false )
+            ? [ block.id ]
+            : []
 
         return []
             .concat( badTopics.map( ( id ) => `topic id "${ id }" is not a T-id (expected T001)` ) )
             .concat( badTopic.map( ( id ) => `topic id "${ id }" is not a T-id (expected T001)` ) )
             .concat( badPrds.map( ( id ) => `prd id "${ id }" is not a PRD-id (expected PRD-001)` ) )
+            .concat( badBlockId.map( ( id ) => `block id "${ id }" is not a B-id (expected B001)` ) )
     }
 
 
@@ -188,6 +214,44 @@ class BlockMeta {
 
     static #stringArray( { value } ) {
         return Array.isArray( value ) ? value.filter( ( item ) => typeof item === 'string' ) : []
+    }
+
+
+    // PRD-008: extract the three structured body sections (### Problem-Beschreibung, ### Loesungsansatz,
+    // ### Offene Fragen) that follow a block-meta fence. The body region runs from the fence end to the
+    // next chapter ("## ") or the next block-meta fence, whichever comes first — sections are scoped to
+    // THIS block only. A missing section yields null (no silent default). Non-throwing.
+    static #bodySections( { doc, fenceEnd } ) {
+        const after = doc.slice( fenceEnd )
+        const nextChapter = after.search( /^##\s+/m )
+        const nextFence = after.search( /```block-meta/ )
+        const bounds = [ nextChapter, nextFence ].filter( ( index ) => index >= 0 )
+        const limit = bounds.length === 0 ? after.length : Math.min( ...bounds )
+        const region = after.slice( 0, limit )
+
+        const lines = region.split( '\n' )
+        const headingIndexes = lines
+            .map( ( line, index ) => ( { line, index } ) )
+            .filter( ( entry ) => /^###\s+/.test( entry.line ) )
+
+        const sectionFor = ( heading ) => {
+            const start = headingIndexes.find( ( entry ) => entry.line.replace( /^###\s+/, '' ).trim() === heading )
+            if( start === undefined ) {
+                return null
+            }
+
+            const next = headingIndexes.find( ( entry ) => entry.index > start.index )
+            const end = next === undefined ? lines.length : next.index
+            const text = lines.slice( start.index + 1, end ).join( '\n' ).trim()
+
+            return text.length === 0 ? null : text
+        }
+
+        return BODY_SECTIONS.reduce( ( acc, section ) => {
+            acc[ section.field ] = sectionFor( section.heading )
+
+            return acc
+        }, {} )
     }
 
 

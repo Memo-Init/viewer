@@ -16,26 +16,33 @@ import { FindingsStore } from '../src/FindingsStore.mjs'
 
 const showHelp = () => {
     const helpText = `
-Usage: memo findings <init|put|get> [options]
+Usage: memo findings <init|register|put|get> [options]
        (the second Memo-CLI feature — the CLI gate is the only writer)
 
 Commands:
-  init   Initialize <memo>/findings.db (WAL, append-only schema). NO-OVERWRITE.
-  put    Append exactly one finding with an orchestrator-generated --id (dedup per ID).
-  get    Read shared findings (SELECT only), optionally filtered by --thread.
+  init      Initialize <memo>/findings.db (WAL, append-only schema). NO-OVERWRITE.
+  register  Mint a user in a room with a strong random secret (printed ONCE). PRD-013.
+  put       Append exactly one finding with an orchestrator-generated --id (dedup per ID).
+  get       Read shared findings (SELECT only, read-all), optionally filtered by --thread.
 
 Options:
   --memo <path>      Memo directory holding findings.db (required)
   --id <hash>        Finding Hash-ID (required for put; orchestrator-generated)
   --thread <t>       Thread name (put: tag; get: filter)
-  --author <a>       Author (put)
+  --author <a>       Author (put; IGNORED when --room/--username/--secret authenticate)
   --payload <json>   Finding payload, JSON string (put)
+  --room <name>      Chatroom name (register; put write-own gate)
+  --username <name>  User name (register; put write-own gate -> server-side author)
+  --secret <hex>     Secret issued by register (put write-own gate)
+  --topic <t>        Optional finding topic (put)
+  --done             Mark the finding done at write time (put)
   --help, -h         Show this help message
 
 Examples:
-  memo findings init --memo ./.memo/011-foo
-  memo findings put  --memo ./.memo/011-foo --id abc123 --thread research --author scout --payload '{"k":1}'
-  memo findings get  --memo ./.memo/011-foo --thread research
+  memo findings init     --memo ./.memo/011-foo
+  memo findings register --memo ./.memo/011-foo --room phase-3 --username worker-a
+  memo findings put      --memo ./.memo/011-foo --id abc123 --room phase-3 --username worker-a --secret <hex> --payload '{"k":1}'
+  memo findings get      --memo ./.memo/011-foo --thread research
 `
 
     process.stdout.write( `${ helpText }\n` )
@@ -75,6 +82,29 @@ const runInit = async ( { values } ) => {
 }
 
 
+const runRegister = async ( { values } ) => {
+    const { ok, memoPath } = requireMemo( { values } )
+
+    if( ok === false ) {
+        emit( { result: { status: 'error', error: 'MEMO-FND-002 --memo required', fix: 'pass --memo <path>' } } )
+        process.exitCode = 1
+
+        return
+    }
+
+    const result = FindingsStore.register( {
+        memoPath,
+        room: values[ 'room' ],
+        username: values[ 'username' ]
+    } )
+    emit( { result } )
+
+    if( result[ 'status' ] === 'error' ) {
+        process.exitCode = 1
+    }
+}
+
+
 const runPut = async ( { values } ) => {
     const { ok, memoPath } = requireMemo( { values } )
 
@@ -90,7 +120,12 @@ const runPut = async ( { values } ) => {
         id: values[ 'id' ],
         thread: values[ 'thread' ],
         author: values[ 'author' ],
-        payload: values[ 'payload' ]
+        payload: values[ 'payload' ],
+        room: values[ 'room' ],
+        username: values[ 'username' ],
+        secret: values[ 'secret' ],
+        topic: values[ 'topic' ],
+        done: values[ 'done' ] === true
     } )
     emit( { result } )
 
@@ -118,6 +153,7 @@ const runGet = async ( { values } ) => {
 const dispatch = async ( { command, values } ) => {
     const table = {
         'init': runInit,
+        'register': runRegister,
         'put': runPut,
         'get': runGet
     }
@@ -146,6 +182,11 @@ const run = async () => {
             'thread': { type: 'string' },
             'author': { type: 'string' },
             'payload': { type: 'string' },
+            'room': { type: 'string' },
+            'username': { type: 'string' },
+            'secret': { type: 'string' },
+            'topic': { type: 'string' },
+            'done': { type: 'boolean' },
             'help': { type: 'boolean', short: 'h' }
         }
     } )
@@ -162,7 +203,7 @@ const run = async () => {
     const command = cleaned[ 0 ]
 
     if( typeof command !== 'string' || command.trim().length === 0 ) {
-        process.stderr.write( 'Error: a findings sub-command is required (init|put|get)\n' )
+        process.stderr.write( 'Error: a findings sub-command is required (init|register|put|get)\n' )
         showHelp()
         process.exitCode = 1
 

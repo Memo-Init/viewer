@@ -11,6 +11,7 @@ import { MemoValidator } from './MemoValidator.mjs'
 import { PlanRegistry } from './PlanRegistry.mjs'
 import { TranscriptRegistry } from './TranscriptRegistry.mjs'
 import { RequirementsStore } from './RequirementsStore.mjs'
+import { BlockMeta } from './BlockMeta.mjs'
 import { Config } from './data/config.mjs'
 
 
@@ -2406,6 +2407,42 @@ class MemoView {
         .req-detail-label { font-size: 11px; font-weight: 700; color: var(--text-muted); }
         .req-detail-value { font-size: 13px; color: var(--text-1); }
 
+        /* PRD-010 (Memo 014 Kap 2): Block-Ansicht. Mirrors the .req-* list/card primitives. The block
+           DETAIL popup reuses the shared .t-modal* classes — NO bespoke block modal/position:fixed CSS. */
+        .block-view { display: flex; flex-direction: column; gap: 16px; }
+        .block-section-title { font-size: 14px; font-weight: 700; color: var(--text-1); }
+        .block-items { display: flex; flex-direction: column; gap: 8px; }
+
+        .block-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+        }
+
+        .block-item:hover { border-color: var(--accent); color: var(--text-1); }
+        .block-item .block-item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+        .block-item .block-item-id { color: var(--text-muted); font-size: 11px; font-weight: 700; }
+        .block-item .block-item-chapter { font-size: 13px; font-weight: 600; }
+        .block-item .block-item-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+        .block-item .block-tag {
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1px 8px;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .block-detail-section { display: flex; flex-direction: column; gap: 2px; }
+        .block-detail-label { font-size: 11px; font-weight: 700; color: var(--text-muted); }
+        .block-detail-value { font-size: 13px; color: var(--text-1); white-space: pre-wrap; }
+
         /* Tab bar inside transcript modal (Tab 1 / Tab 2) */
         .t-tabs {
             display: flex;
@@ -3544,6 +3581,19 @@ class MemoView {
             <div class="t-modal-body" id="req-modal-body"></div>
         </div>
     </div>
+    <!-- PRD-010 (Memo 014 Kap 2): block detail popup. REUSES the existing .t-modal / .t-modal-content
+         / .t-modal-header / .t-modal-body classes (centered via .t-modal { display:flex; ... }), exactly
+         like the requirement popup above. NO new overlay/position:fixed CSS for the block modal. -->
+    <div id="block-modal" class="t-modal t-hidden">
+        <div class="t-modal-content">
+            <div class="t-modal-header">
+                <span class="t-title" id="block-modal-title">Block</span>
+                <span class="t-header-spacer"></span>
+                <button class="t-close" id="block-modal-close" title="Schliessen">&times;</button>
+            </div>
+            <div class="t-modal-body" id="block-modal-body"></div>
+        </div>
+    </div>
     <div id="layout">
         <nav id="doc-sidebar">
             <div id="doc-sidebar-body"></div>
@@ -4106,6 +4156,8 @@ class MemoView {
             z1Line1 += '<button id="diff-toggle" style="display:none" title="Diff anzeigen/ausblenden">Diff</button>'
             // PRD-012 (Memo 011 Kap 4, F16=A): Requirements-Ansicht oeffnen (PRD-Ebene + Memo-Aggregat).
             z1Line1 += '<button id="req-view-toggle" title="Requirements anzeigen">Requirements</button>'
+            // PRD-010 (Memo 014 Kap 2): Block-Ansicht oeffnen (Block-Overlay, read-only). Muster req-view-toggle.
+            z1Line1 += '<button id="block-view-toggle" title="Bloecke anzeigen">Bloecke</button>'
             z1Line1 += '</div>'
 
             // Zeile 2 (9I8kz): aktuelles Dokument — "ressources · 019 · REV-NN" + Kalender-Icon
@@ -4253,6 +4305,15 @@ class MemoView {
             if( reqViewToggle ) {
                 reqViewToggle.addEventListener( 'click', function() {
                     loadRequirementsView( currentDocumentId )
+                } )
+            }
+
+            // PRD-010 (Memo 014 Kap 2): rebind the Block-view toggle (re-created on each header
+            // render). Opens the read-only block overlay for the active memo.
+            var blockViewToggle = document.getElementById( 'block-view-toggle' )
+            if( blockViewToggle ) {
+                blockViewToggle.addEventListener( 'click', function() {
+                    loadBlockView( currentDocumentId )
                 } )
             }
 
@@ -6510,6 +6571,133 @@ class MemoView {
             }
         }
 
+        // PRD-010 (Memo 014 Kap 2): Block-Ansicht. Mirrors the Requirements-view pattern above.
+        // Build one block card. Stable DOM hooks for Playwright/jsdom assertions:
+        //   - class "block-item", attribute data-block-id (B-id from BlockMeta.parse)
+        //   - click -> openBlockModal (centered REUSED #block-modal popup)
+        function buildBlockItem( block ) {
+            var item = document.createElement( 'div' )
+            item.className = 'block-item'
+            var blockId = block.id || ''
+            item.setAttribute( 'data-block-id', blockId )
+
+            var head = document.createElement( 'div' )
+            head.className = 'block-item-head'
+
+            var idSpan = document.createElement( 'span' )
+            idSpan.className = 'block-item-id'
+            idSpan.textContent = blockId
+            head.appendChild( idSpan )
+
+            var chapterSpan = document.createElement( 'span' )
+            chapterSpan.className = 'block-item-chapter'
+            chapterSpan.textContent = block.chapter || ''
+            head.appendChild( chapterSpan )
+            item.appendChild( head )
+
+            var meta = document.createElement( 'div' )
+            meta.className = 'block-item-meta'
+            var repos = ( block.repos && block.repos.length > 0 ) ? block.repos : []
+            var tags = ( block.tags && block.tags.length > 0 ) ? block.tags : []
+            var topics = ( block.topics && block.topics.length > 0 ) ? block.topics : []
+            repos.concat( tags ).concat( topics ).forEach( function( label ) {
+                var tag = document.createElement( 'span' )
+                tag.className = 'block-tag'
+                tag.textContent = label
+                meta.appendChild( tag )
+            } )
+            item.appendChild( meta )
+
+            item.addEventListener( 'click', function() {
+                openBlockModal( block )
+            } )
+
+            return item
+        }
+
+        // Render the block view model into the given container. payload = the /blocks API shape
+        // { blocks[] } from BlockMeta.parse. Each block becomes a .block-item carrying data-block-id.
+        function renderBlockView( payload, container ) {
+            container.textContent = ''
+            var root = document.createElement( 'div' )
+            root.className = 'block-view'
+
+            var blocks = ( payload && payload.blocks ) ? payload.blocks : []
+
+            var title = document.createElement( 'div' )
+            title.className = 'block-section-title'
+            title.textContent = 'Bloecke (' + blocks.length + ')'
+            root.appendChild( title )
+
+            var items = document.createElement( 'div' )
+            items.className = 'block-items'
+            blocks.forEach( function( block ) {
+                items.appendChild( buildBlockItem( block ) )
+            } )
+            root.appendChild( items )
+
+            container.appendChild( root )
+
+            return root
+        }
+
+        // Open the REUSED .t-modal popup with block details — the three body sections (Problem,
+        // Loesung, Offene Fragen). Toggles t-hidden only; centering is inherited from .t-modal. The
+        // section wrappers carry data-block-section hooks for Playwright. NO new modal CSS.
+        function openBlockModal( block ) {
+            var modal = document.getElementById( 'block-modal' )
+            var title = document.getElementById( 'block-modal-title' )
+            var body = document.getElementById( 'block-modal-body' )
+            if( !modal || !body ) { return }
+
+            if( title ) { title.textContent = ( block.id || 'Block' ) + ( block.chapter ? ' · ' + block.chapter : '' ) }
+
+            body.textContent = ''
+            var sections = [
+                { key: 'problem', label: 'Problem-Beschreibung', value: block.problem },
+                { key: 'solution', label: 'Loesungsansatz', value: block.solution },
+                { key: 'open-questions', label: 'Offene Fragen', value: block.openQuestions }
+            ]
+            sections.forEach( function( section ) {
+                var sectionEl = document.createElement( 'div' )
+                sectionEl.className = 'block-detail-section'
+                sectionEl.setAttribute( 'data-block-section', section.key )
+                var labelEl = document.createElement( 'div' )
+                labelEl.className = 'block-detail-label'
+                labelEl.textContent = section.label
+                var valueEl = document.createElement( 'div' )
+                valueEl.className = 'block-detail-value'
+                valueEl.textContent = section.value || '—'
+                sectionEl.appendChild( labelEl )
+                sectionEl.appendChild( valueEl )
+                body.appendChild( sectionEl )
+            } )
+
+            modal.classList.remove( 't-hidden' )
+
+            return modal
+        }
+
+        function closeBlockModal() {
+            var modal = document.getElementById( 'block-modal' )
+            if( modal ) { modal.classList.add( 't-hidden' ) }
+        }
+
+        // Fetch the block view model for the active memo and render it into #content.
+        // Read-only: GET /api/documents/<id>/blocks. No-op without an active documentId.
+        async function loadBlockView( documentId ) {
+            var contentTarget = document.getElementById( 'content' )
+            if( !documentId || !contentTarget ) { return }
+
+            try {
+                var resp = await fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/blocks' )
+                var payload = await resp.json()
+                renderBlockView( payload, contentTarget )
+            } catch( err ) {
+                contentTarget.textContent = 'Bloecke konnten nicht geladen werden.'
+            }
+        }
+
         function allMemosByNamespace() {
             // All memos grouped by namespace; finalized = selectable, others = greyed/not selectable.
             var groups = {}
@@ -6728,8 +6916,24 @@ class MemoView {
             } )
         }
 
+        // PRD-010 (Memo 014 Kap 2): block-modal close wiring — X button, Esc, overlay click. Same
+        // toggle mechanic (.t-hidden) as the requirement/transcript/plan modals.
+        var blockCloseBtn = document.getElementById( 'block-modal-close' )
+        if( blockCloseBtn ) { blockCloseBtn.addEventListener( 'click', closeBlockModal ) }
+
+        var blockModalEl = document.getElementById( 'block-modal' )
+        if( blockModalEl ) {
+            blockModalEl.addEventListener( 'click', function( ev ) {
+                if( ev.target === blockModalEl ) { closeBlockModal() }
+            } )
+        }
+
         document.addEventListener( 'keydown', function( ev ) {
             if( ev.key === 'Escape' ) { closeRequirementModal() }
+        } )
+
+        document.addEventListener( 'keydown', function( ev ) {
+            if( ev.key === 'Escape' ) { closeBlockModal() }
         } )
 
         function playNotification() {
@@ -9012,6 +9216,37 @@ class MemoView {
                     'count': view[ 'count' ],
                     'missingIds': view[ 'missingIds' ]
                 } )
+
+                return
+            }
+
+            // PRD-010 (Memo 014 Kap 2): read-only block overlay model for one memo — the structured
+            // blocks parsed by BlockMeta.parse from the selected revision's markdown. MUST be matched
+            // BEFORE the generic /api/documents/<id> GET below (the suffix is more specific; otherwise
+            // the generic route would swallow "<id>/blocks" as the id). Mirror of the /requirements route.
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/blocks' ) && req.method === 'GET' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/blocks'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                const { absolutePath } = MemoView.#registry.getSelectedRevisionPath( { documentId } )
+
+                if( !absolutePath ) {
+                    sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'blocks': [] } )
+
+                    return
+                }
+
+                const { content } = await MemoView.#readFileContent( { absolutePath } )
+                const { blocks } = BlockMeta.parse( { doc: content } )
+
+                sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'blocks': blocks } )
 
                 return
             }

@@ -211,4 +211,164 @@ describe( 'FindingsStore — PRD-010 (Memo 011 Kap 9)', () => {
             expect( /DELETE\s/i.test( source ) ).toBe( false )
         } )
     } )
+
+
+    // PRD-013 (Memo 014 Kap 10): identity half — register/verify, write-own gate, server-side author,
+    // topic/done roundtrip. ADDITIVE — the 13 cases above stay untouched. Test secrets are obviously
+    // fake (issued by register at runtime or literal 'wrong-secret'); nothing real is committed.
+    describe( 'register (PRD-013)', () => {
+        it( 'AC: register mints a strong secret exactly once -> { status:registered, room, username, secret }', async () => {
+            await FindingsStore.init( { memoPath } )
+
+            const result = FindingsStore.register( { memoPath, room: 'phase-3', username: 'worker-a' } )
+
+            expect( result.status ).toBe( 'registered' )
+            expect( result.room ).toBe( 'phase-3' )
+            expect( result.username ).toBe( 'worker-a' )
+            expect( typeof result.secret ).toBe( 'string' )
+            // crypto.randomBytes(32) -> 64 hex chars; strong, never a trivial placeholder.
+            expect( result.secret ).toMatch( /^[0-9a-f]{64}$/ )
+        } )
+
+
+        it( 'AC: a second register for the same (room,username) is { status:exists } WITHOUT a secret', async () => {
+            await FindingsStore.init( { memoPath } )
+
+            const first = FindingsStore.register( { memoPath, room: 'phase-3', username: 'worker-a' } )
+            const second = FindingsStore.register( { memoPath, room: 'phase-3', username: 'worker-a' } )
+
+            expect( first.status ).toBe( 'registered' )
+            expect( second.status ).toBe( 'exists' )
+            expect( second.secret ).toBeUndefined()
+        } )
+
+
+        it( 'AC: missing room/username -> error envelope', async () => {
+            await FindingsStore.init( { memoPath } )
+
+            const result = FindingsStore.register( { memoPath, room: 'phase-3' } )
+
+            expect( result.status ).toBe( 'error' )
+            expect( result.error ).toBe( 'MEMO-FND-004 room and username required' )
+        } )
+    } )
+
+
+    describe( 'hashSecret / verify (PRD-013)', () => {
+        it( 'AC: hashSecret returns a deterministic sha256 hex digest', () => {
+            const a = FindingsStore.hashSecret( { secret: 'fake-secret-value' } )
+            const b = FindingsStore.hashSecret( { secret: 'fake-secret-value' } )
+
+            expect( a.hash ).toBe( b.hash )
+            expect( a.hash ).toMatch( /^[0-9a-f]{64}$/ )
+        } )
+
+
+        it( 'AC: verify true for the issued secret, false for a wrong/unknown one', async () => {
+            await FindingsStore.init( { memoPath } )
+            const { secret } = FindingsStore.register( { memoPath, room: 'phase-3', username: 'worker-a' } )
+
+            const good = FindingsStore.verify( { memoPath, room: 'phase-3', username: 'worker-a', secret } )
+            const bad = FindingsStore.verify( { memoPath, room: 'phase-3', username: 'worker-a', secret: 'wrong-secret' } )
+            const unknown = FindingsStore.verify( { memoPath, room: 'phase-3', username: 'ghost', secret } )
+
+            expect( good.status ).toBe( true )
+            expect( bad.status ).toBe( false )
+            expect( unknown.status ).toBe( false )
+        } )
+    } )
+
+
+    describe( 'put write-own gate (PRD-013)', () => {
+        it( 'AC: put with a WRONG secret -> error envelope AND no insert (get-count unchanged)', async () => {
+            await FindingsStore.init( { memoPath } )
+            FindingsStore.register( { memoPath, room: 'phase-3', username: 'worker-a' } )
+
+            const before = FindingsStore.get( { memoPath } ).count
+
+            const result = FindingsStore.put( {
+                memoPath, id: 'auth-1', payload: '{"k":1}',
+                room: 'phase-3', username: 'worker-a', secret: 'wrong-secret'
+            } )
+
+            expect( result.status ).toBe( 'error' )
+            expect( result.error ).toBe( 'MEMO-FND-003 auth failed' )
+
+            const after = FindingsStore.get( { memoPath } ).count
+            expect( after ).toBe( before )
+        } )
+
+
+        it( 'AC: put for an UNKNOWN user with creds -> error envelope, no insert', async () => {
+            await FindingsStore.init( { memoPath } )
+
+            const result = FindingsStore.put( {
+                memoPath, id: 'auth-2', payload: '{"k":1}',
+                room: 'phase-3', username: 'never-registered', secret: 'wrong-secret'
+            } )
+
+            expect( result.status ).toBe( 'error' )
+            expect( result.error ).toBe( 'MEMO-FND-003 auth failed' )
+
+            const got = FindingsStore.get( { memoPath } )
+            expect( got.count ).toBe( 0 )
+        } )
+
+
+        it( 'AC: put with a VALID secret sets author SERVER-SIDE = username (passed --author ignored)', async () => {
+            await FindingsStore.init( { memoPath } )
+            const { secret } = FindingsStore.register( { memoPath, room: 'phase-3', username: 'worker-a' } )
+
+            const result = FindingsStore.put( {
+                memoPath, id: 'auth-3', payload: '{"k":1}',
+                room: 'phase-3', username: 'worker-a', secret,
+                author: 'spoofed-impostor'
+            } )
+
+            expect( result ).toEqual( { status: 'inserted', id: 'auth-3' } )
+
+            const got = FindingsStore.get( { memoPath } )
+            expect( got.count ).toBe( 1 )
+            // server-side author wins; the passed (spoofed) author does NOT override it.
+            expect( got.items[ 0 ].author ).toBe( 'worker-a' )
+            expect( got.items[ 0 ].author ).not.toBe( 'spoofed-impostor' )
+        } )
+
+
+        it( 'AC: without an auth context put keeps the legacy self-report author (read-only data half)', async () => {
+            await FindingsStore.init( { memoPath } )
+
+            const result = FindingsStore.put( {
+                memoPath, id: 'legacy-1', author: 'self-report', payload: '{"k":1}'
+            } )
+
+            expect( result ).toEqual( { status: 'inserted', id: 'legacy-1' } )
+
+            const got = FindingsStore.get( { memoPath } )
+            expect( got.items[ 0 ].author ).toBe( 'self-report' )
+        } )
+    } )
+
+
+    describe( 'topic / done roundtrip (PRD-013)', () => {
+        it( 'AC: topic and done set at write time read back via get', async () => {
+            await FindingsStore.init( { memoPath } )
+
+            FindingsStore.put( {
+                memoPath, id: 'td-1', author: 'a', payload: '{"k":1}', topic: 'auth', done: true
+            } )
+            FindingsStore.put( {
+                memoPath, id: 'td-2', author: 'b', payload: '{"k":2}', topic: 'schema'
+            } )
+
+            const got = FindingsStore.get( { memoPath } )
+            const byId = Object.fromEntries( got.items.map( ( item ) => [ item.id, item ] ) )
+
+            expect( byId[ 'td-1' ].topic ).toBe( 'auth' )
+            expect( byId[ 'td-1' ].done ).toBe( true )
+            expect( byId[ 'td-2' ].topic ).toBe( 'schema' )
+            // done defaults to false (0) when not passed.
+            expect( byId[ 'td-2' ].done ).toBe( false )
+        } )
+    } )
 } )

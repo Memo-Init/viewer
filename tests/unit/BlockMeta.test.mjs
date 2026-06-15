@@ -158,6 +158,113 @@ describe( 'BlockMeta Parent/Child + inheritance — Memo 013 Kap 3', () => {
 } )
 
 
+describe( 'BlockMeta PRD-008 — id (B-id), tags, body sections, no strand', () => {
+    const FULL_BLOCK = [
+        '## 6. Block-Struktur',
+        'prose intro',
+        '```block-meta',
+        '{ "id": "B001", "topics": ["T014"], "repos": ["repos/core"], "tags": ["nodejs", "outward-facing"], "prds": ["PRD-008"] }',
+        '```',
+        '',
+        '### Problem-Beschreibung',
+        'The block format lacks an id and tags.',
+        'Second problem line.',
+        '',
+        '### Loesungsansatz',
+        'Add B-id, tags and three body sections.',
+        '',
+        '### Offene Fragen',
+        'How do tags feed auto-requirements?',
+        ''
+    ].join( '\n' )
+
+    it( 'parses id, tags, problem, solution, openQuestions for a full block', () => {
+        const { blocks } = BlockMeta.parse( { doc: FULL_BLOCK } )
+
+        expect( blocks ).toHaveLength( 1 )
+        const block = blocks[ 0 ]
+        expect( block.id ).toBe( 'B001' )
+        expect( block.tags ).toEqual( [ 'nodejs', 'outward-facing' ] )
+        expect( block.problem ).toBe( 'The block format lacks an id and tags.\nSecond problem line.' )
+        expect( block.solution ).toBe( 'Add B-id, tags and three body sections.' )
+        expect( block.openQuestions ).toBe( 'How do tags feed auto-requirements?' )
+    } )
+
+    it( 'validateShape accepts a valid B-id and flags a non-B block id', () => {
+        const valid = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "id": "B001", "topics": ["T014"] }\n```'
+        } ).blocks[ 0 ]
+        expect( BlockMeta.validateShape( { block: valid } ).messages ).toEqual( [] )
+
+        const bad = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "id": "BX1", "topics": ["T014"] }\n```'
+        } ).blocks[ 0 ]
+        const { messages } = BlockMeta.validateShape( { block: bad } )
+        expect( messages.some( ( m ) => m.includes( 'is not a B-id' ) ) ).toBe( true )
+    } )
+
+    it( 'a block with NO id stays valid (additive — id is optional)', () => {
+        const block = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "topics": ["T014"], "tags": ["nodejs"] }\n```'
+        } ).blocks[ 0 ]
+
+        expect( block.id ).toBeNull()
+        expect( BlockMeta.validateShape( { block } ).messages ).toEqual( [] )
+    } )
+
+    it( 'F18=B: tags are parsed at block level; missing tags yield an empty array', () => {
+        const tagged = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "topics": ["T014"], "tags": ["nodejs"] }\n```'
+        } ).blocks[ 0 ]
+        expect( tagged.tags ).toEqual( [ 'nodejs' ] )
+
+        const untagged = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "topics": ["T014"] }\n```'
+        } ).blocks[ 0 ]
+        expect( untagged.tags ).toEqual( [] )
+    } )
+
+    it( 'missing body sections yield null (no silent default)', () => {
+        const block = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "id": "B002", "topics": ["T014"] }\n```\n### Problem-Beschreibung\nonly a problem here.\n'
+        } ).blocks[ 0 ]
+
+        expect( block.problem ).toBe( 'only a problem here.' )
+        expect( block.solution ).toBeNull()
+        expect( block.openQuestions ).toBeNull()
+    } )
+
+    it( 'body sections are scoped to THIS block (a following ## chapter ends the region)', () => {
+        const doc = [
+            '## 6. First',
+            '```block-meta',
+            '{ "id": "B001", "topics": ["T014"] }',
+            '```',
+            '### Problem-Beschreibung',
+            'first block problem.',
+            '',
+            '## 7. Second',
+            '### Loesungsansatz',
+            'this belongs to no block.'
+        ].join( '\n' )
+        const block = BlockMeta.parse( { doc } ).blocks[ 0 ]
+
+        expect( block.problem ).toBe( 'first block problem.' )
+        // the second chapter's ### Loesungsansatz must NOT leak into the first block
+        expect( block.solution ).toBeNull()
+    } )
+
+    it( 'a strand:"x" key is ignored — the parsed block exposes NO strand field', () => {
+        const block = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "id": "B001", "topics": ["T014"], "strand": "x" }\n```'
+        } ).blocks[ 0 ]
+
+        expect( Object.prototype.hasOwnProperty.call( block, 'strand' ) ).toBe( false )
+        expect( block.strand ).toBeUndefined()
+    } )
+} )
+
+
 describe( 'MemoValidator MEMO-080 — block-meta integration (memo lint SSOT)', () => {
     it( 'flags malformed block-meta JSON via MEMO-080', () => {
         const doc = '## Kontext\nk\n\n## 8. X\n```block-meta\n{ broken\n```\n'

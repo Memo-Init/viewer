@@ -13,21 +13,21 @@ describe( 'Memo 022 Phase 3 — Feinschliff', () => {
 
 
     beforeAll( async () => {
+        // PRD-011 (Memo 016, F1/F2): the inline client <script> was extracted to
+        // src/public/app.client.mjs (already the runtime-emitted form). PRD-010 (F1): the CSS lives
+        // in src/public/app.css. Read the client script directly, and append the stylesheet to the
+        // .mjs source so CSS-rule assertions check the real moved CSS.
         const here = dirname( fileURLToPath( import.meta.url ) )
         const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
-        source = await readFile( sourcePath, 'utf8' )
+        const cssPath = join( here, '..', '..', 'src', 'public', 'app.css' )
+        const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+        const mjsSource = await readFile( sourcePath, 'utf8' )
+        const cssSource = await readFile( cssPath, 'utf8' )
 
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-
-        // The main inline script must stay free of template interpolation (config is injected in
-        // a SEPARATE early script block, not here).
-        expect( rawSlice.includes( '${' ) ).toBe( false )
-
-        // eslint-disable-next-line no-new-func — controlled, no interpolation, escape-faithful.
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        emittedScript = await readFile( clientPath, 'utf8' )
+        // Some assertions grep `source` for CLIENT markup strings that now live in the extracted
+        // client script; include it so those text checks resolve unchanged.
+        source = mjsSource + '\n' + emittedScript + '\n' + cssSource
     } )
 
 

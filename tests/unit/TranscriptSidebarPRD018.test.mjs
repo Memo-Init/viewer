@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeAll } from '@jest/globals'
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 
-import { extractFunctions, readMemoViewSource } from '../helpers/extractFunction.mjs'
+import { extractFunctions } from '../helpers/extractFunction.mjs'
 
 
 // PRD-018 (Memo 002 REV-03 Kap 10): Transcript-Bereich Zweck schärfen. The sidebar history is
@@ -90,7 +93,12 @@ describe( 'PRD-018 Transcript sidebar focus', () => {
 
     describe( 'source — primary affordance present, no delete in the sidebar render', () => {
         it( 'hoists a "Memo erstellen" affordance wired to openTranscriptModal', async () => {
-            const source = await readMemoViewSource()
+            // PRD-011 (Memo 016, F1/F2): the inline client <script> was extracted to
+            // src/public/app.client.mjs (served as a classic script via /app.client.mjs). The
+            // renderSidebarTranscripts client function now lives there — read it directly.
+            const here = dirname( fileURLToPath( import.meta.url ) )
+            const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+            const source = await readFile( clientPath, 'utf8' )
             const start = source.indexOf( 'async function renderSidebarTranscripts(' )
             const end = source.indexOf( 'async function loadTranscriptIntoContent(', start )
             const fnSource = source.slice( start, end )

@@ -6,8 +6,10 @@ import { dirname, join } from 'node:path'
 
 // PRD-003 (Memo 018 Kap 6): sidebar conformance to the finalized 014 (Kap 7) and 015 (REV-05)
 // decisions. The sidebar markup is produced by renderSidebarMemos inside the single inline
-// <script> of the HTML page; the matching CSS lives in the page <style>. Rather than booting
+// <script> of the HTML page; the matching CSS lives in the stylesheet. Rather than booting
 // the server, we read the source and assert on the emitted browser script + full source.
+// PRD-010 (Memo 016, F1): the CSS was extracted to src/public/app.css, so `source` here is the
+// .mjs source plus the stylesheet — CSS-rule regexes resolve against the moved CSS unchanged.
 describe( 'Sidebar conformance — PRD-003 (Memo 018 Kap 6 / 014 / 015)', () => {
     let source = ''
     let emittedScript = ''
@@ -16,17 +18,17 @@ describe( 'Sidebar conformance — PRD-003 (Memo 018 Kap 6 / 014 / 015)', () => 
     beforeAll( async () => {
         const here = dirname( fileURLToPath( import.meta.url ) )
         const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
-        source = await readFile( sourcePath, 'utf8' )
+        const cssPath = join( here, '..', '..', 'src', 'public', 'app.css' )
+        const mjsSource = await readFile( sourcePath, 'utf8' )
+        const cssSource = await readFile( cssPath, 'utf8' )
+        source = mjsSource + '\n' + cssSource
 
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-
-        expect( rawSlice.includes( '${' ) ).toBe( false )
-
-        // eslint-disable-next-line no-new-func — controlled, no interpolation, escape-faithful.
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        // PRD-011 (Memo 016, F1/F2): the big inline client <script> was extracted to
+        // src/public/app.client.mjs (served by /app.client.mjs as a classic script). That file is
+        // already the runtime-emitted form (template-literal escapes collapsed), so it IS the
+        // emitted browser script — read it directly instead of slicing/evaluating the .mjs source.
+        const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+        emittedScript = await readFile( clientPath, 'utf8' )
     } )
 
 

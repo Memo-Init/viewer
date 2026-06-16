@@ -14,7 +14,7 @@ import vm from 'node:vm'
 // AC 3-6 without a DOM.
 
 const here = dirname( fileURLToPath( import.meta.url ) )
-const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
+const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
 
 
 function extractFunction( script, name ) {
@@ -48,15 +48,10 @@ describe( 'PRD-004 render gate — emitted browser string', () => {
 
 
     beforeAll( async () => {
-        const source = await readFile( sourcePath, 'utf8' )
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-
-        expect( rawSlice.includes( '${' ) ).toBe( false )
-
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        // PRD-011 (Memo 016, F1/F2): the inline client <script> was extracted to
+        // src/public/app.client.mjs, which is already the runtime-emitted form (escapes collapsed
+        // during extraction). Reading it directly gives the real browser string — no slice needed.
+        emittedScript = await readFile( clientPath, 'utf8' )
 
         // Isolate the two gate functions and evaluate them standalone with minimal stubs.
         const cleanSrc = extractFunction( emittedScript, 'isQuestionCleanParse' )

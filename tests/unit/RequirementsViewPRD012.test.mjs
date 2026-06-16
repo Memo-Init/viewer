@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 
-import { extractFunctions, readMemoViewSource } from '../helpers/extractFunction.mjs'
+import { extractFunctions, readMemoViewSource, readMemoViewStyles } from '../helpers/extractFunction.mjs'
 
 
 // PRD-012 (Memo 011 Kap 4, F16=A): the requirements VIEW lives inside the single inline <script>
@@ -100,15 +100,26 @@ describe( 'Requirements view — PRD-012 (Memo 011 Kap 4, F16=A)', () => {
 
 
     beforeAll( async () => {
-        source = await readMemoViewSource()
+        // PRD-010 (Memo 016, F1): CSS moved to src/public/app.css. PRD-011 (Memo 016, F1/F2): the
+        // inline client <script> was extracted into src/public/app.client.mjs (already runtime form).
+        // emittedScript reads the client file directly; source concats .mjs + CSS + client so both
+        // server-side route greps AND client render-function greps resolve.
+        const here = dirname( fileURLToPath( import.meta.url ) )
+        const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+        const mjsSource = await readMemoViewSource()
+        const cssSource = await readMemoViewStyles()
+        const clientSource = await readFile( clientPath, 'utf8' )
 
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        source = mjsSource + '\n' + cssSource + '\n' + clientSource
+        emittedScript = clientSource
 
         fns = await extractFunctions( [
+            'requirementsEmptyState',
+            'resolveBlockRequirements',
+            'requirementsConsistency',
+            'requirementSeverityClass',
+            'requirementKindLabel',
+            'buildEmptyState',
             'buildRequirementChip',
             'renderRequirementsView',
             'openRequirementModal',
@@ -172,7 +183,10 @@ describe( 'Requirements view — PRD-012 (Memo 011 Kap 4, F16=A)', () => {
             statement: 'Tool names must be unique within catalog'
         } )
 
-        expect( chip.className ).toBe( 'req-item' )
+        // PRD-014 (Memo 016 Kap 9, B9): the chip keeps the base .req-item class and now ALSO carries
+        // a severity class (a requirement with no severity maps to the neutral req-sev-info).
+        expect( chip._classes.has( 'req-item' ) ).toBe( true )
+        expect( chip._classes.has( 'req-sev-info' ) ).toBe( true )
         expect( chip.getAttribute( 'data-req-id' ) ).toBe( 'REQ-0042' )
         expect( chip.getAttribute( 'title' ) ).toBe( 'Tool names unique' )
     } )

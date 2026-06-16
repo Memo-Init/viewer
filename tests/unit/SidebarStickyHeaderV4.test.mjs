@@ -6,9 +6,12 @@ import { dirname, join } from 'node:path'
 
 // PRD-006 + PRD-007 (Memo 019 Kap 6+7, Phase 4): the Pencil-v4 Sidebar + Sticky-Header redesign.
 // The markup is produced by updateSidebarSticky / renderSidebarMemos inside the single inline
-// <script> of the HTML page; the matching CSS lives in the page <style>. As in SidebarConformance
+// <script> of the HTML page; the matching CSS lives in the stylesheet. As in SidebarConformance
 // we read the source and evaluate the escape-faithful script slice, asserting on emitted markup
 // plus the source CSS. No server boot needed — the assertions are deterministic on the source.
+// PRD-010 (Memo 016, F1): the CSS was extracted to src/public/app.css. The <script> slice is taken
+// from the .mjs source; `source` is then the .mjs source plus the stylesheet so CSS-rule regexes
+// resolve against the moved CSS unchanged.
 describe( 'Sidebar + Sticky-Header v4 — PRD-006 / PRD-007 (Memo 019 Kap 6+7)', () => {
     let source = ''
     let emittedScript = ''
@@ -17,17 +20,16 @@ describe( 'Sidebar + Sticky-Header v4 — PRD-006 / PRD-007 (Memo 019 Kap 6+7)',
     beforeAll( async () => {
         const here = dirname( fileURLToPath( import.meta.url ) )
         const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
-        source = await readFile( sourcePath, 'utf8' )
+        const cssPath = join( here, '..', '..', 'src', 'public', 'app.css' )
+        const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+        const mjsSource = await readFile( sourcePath, 'utf8' )
+        const cssSource = await readFile( cssPath, 'utf8' )
 
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-
-        expect( rawSlice.includes( '${' ) ).toBe( false )
-
-        // eslint-disable-next-line no-new-func — controlled, no interpolation, escape-faithful.
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        // PRD-011 (Memo 016, F1/F2): the inline client <script> was extracted to
+        // src/public/app.client.mjs (already the runtime-emitted form). Read it directly; append
+        // the stylesheet to the .mjs source so CSS-rule assertions check the moved CSS.
+        emittedScript = await readFile( clientPath, 'utf8' )
+        source = mjsSource + '\n' + cssSource
     } )
 
 

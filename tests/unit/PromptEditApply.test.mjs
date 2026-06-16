@@ -14,7 +14,7 @@ import vm from 'node:vm'
 // template-literal escape processing to obtain the EXACT browser string, then run the two
 // functions in a vm sandbox with light fetch/clipboard/document stubs.
 const here = dirname( fileURLToPath( import.meta.url ) )
-const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
+const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
 
 
 function extractFunction( script, signature ) {
@@ -65,15 +65,10 @@ describe( 'PRD-002 applyPromptEdit — emitted browser string', () => {
 
 
     beforeAll( async () => {
-        const source = await readFile( sourcePath, 'utf8' )
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-
-        expect( rawSlice.includes( '${' ) ).toBe( false )
-
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        const emittedScript = toRuntime()
+        // PRD-011 (Memo 016, F1/F2): the inline client <script> was extracted to
+        // src/public/app.client.mjs, which is already the runtime-emitted form (escapes collapsed
+        // during extraction). Reading it directly gives the real browser string — no slice needed.
+        const emittedScript = await readFile( clientPath, 'utf8' )
 
         const applySrc = extractFunction( emittedScript, 'async function applyPromptEdit(' )
         const activateSrc = extractFunction( emittedScript, 'function activatePsCopy(' )

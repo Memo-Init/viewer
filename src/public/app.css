@@ -1,0 +1,3074 @@
+        :root {
+            --bg-0: #010409;
+            --bg-1: #0d1117;
+            --bg-2: #161b22;
+            --bg-3: #1c2128;
+            --bg-4: #21262d;
+            /* PRD-018 (Memo 016 Kap 7.2): single shared subtle-gray hover token for ALL
+               sidebar rows (memo-head, rev-entry, queue-entry). Kept distinctly lighter than
+               the row background yet softer than the selected-state accent. */
+            --hover-bg: #2b313b;
+            --border: #30363d;
+            --border-subtle: rgba(110, 118, 129, 0.4);
+            --text-1: #e6edf3;
+            --text-2: #c9d1d9;
+            --text-muted: #8b949e;
+            --text-muted-2: #6e7681;
+            --text-on-accent: #f6f8fa;
+            --accent: #2ea043;
+            --accent-bright: #3fb950;
+            --danger: #f85149;
+            --warning: #d29922;
+            --type-impl: #db6d28;
+            --link: #4493f8;
+            --link-bright: #58a6ff;
+            --diff-add-bg: rgba(63, 185, 80, 0.12);
+            --diff-del-bg: rgba(248, 81, 73, 0.1);
+            --warn-bg: rgba(210, 153, 34, 0.12);
+            --overlay: rgba(1, 4, 9, 0.92);
+            --shadow: rgba(0, 0, 0, 0.7);
+            --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+            --font-mono: 'SF Mono', 'Monaco', 'Consolas', 'Liberation Mono', monospace;
+            --sp-1: 4px;
+            --sp-2: 8px;
+            --sp-3: 12px;
+            --sp-4: 16px;
+            --sp-5: 24px;
+            --sp-6: 32px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            background: var(--bg-1);
+            color: var(--text-1);
+            font-family: var(--font-sans);
+            font-size: 16px;
+            line-height: 1.5;
+            word-wrap: break-word;
+        }
+
+        #nav-bar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 52px;
+            background: var(--bg-2);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 16px 0 20px;
+            z-index: 1000;
+            gap: 12px;
+        }
+
+        /* NavBar brand — only place the deco emoji is allowed besides popups/status */
+        #nav-brand {
+            color: var(--text-1);
+            font-size: 16px;
+            font-weight: 700;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        /* Toggle pill group (Memos / Plans) */
+        #mode-toggle {
+            display: inline-flex;
+            background: var(--bg-4);
+            border-radius: 8px;
+            padding: 3px;
+            gap: 2px;
+            flex-shrink: 0;
+        }
+
+        .mode-toggle {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 4px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            font-weight: 500;
+        }
+
+        .mode-toggle:hover { color: var(--text-1); }
+
+        .mode-toggle.active {
+            background: var(--bg-3);
+            border-color: var(--border);
+            color: var(--text-1);
+            font-weight: 700;
+        }
+
+        #nav-spacer { flex: 1 1 auto; min-width: 0; }
+
+        /* Primary green button (+ Neues Memo / + Neuer Plan) */
+        .nav-btn-primary {
+            background: var(--accent);
+            border: 1px solid var(--accent);
+            color: var(--text-1);
+            cursor: pointer;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            flex-shrink: 0;
+        }
+
+        .nav-btn-primary:hover { background: var(--accent); }
+
+        /* Secondary button (+ Transcript) */
+        .nav-btn-secondary {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            color: var(--text-1);
+            cursor: pointer;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            font-family: inherit;
+            flex-shrink: 0;
+        }
+
+        .nav-btn-secondary:hover { border-color: var(--text-muted); }
+
+        #nav-back {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 2px 8px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            flex-shrink: 0;
+        }
+
+        #nav-back:hover { color: var(--text-1); border-color: var(--text-muted); }
+        #nav-back:disabled { opacity: 0.3; cursor: default; }
+        #nav-back:disabled:hover { color: var(--text-muted); border-color: var(--border); }
+
+        #nav-file {
+            color: var(--text-muted);
+            font-size: 13px;
+            font-family: var(--font-mono);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex-shrink: 1;
+        }
+
+        #status {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--danger);
+            opacity: 0.6;
+            transition: background 0.3s;
+            flex-shrink: 0;
+        }
+
+        #status.connected { background: var(--accent-bright); }
+
+        /* PRD-016 (Memo 016, E9): visible offline banner, shown from the 1st failed attempt. */
+        .offline-banner {
+            display: block;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 8px 16px;
+            background: var(--danger);
+            color: #fff;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            letter-spacing: 0.2px;
+        }
+
+        .offline-banner-hidden { display: none; }
+
+        /* PRD-008: two-line content-sticky-header.
+           Line 1: Titel + Memo-Typ-Badge + Status-Pill + Diff-Toggle.
+           Line 2: Transcript kopieren + URL + Woerter/Minuten. */
+        /* PRD-006 (Memo 019 Kap 6): the sticky header is a 3-zone model. #main-header is the
+           sticky frame holding Zone 1 (Info, gelockt) + Zone 2 (Interaktion, Platzhalter).
+           Zone 3 (Content) lives in #content and scrolls — it is NOT inside this sticky frame.
+           Both zones stay fixed at the top while the content scrolls (AC-1). */
+        #main-header {
+            position: sticky;
+            top: 52px;
+            z-index: 4;
+            display: flex;
+            flex-direction: column;
+            gap: 0;
+            background: var(--bg-1);
+            border-bottom: 1px solid var(--border);
+            padding: 0;
+            font-size: 13px;
+        }
+
+        #main-header:empty { display: none; }
+
+        /* Zone wrappers. Zone 1 sits on the page background; Zone 2 is set apart by its own
+           subtle fill + a top divider (Soll o0zun: fill #F4F4F5, top stroke). */
+        #main-header .hdr-zone { display: flex; flex-direction: column; min-width: 0; }
+        #main-header .hdr-zone-1 { background: var(--bg-1); }
+        #main-header .hdr-zone-2 {
+            background: var(--bg-2);
+            border-top: 1px solid var(--border);
+            padding: 10px 20px;
+        }
+
+        /* ---- Zone 2 — Prompt-Statuszeile (PRD-008, Frame o0zun). ----
+           STRICTLY two rows (Kap 9.3): .ps-row--transcript + .ps-row--fragen. Vertical
+           container (o0zun: layout vertical, gap 9). Each row is horizontal (gap 8). */
+        #main-header .prompt-statuszeile {
+            display: flex;
+            flex-direction: column;
+            gap: 9px;
+            min-width: 0;
+        }
+        #main-header .ps-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+        /* Icon + Label (he2EW/EQVXw, sHp3P/vfGXX): 11px / 700, label dark. */
+        #main-header .ps-ico { font-size: 12px; line-height: 1; color: var(--text-2); flex-shrink: 0; }
+        #main-header .ps-label { font-size: 11px; font-weight: 700; color: var(--text-1); flex-shrink: 0; }
+        #main-header .ps-sep { font-size: 11px; color: var(--text-muted-2); flex-shrink: 0; }
+        /* Minuten-Leitkennzahl (C7weW): dark chip #18181B, white text, PROMINENT (Kap 9.4). */
+        #main-header .ps-minutes {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 11px;
+            font-weight: 700;
+            color: #FFFFFF;
+            background: #18181B;
+            border-radius: 6px;
+            padding: 2px 9px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #main-header .ps-minutes .ps-mic { font-size: 11px; line-height: 1; }
+        /* Wörter (N7f0I): secondary, muted #71717A, AFTER the minutes. */
+        #main-header .ps-words {
+            font-size: 11px;
+            font-weight: 400;
+            color: var(--text-muted);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #main-header .ps-empty {
+            font-size: 11px;
+            font-style: italic;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+        #main-header .ps-spacer { flex: 1 1 auto; }
+        /* "Prompt bearbeiten" (bHsKm): white button, dark 1.5px border, pencil icon. */
+        #main-header .ps-edit {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: inherit;
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-1);
+            background: var(--bg-1);
+            border: 1.5px solid var(--text-1);
+            border-radius: 7px;
+            padding: 4px 11px;
+            cursor: pointer;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #main-header .ps-edit:hover { background: var(--bg-4); }
+        /* Copy-Icon (iZM8G): square icon button. */
+        #main-header .ps-copy {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 30px;
+            height: 26px;
+            font-size: 13px;
+            color: var(--text-2);
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        #main-header .ps-copy:hover:not(:disabled) { color: var(--text-1); border-color: var(--text-muted); }
+        #main-header .ps-copy:disabled { opacity: 0.5; cursor: default; }
+        /* beantwortet/offen (fMlP3): 11px / 600. */
+        #main-header .ps-answered { font-size: 11px; font-weight: 600; color: var(--text-2); white-space: nowrap; flex-shrink: 0; }
+        /* Fragezeichen-Indikator (Vvpcy): chip "? N offen", white, 1px border. */
+        #main-header .ps-qmark {
+            display: inline-flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-2);
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 7px;
+            padding: 2px 9px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #main-header .ps-qmark .ps-qmark-sign { font-size: 13px; line-height: 1; }
+        /* "Abschliessen" (ImDqp): dark button #18181B, white text, right. */
+        #main-header .ps-finish {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-family: inherit;
+            font-size: 11px;
+            font-weight: 700;
+            color: #FFFFFF;
+            background: #18181B;
+            border: none;
+            border-radius: 7px;
+            padding: 5px 12px;
+            cursor: pointer;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #main-header .ps-finish:hover { background: #000000; }
+
+        /* ---- Zone 1 — Informationsebene (gelockt, Frame JaA9o). ---- */
+        /* Zeile 1 (YtFVI): horizontal, alignItems center, gap 12, padding [14,20,6,20]. */
+        #main-header .z1-line1 {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 20px 6px 20px;
+            min-width: 0;
+        }
+        /* Titel (BKYwK): 17px / weight 700. */
+        #main-header .z1-title {
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--text-1);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 0 1 auto;
+            min-width: 0;
+        }
+        /* Status-Pill (NUj56): radius 7, stroke 1.5, padding [3,10]; Text 10px / 700. */
+        #main-header .z1-pill {
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1;
+            border-radius: 7px;
+            padding: 3px 10px;
+            border: 1.5px solid var(--text-1);
+            color: var(--text-1);
+            background: transparent;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #main-header .z1-pill.z1pill-final {
+            color: var(--accent-bright);
+            border-color: var(--accent);
+            background: var(--diff-add-bg);
+        }
+        #main-header .z1-pill.z1pill-draft {
+            color: var(--text-2);
+            border-color: var(--text-muted);
+        }
+        /* Zeile 2 (9I8kz): horizontal, alignItems center, gap 8, padding [0,20,12,20]. */
+        #main-header .z1-line2 {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 20px 12px 20px;
+            min-width: 0;
+        }
+        /* Doc-Pfad (ebWea): 11px / 600 / #52525B. */
+        #main-header .z1-doc {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text-2);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 0 1 auto;
+            min-width: 0;
+        }
+        #main-header .z1-cal { font-size: 11px; line-height: 1; flex-shrink: 0; opacity: 0.7; }
+        /* Datum (RSzhu) / Typ (vT8Px) / KB (LQtCr): 11px / #71717A. */
+        #main-header .z1-date,
+        #main-header .z1-type,
+        #main-header .z1-kb {
+            font-size: 11px;
+            color: var(--text-muted);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        /* Separator "·" (8LBFt/QktG5): 11px / #D4D4D8. */
+        #main-header .z1-sep {
+            font-size: 11px;
+            color: var(--text-muted-2);
+            flex-shrink: 0;
+        }
+
+        #main-header .mh-line1,
+        #main-header .mh-line2,
+        #main-header .mh-title-row,
+        #main-header .mh-status-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        /* PRD-004 (Memo 018 Kap 7 / 014 Kap 10): the title line is its own first row,
+           informational only (no action buttons). */
+        #main-header .mh-title-row { font-weight: 700; }
+
+        /* PRD-004 (Kap 7 R4): unified badge base — every header badge shares mh-badge,
+           the modifier mh-badge--{typ} (or the legacy mh-type-badge/mh-pill state classes)
+           supplies the variant colour. */
+        #main-header .mh-badge {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            border-radius: 10px;
+            padding: 1px 8px;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            background: var(--bg-4);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        #main-header .mh-badge.mh-badge--impl {
+            color: var(--type-impl);
+            border-color: var(--type-impl);
+            background: rgba( 219, 109, 40, 0.12 );
+        }
+
+        /* PRD-004 (Kap 7): Transcript-Statuszeile status badges. */
+        #main-header .mh-badge.mh-badge--offen {
+            color: var(--accent-bright);
+            border-color: var(--accent);
+            background: var(--diff-add-bg);
+        }
+
+        #main-header .mh-badge.mh-badge--transcript {
+            color: var(--link-bright);
+            border-color: var(--link);
+            background: transparent;
+        }
+
+        #main-header .mh-badge.mh-badge--eingeloggt {
+            color: var(--accent-bright);
+            border-color: var(--accent);
+            background: var(--diff-add-bg);
+        }
+
+        /* BUGFIX (fix/transcript-abschliessen-queue): the "abgeschlossen" status badge on a
+           logged-in revision lives in the sidebar tree (rev-mini), not #main-header. Mirror the
+           header badge look at a quieter sidebar scale so an abgeschlossene Revision is visible. */
+        .rev-mini .mh-badge {
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            border-radius: 8px;
+            padding: 0 6px;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            background: var(--bg-4);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .rev-mini .mh-badge.mh-badge--eingeloggt {
+            color: var(--accent-bright);
+            border-color: var(--accent);
+            background: var(--diff-add-bg);
+        }
+
+        #main-header .mh-title {
+            color: var(--text-1);
+            font-weight: 700;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        #main-header .mh-spacer { flex: 1 1 auto; }
+
+        #main-header .mh-type-badge {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            border-radius: 10px;
+            padding: 1px 8px;
+            border: 1px solid var(--border);
+            color: var(--text-2);
+            background: var(--bg-4);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        #main-header .mh-type-badge.type-impl {
+            color: var(--type-impl);
+            border-color: var(--type-impl);
+            background: rgba( 219, 109, 40, 0.12 );
+        }
+
+        #main-header .mh-pill {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            border-radius: 10px;
+            padding: 1px 8px;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        #main-header .mh-pill.pill-final {
+            color: var(--accent-bright);
+            border-color: var(--accent);
+            background: var(--diff-add-bg);
+        }
+
+        #main-header .mh-pill.pill-transcript {
+            color: var(--link-bright);
+            border-color: var(--link);
+            background: transparent;
+        }
+
+        #main-header .mh-pill.pill-feedback {
+            color: var(--accent-bright);
+            border-color: var(--accent);
+            background: var(--diff-add-bg);
+        }
+
+        #main-header .mh-copy-btn {
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--text-2);
+            cursor: pointer;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: inherit;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        #main-header .mh-copy-btn:hover:not(:disabled) {
+            color: var(--text-1);
+            border-color: var(--text-muted);
+        }
+
+        #main-header .mh-copy-btn:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
+        #main-header .mh-url {
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        #main-header .mh-url.mh-url-empty {
+            font-family: inherit;
+            font-style: italic;
+        }
+
+        #main-header .mh-words {
+            color: var(--text-muted);
+            font-size: 11px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        #main-header .mh-status {
+            color: var(--text-muted);
+            font-size: 11px;
+            white-space: nowrap;
+        }
+
+        #main {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #content {
+            padding: 24px;
+            min-width: 0;
+            max-width: 980px;
+        }
+
+        /* PRD-001 (#16-18): raw question markdown bodies hidden once widgets render. */
+        #content .raw-question-hidden { display: none; }
+
+        /* PRD-015 (D6): a block's structured H3 body sections (### Problem-Beschreibung /
+           Loesungsansatz / Offene Fragen below a block-meta card) are collapsed out of the prose
+           — the Block-Card already carries the machine-links. */
+        #content .block-body-hidden { display: none; }
+
+        /* PRD-002 (#12/#15): caps section labels (style analog .sb-group-header). */
+        #content .section-caps-label,
+        #content .section-caps-host::before {
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+        #content .section-caps-host::before { content: attr(data-caps); display: block; }
+
+        /* PRD-002 (#13): TOPICS chip strip (style analog .qw-topics / .qw-topic-link). */
+        #content .topic-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--sp-1);
+            margin: var(--sp-2) 0;
+        }
+        #content .topic-chip {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--link);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1px 8px;
+        }
+
+        /* PRD-002 (#14): Metatags chip strip. */
+        #content .meta-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--sp-1);
+            margin: var(--sp-2) 0;
+        }
+        #content .meta-chip {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1px 8px;
+        }
+
+        h1, h2, h3, h4, h5, h6 {
+            color: var(--text-1);
+            margin-top: 24px;
+            margin-bottom: 16px;
+            font-weight: 600;
+            line-height: 1.25;
+        }
+
+        h1 { font-size: 2em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border); }
+        h2 { font-size: 1.5em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border); }
+        h3 { font-size: 1.25em; }
+        h4 { font-size: 1em; }
+
+        h1:first-child, h2:first-child, h3:first-child { margin-top: 0; }
+
+        p { margin-top: 0; margin-bottom: 16px; }
+
+        a { color: var(--link); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+
+        strong { color: var(--text-1); font-weight: 600; }
+
+        code {
+            background: var(--border-subtle);
+            padding: 0.2em 0.4em;
+            border-radius: 6px;
+            font-family: var(--font-mono);
+            font-size: 85%;
+        }
+
+        pre {
+            background: var(--bg-2);
+            padding: 16px;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin-top: 0;
+            margin-bottom: 16px;
+            border: 1px solid var(--border);
+            line-height: 1.45;
+        }
+
+        pre code {
+            background: transparent;
+            padding: 0;
+            border-radius: 0;
+            font-size: 85%;
+            line-height: inherit;
+            word-wrap: normal;
+        }
+
+        blockquote {
+            border-left: 0.25em solid var(--border);
+            padding: 0 1em;
+            margin: 0 0 16px 0;
+            color: var(--text-muted);
+        }
+
+        blockquote > :first-child { margin-top: 0; }
+        blockquote > :last-child { margin-bottom: 0; }
+
+        blockquote p {
+            margin-bottom: 4px;
+        }
+
+        blockquote p:last-child {
+            margin-bottom: 0;
+        }
+
+        .diff-banner {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin-bottom: 16px;
+            font-size: 13px;
+            color: var(--text-muted);
+        }
+
+        .diff-banner a {
+            color: var(--link);
+            cursor: pointer;
+        }
+
+        .diff-banner a:hover {
+            text-decoration: underline;
+        }
+
+        .diff-added {
+            background-color: var(--diff-add-bg);
+            border-left: 3px solid var(--accent-bright);
+            padding-left: 8px;
+        }
+
+        .diff-removed {
+            background-color: var(--diff-del-bg);
+            border-left: 3px solid var(--danger);
+            padding-left: 8px;
+            text-decoration: line-through;
+            opacity: 0.6;
+        }
+
+        /* PRD-002 (#11): clear button look — background + stronger border/text
+           (--surface-2/--surface-3 are not defined; existing bg-3/bg-4 tokens used). */
+        /* PRD-007 (Memo 022 Kap 5): kleiner Diff-Button neben der Zone-1-Pill. Kein margin-left
+           mehr — .z1-line1 setzt bereits gap: 12px. Optisch an die Pill angeglichen (klein,
+           kompakt, nicht voll-breit). Toggle-Optik (hover/active) bleibt erhalten. */
+        #diff-toggle {
+            background: var(--bg-3);
+            border: 1px solid var(--text-muted);
+            color: var(--text-1);
+            cursor: pointer;
+            padding: 3px 10px;
+            border-radius: 7px;
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1;
+            font-family: inherit;
+            flex-shrink: 0;
+        }
+
+        #diff-toggle:hover { color: var(--text-1); border-color: var(--accent); background: var(--bg-4); }
+        #diff-toggle.active { color: var(--accent-bright); border-color: var(--accent-bright); background: var(--diff-add-bg); }
+
+        /* Memo 016 P3 (PRD-013): same compact button look as #diff-toggle; nowrap +
+           flex-shrink:0 so the label is never squeezed into a tall narrow box. */
+        #sticky-add-transcript {
+            background: var(--bg-3);
+            border: 1px solid var(--text-muted);
+            color: var(--text-1);
+            cursor: pointer;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: inherit;
+            margin-left: 8px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #sticky-add-transcript:hover { color: var(--text-1); border-color: var(--accent); background: var(--bg-4); }
+        #sticky-add-transcript[data-exists="1"] { opacity: 0.65; }
+
+        #layout {
+            display: flex;
+            margin: 52px 0 0;
+        }
+
+        #doc-sidebar {
+            position: sticky;
+            top: 52px;
+            width: 320px;
+            min-width: 320px;
+            height: calc( 100vh - 52px );
+            overflow-y: auto;
+            padding: 0;
+            background: var(--bg-2);   /* PRD-003 (#54): #161b22 statt #010409 (zu dunkel) */
+            border-right: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        /* Plans-View narrows the sidebar to 280px */
+        #doc-sidebar.plans-mode {
+            width: 280px;
+            min-width: 280px;
+        }
+
+        #doc-sidebar-body {
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        /* Namespace / section group headers */
+        .sb-group-header {
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            padding: 6px 4px 2px;
+        }
+
+        /* PRD-003 (Memo 018 Kap 6): content placeholder — replaces inline color:#888 with the
+           shared muted token so the "Dokument auswaehlen..." text follows the design language. */
+        .content-placeholder {
+            color: var(--text-muted);
+            font-size: 13px;
+            padding: 16px;
+        }
+
+        /* PRD-006 (#36): namespace-style group header with vertical bar glyph. */
+        .sb-ns-bar {
+            color: var(--accent);
+            font-weight: 700;
+        }
+
+        .sb-divider {
+            height: 1px;
+            background: var(--border);
+            margin: 8px 0;
+        }
+
+        /* PRD-003 (Memo 018 Kap 6 / 014 Kap 7): spacing between the last revision of a memo
+           and the next memo header. The memo-group wraps the memo head + its revision list. */
+        .memo-group {
+            margin-bottom: 6px;
+        }
+
+        /* Memo-Header-Zeile (status icon + name + transcript count) */
+        .memo-head {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            /* Fix (#81): the header wraps — the memo name keeps line 1 to itself (always fully
+               readable), the status cluster (badge + minutes + finalisiert) drops to line 2 via
+               .mh-break. row-gap keeps the two lines tight. */
+            flex-wrap: wrap;
+            row-gap: 4px;
+            min-height: 30px;
+            /* PRD-006 (#37/#61/#62): memo-header as a card — radius 8, own BG #2B313B. */
+            border-radius: 8px;
+            background: #2B313B;
+            padding: 6px 8px;
+            /* REV-05 R3: the whole header toggles its revisions — make it feel clickable. */
+            cursor: pointer;
+            /* PRD-003 (#63): transparent base border so .selected only swaps the color
+               (no 1px layout shift). */
+            border: 1px solid transparent;
+            transition: background 0.12s ease, border-color 0.12s ease;
+        }
+
+        /* PRD-018 (Memo 016 Kap 7.2): unified subtle-gray hover across ALL sidebar rows
+           (memo-head, rev-entry, queue-entry). The shared token is --hover-bg; the
+           selected-state stays clearly stronger (accent border + inset shadow) so hover and
+           selected never become indistinguishable. */
+        .memo-head:hover {
+            background: var(--hover-bg);
+            border-color: #3a424e;
+        }
+
+        .memo-head.selected {
+            background: var(--bg-4);
+            /* PRD-003 (#63): ruhiger Border statt grellweiss (#e6edf3 / --text-1). */
+            border: 1px solid #3a424e;
+        }
+
+        .memo-head.selected:hover {
+            border-color: var(--accent);
+        }
+
+        /* PRD-003 (#63): neutralise any focus outline appearing as a white frame. */
+        .memo-head.selected:focus,
+        .memo-head.selected:focus-visible {
+            outline: 1px solid #3a424e;
+            outline-offset: 0;
+        }
+
+        .memo-head .mh-caret {
+            font-size: 10px;
+            color: var(--text-muted);
+            cursor: pointer;
+            user-select: none;
+            flex-shrink: 0;
+            width: 12px;
+            text-align: center;
+        }
+
+        .memo-head .mh-caret:hover { color: var(--text-1); }
+
+        .memo-head .mh-icon {
+            font-size: 12px;
+            flex-shrink: 0;
+        }
+
+        .memo-head .mh-name {
+            color: var(--text-1);
+            font-size: 12px;
+            font-weight: 700;
+            /* Fix (#81): the memo name stays on a SINGLE line and truncates with an ellipsis
+               when too long (user preference). flex-basis 0 keeps caret + icon + name together
+               on line 1; the name grows to fill the rest of the row. The status cluster drops
+               to its own line via .mh-break. */
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 1 1 0;
+            min-width: 0;
+        }
+
+        /* Fix (#81): full-width zero-height break that forces the status cluster onto a
+           second line inside the wrapping memo-head. */
+        .memo-head .mh-break { flex: 0 0 100%; height: 0; margin: 0; padding: 0; }
+
+        /* Fix (#81): on line 2 the status items pack left so badge + minutes + finalisiert
+           fit on a single line (a growing spacer pushed them past the edge and wrapped). */
+        .memo-head .mh-spacer { flex: 0 0 0; }
+
+        /* Fix (#83): right-align the minutes chip (and any trailing finalisiert badge) on
+           line 2 — auto margin absorbs the free space without the wrap quirk of a flex-grow
+           spacer, so the status badge stays left and the minutes sit at the right edge. */
+        .memo-head .mh-minutes { margin-left: auto; }
+
+        #doc-sidebar ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        #doc-sidebar li {
+            padding: 2px 6px;
+            color: var(--text-muted);
+        }
+
+        #doc-sidebar li[data-doc] {
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        #doc-sidebar li[data-doc]:hover {
+            background: var(--bg-2);
+            color: var(--text-1);
+        }
+
+        #doc-sidebar strong {
+            color: var(--text-1);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        /* Two-line revision entries (indented under memo head, uniform height) */
+        .rev-entry {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            min-height: 38px;
+            box-sizing: border-box;
+            border-radius: 4px;
+            padding: 5px 8px 5px 28px;
+            cursor: pointer;
+            line-height: 1.3;
+        }
+
+        /* PRD-018: same subtle-gray hover as .memo-head (was var(--bg-2), too dark to read). */
+        .rev-entry:hover {
+            background: var(--hover-bg);
+        }
+
+        .rev-entry.rev-selected {
+            background: var(--bg-4);
+            border-left: 2px solid var(--accent);
+            box-shadow: inset 0 0 0 1px var(--accent);
+        }
+
+        .rev-line1 {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--text-2);
+            font-size: 12px;
+        }
+
+        .rev-entry.rev-selected .rev-line1 {
+            color: var(--text-1);
+            font-weight: 700;
+        }
+
+        .rev-entry.rev-muted .rev-line1 {
+            color: var(--text-muted-2);
+        }
+
+        .rev-line1 .rev-spacer { flex: 1 1 auto; }
+
+        /* Revision type badges */
+        .rev-type {
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            border-radius: 10px;
+            padding: 1px 7px;
+            flex-shrink: 0;
+        }
+
+        /* Full: high contrast, NO green (green is exclusive to ball-status, PRD-007 #6) */
+        .rev-type.rt-full {
+            background: var(--diff-add-bg);
+            color: var(--accent-bright);
+            border: 1px solid var(--accent);
+        }
+
+        .rev-type.rt-update {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+        }
+
+        .rev-type.rt-prepare {
+            background: var(--bg-4);
+            color: var(--text-muted);
+        }
+
+        .rev-chat {
+            color: var(--link-bright);
+            font-size: 11px;
+            flex-shrink: 0;
+        }
+
+        .rev-line2 {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 6px;
+            color: var(--text-muted);
+            font-size: 10px;
+            margin-top: 2px;
+        }
+
+        .rev-line2 .rev-meta-right {
+            flex-shrink: 0;
+            text-align: right;
+        }
+
+        .rev-entry.rev-muted .rev-line2 {
+            color: var(--text-muted-2);
+        }
+
+        .rev-entry.rev-muted {
+            opacity: 0.7;
+        }
+
+        /* PRD-001 (Memo 019 Kap 1): legacy/parseError revisions stay visible in the namespace
+           tree but are clearly dimmed ("ausgegraut") and set apart from new revisions. They never
+           appear in the queue (see computeQueue / DocumentRegistry.isInQueue). */
+        .rev-entry.rev-legacy-muted {
+            opacity: 0.45;
+        }
+        .rev-entry.rev-legacy-muted .rev-line1,
+        .rev-entry.rev-legacy-muted .rev-line2 {
+            color: var(--text-muted-2);
+            font-style: italic;
+        }
+
+        /* PRD-001 (Memo 019 Kap 1): the finalized-memo minutes chip — microphone icon +
+           aggregated spoken minutes + "Min", shown INSTEAD of a date for finalized memos. */
+        .mh-minutes {
+            display: inline-flex;
+            align-items: center;
+            white-space: nowrap;
+            flex-shrink: 0;
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-left: 6px;
+        }
+
+        /* PRD-001 (Memo 019 Kap 1): Queue-item info model. The namespace is a LABEL on the item
+           (flat list, no grouping); name + REV-ID + status share line1, date + open-count line2. */
+        .qe-entry .qe-ns {
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            color: var(--text-muted);
+            margin-right: 6px;
+        }
+        .qe-entry .qe-name {
+            font-weight: 600;
+            margin-right: 6px;
+        }
+        .qe-entry .qe-status {
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .rev-questions {
+            color: var(--text-muted);
+        }
+
+        /* PRD-016: read-only memo status badge.
+           PRD-019 (Memo 016 Kap 7.1): the badge must NOT wrap to a 2nd line ("Bedingt
+           finalisiert" was breaking while "Finalisiert" stayed 1-line, making the row height
+           jump). nowrap + a fixed line-height/min-height keep every status one line and the
+           badge position stable. flex-shrink:0 prevents the flex row from squeezing it. */
+        .memo-badge {
+            display: inline-flex;
+            align-items: center;
+            white-space: nowrap;
+            line-height: 14px;
+            min-height: 16px;
+            flex-shrink: 0;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            border-radius: 10px;
+            padding: 0 8px;
+            margin-left: 6px;
+            vertical-align: middle;
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+        }
+
+        .memo-badge.badge-final {
+            color: var(--accent-bright);
+            border-color: var(--accent);
+            background: var(--diff-add-bg);
+        }
+
+        .memo-badge.badge-conditional {
+            color: var(--warning);
+            border-color: #9e6a03;
+            background: var(--warn-bg);
+        }
+
+        .memo-badge.badge-draft {
+            color: var(--text-muted);
+            border-color: var(--border);
+            background: transparent;
+        }
+
+        /* PRD-019: deep-link open-questions marker — quiet text count ("N ?") instead of an
+           emoji. Kept in the warning colour so the open-questions state stays glanceable. */
+        /* PRD-006 (Memo 019 Kap 6.4 / AC-10): "Fragezeichen + Nummer"-Indikator als ruhiger,
+           linksbuendiger Chip. Box-Abstand zum Fragezeichen vergroessert (eleganter) — der "?"
+           und die Zahl bekommen Luft (gap) und der Chip eine eigene Box (padding + border). */
+        .questions-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin-left: 8px;
+            padding: 1px 7px;
+            border-radius: 7px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--warning);
+            flex-shrink: 0;
+        }
+
+        .questions-link:hover {
+            color: #f0c674;
+        }
+
+        /* PRD-019: per-revision transcript marker — quiet uppercase text tag (was a 🗒 emoji). */
+        .rev-transcript-indicator {
+            font-size: 9px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        /* PRD-007 (Memo 018 Kap 10): legacy/inkompatible Revisionen — "alte Version".
+           Reuses the .rev-type badge geometry, quiet muted styling, never green. */
+        .rev-type.rt-legacy {
+            background: transparent;
+            border: 1px dashed var(--border);
+            color: var(--text-muted);
+        }
+
+        .questions-link:empty {
+            display: none;
+        }
+
+        /* Plans-View sidebar — plan pills + open memos */
+        .plan-pill {
+            display: block;
+            border-radius: 4px;
+            padding: 6px 8px;
+            cursor: pointer;
+            color: var(--text-2);
+            font-size: 12px;
+        }
+
+        .plan-pill:hover { background: var(--bg-2); }
+
+        .plan-pill.selected {
+            background: var(--bg-4);
+            color: var(--text-1);
+            font-weight: 700;
+        }
+
+        .plan-pill.invalid { color: var(--warning); }
+
+        .open-memo {
+            border-radius: 4px;
+            padding: 5px 8px;
+        }
+
+        .open-memo .om-name {
+            display: block;
+            color: var(--text-2);
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .open-memo .om-status {
+            display: block;
+            color: var(--text-muted);
+            font-size: 10px;
+            margin-top: 1px;
+        }
+
+        .open-memo.not-final {
+            opacity: 0.45;
+        }
+
+        /* PRD-016: sidebar Queue (Warteschlange) — FIFO list above the namespace groups. */
+        .sb-queue {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .sb-queue-empty {
+            color: var(--text-muted);
+            font-size: 11px;
+            padding: 4px 8px;
+        }
+
+        /* ============================================================================
+           PRD-006 / PRD-007 (Memo 019 Kap 6+7): Pencil v4 Sidebar — Namespace-Box,
+           Revisions-Mini-Widget, Queue-Item-Container. Light-mode Soll-Werte (Geometrie:
+           Masse/Abstaende/Hierarchie) sind frame-treu uebernommen; die Farben sind auf das
+           bestehende Dark-Theme gemappt (gleiche prominenz-relationen wie im Mockup).
+           ============================================================================ */
+
+        /* ---- Namespace-Box (Soll npwAk: radius 10, stroke 1.5, clip). ---- */
+        .ns-box {
+            border-radius: 10px;
+            border: 1.5px solid var(--border);
+            background: var(--bg-1);
+            overflow: hidden;
+            margin-bottom: 6px;
+        }
+        /* NS-Header (Soll Q2uZD: height 42, padding [0,12], gap 8, fill #E4E4E7). */
+        .ns-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            height: 42px;
+            padding: 0 12px;
+            background: var(--bg-4);
+            cursor: pointer;
+            user-select: none;
+        }
+        .ns-header:hover { background: #2b313b; }
+        .ns-chevron {
+            font-size: 10px;
+            color: var(--text-2);
+            flex-shrink: 0;
+            width: 12px;
+            text-align: center;
+        }
+        .ns-folder { font-size: 13px; line-height: 1; flex-shrink: 0; }
+        /* Name (aDMo1): 13px / 700. */
+        .ns-name {
+            font-size: 13px;
+            font-weight: 700;
+            color: var(--text-1);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 0 1 auto;
+            min-width: 0;
+        }
+        .ns-spacer { flex: 1 1 auto; }
+        /* Memo-Count-Chip (xQI4m/bQZG5: radius 8, padding [1,8], 9px/600). */
+        .ns-count {
+            font-size: 9px;
+            font-weight: 600;
+            color: var(--text-muted);
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 1px 8px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        /* NS-Body (Soll ZUXs3: padding [6,8,8,8], gap 6). */
+        .ns-body {
+            padding: 6px 8px 8px 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        /* ---- Revisions-Mini-Widget (Soll 7RCLz active / yesxz inactive). ---- */
+        /* One ROW: height 38, radius 7, gap 8, padding [0,10]; 1-zeilig vertikal zentriert.
+           Scoped under #doc-sidebar li to beat the generic li[data-doc] radius:4px (ID-Spez.). */
+        #doc-sidebar li.rev-mini {
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-height: 38px;
+            box-sizing: border-box;
+            border-radius: 7px;
+            padding: 0 10px;
+            cursor: pointer;
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+        }
+        /* Hover-Highlight (Soll wa1Qa: fill #ECECF0, stroke #52525B/1.5). */
+        #doc-sidebar li.rev-mini:hover {
+            background: var(--hover-bg);
+            border-color: var(--text-muted);
+        }
+        /* Aktive Revision (Soll 7RCLz: fill #EAEAEC, stroke #18181B/1.5). */
+        #doc-sidebar li.rev-mini.rev-mini-active {
+            background: var(--bg-4);
+            border: 1.5px solid var(--text-2);
+        }
+        /* PRD-005 (Memo 022 Kap 9): REV-NN PROMINENT + vorne — der primaere Identifikator.
+           Visuelle Tokens aus Pencil v4 (REV-NN ~12-13px/600 #18181B). Transcript-Kopplung
+           ueber Akzentfarbe (kein separates Doc-Icon mehr). */
+        .rev-mini-num {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-1);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .rev-mini.rev-mini-active .rev-mini-num { font-weight: 700; }
+        /* Eigene Transcript-Revision -> Akzent-Ton auf der prominenten REV-NN. */
+        .rev-mini-num-transcript { color: var(--link-bright); }
+        /* PRD-005: Datum sekundaer (lesbar, gedaempft) — Pencil v4 ~10-11px #71717A. */
+        .rev-mini-date {
+            font-size: 10px;
+            font-weight: 500;
+            color: var(--text-muted);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .rev-mini-spacer { flex: 1 1 auto; }
+        /* PRD-005: Minuten-Chip — die Leitkennzahl (mic-Symbol + "N Min"). Pencil v4 Tokens:
+           radius 5, padding [1,6], fontSize 9-11/700, heller Chip #EFEFF1 / Text #3F3F46. */
+        .rev-mini-minutes {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 10px;
+            font-weight: 700;
+            color: var(--text-2);
+            background: var(--bg-3);
+            border-radius: 5px;
+            padding: 1px 6px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .rev-mini-mic { font-size: 9px; line-height: 1; }
+        .rev-mini.rev-mini-active .rev-mini-minutes { color: var(--text-1); background: var(--bg-4); }
+        /* PRD-005: dezentes Status-Symbol (offen = offener Punkt, abgeschlossen = gefuellt). */
+        .rev-mini-status {
+            font-size: 9px;
+            line-height: 1;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+        .rev-mini-status.rev-mini-status-done { color: var(--accent-bright); }
+        .rev-mini-note { font-size: 9px; color: var(--text-muted-2); flex-shrink: 0; }
+        /* Fragen-Chip (Soll 0DuFe: radius 5, padding [1,6], stroke). Box-Abstand zum "?"
+           vergroessert (PRD-006 Kap 6.4 / AC-10): gap 5px zwischen "?" und Zahl. */
+        .rev-mini-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 9px;
+            font-weight: 600;
+            color: var(--text-2);
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            padding: 1px 6px;
+            flex-shrink: 0;
+        }
+        .rev-mini-chip-q { font-weight: 700; color: var(--text-muted); }
+        /* PRD-006 (Memo 022 Kap 7): die funktionslosen Hover-Action-Icons (copy/open/trash) und
+           die zugehoerige Chip-Hide-Regel wurden entfernt — der Fragen-Chip bleibt bei Hover
+           sichtbar (kein Verstecken mehr fuer Platz, der nicht mehr gebraucht wird). */
+        /* Legacy-Revision (PRD-007 AC-4): im Baum gegrayt, nie in der Queue. */
+        .rev-mini.rev-legacy-muted { opacity: 0.45; }
+        .rev-mini.rev-legacy-muted .rev-mini-date,
+        .rev-mini.rev-legacy-muted .rev-mini-num { color: var(--text-muted-2); font-style: italic; }
+
+        /* ---- finalisiert-Badge auf dem collapsed Memo-Header (Soll BVf3c). ---- */
+        .mh-final-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            font-size: 9px;
+            font-weight: 700;
+            border-radius: 6px;
+            padding: 2px 8px;
+            margin-left: 6px;
+            color: var(--bg-1);
+            background: var(--accent-bright);
+        }
+
+        /* ---- Queue-Item-Container (Soll RdoSV/EHlQV: height 62, radius 8, linker Balken 4px). ---- */
+        #doc-sidebar li.queue-card {
+            position: relative;
+            display: flex;
+            align-items: stretch;
+            min-height: 62px;
+            box-sizing: border-box;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg-1);
+            overflow: hidden;
+            cursor: pointer;
+            padding: 0;
+        }
+        #doc-sidebar li.queue-card:hover { background: var(--hover-bg); }
+        .queue-card-bar { width: 4px; flex-shrink: 0; background: var(--accent); }
+        /* Info-Spalte (EHlQV: justifyContent center, gap 2, padding [8,10]). */
+        .queue-card-info {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 2px;
+            padding: 8px 10px;
+            min-width: 0;
+            flex: 1 1 auto;
+        }
+        .queue-card-row1 { display: flex; align-items: center; gap: 6px; min-width: 0; }
+        .queue-card-title {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-1);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            flex: 0 1 auto;
+            min-width: 0;
+        }
+        .queue-card-spacer { flex: 1 1 auto; }
+        /* Fragen-Chip (U6VCv: radius 5, padding [0,5], stroke). Box-Abstand zum "?" vergroessert. */
+        .queue-card-chip {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            font-size: 9px;
+            font-weight: 600;
+            color: var(--text-2);
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            padding: 0 5px;
+            flex-shrink: 0;
+        }
+        .queue-card-chip-q { font-weight: 700; color: var(--text-muted); }
+        /* PRD-006 (Memo 024 Kap 5): Minuten-Chip der Queue-Card (gleiche Formsprache wie .mh-minutes
+           in der Sidebar). Sitzt zwischen Spacer und Fragen-Chip in Zeile 1. */
+        .queue-card-minutes {
+            display: inline-flex;
+            align-items: center;
+            white-space: nowrap;
+            flex-shrink: 0;
+            font-size: 9px;
+            font-weight: 600;
+            color: var(--text-muted);
+            margin-right: 6px;
+        }
+        /* Zeile 2 (8qi4f: "REV-NN · offen" 10px). */
+        .queue-card-row2 { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+        /* PRD-006 (Memo 024 Kap 5): Lifecycle-Status-Label (PRD-004 Modell) hinter der REV-Zeile. */
+        .queue-card-lifecycle { margin-left: 6px; font-weight: 600; color: var(--text-2); }
+        /* Zeile 3 (Z36pN: folder + Namespace + · Datum, 9px). */
+        .queue-card-row3 { display: flex; align-items: center; gap: 6px; font-size: 9px; color: var(--text-muted-2); }
+        .queue-card-folder { font-size: 10px; line-height: 1; flex-shrink: 0; }
+        .queue-card-ns { font-weight: 600; flex-shrink: 0; }
+        .queue-card-date { flex-shrink: 0; }
+
+        /* PRD-002 (Memo 018 Kap 5): queue entries reuse the namespace revision-line markup
+           (.rev-entry, rendered by renderRevEntry). The former .queue-entry/.qe-name/.qe-ns
+           styles were removed — the queue now shares the .rev-entry styling. */
+
+        /* Plans-View content */
+        .plan-block {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            margin-bottom: 32px;
+        }
+
+        .plan-title {
+            color: var(--text-1);
+            font-size: 20px;
+            font-weight: 700;
+            border: 0;
+            padding: 0;
+            margin: 0;
+        }
+
+        /* Plan-URL row */
+        .plan-url-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .plan-url-box {
+            flex: 1 1 auto;
+            background: var(--bg-4);
+            border-radius: 6px;
+            padding: 6px 10px;
+            font-size: 12px;
+            color: var(--text-2);
+            font-family: var(--font-mono);
+            word-break: break-all;
+        }
+
+        .plan-copy-btn {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            color: var(--text-1);
+            cursor: pointer;
+            padding: 6px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-family: inherit;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .plan-copy-btn:hover { border-color: var(--text-muted); }
+
+        .plan-section-label {
+            color: var(--text-muted);
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }
+
+        .memo-tiles {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .memo-tile {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 14px;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .memo-tile .tile-left {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+
+        .memo-tile .tile-name {
+            color: var(--text-1);
+            font-weight: 700;
+            font-size: 13px;
+        }
+
+        .memo-tile .tile-subtitle {
+            color: var(--text-muted);
+            font-size: 11px;
+        }
+
+        .memo-tile .tile-right {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 5px;
+            flex-shrink: 0;
+        }
+
+        .memo-tile .tile-ns-badge {
+            color: var(--text-2);
+            background: var(--bg-4);
+            border-radius: 10px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .memo-tile .tile-status {
+            color: var(--text-muted);
+            font-size: 10px;
+            white-space: nowrap;
+        }
+
+        table.trace-table {
+            display: table;
+            width: 100%;
+            border-collapse: collapse;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+            margin: 0;
+        }
+
+        table.trace-table th,
+        table.trace-table td {
+            border: 0;
+            border-bottom: 1px solid var(--bg-4);
+        }
+
+        table.trace-table thead th {
+            background: var(--bg-4);
+            color: var(--text-muted);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            text-align: left;
+            padding: 8px 12px;
+        }
+
+        table.trace-table thead th.tcol-fix {
+            text-align: center;
+            width: 50px;
+        }
+
+        table.trace-table thead th.tcol-commit {
+            text-align: center;
+            width: 84px;
+        }
+
+        table.trace-table tbody td {
+            padding: 7px 12px;
+            font-size: 11px;
+            vertical-align: middle;
+            text-align: center;
+        }
+
+        table.trace-table tbody td.tcell-strang {
+            text-align: left;
+            color: var(--text-2);
+        }
+
+        table.trace-table tbody tr.row-future {
+            opacity: 0.55;
+        }
+
+        .trace-sym-done { color: var(--text-1); }
+        .trace-sym-progress { color: var(--link); }
+        .trace-sym-pending { color: var(--text-muted-2); }
+
+        .trace-commit {
+            color: var(--text-muted);
+            font-family: var(--font-mono);
+            font-size: 10px;
+        }
+
+        .trace-commit-empty {
+            color: var(--text-muted-2);
+        }
+
+        /* Plan-Popup — memo checkbox rows */
+        .plan-memo-list {
+            max-height: 260px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .plan-ns-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .plan-ns-group > .plan-ns-title {
+            color: var(--text-muted);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            padding: 2px 0;
+        }
+
+        .plan-memo-option {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg-2);
+            cursor: pointer;
+            font-size: 13px;
+            color: var(--text-1);
+        }
+
+        .plan-memo-option:hover {
+            border-color: var(--text-muted);
+        }
+
+        .plan-memo-option .pm-box {
+            font-size: 14px;
+            flex-shrink: 0;
+            color: var(--text-muted);
+        }
+
+        .plan-memo-option.selected {
+            border-color: var(--link-bright);
+        }
+
+        .plan-memo-option.selected .pm-box {
+            color: var(--link-bright);
+        }
+
+        .plan-memo-option .pm-status {
+            color: var(--text-muted);
+            font-size: 11px;
+        }
+
+        /* Non-finalized: greyed out, not selectable */
+        .plan-memo-option.not-final {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .plan-memo-option.not-final:hover {
+            border-color: var(--border);
+        }
+
+        .plan-empty {
+            color: var(--text-muted);
+            font-size: 12px;
+            padding: 8px;
+        }
+
+        /* Transcript indicator: dezentes Wort/Icon, KEIN farbiger Punkt (PRD-007 F14=A) */
+        .transcript-indicator {
+            margin-left: 6px;
+            cursor: pointer;
+            opacity: 0.85;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.3px;
+            color: var(--text-muted-2);
+            flex-shrink: 0;
+        }
+
+        .transcript-indicator:hover {
+            opacity: 1;
+            color: var(--text-2);
+        }
+
+        .transcript-indicator:empty {
+            display: none;
+        }
+
+
+        .t-modal {
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: var(--shadow);
+            z-index: 2000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .t-hidden { display: none !important; }
+
+        .t-modal-content {
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 0;
+            width: 720px;
+            max-width: 90vw;
+            max-height: 90vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Popup header bar (bg var(--bg-4), emoji title allowed here) */
+        .t-modal-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--bg-4);
+            border-bottom: 1px solid var(--border);
+            padding: 14px 18px;
+            flex-shrink: 0;
+        }
+
+        .t-modal-header .t-title {
+            color: var(--text-1);
+            font-size: 15px;
+            font-weight: 700;
+        }
+
+        .t-modal-header .t-header-spacer { flex: 1 1 auto; }
+
+        .t-modal-header .t-close {
+            background: none;
+            border: none;
+            color: var(--text-muted);
+            font-size: 16px;
+            cursor: pointer;
+            padding: 0 4px;
+            line-height: 1;
+        }
+
+        .t-modal-header .t-close:hover { color: var(--text-1); }
+
+        .t-modal-body {
+            padding: 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            overflow-y: auto;
+        }
+
+        .t-hint {
+            font-size: 10px;
+            color: var(--text-muted-2);
+        }
+
+        /* PRD-012 (Memo 011 Kap 4, F16=A): Requirements-Ansicht. Chips + Gruppen-Container.
+           Bewusst KEINE position:fixed / Overlay-Regel hier — das Detail-Popup wiederverwendet
+           ausschliesslich die bestehenden .t-modal*-Klassen. */
+        .req-view { display: flex; flex-direction: column; gap: 16px; }
+        .req-section-title { font-size: 14px; font-weight: 700; color: var(--text-1); }
+        .req-group { display: flex; flex-direction: column; gap: 6px; }
+        .req-group-head { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+        .req-items { display: flex; flex-wrap: wrap; gap: 8px; }
+
+        .req-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 4px 12px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        .req-item:hover { border-color: var(--accent); color: var(--text-1); }
+        .req-item .req-item-id { color: var(--text-muted); font-size: 11px; font-weight: 600; }
+        .req-item .req-item-short { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+        .req-detail-row { display: flex; flex-direction: column; gap: 2px; }
+        .req-detail-label { font-size: 11px; font-weight: 700; color: var(--text-muted); }
+        .req-detail-value { font-size: 13px; color: var(--text-1); }
+
+        /* PRD-010 (Memo 014 Kap 2): Block-Ansicht. Mirrors the .req-* list/card primitives. The block
+           DETAIL popup reuses the shared .t-modal* classes — NO bespoke block modal/position:fixed CSS. */
+        .block-view { display: flex; flex-direction: column; gap: 16px; }
+        .block-section-title { font-size: 14px; font-weight: 700; color: var(--text-1); }
+        .block-items { display: flex; flex-direction: column; gap: 8px; }
+
+        /* PRD-004 (Memo 016 Kap 3): chapter group (A6 one header), parent/child nesting (A1),
+           role badge (A5), effective-requirement chips (A4). */
+        .block-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+        .block-group-header { font-size: 13px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+        .block-children { display: flex; flex-direction: column; gap: 8px; margin-left: 20px; border-left: 2px solid var(--border); padding-left: 12px; }
+        .block-role-badge {
+            background: var(--accent);
+            color: var(--bg-1);
+            border-radius: 8px;
+            padding: 1px 7px;
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+        .block-role-child .block-role-badge { background: var(--text-muted); }
+        .block-req-chip { border-style: dashed; }
+
+        .block-item {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 10px 14px;
+            cursor: pointer;
+        }
+
+        .block-item:hover { border-color: var(--accent); color: var(--text-1); }
+        .block-item .block-item-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+        .block-item .block-item-id { color: var(--text-muted); font-size: 11px; font-weight: 700; }
+        .block-item .block-item-chapter { font-size: 13px; font-weight: 600; }
+        .block-item .block-item-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+        .block-item .block-tag {
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1px 8px;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .block-detail-section { display: flex; flex-direction: column; gap: 2px; }
+        .block-detail-label { font-size: 11px; font-weight: 700; color: var(--text-muted); }
+        .block-detail-value { font-size: 13px; color: var(--text-1); white-space: pre-wrap; }
+
+        /* PRD-014 (Memo 016 Kap 9): shared empty-/error-state component reused by the requirements
+           AND the blocks view (F9). A real labelled box instead of a blank panel or generic line. */
+        .view-empty-state {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: var(--bg-2);
+            border: 1px dashed var(--border);
+            border-radius: 10px;
+            padding: 14px 16px;
+        }
+        .view-empty-head { font-size: 14px; font-weight: 700; color: var(--text-1); }
+        .view-empty-reason { font-size: 12px; color: var(--text-muted); }
+
+        .view-error-state {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            background: var(--bg-2);
+            border: 1px solid var(--danger);
+            border-radius: 10px;
+            padding: 14px 16px;
+        }
+        .view-error-head { font-size: 14px; font-weight: 700; color: var(--danger); }
+        .view-error-reason { font-size: 12px; color: var(--text-1); }
+
+        /* PRD-014 (B9): severity color on a requirement chip — the left border encodes severity so the
+           chips are no longer all identical. Kind badge sits at the chip's tail. */
+        .req-item.req-sev-blocker { border-left: 3px solid var(--danger); }
+        .req-item.req-sev-major { border-left: 3px solid var(--warning); }
+        .req-item.req-sev-warning { border-left: 3px solid var(--warning); }
+        .req-item.req-sev-minor { border-left: 3px solid var(--accent); }
+        .req-item.req-sev-info { border-left: 3px solid var(--border); }
+        .req-item .req-item-kind {
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0 6px;
+            font-size: 9px;
+            font-weight: 700;
+            letter-spacing: 0.04em;
+            color: var(--text-muted);
+        }
+
+        /* PRD-014 (B8): consistency badge — expected-from-blocks vs resolved. */
+        .req-consistency { font-size: 12px; padding: 4px 0; }
+        .req-consistency-ok { color: var(--accent-bright); }
+        .req-consistency-mismatch { color: var(--warning); }
+
+        /* PRD-014 (A10): block parse errors surfaced under the blocks list. */
+        .block-parse-errors {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            border: 1px solid var(--warning);
+            border-radius: 8px;
+            padding: 8px 12px;
+        }
+        .block-parse-error { font-size: 12px; color: var(--warning); }
+
+        /* PRD-014 (B6): drilldown link from the block modal to the requirements view. */
+        .block-req-drilldown {
+            display: inline-block;
+            margin-top: 6px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--accent-bright);
+            cursor: pointer;
+            text-decoration: none;
+        }
+        .block-req-drilldown:hover { text-decoration: underline; }
+
+        /* Tab bar inside transcript modal (Tab 1 / Tab 2) */
+        .t-tabs {
+            display: flex;
+            gap: 4px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 4px;
+        }
+
+        .t-tab {
+            background: none;
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            padding: 8px 12px;
+            font-size: 13px;
+            font-family: inherit;
+            font-weight: 600;
+        }
+
+        .t-tab:hover { color: var(--text-1); }
+
+        .t-tab.active {
+            color: var(--text-1);
+            border-bottom-color: var(--accent);
+        }
+
+        .t-tab-panel.t-hidden { display: none !important; }
+
+        #t2-name {
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-family: inherit;
+            font-size: 13px;
+            width: 100%;
+        }
+
+        /* PRD-008 (Memo 022 Kap 6): gemeinsame Transcript-Textarea-Klasse fuer BEIDE Tabs
+           ("neues Memo" #t2-content + "hinzufuegen" #ta-content). Frueher hatte nur #t2-content
+           eine eigene 170px-Regel; #ta-content fiel auf den kleinen textarea-Default zurueck
+           (winzig/verschoben). Jetzt tragen beide IDs dieselbe Optik/Hoehe. */
+        #t2-content,
+        #ta-content {
+            width: 100%;
+            height: 170px;
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 13px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+
+        /* PRD-008 (Memo 022 Kap 6): Dark-Theme-Styling fuer alle <select> im Transcript-Modal
+           (#t2-namespace, #ta-namespace, #ta-memo). Ohne diese Regel erschienen die Dropdowns im
+           hellen Browser-Default. appearance:none + eigenes Caret. Konsistent zu den Inputs. */
+        .t-modal-body select {
+            width: 100%;
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 28px 8px 10px;
+            font-family: inherit;
+            font-size: 13px;
+            box-sizing: border-box;
+            cursor: pointer;
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path d='M1 1l4 4 4-4' stroke='%238b949e' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+            background-repeat: no-repeat;
+            background-position: right 10px center;
+        }
+
+        .t-modal-body select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* Field row — three fields side by side */
+        .t-field-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .t-field {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            flex: 1 1 0;
+            min-width: 0;
+        }
+
+        .t-field-label {
+            font-size: 10px;
+            color: var(--text-muted-2);
+        }
+
+        .t-meta input,
+        .t-field input {
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-family: inherit;
+            font-size: 13px;
+            width: 100%;
+        }
+
+        .t-field-label-strong {
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--text-1);
+        }
+
+        #t-content {
+            width: 100%;
+            height: 240px;
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 13px;
+            resize: vertical;
+        }
+
+        .t-info {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .t-error {
+            background: #3a1f1f;
+            color: var(--danger);
+            border: 1px solid var(--danger);
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 12px;
+        }
+
+        /* PRD-002 (Memo 022, Kap 3): success quittance with the saved transcript URL. */
+        .pp-success {
+            background: #1f3a23;
+            color: var(--success, #3ddc84);
+            border: 1px solid var(--success, #3ddc84);
+            border-radius: 6px;
+            padding: 6px 8px;
+            font-size: 12px;
+            word-break: break-all;
+        }
+        .pp-success a { color: inherit; text-decoration: underline; }
+
+        /* URL box inside popup */
+        .t-url-box {
+            background: var(--bg-4);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 12px;
+            color: var(--text-muted);
+            word-break: break-all;
+        }
+
+        .t-url-box.has-url { color: var(--text-2); }
+
+        /* Footer actions (justify end) */
+        .t-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+
+        /* PRD-007 (#44): word/minute counter pinned left of the save button. */
+        .t-wordcount {
+            margin-right: auto;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .t-btn-secondary {
+            background: var(--bg-2);
+            color: var(--text-1);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .t-btn-secondary:hover { border-color: var(--text-muted); }
+
+        .t-btn-primary {
+            background: var(--accent);
+            color: var(--text-1);
+            border: 1px solid var(--accent);
+            border-radius: 6px;
+            padding: 8px 16px;
+            font-size: 13px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+        }
+
+        .t-btn-primary:hover { background: var(--accent); }
+
+        .t-btn-primary:disabled {
+            background: var(--bg-4);
+            border-color: var(--border);
+            color: var(--text-muted-2);
+            cursor: not-allowed;
+        }
+
+        .t-btn-primary:disabled:hover { background: var(--bg-4); }
+
+        .t-footnote {
+            font-size: 9px;
+            color: var(--text-muted-2);
+        }
+
+        /* PRD-008 (Kap 9.5): "Prompt bearbeiten"-Popup — combined sections + footer (Frame iFrSa). */
+        #t-panel-prompt { display: flex; flex-direction: column; gap: 12px; }
+        .pp-section { display: flex; flex-direction: column; gap: 8px; }
+        .pp-section-label {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+        }
+        .pp-field-row { display: flex; gap: 8px; }
+        .pp-field-row .t-field { flex: 1 1 auto; min-width: 0; }
+        #pp-content {
+            width: 100%;
+            min-height: 90px;
+            resize: vertical;
+            font-family: inherit;
+            font-size: 13px;
+            padding: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-2);
+            color: var(--text-1);
+            box-sizing: border-box;
+        }
+        .pp-tcount { font-size: 10px; font-weight: 700; color: var(--text-2); }
+        .pp-questions-list { display: flex; flex-direction: column; gap: 8px; }
+        .pp-question {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            background: var(--bg-2);
+            border-radius: 8px;
+            padding: 10px;
+        }
+        .pp-question-title { font-size: 11px; font-weight: 700; color: var(--text-1); }
+        .pp-question-input {
+            width: 100%;
+            font-family: inherit;
+            font-size: 12px;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--bg-1);
+            color: var(--text-1);
+            box-sizing: border-box;
+        }
+        .pp-questions-empty { font-size: 11px; color: var(--text-muted); font-style: italic; }
+        .pp-footer {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding-top: 6px;
+        }
+        .pp-footer-note { flex: 1 1 auto; font-size: 10px; font-style: italic; color: var(--text-muted); }
+
+        .t-attach-row {
+            color: var(--text-muted);
+            font-size: 13px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 10px;
+            background: var(--bg-2);
+        }
+
+        .t-saved-state {
+            margin-top: 4px;
+        }
+
+        .t-url {
+            display: block;
+            background: var(--bg-4);
+            padding: 8px 10px;
+            border-radius: 6px;
+            word-break: break-all;
+            font-size: 12px;
+            margin: 8px 0;
+            color: var(--text-2);
+        }
+
+        /* PRD-032: inline copy icon sits next to the URL, the <code> keeps its box. */
+        .t-url-row {
+            display: flex;
+            align-items: flex-start;
+            gap: 6px;
+        }
+
+        .t-url-row .t-url {
+            flex: 1;
+        }
+
+        .t-copy-inline {
+            flex: 0 0 auto;
+            margin-top: 8px;
+            padding: 4px 6px;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-muted);
+            font-size: 12px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .t-copy-inline:hover {
+            color: var(--text-1);
+        }
+
+        /* PRD-031: unobtrusive hint that the URL was auto-copied on save. */
+        .t-autocopy-hint {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin: 2px 0 0;
+        }
+
+        #toc-sidebar {
+            position: sticky;
+            top: 52px;
+            width: 240px;
+            min-width: 240px;
+            height: calc( 100vh - 52px );
+            overflow-y: auto;
+            padding: 16px;
+            background: var(--bg-0);
+            border-left: 1px solid var(--border);
+            font-size: 13px;
+        }
+
+        /* TOC label "Auf dieser Seite" */
+        #toc-label {
+            color: var(--text-muted-2);
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            padding: 0 8px 10px;
+            margin-bottom: 4px;
+        }
+
+        #toc-sidebar ul {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        /* PRD-009 #3: list ALL topics, no truncation / no "…" — long titles wrap. */
+        #toc-sidebar li {
+            padding: 4px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            color: var(--text-muted);
+            font-size: 12px;
+            white-space: normal;
+            overflow-wrap: anywhere;
+            line-height: 1.35;
+        }
+
+        #toc-sidebar li:hover {
+            color: var(--text-1);
+        }
+
+        /* PRD-015 (D11): h3 entries are nested under their h2 — indent + slightly smaller. */
+        #toc-sidebar li.toc-h3 {
+            padding-left: 20px;
+            font-size: 11px;
+        }
+
+        #toc-sidebar li.toc-active {
+            color: var(--text-1);
+            font-weight: 700;
+        }
+
+        .toc-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--accent-bright);
+            margin-right: 6px;
+            flex-shrink: 0;
+        }
+
+        /* PRD-009 (F11): prominent, scannable "Offene Fragen" anchor in the content. */
+        #content .offene-fragen-anchor {
+            scroll-margin-top: 120px;
+            border-left: 4px solid var(--warning);
+            padding-left: 10px;
+            color: var(--warning);
+        }
+
+        /* PRD-009 (Kap 19, Phase 6): Vorwort placeholder section, hidden while empty. */
+        #content .vorwort-section {
+            scroll-margin-top: 120px;
+        }
+
+        #content .vorwort-section.vorwort-empty:empty {
+            display: none;
+        }
+
+        /* PRD-014 (Kap 19): persisted Claude-Vorwort, shown above the open questions. */
+        #content .vorwort-section .vorwort-body {
+            border-left: 4px solid var(--accent);
+            background: var(--bg-2);
+            padding: var(--sp-3) var(--sp-4);
+            margin: var(--sp-4) 0;
+            border-radius: 6px;
+            color: var(--text-2);
+        }
+
+        #content .vorwort-section .vorwort-body > :first-child {
+            margin-top: 0;
+        }
+
+        #content .vorwort-section .vorwort-body > :last-child {
+            margin-bottom: 0;
+        }
+
+        /* PRD-013 (Kap 15): interactive question widgets (single + multi). */
+        #question-widgets {
+            margin: var(--sp-5) 0;
+            display: flex;
+            flex-direction: column;
+            gap: var(--sp-4);
+        }
+
+        #question-widgets:empty { display: none; }
+
+        .qw-card {
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg-2);
+            padding: 16px 18px;
+            scroll-margin-top: 120px;
+        }
+
+        /* PRD-001 (Memo 024 Kap 1): visible parse warnings — the count-vs-render banner and the
+           per-question fallback notice. Both use the shared warning colour so they read as a
+           deliberate alert, never a silent gap. */
+        .qw-parse-warn,
+        .qw-fallback-warn {
+            color: var(--warning);
+            background: var(--warn-bg);
+            border: 1px solid var(--warning);
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        .qw-fallback {
+            border: 1px dashed var(--warning);
+            border-radius: 10px;
+            background: var(--bg-2);
+            padding: 16px 18px;
+            scroll-margin-top: 120px;
+        }
+
+        .qw-card.qw-active {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 1px var(--accent);
+        }
+
+        .qw-card.qw-collapsed .qw-body { display: none; }
+
+        .qw-head {
+            display: flex;
+            align-items: center;
+            gap: var(--sp-2);
+            cursor: pointer;
+        }
+
+        .qw-id {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .qw-title {
+            font-weight: 600;
+            color: var(--text-1);
+            flex: 1 1 auto;
+        }
+
+        .qw-badge {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            padding: 2px 8px;
+            border-radius: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg-3);
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .qw-toggle {
+            font-family: var(--font-mono);
+            font-size: 16px;
+            font-weight: 700;
+            line-height: 1;
+            color: var(--text-2);
+            flex-shrink: 0;
+        }
+
+        .qw-body { margin-top: var(--sp-3); }
+
+        /* PRD-023 (Kap 11.4): Hintergrund / Frage / KI-Empfehlung are three labelled,
+           visually separated blocks. Each block carries an uppercase label and a clear
+           gap + subtle separator so they never read as one continuous paragraph. */
+        .qw-hintergrund {
+            font-size: 13px;
+            color: var(--text-muted);
+            margin-bottom: var(--sp-3);
+            padding-bottom: var(--sp-2);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .qw-hintergrund-label,
+        .qw-frage-label,
+        .qw-ai-label {
+            display: block;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+            margin-bottom: var(--sp-1);
+        }
+
+        .qw-hintergrund-label {
+            color: var(--text-muted-2);
+        }
+
+        .qw-frage {
+            color: var(--text-2);
+            margin-bottom: var(--sp-3);
+            padding-bottom: var(--sp-2);
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .qw-frage-label {
+            color: var(--text-muted-2);
+        }
+
+        .qw-frage-text {
+            display: block;
+            color: var(--text-1);
+        }
+
+        .qw-options {
+            display: flex;
+            flex-direction: column;
+            gap: var(--sp-1);
+            max-height: 260px;
+            overflow-y: auto;
+            padding-right: var(--sp-1);
+        }
+
+        .qw-option {
+            display: flex;
+            align-items: flex-start;
+            gap: var(--sp-2);
+            padding: var(--sp-2);
+            border: 1px solid transparent;
+            border-radius: 6px;
+            cursor: pointer;
+            color: var(--text-2);
+        }
+
+        .qw-option:hover { background: var(--bg-3); }
+
+        .qw-option.qw-focus {
+            border-color: var(--accent);
+            background: var(--bg-3);
+        }
+
+        .qw-option.qw-ai {
+            color: var(--text-muted);
+        }
+
+        .qw-option.qw-selected {
+            color: var(--text-1);
+            border-color: var(--border-subtle);
+            background: var(--bg-3);
+        }
+
+        .qw-marker {
+            font-family: var(--font-mono);
+            flex-shrink: 0;
+            width: 1.4em;
+            text-align: center;
+            color: var(--text-muted);
+        }
+
+        .qw-option.qw-selected .qw-marker { color: var(--accent); }
+
+        .qw-option-key {
+            font-family: var(--font-mono);
+            color: var(--text-muted);
+            flex-shrink: 0;
+        }
+
+        .qw-ai-hint {
+            font-size: 12px;
+            color: var(--text-muted);
+            font-style: italic;
+        }
+
+        .qw-ai-line {
+            margin-top: var(--sp-3);
+            padding-top: var(--sp-2);
+            border-top: 1px solid var(--border-subtle);
+            color: var(--accent-bright);
+            font-size: 12px;
+        }
+
+        .qw-ai-label {
+            color: var(--accent);
+        }
+
+        .qw-ai-text {
+            display: block;
+            color: var(--accent-bright);
+        }
+
+        .qw-custom-row {
+            display: flex;
+            gap: var(--sp-2);
+            margin-top: var(--sp-2);
+        }
+
+        .qw-custom-input {
+            flex: 1 1 auto;
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-1);
+            padding: var(--sp-2);
+            font-family: var(--font-sans);
+            font-size: 13px;
+        }
+
+        .qw-custom-input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        .qw-footer {
+            display: flex;
+            align-items: center;
+            gap: var(--sp-3);
+            margin-top: var(--sp-3);
+        }
+
+        .qw-add-btn {
+            background: var(--accent);
+            color: var(--text-on-accent);
+            border: none;
+            border-radius: 6px;
+            padding: 10px 20px;
+            font-family: var(--font-sans);
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .qw-add-btn:hover { background: var(--accent-bright); }
+
+        /* PRD-026 (Kap 12.1): visible "hinzugefügt" quittance after machine injection.
+           Distinct from the active state so the user sees the answer was accepted. */
+        .qw-add-btn--done {
+            background: var(--ok, #2e7d32);
+            cursor: default;
+        }
+
+        .qw-add-btn--done:hover { background: var(--ok, #2e7d32); }
+
+        .qw-secondary-btn {
+            background: transparent;
+            color: var(--text-muted);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: var(--sp-2) var(--sp-3);
+            font-family: var(--font-sans);
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .qw-secondary-btn:hover {
+            color: var(--text-1);
+            border-color: var(--border-subtle);
+        }
+
+        .qw-note {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        /* PRD-008 (Memo 024 Kap 7): the answers-only bar lives in Sticky-Header Zone 2. It is a
+           horizontal action row consistent with the Zone-2 prompt-statuszeile spacing. The bar
+           sits below the existing two Zone-2 rows, separated by a thin divider so the actions read
+           as a distinct interaction block. The Zone-2 fill (var(--bg-2)) + top-divider already come
+           from .hdr-zone-2; the bar only adds its own internal layout. */
+        .qw-answers-only-bar {
+            display: flex;
+            align-items: center;
+            gap: var(--sp-3);
+            flex-wrap: wrap;
+        }
+
+        .qw-answers-only-bar.qw-answers-only-bar--header {
+            margin-top: 9px;
+            padding-top: 9px;
+            border-top: 1px solid var(--border);
+        }
+
+        /* PRD-008 (AC-05): primary action = "Fertig" (accent), secondary = "ohne Transcript
+           speichern" (outline). Both stay legible against the Zone-2 fill. */
+        .qw-primary-btn {
+            background: var(--accent);
+            color: var(--text-on-accent);
+            border: 1px solid var(--accent);
+            border-radius: 6px;
+            padding: var(--sp-2) var(--sp-3);
+            font-family: var(--font-sans);
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
+        }
+
+        .qw-primary-btn:hover { background: var(--accent-bright); border-color: var(--accent-bright); }
+
+        /* PRD-006 (Kap 9, AC-05): the reversible "Fertig ✓" done-state reads visibly different. */
+        .qw-answers-only-bar.qw-fertig-done .qw-primary-btn {
+            background: var(--ok, #2e7d32);
+            border-color: var(--ok, #2e7d32);
+        }
+
+        .qw-answers-only-bar .qw-secondary-btn:disabled {
+            opacity: 0.5;
+            cursor: default;
+        }
+
+        .qw-answers-only-status {
+            font-size: 12px;
+            color: var(--text-2);
+            white-space: nowrap;
+        }
+
+        .qw-topics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--sp-1);
+            margin-top: var(--sp-2);
+        }
+
+        .qw-topic-link {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--link);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 1px 8px;
+            cursor: pointer;
+        }
+
+        .qw-topic-link.qw-focus {
+            border-color: var(--accent);
+            color: var(--link-bright);
+        }
+
+        /* PRD-025 (Kap 11.6): a topic chip with no jump target shows no link cursor and
+           reads as inert — cursor must match actual jumpability. */
+        .qw-topic-link.qw-topic-dead {
+            cursor: default;
+            color: var(--text-muted);
+        }
+
+        @media ( max-width: 1100px ) {
+            #toc-sidebar { display: none; }
+        }
+
+        @media ( max-width: 900px ) {
+            #doc-sidebar { display: none; }
+            #layout { display: block; }
+        }
+
+        .mermaid-error {
+            color: var(--danger);
+            border: 1px solid var(--danger);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            white-space: pre-wrap;
+            text-align: left;
+            background: #1a0d0d;
+        }
+
+        /* PRD-010: original mermaid source shown below the error when render fails. */
+        .mermaid-error-source {
+            border: 1px solid var(--border, #333);
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            margin: -6px 0 0;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            white-space: pre-wrap;
+            text-align: left;
+            overflow-x: auto;
+            background: #0d0d12;
+            color: var(--text, #ddd);
+        }
+
+        /* PRD-007 (D1): inline Block-Card replacing the raw block-meta JSON code block in prose. */
+        .block-meta-card {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            border: 1px solid var(--border, #333);
+            border-left: 3px solid var(--accent, #7c8cff);
+            border-radius: 6px;
+            padding: 8px 12px;
+            margin: 12px 0;
+            background: var(--bg-elev, #16161c);
+            font-size: 12px;
+        }
+
+        .block-meta-card .block-meta-label {
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-muted, #8b949e);
+        }
+
+        .block-meta-card .block-meta-id {
+            font-family: var(--font-mono);
+            font-weight: 700;
+            color: var(--accent, #7c8cff);
+        }
+
+        .block-meta-card .block-meta-chip {
+            font-family: var(--font-mono);
+            color: var(--text, #ddd);
+        }
+
+        table {
+            border-spacing: 0;
+            border-collapse: collapse;
+            margin-top: 0;
+            margin-bottom: 16px;
+            display: block;
+            width: max-content;
+            max-width: 100%;
+            overflow: auto;
+        }
+
+        th, td {
+            border: 1px solid var(--border);
+            padding: 6px 13px;
+        }
+
+        th {
+            font-weight: 600;
+            background: transparent;
+        }
+
+        tr { background: var(--bg-1); border-top: 1px solid var(--bg-4); }
+        tr:nth-child(2n) { background: var(--bg-2); }
+
+        ul, ol {
+            margin-top: 0;
+            margin-bottom: 16px;
+            padding-left: 2em;
+        }
+
+        li { margin-top: 0.25em; }
+
+        li + li { margin-top: 0.25em; }
+
+        ul ul, ul ol, ol ul, ol ol {
+            margin-top: 0;
+            margin-bottom: 0;
+        }
+
+        hr {
+            height: 0.25em;
+            padding: 0;
+            margin: 24px 0;
+            background-color: var(--border);
+            border: 0;
+        }
+
+        img { max-width: 100%; border-radius: 6px; }
+
+        .mermaid {
+            background: var(--text-on-accent);
+            border-radius: 6px;
+            padding: 16px;
+            margin: 0 0 16px 0;
+            text-align: center;
+            cursor: zoom-in;
+            transition: opacity 0.15s;
+        }
+
+        .mermaid:hover { opacity: 0.85; }
+
+        #mermaid-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: var(--overlay);
+            align-items: center;
+            justify-content: center;
+            cursor: zoom-out;
+        }
+
+        #mermaid-modal.open { display: flex; }
+
+        #mermaid-modal-inner {
+            background: var(--text-on-accent);
+            border-radius: 10px;
+            padding: 40px 32px 32px;
+            width: 92vw;
+            height: 88vh;
+            overflow: auto;
+            cursor: default;
+            position: relative;
+            box-shadow: 0 24px 64px var(--shadow);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #mermaid-modal-svg {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #mermaid-modal-inner svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        #mermaid-modal-close {
+            position: absolute;
+            top: 10px;
+            right: 12px;
+            background: none;
+            border: none;
+            font-size: 22px;
+            line-height: 1;
+            color: var(--text-muted-2);
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        #mermaid-modal-close:hover { background: #d0d7de; color: #24292f; }
+
+        input[type="checkbox"] {
+            margin: 0 0.35em 0.25em -1.4em;
+            vertical-align: middle;
+        }
+
+        .task-list-item { list-style-type: none; }

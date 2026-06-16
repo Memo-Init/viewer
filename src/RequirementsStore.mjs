@@ -85,17 +85,20 @@ class RequirementsStore {
     }
 
 
-    // Read a persisted eval set (sets/<memoName>.set.json). Returns { status, set } or
-    // { status: 'missing', set: null } when the memo has no recorded set (benign).
+    // Read a persisted eval set (sets/<memoName>.set.json). Returns { status, set, setPresent }.
+    // PRD-005 (Memo 016 Kap 4, B2): `setPresent` distinguishes a MISSING set file (no
+    // memo-NNN.set.json on disk) from a set that merely resolves to zero requirements. A missing
+    // file is { status: 'missing', set: null, setPresent: false }; a present-but-empty set is
+    // { status: 'ok', set: {...ids:[]}, setPresent: true } — the view renders different copy.
     static async memoSet( { requirementsDir, memoName } ) {
         const { setsDir } = RequirementsStore.paths( { requirementsDir } )
         const set = await RequirementsStore.#readJson( { filePath: join( setsDir, `${ memoName }.set.json` ) } )
 
         if( set === null || Array.isArray( set[ 'ids' ] ) === false ) {
-            return { status: 'missing', set: null }
+            return { status: 'missing', set: null, setPresent: false }
         }
 
-        return { status: 'ok', set }
+        return { status: 'ok', set, setPresent: true }
     }
 
 
@@ -129,7 +132,7 @@ class RequirementsStore {
     // (they cannot be rendered without a body) but counted as `missingIds`.
     static async aggregate( { requirementsDir, memoName } ) {
         const all = await RequirementsStore.loadAll( { requirementsDir } )
-        const { set } = await RequirementsStore.memoSet( { requirementsDir, memoName } )
+        const { set, setPresent } = await RequirementsStore.memoSet( { requirementsDir, memoName } )
 
         const byId = {}
         all[ 'requirements' ].forEach( ( requirement ) => { byId[ requirement[ 'id' ] ] = requirement } )
@@ -142,13 +145,18 @@ class RequirementsStore {
 
         const groups = RequirementsStore.#groupByRepoScope( { requirements: resolved } )
 
+        // PRD-005 (Memo 016 Kap 4, B2/B5): `setPresent` lets the view tell a missing eval set apart
+        // from an empty one. `knownIds` is the full store id index (REQ-NNN) so the route can lint
+        // block requirement names (req-*) against the real store namespace (B3/B5).
         return {
             status: 'ok',
             memoName,
             groups,
             aggregate: resolved,
             count: resolved.length,
-            missingIds
+            missingIds,
+            setPresent,
+            knownIds: all[ 'requirements' ].map( ( requirement ) => requirement[ 'id' ] )
         }
     }
 

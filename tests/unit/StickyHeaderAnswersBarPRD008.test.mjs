@@ -15,17 +15,18 @@ describe( 'PRD-008 — Sticky-Header answers-only bar (Zone 2)', () => {
 
 
     beforeAll( async () => {
+        // PRD-010 (Memo 016, F1): CSS moved to src/public/app.css. PRD-011 (Memo 016, F1/F2): the
+        // inline client <script> was extracted into src/public/app.client.mjs (already runtime form).
+        // Read the client file directly for the emitted script; concat .mjs + CSS for source greps.
         const here = dirname( fileURLToPath( import.meta.url ) )
         const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
-        source = await readFile( sourcePath, 'utf8' )
+        const cssPath = join( here, '..', '..', 'src', 'public', 'app.css' )
+        const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+        const mjsSource = await readFile( sourcePath, 'utf8' )
+        const cssSource = await readFile( cssPath, 'utf8' )
 
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-
-        // eslint-disable-next-line no-new-func — controlled, escape-faithful, no interpolation.
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        emittedScript = await readFile( clientPath, 'utf8' )
+        source = mjsSource + '\n' + cssSource
     } )
 
 

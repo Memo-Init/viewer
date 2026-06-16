@@ -17,23 +17,13 @@ describe( 'Question widget render — Phase 5 (Memo 016 Kap 11)', () => {
 
 
     beforeAll( async () => {
+        // PRD-011 (Memo 016, F1/F2): the inline client <script> was extracted to
+        // src/public/app.client.mjs, which is already the runtime-emitted form (the template-literal
+        // escapes were collapsed during extraction, so `\(` / `\s` are single-backslash exactly as a
+        // browser sees them). Reading it directly gives the real browser string — no slice needed.
         const here = dirname( fileURLToPath( import.meta.url ) )
-        const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
-        const source = await readFile( sourcePath, 'utf8' )
-
-        // The inline app script sits between the last "<script>" that is NOT a CDN include
-        // and its closing "</script>". The widget functions carry no ${} interpolation, so
-        // evaluating the raw slice as a template literal faithfully applies backslash
-        // collapsing exactly as production does — giving the real browser string.
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-
-        expect( rawSlice.includes( '${' ) ).toBe( false )
-
-        // eslint-disable-next-line no-new-func — controlled, no interpolation, escape-faithful.
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+        emittedScript = await readFile( clientPath, 'utf8' )
     } )
 
 

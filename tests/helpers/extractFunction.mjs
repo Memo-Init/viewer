@@ -15,17 +15,27 @@ async function readMemoViewSource() {
 }
 
 
-// The browser script lives inside a template literal in MemoView.mjs, so escapes like
-// `\\(` / `\\n` are doubled in the raw file. Reconstruct the emitted runtime script
-// (same approach as SidebarConformance.test.mjs) before extracting any function from it.
-async function readEmittedScript() {
-    const source = await readMemoViewSource()
-    const open = source.lastIndexOf( '<script>' )
-    const close = source.indexOf( '</script>', open )
-    const rawSlice = source.slice( open + '<script>'.length, close )
-    const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
+// PRD-010 (Memo 016, F1): the app CSS was extracted from the inline <style> block of MemoView.mjs
+// into src/public/app.css. Tests that assert on CSS rules must read this stylesheet rather than the
+// .mjs source. Returns the raw stylesheet text (byte-identical to the formerly inline CSS).
+async function readMemoViewStyles() {
+    const here = dirname( fileURLToPath( import.meta.url ) )
+    const cssPath = join( here, '..', '..', 'src', 'public', 'app.css' )
 
-    return toRuntime()
+    return readFile( cssPath, 'utf8' )
+}
+
+
+// PRD-011 (Memo 016, F1/F2): the big inline client <script> block was extracted from MemoView.mjs
+// into src/public/app.client.mjs and is served by the /app.client.mjs static route as a classic
+// script. The extracted file is already the runtime-emitted form (the template-literal escapes were
+// collapsed during extraction, so `\\(` / `\\n` are now single-backslash exactly as a browser sees
+// them). Reading it directly gives the runtime script — no slice/re-evaluation needed.
+async function readEmittedScript() {
+    const here = dirname( fileURLToPath( import.meta.url ) )
+    const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+
+    return readFile( clientPath, 'utf8' )
 }
 
 
@@ -74,4 +84,4 @@ async function extractFunctions( names ) {
 }
 
 
-export { extractFunctions, readMemoViewSource }
+export { extractFunctions, readMemoViewSource, readMemoViewStyles }

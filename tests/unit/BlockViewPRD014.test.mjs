@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals'
+import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 
-import { extractFunctions, readMemoViewSource } from '../helpers/extractFunction.mjs'
+import { extractFunctions, readMemoViewSource, readMemoViewStyles } from '../helpers/extractFunction.mjs'
 import { BlockMeta } from '../../src/BlockMeta.mjs'
 
 
@@ -94,15 +97,24 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
 
 
     beforeAll( async () => {
-        source = await readMemoViewSource()
+        // PRD-010 (Memo 016, F1): CSS moved to src/public/app.css. PRD-011 (Memo 016, F1/F2): the
+        // inline client <script> was extracted into src/public/app.client.mjs (already runtime form).
+        // emittedScript reads the client file directly; source concats .mjs + CSS + client so both
+        // server-side route greps AND client render-function greps resolve.
+        const here = dirname( fileURLToPath( import.meta.url ) )
+        const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+        const mjsSource = await readMemoViewSource()
+        const cssSource = await readMemoViewStyles()
+        const clientSource = await readFile( clientPath, 'utf8' )
 
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        emittedScript = clientSource
+        source = mjsSource + '\n' + cssSource + '\n' + clientSource
 
         fns = await extractFunctions( [
+            'partitionBlocks',
+            'blockChildHook',
+            'blocksEmptyState',
+            'buildEmptyState',
             'buildBlockItem',
             'renderBlockView',
             'openBlockModal',
@@ -153,7 +165,8 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
             topics: [ 'T014' ]
         } )
 
-        expect( item.className ).toBe( 'block-item' )
+        // PRD-004 (A5): the card now also carries a role class (block-role-parent/-child).
+        expect( item._classes.has( 'block-item' ) ).toBe( true )
         expect( item.getAttribute( 'data-block-id' ) ).toBe( 'B001' )
         expect( /^B\d{3}$/.test( item.getAttribute( 'data-block-id' ) ) ).toBe( true )
 

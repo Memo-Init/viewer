@@ -21,18 +21,8 @@ describe( 'Question widget state — PRD-006 (Memo 018 Kap 9)', () => {
 
     beforeAll( async () => {
         const here = dirname( fileURLToPath( import.meta.url ) )
-        const sourcePath = join( here, '..', '..', 'src', 'MemoView.mjs' )
-        const source = await readFile( sourcePath, 'utf8' )
-
-        const open = source.lastIndexOf( '<script>' )
-        const close = source.indexOf( '</script>', open )
-        const rawSlice = source.slice( open + '<script>'.length, close )
-
-        expect( rawSlice.includes( '${' ) ).toBe( false )
-
-        // eslint-disable-next-line no-new-func — controlled, escape-faithful, no interpolation.
-        const toRuntime = new Function( 'return `' + rawSlice.replace( /`/g, '\\`' ) + '`' )
-        emittedScript = toRuntime()
+        const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
+        emittedScript = await readFile( clientPath, 'utf8' )
     } )
 
 

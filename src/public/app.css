@@ -782,7 +782,12 @@
         /* PRD-007 (Memo 022 Kap 5): kleiner Diff-Button neben der Zone-1-Pill. Kein margin-left
            mehr — .z1-line1 setzt bereits gap: 12px. Optisch an die Pill angeglichen (klein,
            kompakt, nicht voll-breit). Toggle-Optik (hover/active) bleibt erhalten. */
-        #diff-toggle {
+        /* Memo 016 follow-up: the content-view toggles share the #diff-toggle pill look so
+           Diff / Requirements / Blöcke read as one consistent control group (they were raw
+           default-browser buttons before — unstyled white boxes that broke the dark theme). */
+        #diff-toggle,
+        #req-view-toggle,
+        #block-view-toggle {
             background: var(--bg-3);
             border: 1px solid var(--text-muted);
             color: var(--text-1);
@@ -796,8 +801,16 @@
             flex-shrink: 0;
         }
 
-        #diff-toggle:hover { color: var(--text-1); border-color: var(--accent); background: var(--bg-4); }
-        #diff-toggle.active { color: var(--accent-bright); border-color: var(--accent-bright); background: var(--diff-add-bg); }
+        #req-view-toggle,
+        #block-view-toggle { margin-left: 6px; }
+
+        #diff-toggle:hover,
+        #req-view-toggle:hover,
+        #block-view-toggle:hover { color: var(--text-1); border-color: var(--accent); background: var(--bg-4); }
+
+        #diff-toggle.active,
+        #req-view-toggle.active,
+        #block-view-toggle.active { color: var(--accent-bright); border-color: var(--accent-bright); background: var(--diff-add-bg); }
 
         /* Memo 016 P3 (PRD-013): same compact button look as #diff-toggle; nowrap +
            flex-shrink:0 so the label is never squeezed into a tall narrow box. */

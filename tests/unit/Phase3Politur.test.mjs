@@ -123,7 +123,10 @@ describe( 'Memo 022 Phase 3 — Feinschliff', () => {
         } )
 
         it( 'AC-5: #diff-toggle CSS is compact (no full-width), margin-left removed', () => {
-            const block = source.slice( source.indexOf( '#diff-toggle {' ), source.indexOf( '#diff-toggle:hover' ) )
+            // Memo 016 follow-up: #diff-toggle now shares its base rule with the view toggles
+            // (#diff-toggle, #req-view-toggle, #block-view-toggle { ... }) — slice from the grouped
+            // selector start. Intent unchanged: the diff-toggle itself carries no margin-left: 8px.
+            const block = source.slice( source.indexOf( '#diff-toggle,' ), source.indexOf( '#diff-toggle:hover' ) )
             expect( block.includes( 'margin-left: 8px' ) ).toBe( false )
             expect( /font-size:\s*10px/.test( block ) ).toBe( true )
             expect( /flex-shrink:\s*0/.test( block ) ).toBe( true )

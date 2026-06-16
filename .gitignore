@@ -5,6 +5,8 @@ coverage/
 # NEVER written to the user home — and never committed (re-created per test run).
 .test-home/
 .test-tmp/
+# Memo working artifacts — local-only, never committed in the viewer repo.
+.memo/
 tests/manual/test-results/
 tests/manual/mermaid-error-collection/extracted/
 # PRD-004 (Memo 022 Kap 8): the root .gitignore ignores every "data/" dir broadly. Un-ignore the

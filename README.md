@@ -37,6 +37,9 @@ memo-view .memo/004-example/revisions/
   from one local server on port 3333.
 - **Mermaid-SVG rendering** — fenced `mermaid` blocks are rendered to SVG, not
   left as code.
+- **Scientific diagrams (Vega-Lite)** — fenced `vega-lite` blocks render
+  statistical charts (line, bar, boxplot, median layers) from an inline JSON
+  spec. See [Scientific diagrams](#scientific-diagrams-vega-lite).
 - **Deterministic question format** — the `questions-json` schema renders
   multiple-choice and single questions consistently across documents.
 - **Auto-refresh** — a WebSocket channel pushes updates to the browser as files
@@ -49,11 +52,82 @@ memo-view .memo/004-example/revisions/
 - [memo-init / viewer](#memo-init--viewer)
   - [Quickstart](#quickstart)
   - [Features](#features)
+  - [Scientific diagrams (Vega-Lite)](#scientific-diagrams-vega-lite)
   - [Methods](#methods)
     - [.start()](#start)
     - [.startDirectory()](#startdirectory)
   - [Contributing](#contributing)
   - [License](#license)
+
+## Scientific diagrams (Vega-Lite)
+
+To put a statistical chart in a memo, write a fenced `vega-lite` block whose body
+is a [Vega-Lite](https://vega.github.io/vega-lite/) JSON spec. The viewer renders
+it to an SVG inline (next to Mermaid), and a click opens the shared full-view
+modal. No build step, no per-diagram source change — the renderer is a registry
+entry, so the author only writes the spec.
+
+**Security constraint (enforced):** a spec may only carry **inline** data
+(`"data": { "values": [...] }`). Any remote reference — a `url` anywhere in the
+spec — is rejected and shown as an error instead of being fetched. The renderer
+runs Vega's CSP-safe AST interpreter (no `eval`), with the export menu disabled.
+
+A simple line chart:
+
+```vega-lite
+{
+  "data": { "values": [
+    { "memo": "013", "score": 68 },
+    { "memo": "014", "score": 82 },
+    { "memo": "019", "score": 92 }
+  ] },
+  "mark": "line",
+  "encoding": {
+    "x": { "field": "memo", "type": "ordinal" },
+    "y": { "field": "score", "type": "quantitative" }
+  }
+}
+```
+
+A bar chart:
+
+```vega-lite
+{
+  "data": { "values": [
+    { "phase": "P1", "prds": 1 },
+    { "phase": "P2", "prds": 3 },
+    { "phase": "P3", "prds": 1 }
+  ] },
+  "mark": "bar",
+  "encoding": {
+    "x": { "field": "phase", "type": "nominal" },
+    "y": { "field": "prds", "type": "quantitative" }
+  }
+}
+```
+
+"Add a median line" — a layered spec where the statistical layer is written
+directly into the spec (the viewer does not compute, it renders what you write):
+
+```vega-lite
+{
+  "data": { "values": [
+    { "memo": "013", "score": 68 },
+    { "memo": "014", "score": 82 },
+    { "memo": "017", "score": 88 },
+    { "memo": "019", "score": 92 }
+  ] },
+  "layer": [
+    { "mark": "point",
+      "encoding": {
+        "x": { "field": "memo", "type": "ordinal" },
+        "y": { "field": "score", "type": "quantitative" }
+      } },
+    { "mark": { "type": "rule", "color": "firebrick" },
+      "encoding": { "y": { "aggregate": "median", "field": "score", "type": "quantitative" } } }
+  ]
+}
+```
 
 ## Methods
 

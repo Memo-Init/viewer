@@ -3021,6 +3021,48 @@
 
         .mermaid:hover { opacity: 0.85; }
 
+        /* Memo 020 Kap 5/6: scientific (Vega-Lite) diagram container, modelled on .mermaid so the
+           shared full-view modal (cursor zoom-in) behaves identically for both renderers. */
+        .vega-lite {
+            background: var(--text-on-accent);
+            border-radius: 6px;
+            padding: 16px;
+            margin: 0 0 16px 0;
+            text-align: center;
+            cursor: zoom-in;
+            transition: opacity 0.15s;
+        }
+
+        .vega-lite:hover { opacity: 0.85; }
+
+        /* Memo 020 Kap 6: error fallback for a broken/rejected Vega-Lite spec, mirrors .mermaid-error. */
+        .vega-error {
+            color: var(--danger);
+            border: 1px solid var(--danger);
+            border-radius: 6px;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            white-space: pre-wrap;
+            text-align: left;
+            background: #1a0d0d;
+        }
+
+        .vega-error-source {
+            border: 1px solid var(--border, #333);
+            border-top: none;
+            border-radius: 0 0 6px 6px;
+            margin: -6px 0 0;
+            padding: 12px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            white-space: pre-wrap;
+            text-align: left;
+            overflow-x: auto;
+            background: #0d0d12;
+            color: var(--text, #ddd);
+        }
+
         #mermaid-modal {
             display: none;
             position: fixed;

@@ -726,8 +726,20 @@ class MemoView {
     <script>
         window.__MEMO_CONFIG__ = { showOnlyFullRevisions: ${configFlag} }
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.0/marked.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+    <!-- Memo 020 Kap 6 (F6 = volle Haertung): every CDN script is version-pinned AND carries an
+         SRI integrity hash (sha384) + crossorigin, so a tampered/poisoned CDN file is rejected by
+         the browser instead of executed. The marked/mermaid tags were retrofitted with SRI too. -->
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.0/marked.min.js" integrity="sha384-5S+6C4bM5PFDRwie5G8wVUoq/5EzdFEaE2bg7xLLhNiz4fjj7fsecAfOl8VzZ/co" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js" integrity="sha384-rbtjAdnIQE/aQJGEgXrVUlMibdfTSa4PQju4HDhN3sR2PmaKFzhEafuePsl9H/9I" crossorigin="anonymous"></script>
+    <!-- Memo 020 Kap 3/6: scientific-diagram stack (Vega-Lite). Load order is load-bearing
+         (vega -> vega-lite -> vega-embed -> app client). The CSP-safe AST expression interpreter
+         is bundled inside vega-embed@7.1.0 (it depends on vega-interpreter@^2.0.0) and is selected
+         per-embed via { ast: true } in app.client.mjs — there is no separate vega-interpreter tag
+         because its published build is ESM-only (not loadable as a classic <script>) and is
+         redundant with the bundled one. CDN-Tags: 2 -> 5, npm-Deps: still 0. -->
+    <script src="https://cdn.jsdelivr.net/npm/vega@6.2.0/build/vega.min.js" integrity="sha384-0Wc8+KeboSkAq/fK81pd4uFbWKu4ouB+y4KWCYxlC69hRWol7vnc6zZSruXOtc0F" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.3/build/vega-lite.min.js" integrity="sha384-9/70gNCfOu6G7xXvkdreMfuqAEsoaGJVXV2BN/JLRXkSmcGvnMqtsRx8HZtUWAvI" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-embed@7.1.0/build/vega-embed.min.js" integrity="sha384-giTAWqsEDsWuWzWKi6NCvjgwi160SClnTYYXWPLuy/DnaQTqmk4soinrpxcCS4dx" crossorigin="anonymous"></script>
     <script src="/app.client.mjs"></script>
 </body>
 </html>`
@@ -3511,6 +3523,9 @@ class MemoView {
     // by the inline browser renderer.code so the branch is identical client-side.
     static blockMetaRenderDecision( { lang } ) {
         if( lang === 'mermaid' ) { return { decision: 'mermaid' } }
+        // Memo 020 Kap 4: vega-lite is a registered diagram language too — it renders to a diagram
+        // div (.vega-lite), never a raw code block. Mirrors the client diagramRegistry dispatch.
+        if( lang === 'vega-lite' ) { return { decision: 'vega-lite' } }
         if( lang === 'block-meta' ) { return { decision: 'block-card' } }
 
         return { decision: 'code' }

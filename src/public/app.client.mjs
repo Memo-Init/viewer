@@ -305,6 +305,57 @@
                 + '</div><pre class="mermaid-error-source">' + safeOriginal + '</pre>'
         }
 
+        // Memo 020 Kap 6 (pt 1): remote-data guard for Vega-Lite specs — the single biggest risk
+        // reducer. A spec may only carry INLINE data (data.values / data.sequence). findUrlKey walks
+        // the parsed spec and reports the first `url` key at ANY depth (data loaders, image-mark
+        // hrefs, sphere/graticule loaders all use `url`), so the validator rejects anything that
+        // would trigger a network fetch. Recursive (no loops) to cover layer/concat/facet nesting.
+        function findUrlKey( node ) {
+            if( node === null || typeof node !== 'object' ) { return null }
+            if( Array.isArray( node ) ) {
+                return node.reduce( function( found, item ) { return found || findUrlKey( item ) }, null )
+            }
+            return Object.keys( node ).reduce( function( found, key ) {
+                if( found ) { return found }
+                if( key === 'url' ) { return 'url' }
+                return findUrlKey( node[ key ] )
+            }, null )
+        }
+
+        // Memo 020 Kap 6: parse + validate a Vega-Lite spec before it is embedded. Returns
+        // { ok:true, spec } for an inline-only spec, or { ok:false, reason } for invalid JSON or a
+        // spec that references remote data. The render hook turns a reject into the error fallback
+        // instead of letting vega fetch a URL.
+        function validateVegaSpec( raw ) {
+            var spec
+            try {
+                spec = JSON.parse( raw )
+            } catch( e ) {
+                return { ok: false, reason: 'Invalid JSON: ' + ( e && e.message ? e.message : 'parse error' ) }
+            }
+            if( findUrlKey( spec ) ) {
+                return { ok: false, reason: 'Remote data is not allowed — use inline "data": { "values": [...] } only.' }
+            }
+            return { ok: true, spec: spec }
+        }
+
+        // Memo 020 Kap 6: error fallback for the scientific renderer, mirrors buildMermaidErrorHtml.
+        // Shows the message PLUS the unchanged HTML-escaped source, so a broken/rejected spec
+        // degrades to readable text instead of failing silently.
+        function buildVegaErrorHtml( err, originalText ) {
+            var message = ( err && err.message ) ? err.message : String( err == null ? '' : err )
+            var safeMessage = String( message )
+                .replace( /&/g, '&amp;' )
+                .replace( /</g, '&lt;' )
+                .replace( />/g, '&gt;' )
+            var safeOriginal = String( originalText == null ? '' : originalText )
+                .replace( /&/g, '&amp;' )
+                .replace( /</g, '&lt;' )
+                .replace( />/g, '&gt;' )
+            return '<div class="vega-error">Vega-Lite Error: ' + safeMessage
+                + '</div><pre class="vega-error-source">' + safeOriginal + '</pre>'
+        }
+
         // Memo 020 Kap 4 (F3=A): ONE renderer registry replaces the formerly 5 hardcoded
         // 'mermaid' sites (1 renderer.code branch + 4 render callsites). Each entry is
         // { selector, render( spec, el ) }: renderer.code emits <div class="LANG">SPEC</div>
@@ -321,6 +372,27 @@
                         .then( function( result ) { el.innerHTML = result.svg } )
                         .catch( function( err ) { el.innerHTML = buildMermaidErrorHtml( err, spec ) } )
                 }
+            },
+            // Memo 020 Kap 3/6: the scientific renderer. The spec is validated (remote data
+            // rejected) before embedding. vegaEmbed runs with the hardening config: ast:true selects
+            // the CSP-safe AST interpreter bundled in vega-embed (no Function codegen, no unsafe-eval),
+            // actions:false drops the export/editor menu, renderer:'svg', and the loader omits
+            // credentials. Nothing is attached to window — the returned View stays local to this call.
+            'vega-lite': {
+                selector: '.vega-lite',
+                render: function( spec, el ) {
+                    var check = validateVegaSpec( spec )
+                    if( !check.ok ) {
+                        el.innerHTML = buildVegaErrorHtml( check.reason, spec )
+                        return
+                    }
+                    vegaEmbed( el, check.spec, {
+                        actions: false,
+                        ast: true,
+                        renderer: 'svg',
+                        loader: { http: { credentials: 'omit' } }
+                    } ).catch( function( err ) { el.innerHTML = buildVegaErrorHtml( err, spec ) } )
+                }
             }
         }
 
@@ -335,6 +407,15 @@
                     entry.render( spec, el )
                 } )
             } )
+        }
+
+        // Memo 020 Kap 4: a node sits "inside a diagram" if it matches ANY registered diagram
+        // selector. Registry-driven so a new renderer is covered automatically — used by the diff
+        // marker (never mark diagram source as changed text) and the diagram modal handler.
+        function closestDiagram( el ) {
+            return Object.keys( diagramRegistry ).reduce( function( hit, lang ) {
+                return hit || el.closest( diagramRegistry[ lang ].selector )
+            }, null )
         }
 
         // PRD-001 (Memo 018 Kap 4, F7=A): the 3-state ball status is now DERIVED from the
@@ -5974,7 +6055,7 @@
                 var set = new Set()
                 rootEl.querySelectorAll( diffBlockSelector ).forEach( function( el ) {
                     if( el.closest( '.diff-banner' ) ) { return }
-                    if( el.closest( '.mermaid' ) ) { return }
+                    if( closestDiagram( el ) ) { return }
                     if( el.closest( 'pre' ) ) { return }
 
                     var text = el.textContent.trim()
@@ -6023,7 +6104,7 @@
                 var currentChapter = ''
                 contentEl.querySelectorAll( diffBlockSelector + ', h2' ).forEach( function( el ) {
                     if( el.closest( '.diff-banner' ) ) { return }
-                    if( el.closest( '.mermaid' ) ) { return }
+                    if( closestDiagram( el ) ) { return }
                     if( el.closest( 'pre' ) ) { return }
 
                     if( el.tagName === 'H2' ) {
@@ -6289,10 +6370,12 @@
             if( e.key === 'Escape' ) { closeMermaidModal() }
         } )
 
+        // Memo 020 Kap 5/6: clicking ANY rendered diagram (mermaid or vega-lite) opens the shared
+        // full-view modal. Registry-driven via closestDiagram so new renderers are covered too.
         document.addEventListener( 'click', function( e ) {
-            var mermaidEl = e.target.closest( '.mermaid' )
-            if( mermaidEl && !mermaidEl.closest( '#mermaid-modal' ) ) {
-                var svg = mermaidEl.querySelector( 'svg' )
+            var diagramEl = closestDiagram( e.target )
+            if( diagramEl && !diagramEl.closest( '#mermaid-modal' ) ) {
+                var svg = diagramEl.querySelector( 'svg' )
                 if( svg ) { openMermaidModal( svg.outerHTML ) }
             }
         } )

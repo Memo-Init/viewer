@@ -68,8 +68,8 @@
         }
 
         renderer.code = function( token ) {
-            if( token.lang === 'mermaid' ) {
-                return '<div class="mermaid">' + token.text + '</div>'
+            if( diagramRegistry[ token.lang ] ) {
+                return '<div class="' + token.lang + '">' + token.text + '</div>'
             }
 
             if( token.lang === 'block-meta' ) {
@@ -303,6 +303,38 @@
                 .replace( />/g, '&gt;' )
             return '<div class="mermaid-error">Mermaid Error: ' + safeMessage
                 + '</div><pre class="mermaid-error-source">' + safeOriginal + '</pre>'
+        }
+
+        // Memo 020 Kap 4 (F3=A): ONE renderer registry replaces the formerly 5 hardcoded
+        // 'mermaid' sites (1 renderer.code branch + 4 render callsites). Each entry is
+        // { selector, render( spec, el ) }: renderer.code emits <div class="LANG">SPEC</div>
+        // for any registered language, and renderAllDiagrams() walks every entry's selector
+        // once and calls its render hook. Adding a diagram type is now a single registry entry,
+        // no new callsite — that is the "kein Quellcode-Churn pro Diagramm"-Constraint resolved.
+        // Invariant: each key K has selector '.K', so renderer.code can derive the div class
+        // from the registry key and renderAllDiagrams can find it again by selector.
+        var diagramRegistry = {
+            mermaid: {
+                selector: '.mermaid',
+                render: function( spec, el ) {
+                    mermaid.render( 'mermaid-' + Math.random().toString( 36 ).slice( 2 ), spec )
+                        .then( function( result ) { el.innerHTML = result.svg } )
+                        .catch( function( err ) { el.innerHTML = buildMermaidErrorHtml( err, spec ) } )
+                }
+            }
+        }
+
+        // Memo 020 Kap 4: the single post-parse render pass. Walks each registry entry's
+        // selector and renders every matching element from its textContent. Replaces the four
+        // identical querySelectorAll('.mermaid') callsites (prose, diff-new, diff-prev, ws-update).
+        function renderAllDiagrams() {
+            Object.keys( diagramRegistry ).forEach( function( lang ) {
+                var entry = diagramRegistry[ lang ]
+                document.querySelectorAll( entry.selector ).forEach( function( el ) {
+                    var spec = el.textContent
+                    entry.render( spec, el )
+                } )
+            } )
         }
 
         // PRD-001 (Memo 018 Kap 4, F7=A): the 3-state ball status is now DERIVED from the
@@ -3404,12 +3436,7 @@
                 slugCounts.clear()
                 contentEl.innerHTML = marked.parse( lastContent )
                 interceptLinks()
-                document.querySelectorAll( '.mermaid' ).forEach( function( el ) {
-                    var originalText = el.textContent
-                    mermaid.render( 'mermaid-' + Math.random().toString( 36 ).slice( 2 ), originalText )
-                        .then( function( result ) { el.innerHTML = result.svg } )
-                        .catch( function( err ) { el.innerHTML = buildMermaidErrorHtml( err, originalText ) } )
-                } )
+                renderAllDiagrams()
             }
             applyContentStructure()
             renderVorwort( lastVorwort )
@@ -4091,12 +4118,7 @@
                     slugCounts.clear()
                     contentEl.innerHTML = marked.parse( lastContent )
                     interceptLinks()
-                    document.querySelectorAll( '.mermaid' ).forEach( function( el ) {
-                        var originalText = el.textContent
-                        mermaid.render( 'mermaid-' + Math.random().toString( 36 ).slice( 2 ), originalText )
-                            .then( function( result ) { el.innerHTML = result.svg } )
-                            .catch( function( err ) { el.innerHTML = buildMermaidErrorHtml( err, originalText ) } )
-                    } )
+                    renderAllDiagrams()
                 }
 
                 // PRD-007 (D2): toggling the diff re-renders contentEl.innerHTML, which wipes the
@@ -5994,12 +6016,7 @@
             contentEl.innerHTML = banner + html
             interceptLinks()
 
-            document.querySelectorAll( '.mermaid' ).forEach( function( el ) {
-                var originalText = el.textContent
-                mermaid.render( 'mermaid-' + Math.random().toString( 36 ).slice( 2 ), originalText )
-                    .then( function( result ) { el.innerHTML = result.svg } )
-                    .catch( function( err ) { el.innerHTML = buildMermaidErrorHtml( err, originalText ) } )
-            } )
+            renderAllDiagrams()
 
             if( previousTextSet.size > 0 ) {
                 // Track the nearest preceding H2 chapter so changedSections can gate marking.
@@ -6140,16 +6157,7 @@
                             contentEl.innerHTML = marked.parse( data.content )
                             interceptLinks()
 
-                            document.querySelectorAll( '.mermaid' ).forEach( function( el ) {
-                                var originalText = el.textContent
-                                mermaid.render( 'mermaid-' + Math.random().toString( 36 ).slice( 2 ), originalText )
-                                    .then( function( result ) {
-                                        el.innerHTML = result.svg
-                                    } )
-                                    .catch( function( err ) {
-                                        el.innerHTML = buildMermaidErrorHtml( err, originalText )
-                                    } )
-                            } )
+                            renderAllDiagrams()
                         }
 
                         applyContentStructure()

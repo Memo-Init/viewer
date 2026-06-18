@@ -1,6 +1,10 @@
 node_modules/
 coverage/
 .DS_Store
+# Env files — local-only secrets; the example template stays tracked.
+.env
+.env.*
+!.env.example
 # PRD-002 (Memo 024 Kap 2): repo-local, isolated test-home for transcript integration tests.
 # NEVER written to the user home — and never committed (re-created per test run).
 .test-home/

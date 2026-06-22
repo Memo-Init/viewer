@@ -12,6 +12,25 @@
         const originalCodeRenderer = renderer.code.bind( renderer )
         const slugCounts = new Map()
 
+        // Memo 038 Kap 13: realistic dictation speed for spoken transcript minutes (~110-150 wpm).
+        // The browser mirror of MemoView/TranscriptRegistry SPOKEN_WORDS_PER_MINUTE — replaces the
+        // too-fast magic 200 so the sidebar/queue/zone-2 spoken estimates match the server.
+        var SPOKEN_WORDS_PER_MINUTE = 130
+
+        // Memo 038 Kap 13: dedupe transcript entries by identity (url|id|transcriptId) before summing
+        // their words, so a doubly-registered transcript is not double-counted. Entries without a key
+        // are kept (no invented identity). Mirror of MemoView.#dedupeTranscripts.
+        function dedupeTranscripts( list ) {
+            var seen = {}
+            return ( list || [] ).filter( function( entry ) {
+                var key = entry && ( entry.url || entry.id || entry.transcriptId )
+                if( typeof key !== 'string' || key.length === 0 ) { return true }
+                if( seen[ key ] ) { return false }
+                seen[ key ] = true
+                return true
+            } )
+        }
+
         // PRD-007 (D3/D7): ONE slug algorithm — mirrors MemoView.slugify 1:1. Used for heading
         // ids AND the diff-banner anchors so a banner link always lands on its heading, even with
         // Umlaut/Em-dash/punctuation. Punctuation collapses to a SEPARATOR (not stripped, D7) so
@@ -479,10 +498,10 @@
         // the per-transcript word counts (the 'words' field in the transcript tree) and converts
         // at ~200 Woerter/Min. 0 transcripts -> 0 Min (no invented default, no date fallback).
         function aggregateMemoMinutes( memoName ) {
-            var words = transcriptsForMemo( memoName )
+            var words = dedupeTranscripts( transcriptsForMemo( memoName ) )
                 .map( function( entry ) { return ( entry && typeof entry.words === 'number' && entry.words > 0 ) ? entry.words : 0 } )
                 .reduce( function( sum, value ) { return sum + value }, 0 )
-            return words === 0 ? 0 : Math.ceil( words / 200 )
+            return words === 0 ? 0 : Math.ceil( words / SPOKEN_WORDS_PER_MINUTE )
         }
 
         // PRD-005 (Memo 022 Kap 9): per-revision spoken minutes — the rev-mini Leitkennzahl.
@@ -491,10 +510,10 @@
         // Memo-Aggregat wird NICHT als Revisions-Wert vorgetaeuscht). ~200 Woerter/Min.
         function aggregateRevisionMinutes( memoName, revisionId ) {
             if( !revisionId ) { return 0 }
-            var words = transcriptsForRevision( memoName, revisionId )
+            var words = dedupeTranscripts( transcriptsForRevision( memoName, revisionId ) )
                 .map( function( entry ) { return ( entry && typeof entry.words === 'number' && entry.words > 0 ) ? entry.words : 0 } )
                 .reduce( function( sum, value ) { return sum + value }, 0 )
-            return words === 0 ? 0 : Math.ceil( words / 200 )
+            return words === 0 ? 0 : Math.ceil( words / SPOKEN_WORDS_PER_MINUTE )
         }
 
         // Extracts the viewed revision (REV-NN) from a sticky-header fileName ("REV-03.md").
@@ -640,7 +659,8 @@
             var hasTranscript = typeof opts.transcriptUrl === 'string' && opts.transcriptUrl.length > 0
             var wordCount = ( typeof opts.words === 'number' && opts.words > 0 ) ? opts.words : 0
             var measured = typeof opts.spokenMinutes === 'number' && opts.spokenMinutes > 0
-            var estimated = wordCount === 0 ? 0 : Math.ceil( wordCount / 200 )
+            // Memo 038 Kap 13: estimate spoken minutes at the realistic dictation rate (was 200).
+            var estimated = wordCount === 0 ? 0 : Math.ceil( wordCount / SPOKEN_WORDS_PER_MINUTE )
             var minutes = measured ? opts.spokenMinutes : estimated
             var minutesEstimated = !measured
             var answered = ( typeof opts.questionsAnswered === 'number' && opts.questionsAnswered > 0 ) ? opts.questionsAnswered : 0
@@ -715,11 +735,9 @@
             var rowStatus = revisionStatusForRow( hasTranscript, loggedIn )
             var viewedTranscript = latestTranscriptForRevision( memoName, viewedRevision )
 
-            // Word/minute estimate derived from the current rendered content (PRD-008 #5 fallback).
-            var plainText = ( lastContent || '' ).replace( /[^A-Za-zÀ-ÿ0-9]+/g, ' ' )
-            var trimmed = plainText.trim()
-            var words = trimmed.length === 0 ? 0 : trimmed.split( /\s+/ ).filter( function( t ) { return t.length > 0 } ).length
-            var minutes = words === 0 ? 0 : Math.ceil( words / 200 )
+            // Memo 038 Kap 13: the former rendered-document word/minute estimate that fed the Zone-2
+            // "Transcript" line was removed — Zone 2 now uses the revision's TRANSCRIPT word count
+            // (psTranscriptWords below), the same source as the sidebar, so the two never diverge.
 
             // ============================================================================
             // PRD-006 (Memo 019 Kap 6): 3-Zonen-Sticky-Header. Zone 1 = Informationsebene
@@ -810,10 +828,18 @@
             var psSpoken = ( viewedTranscript && typeof viewedTranscript.spokenMinutes === 'number' )
                 ? viewedTranscript.spokenMinutes
                 : 0
+            // Memo 038 Kap 13: the Zone-2 "Transcript" line uses the TRANSCRIPT word count of the
+            // viewed revision — NOT the rendered-document length (`words` above). Document length and
+            // spoken transcript time are different quantities; feeding the doc length here made the
+            // "Transcript" minutes diverge from the sidebar's transcript-based total (the 23-vs-38
+            // bug). Deduped + realistic dictation wpm, so Zone 2 and the sidebar now agree.
+            var psTranscriptWords = dedupeTranscripts( transcriptsForRevision( memoName, viewedRevision ) )
+                .map( function( entry ) { return ( entry && typeof entry.words === 'number' && entry.words > 0 ) ? entry.words : 0 } )
+                .reduce( function( sum, value ) { return sum + value }, 0 )
             // Inline mirror of MemoView.promptStatusLine (the static class is server-side only and
             // not available in the browser; promptStatusLineInline replicates it 1:1).
             var ps = promptStatusLineInline( {
-                words: words,
+                words: psTranscriptWords,
                 spokenMinutes: psSpoken,
                 questionsAnswered: psAnswered,
                 questionsTotal: psTotal,
@@ -2504,7 +2530,7 @@
             var words = plain.length === 0
                 ? 0
                 : plain.split( /\s+/ ).filter( function( t ) { return t.length > 0 } ).length
-            var minutes = words === 0 ? 0 : Math.ceil( words / 200 )
+            var minutes = words === 0 ? 0 : Math.ceil( words / SPOKEN_WORDS_PER_MINUTE )
             // PRD-019 (Memo 016 Kap 7.4): label as the transcript length, consistent with the
             // sticky-header read-out, so the count is never mistaken for a user-typed value.
             el.textContent = 'Transcript: ' + words.toLocaleString( 'de-DE' ) + ' Wörter · ' + minutes + ' Min'
@@ -4328,7 +4354,7 @@
             if( !ppContent || !el ) { return }
             var plain = ( ppContent.value || '' ).replace( /[^A-Za-zÀ-ÿ0-9]+/g, ' ' ).trim()
             var w = plain.length === 0 ? 0 : plain.split( /\s+/ ).filter( function( t ) { return t.length > 0 } ).length
-            var m = w === 0 ? 0 : Math.ceil( w / 200 )
+            var m = w === 0 ? 0 : Math.ceil( w / SPOKEN_WORDS_PER_MINUTE )
             el.textContent = m + ' Min · ' + w.toLocaleString( 'de-DE' ) + ' Wörter'
         }
 
@@ -5268,11 +5294,20 @@
 
             var badge = q.typ === 'multi' ? 'Multi-Select' : 'Single-Select'
 
+            // Memo 038 Kap 7 (P3a, F5=A): provenance badge. When a question was pre-decided by the
+            // AI "im Namen des Users" (answeredBy === 'ai-on-behalf'), render a prominent pill so the
+            // user always sees an AI-on-behalf decision is NOT a user answer. A 'user' answer (the
+            // default) shows no badge — it stays unobtrusive.
+            var provBadge = ( q && q.answeredBy === 'ai-on-behalf' )
+                ? '<span class="qw-prov-badge" title="ai-on-behalf">🤖 KI im Namen des Users</span>'
+                : ''
+
             var head = document.createElement( 'div' )
             head.className = 'qw-head'
             head.innerHTML = '<span class="qw-id">' + escHtml( q.id ) + '</span>'
                 + '<span class="qw-title">' + escHtml( q.title ) + '</span>'
                 + '<span class="qw-badge">' + badge + '</span>'
+                + provBadge
                 + '<span class="qw-toggle">' + ( qIdx > 0 ? '+' : '−' ) + '</span>'
             head.addEventListener( 'click', function() {
                 card.classList.toggle( 'qw-collapsed' )
@@ -6353,6 +6388,22 @@
             document.body.style.overflow = ''
         }
 
+        // Memo 038 Kap 11: image lightbox. A content image opens the SAME full-view modal as a
+        // diagram — the modal body (#mermaid-modal-svg) holds an <img> instead of an SVG. Close,
+        // Esc, and overlay-click reuse the existing diagram-modal handlers (closeMermaidModal).
+        window.openImageModal = function( src, alt ) {
+            if( !src ) { return }
+            mermaidModalSvg.innerHTML = ''
+            var img = document.createElement( 'img' )
+            img.setAttribute( 'src', src )
+            img.setAttribute( 'alt', typeof alt === 'string' ? alt : '' )
+            img.style.maxWidth = '100%'
+            img.style.maxHeight = '100%'
+            mermaidModalSvg.appendChild( img )
+            mermaidModal.classList.add( 'open' )
+            document.body.style.overflow = 'hidden'
+        }
+
         // PRD-013 (Memo 016, F8): the formerly inline on* handlers of #mermaid-modal
         // (onclick=closeMermaidModal on the overlay + close button, onclick=stopPropagation on
         // the inner box) are now wired here via addEventListener — identical behavior.
@@ -6377,5 +6428,12 @@
             if( diagramEl && !diagramEl.closest( '#mermaid-modal' ) ) {
                 var svg = diagramEl.querySelector( 'svg' )
                 if( svg ) { openMermaidModal( svg.outerHTML ) }
+                return
+            }
+            // Memo 038 Kap 11: content images are click-to-zoom into the same full-view modal.
+            // Scoped to <img> inside #content (never UI icons, never the modal's own image).
+            var target = e.target
+            if( target && target.tagName === 'IMG' && target.closest( '#content' ) && !target.closest( '#mermaid-modal' ) ) {
+                openImageModal( target.getAttribute( 'src' ), target.getAttribute( 'alt' ) )
             }
         } )

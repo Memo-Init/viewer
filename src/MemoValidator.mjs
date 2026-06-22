@@ -48,6 +48,15 @@ const ERROR_CODE_CATALOG = [
 ]
 
 
+// Memo 038 Kap 7 (F8=A): the start confidence threshold for an AI "im Namen des Users"
+// pre-decision. The AI may only pre-decide a question at VERY high confidence (>= 95 %) and the
+// threshold is lowered over time as the User Mental Model proves itself. This is advisory
+// provenance metadata only — it never auto-answers a question. The hard rule (F5=A) is enforced by
+// #finalizeAnsweredCount below: an 'ai-on-behalf' answer NEVER satisfies the finalize gate on its
+// own; it always still needs a user look.
+const AI_ON_BEHALF_START_THRESHOLD = 0.95
+
+
 class MemoValidator {
     static validate( { doc, fileName } ) {
         const struct = { 'status': false, 'messages': [], 'info': [] }
@@ -106,6 +115,53 @@ class MemoValidator {
 
     static getCatalog() {
         return { 'catalog': ERROR_CODE_CATALOG }
+    }
+
+
+    // Memo 038 Kap 7 (P3c, F5=A): the finalize-gate schranke. The "all questions answered" gate
+    // for finalize-readiness must NOT count an 'ai-on-behalf' answer as satisfying it on its own —
+    // such an answer is an advisory AI pre-decision that ALWAYS still needs a user look. This helper
+    // is the single, well-commented guard: given the parsed question list it returns the counts the
+    // finalize gate must use. `total` is every question; `answeredByUser` counts only questions that
+    // are answered AND were decided by the user (the gate-satisfying answers); `answeredByAi` counts
+    // answered questions whose provenance is 'ai-on-behalf' (these need confirmation); `needsUser` is
+    // every still-open OR ai-on-behalf question; `gateSatisfied` is true only when EVERY question is
+    // user-answered. The advisory start threshold (>= 95 %) is exported separately for callers that
+    // surface it — it is provenance, not an auto-answer.
+    static finalizeGate( { questions } ) {
+        const list = Array.isArray( questions ) ? questions : []
+
+        const total = list.length
+        const answeredByUser = list
+            .filter( ( question ) => question !== null && typeof question === 'object'
+                && question[ 'answered' ] === true
+                && MemoValidator.#answeredByOf( { question } ) === 'user' )
+            .length
+        const answeredByAi = list
+            .filter( ( question ) => question !== null && typeof question === 'object'
+                && question[ 'answered' ] === true
+                && MemoValidator.#answeredByOf( { question } ) === 'ai-on-behalf' )
+            .length
+
+        // A question still needs a user look when it is open OR was only AI-pre-decided. The gate
+        // is satisfied only when nothing needs a user look anymore (and at least one question exists).
+        const needsUser = total - answeredByUser
+
+        return {
+            total,
+            answeredByUser,
+            answeredByAi,
+            needsUser,
+            'gateSatisfied': total > 0 && needsUser === 0,
+            'startThreshold': AI_ON_BEHALF_START_THRESHOLD
+        }
+    }
+
+
+    static #answeredByOf( { question } ) {
+        // Memo 038 Kap 7: accept only the two known provenance values; default to 'user' so a
+        // legacy answered entry (no answeredBy field) counts as a user answer (back-compat).
+        return question[ 'answeredBy' ] === 'ai-on-behalf' ? 'ai-on-behalf' : 'user'
     }
 
 

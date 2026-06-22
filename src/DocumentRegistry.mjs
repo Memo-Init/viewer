@@ -820,6 +820,14 @@ class DocumentRegistry {
         const { preselected: derivedPreselected } = DocumentRegistry.#resolvePreselected( { typ, aiRecommendation, options: optionsWithDefaults } )
         const preselected = explicitPreselected !== null ? explicitPreselected : derivedPreselected
 
+        // Memo 038 Kap 7 (P3a, F5=A): question-level answer-provenance, modelled after the
+        // memo-level `Initiator`. `answeredBy` records WHO decided the question — the user, or
+        // the AI "im Namen des Users". Only the two known values count; anything else (incl. a
+        // missing field) defaults to 'user' (the unobtrusive, no-badge case). This is advisory
+        // provenance, NOT an auto-answer — the finalize-gate schranke (MemoValidator) makes sure
+        // an 'ai-on-behalf' answer never satisfies the all-answered gate on its own.
+        const { answeredBy } = DocumentRegistry.#normalizeAnsweredBy( { value: safe[ 'answeredBy' ] } )
+
         const question = {
             'id': typeof safe[ 'id' ] === 'string' ? safe[ 'id' ] : '',
             'title': typeof safe[ 'title' ] === 'string' ? safe[ 'title' ] : '',
@@ -830,10 +838,21 @@ class DocumentRegistry {
             'options': optionsWithDefaults,
             preselected,
             'allowCustomEntries': typ === 'multi',
-            'answered': safe[ 'answered' ] === true
+            'answered': safe[ 'answered' ] === true,
+            answeredBy
         }
 
         return { question }
+    }
+
+
+    static #normalizeAnsweredBy( { value } ) {
+        // Memo 038 Kap 7 (P3a): accept only the two known provenance values; default to 'user'.
+        // A 'user' answer is the silent default (no badge); 'ai-on-behalf' triggers the badge and
+        // the finalize-gate schranke.
+        const answeredBy = value === 'ai-on-behalf' ? 'ai-on-behalf' : 'user'
+
+        return { answeredBy }
     }
 
 
@@ -923,11 +942,19 @@ class DocumentRegistry {
                 }
             } )
 
+        // Memo 038 Kap 7 (P1c/P3b): the answered section may be split into two `###` subsections
+        // — "Vom User beantwortet" and "Von der AI im Namen des Users beantwortet". These headings
+        // are NOT `### F{N}` (so they never count toward MEMO-025), but they carry the per-question
+        // provenance: every `### F{N}` block inherits the provenance of the nearest PRECEDING
+        // subsection heading. Without a split (no such heading) every block defaults to 'user'.
+        const { provenanceAt } = DocumentRegistry.#mapAnsweredProvenance( { sectionLines } )
+
         const questions = blockStarts
             .map( ( startIndex, position ) => {
                 const endIndex = position + 1 < blockStarts.length ? blockStarts[ position + 1 ] : sectionLines.length
                 const blockLines = sectionLines.slice( startIndex, endIndex )
-                const { question } = DocumentRegistry.#parseSingleQuestion( { blockLines, answered } )
+                const sectionAnsweredBy = provenanceAt( startIndex )
+                const { question } = DocumentRegistry.#parseSingleQuestion( { blockLines, answered, sectionAnsweredBy } )
 
                 return question
             } )
@@ -938,7 +965,38 @@ class DocumentRegistry {
     }
 
 
-    static #parseSingleQuestion( { blockLines, answered } ) {
+    static #mapAnsweredProvenance( { sectionLines } ) {
+        // Memo 038 Kap 7 (P1c): build a lookup from line-index → provenance, derived from the
+        // split-subsection headings. The AI subsection heading mentions "AI" (or "KI") "im Namen";
+        // the user subsection heading mentions "User". Anything before the first such heading (or
+        // when no split is present) is the default 'user'. Pure: no shared mutable cursor.
+        const aiHeadingPattern = /^###\s+Von der (?:AI|KI)\b/i
+        const userHeadingPattern = /^###\s+Vom User\b/i
+
+        const transitions = sectionLines
+            .map( ( rawLine, index ) => {
+                const line = rawLine.trim()
+
+                if( aiHeadingPattern.test( line ) ) { return { index, 'answeredBy': 'ai-on-behalf' } }
+                if( userHeadingPattern.test( line ) ) { return { index, 'answeredBy': 'user' } }
+
+                return null
+            } )
+            .filter( ( entry ) => entry !== null )
+
+        const provenanceAt = ( lineIndex ) => {
+            const preceding = transitions
+                .filter( ( entry ) => entry[ 'index' ] < lineIndex )
+            const last = preceding.length > 0 ? preceding[ preceding.length - 1 ] : null
+
+            return last !== null ? last[ 'answeredBy' ] : 'user'
+        }
+
+        return { provenanceAt }
+    }
+
+
+    static #parseSingleQuestion( { blockLines, answered, sectionAnsweredBy } ) {
         const struct = { 'question': null }
         const headingPattern = /^###\s+(F\d+)\b\s*(?:[—–-]\s*)?(.*)$/i
 
@@ -966,6 +1024,13 @@ class DocumentRegistry {
         const { value: frage } = DocumentRegistry.#extractField( { body, label: 'Frage' } )
         const { value: aiRecommendation } = DocumentRegistry.#extractField( { body, label: 'AI-Empfehlung' } )
 
+        // Memo 038 Kap 7 (P1c): make the AI/User decision pair machine-readable so the User
+        // Mental Model (Kap 6) can compare what the AI recommended against what the user actually
+        // decided. Both the REV-05 inline form ("· **User-Entscheidung:** Y") and the older
+        // multi-line "- **User-Entscheidung:** Y" form parse. Empty string when absent (back-compat).
+        const { value: aiRecommendationWas } = DocumentRegistry.#extractMetaField( { body, labels: [ 'AI-Empfehlung war', 'KI-Empfehlung war' ] } )
+        const { value: userDecision } = DocumentRegistry.#extractMetaField( { body, labels: [ 'User-Entscheidung', 'User-Antwort' ] } )
+
         const { options } = DocumentRegistry.#extractOptions( { frage, body } )
         const { typ } = DocumentRegistry.#detectType( { body, frage } )
 
@@ -979,6 +1044,11 @@ class DocumentRegistry {
         const { topicPositions } = DocumentRegistry.#extractTopicPositions( { body } )
         const { preselected } = DocumentRegistry.#resolvePreselected( { typ, aiRecommendation, options: optionsWithDefaults } )
 
+        // Memo 038 Kap 7 (P1c/P3b): provenance from the split subsection (only meaningful for
+        // answered entries); the default is 'user'. Normalised through the same helper as the JSON
+        // path so the two parsers can never drift on the accepted values.
+        const { answeredBy } = DocumentRegistry.#normalizeAnsweredBy( { value: sectionAnsweredBy } )
+
         const question = {
             id,
             title,
@@ -990,10 +1060,48 @@ class DocumentRegistry {
             topicPositions,
             preselected,
             'allowCustomEntries': typ === 'multi',
-            answered
+            answered,
+            answeredBy
         }
 
+        // Memo 038 Kap 7 (P1c): only carry the decision pair when actually present, so open
+        // questions and legacy answered entries keep the exact previous shape (additive).
+        if( aiRecommendationWas.length > 0 ) { question[ 'aiRecommendationWas' ] = aiRecommendationWas }
+        if( userDecision.length > 0 ) { question[ 'userDecision' ] = userDecision }
+
         struct[ 'question' ] = question
+
+        return struct
+    }
+
+
+    static #extractMetaField( { body, labels } ) {
+        // Memo 038 Kap 7 (P1c): extract an answered-entry meta field that may appear EITHER on its
+        // own line ("- **User-Entscheidung:** Y") OR inline, separated by " · " from sibling fields
+        // ("**AI-Empfehlung war:** X · **User-Entscheidung:** Y (note) · **Beantwortet in:** REV-03").
+        // The value runs until the next bold "**Label:**" (on the same line after a "·" OR on the
+        // next line), a "·" separator, a blank line, or the end. Returns '' when no label matches.
+        const struct = { 'value': '' }
+
+        if( typeof body !== 'string' || body.length === 0 ) {
+            return struct
+        }
+
+        const labelAlternatives = labels.map( ( label ) => DocumentRegistry.#escapeRegExp( { value: label } ) )
+        const labelPattern = labelAlternatives.join( '|' )
+
+        // Boundary = next "**" bold label, a "·" mid-line separator, a blank line, or string end.
+        const pattern = new RegExp(
+            `\\*\\*(?:${ labelPattern })[^:*]*:\\*\\*\\s*([\\s\\S]*?)(?=\\s*·\\s*\\*\\*|\\n\\s*\\n|\\n\\s*(?:[-*]\\s+)?\\*\\*[A-Za-zÀ-ÿ-]+[^:*]*:\\*\\*|$)`,
+            'i'
+        )
+        const matched = body.match( pattern )
+
+        if( matched !== null ) {
+            struct[ 'value' ] = matched[ 1 ]
+                .replace( /\s+/g, ' ' )
+                .trim()
+        }
 
         return struct
     }

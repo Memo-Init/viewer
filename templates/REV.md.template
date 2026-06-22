@@ -76,15 +76,39 @@ C) {Dritte ausformulierte Antwortmoeglichkeit}
 
 ## Beantwortete Fragen
 
-<!-- Diese Section wird auch leer gerendert. Format pro Eintrag: -->
+<!-- Diese Section wird auch leer gerendert. Memo 038 Kap 7 (Antwort-Split): die beantworteten
+     Fragen werden NACH PROVENANCE getrennt. Jeder `### F{N}`-Eintrag steht unter genau einer der
+     beiden `###`-Untersektionen. Eine vom User beantwortete Frage kommt unter "Vom User
+     beantwortet"; eine von der AI im Namen des Users vor-entschiedene Frage (answeredBy:
+     ai-on-behalf) kommt unter "Von der AI im Namen des Users beantwortet". Die AI-Untersektion
+     darf leer sein (Platzhalter-Prosa erlaubt). Die beiden Untersektions-Headings sind KEINE
+     `### F{N}`-Headings — sie zaehlen daher nicht in die MEMO-025-Invariante hinein. -->
+
+### Vom User beantwortet
+
+<!-- Eintraege, die der User selbst entschieden hat. Format pro Eintrag (Kurzform, eine Zeile):
+     `- **AI-Empfehlung war:** X · **User-Entscheidung:** Y (Anmerkung) · **Beantwortet in:** REV-NN`
+     Die aeltere Mehrzeilen-Form (siehe unten) wird weiterhin geparst (Back-Compat). -->
 
 ### F{N} — {Kurztitel}
 
+- **AI-Empfehlung war:** {Original-Empfehlung} · **User-Entscheidung:** {Antwort + ggf. Korrektur} · **Beantwortet in:** REV-{XX}
+
+<!-- Aeltere Mehrzeilen-Form (weiterhin gueltig):
 - **Frage (Original):** {Wortlaut}
 - **AI-Empfehlung war:** {Original-Empfehlung}
 - **User-Entscheidung:** {Antwort + ggf. Korrektur der AI-Empfehlung}
 - **Beantwortet in:** REV-{XX}
 - **Anmerkung:** {optional}
+-->
+
+### Von der AI im Namen des Users beantwortet
+
+<!-- Eintraege, die die AI im Namen des Users vor-entschieden hat (answeredBy: ai-on-behalf).
+     Diese zaehlen NIE automatisch als beantwortet fuer das Finalize-Gate — sie brauchen immer
+     noch einen User-Blick (Memo 038 Kap 7, F5=A). Darf leer bleiben. -->
+
+*(Noch keine — entfernen, sobald die erste ai-on-behalf-Antwort hier eingetragen wird.)*
 
 ---
 

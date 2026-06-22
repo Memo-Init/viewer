@@ -25,6 +25,12 @@ const PORT_SCHEMA = [ 3333, 4444, 5555, 6666, 7777, 8888 ]
 // probe AND every server.listen, closes that interface-mismatch.
 const BIND_HOST = '127.0.0.1'
 
+// Memo 038 Kap 13: realistic dictation speed. Spoken transcript minutes are derived at this rate
+// (~110-150 wpm for dictation); the old magic 200 wpm was a reading speed and made every spoken
+// estimate too short. ONE constant, shared by every spoken-minute computation (aggregateMemoMinutes,
+// promptStatusLine), mirrored in TranscriptRegistry.mjs and app.client.mjs so the value never drifts.
+const SPOKEN_WORDS_PER_MINUTE = 130
+
 // PRD-010 (Memo 016, F1): the ~3000-line app CSS was extracted from the inline <style> block of
 // #buildHtmlPage into src/public/app.css and is served by the /app.css static route. The file is
 // read ONCE at module load (resolved relative to this module, not cwd) and cached — every request
@@ -756,6 +762,9 @@ class MemoView {
             '.gif': 'image/gif',
             '.svg': 'image/svg+xml',
             '.webp': 'image/webp',
+            // Memo 038 Kap 11: serve .avif images (modern format used in memo media/) — was missing,
+            // so an .avif referenced from a memo fell back to octet-stream and did not render.
+            '.avif': 'image/avif',
             '.ico': 'image/x-icon',
             '.bmp': 'image/bmp'
         }
@@ -3058,19 +3067,38 @@ class MemoView {
 
 
     // PRD-001 (Memo 019 Kap 1): aggregate the spoken minutes of ALL transcripts of a memo. Pure,
-    // testable. Sums the per-transcript word counts and converts at ~200 words/minute (same
-    // estimate as TranscriptRegistry.wordCount and the sticky-header read-out). 0 transcripts ->
-    // 0 Min (no invented default, no date fallback). Used for the finalized-memo minutes chip.
+    // testable. Sums the per-transcript word counts and converts at the realistic dictation rate
+    // SPOKEN_WORDS_PER_MINUTE (Memo 038 Kap 13, was a too-fast 200). 0 transcripts -> 0 Min (no
+    // invented default, no date fallback). Memo 038 Kap 13: the sum is DEDUPED first — a transcript
+    // registered twice (same id/url) must not double-count toward the memo total.
     static aggregateMemoMinutes( { transcripts } ) {
         const list = Array.isArray( transcripts ) ? transcripts : []
 
-        const words = list
+        const words = MemoView.#dedupeTranscripts( { list } )
             .map( ( entry ) => ( entry && typeof entry[ 'words' ] === 'number' && entry[ 'words' ] > 0 ) ? entry[ 'words' ] : 0 )
             .reduce( ( sum, value ) => sum + value, 0 )
 
-        const minutes = words === 0 ? 0 : Math.ceil( words / 200 )
+        const minutes = words === 0 ? 0 : Math.ceil( words / SPOKEN_WORDS_PER_MINUTE )
 
         return { words, minutes }
+    }
+
+
+    // Memo 038 Kap 13: dedupe transcript entries by a stable identity key (id | transcriptId | url)
+    // BEFORE summing words, so a doubly-registered transcript is counted once. An entry without any
+    // key cannot be a known duplicate and is always kept (no invented identity).
+    static #dedupeTranscripts( { list } ) {
+        const seen = new Set()
+
+        return list
+            .filter( ( entry ) => {
+                const key = entry && ( entry[ 'id' ] || entry[ 'transcriptId' ] || entry[ 'url' ] )
+                if( typeof key !== 'string' || key.length === 0 ) { return true }
+                if( seen.has( key ) ) { return false }
+                seen.add( key )
+
+                return true
+            } )
     }
 
 
@@ -3112,7 +3140,9 @@ class MemoView {
 
         const wordCount = ( typeof words === 'number' && words > 0 ) ? words : 0
         const measured = typeof spokenMinutes === 'number' && spokenMinutes > 0
-        const estimated = wordCount === 0 ? 0 : Math.ceil( wordCount / 200 )
+        // Memo 038 Kap 13: estimate at the realistic dictation rate (was 200). `words` here is the
+        // TRANSCRIPT word count (spoken), never the rendered-document length.
+        const estimated = wordCount === 0 ? 0 : Math.ceil( wordCount / SPOKEN_WORDS_PER_MINUTE )
         const minutes = measured ? spokenMinutes : estimated
         // geschaetzt whenever there is no measured spoken duration — never fake "gesprochen".
         const minutesEstimated = !measured

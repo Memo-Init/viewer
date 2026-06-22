@@ -6,6 +6,9 @@ import { TranscriptHeader } from './TranscriptHeader.mjs'
 
 // REV_FILE_PATTERN is used ONLY for the revisions/ folder scan (#scanRevNumbers / #maxRevNumber):
 // real revision files are REV-NN.md. It must stay as-is — transcripts/ no longer uses it.
+// Memo 038 Kap 13: realistic dictation speed for spoken transcript minutes (~110-150 wpm). Replaces
+// the too-fast magic 200 (a reading rate). Mirrored in MemoView.mjs + app.client.mjs — one value.
+const SPOKEN_WORDS_PER_MINUTE = 130
 const REV_FILE_PATTERN = /^REV-(\d+)(?:--(\d+))?\.md$/
 // PRD-001 (Memo 022): the transcripts/ binding key. A revision transcript = feedback ZU REV-N is
 // bound to REV-N. The filename encodes the DISCUSSED revision, not the produced one. Group 1 = the
@@ -1527,7 +1530,7 @@ class TranscriptRegistry {
             .filter( ( token ) => token.length > 0 )
 
         struct[ 'words' ] = matches.length
-        struct[ 'minutes' ] = matches.length === 0 ? 0 : Math.ceil( matches.length / 200 )
+        struct[ 'minutes' ] = matches.length === 0 ? 0 : Math.ceil( matches.length / SPOKEN_WORDS_PER_MINUTE )
 
         return struct
     }
@@ -1535,16 +1538,28 @@ class TranscriptRegistry {
 
     // PRD-001 (Memo 019 Kap 1): aggregate the spoken minutes of ALL transcripts of a memo. Pure,
     // additive, testable. Sums the per-transcript word counts (the 'words' field surfaced in the
-    // transcript tree) and converts at ~200 words/minute, reusing the wordCount estimate. With
-    // 0 transcripts -> 0 Min (no invented default). Does not read or mutate any transcript file.
+    // transcript tree) and converts at the realistic dictation rate SPOKEN_WORDS_PER_MINUTE (Memo
+    // 038 Kap 13, was 200). With 0 transcripts -> 0 Min (no invented default). Memo 038 Kap 13: the
+    // sum is DEDUPED by identity (id|transcriptId|url) so a doubly-registered transcript counts once.
     static aggregateMemoMinutes( { transcripts } ) {
         const list = Array.isArray( transcripts ) ? transcripts : []
 
-        const words = list
+        const seen = new Set()
+        const unique = list
+            .filter( ( entry ) => {
+                const key = entry && ( entry[ 'id' ] || entry[ 'transcriptId' ] || entry[ 'url' ] )
+                if( typeof key !== 'string' || key.length === 0 ) { return true }
+                if( seen.has( key ) ) { return false }
+                seen.add( key )
+
+                return true
+            } )
+
+        const words = unique
             .map( ( entry ) => ( entry && typeof entry[ 'words' ] === 'number' && entry[ 'words' ] > 0 ) ? entry[ 'words' ] : 0 )
             .reduce( ( sum, value ) => sum + value, 0 )
 
-        const minutes = words === 0 ? 0 : Math.ceil( words / 200 )
+        const minutes = words === 0 ? 0 : Math.ceil( words / SPOKEN_WORDS_PER_MINUTE )
 
         return { words, minutes }
     }

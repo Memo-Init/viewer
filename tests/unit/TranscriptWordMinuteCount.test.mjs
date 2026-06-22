@@ -4,10 +4,11 @@ import { TranscriptRegistry } from '../../src/TranscriptRegistry.mjs'
 
 
 // PRD-003 (Memo 024 Kap 3): the Bootstrap-Modal live counter ("X Wörter · Y Min") must use
-// the canonical Math.ceil( words / 200 ) reading-time formula for every tab. The browser-side
-// updateTranscriptWordCount mirrors exactly this contract; TranscriptRegistry.wordCount is the
-// importable single source of truth, so this unit test pins the formula deterministically:
-//   0 words -> 0 Min, 1 word -> 1 Min, 200 words -> 1 Min, 201 words -> 2 Min.
+// the canonical Math.ceil( words / 130 ) dictation-rate formula for every tab (Memo 038 Kap 13 —
+// realistic spoken speed, was a too-fast 200). The browser-side updateTranscriptWordCount mirrors
+// this contract; TranscriptRegistry.wordCount is the importable single source of truth, so this
+// unit test pins the formula deterministically:
+//   0 words -> 0 Min, 1 word -> 1 Min, 130 words -> 1 Min, 131 words -> 2 Min, 200 words -> 2 Min.
 const buildWords = ( count ) => {
     const tokens = Array.from( { length: count }, ( _value, index ) => `wort${ index }` )
 
@@ -15,12 +16,13 @@ const buildWords = ( count ) => {
 }
 
 
-describe( 'PRD-003 Wörter-/Minuten-Logik (Math.ceil( words / 200 ))', () => {
+describe( 'PRD-003 Wörter-/Minuten-Logik (Math.ceil( words / 130 ), Memo 038 Kap 13)', () => {
     const cases = [
         [ 0, 0, 0 ],
         [ 1, 1, 1 ],
-        [ 200, 200, 1 ],
-        [ 201, 201, 2 ]
+        [ 130, 130, 1 ],
+        [ 131, 131, 2 ],
+        [ 200, 200, 2 ]
     ]
 
     cases.forEach( ( [ wordCount, expectedWords, expectedMinutes ] ) => {

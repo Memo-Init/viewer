@@ -24,10 +24,11 @@ describe( 'MemoView.promptStatusLine (PRD-008 Prompt-Statuszeile, Zone 2)', () =
                 words: 400, spokenMinutes: 0, questionsAnswered: 0, questionsTotal: 0, transcriptUrl: 'http://x/t1'
             } )
 
-            // 400 words / 200 = 2 min estimate; never faked as "gesprochen".
-            expect( ps.minutes ).toBe( 2 )
+            // Memo 038 Kap 13: 400 words / 130 = 3.08 -> ceil 4 min estimate (was 2 at 200 wpm);
+            // never faked as "gesprochen".
+            expect( ps.minutes ).toBe( 4 )
             expect( ps.minutesEstimated ).toBe( true )
-            expect( ps.minutesLabel ).toBe( '2 Min geschätzt' )
+            expect( ps.minutesLabel ).toBe( '4 Min geschätzt' )
             expect( ps.minutesLabel.includes( 'gesprochen' ) ).toBe( false )
         } )
 

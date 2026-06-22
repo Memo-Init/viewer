@@ -15,7 +15,8 @@ describe( 'MemoView.queueEntryModel (PRD-006)', () => {
             transcripts: [ { words: 200 }, { words: 100 } ]
         } )
 
-        expect( model.minutes ).toBe( 2 )
+        // Memo 038 Kap 13: 300 words / 130 = 2.31 -> ceil 3 (was 2 at the old 200 wpm).
+        expect( model.minutes ).toBe( 3 )
     } )
 
 
@@ -80,7 +81,8 @@ describe( 'MemoView.queueEntryModel (PRD-006)', () => {
         } )
 
         expect( model.lifecycleStatus ).toBe( 'Abgeschlossen' )
-        expect( model.minutes ).toBe( 1 )
+        // Memo 038 Kap 13: 200 words / 130 = 1.54 -> ceil 2 (was 1 at the old 200 wpm).
+        expect( model.minutes ).toBe( 2 )
     } )
 
 
@@ -94,7 +96,8 @@ describe( 'MemoView.queueEntryModel (PRD-006)', () => {
 
         expect( model ).toEqual( {
             memoName: '024-feature',
-            minutes: 2,
+            // Memo 038 Kap 13: 400 words / 130 = 3.08 -> ceil 4 (was 2 at the old 200 wpm).
+            minutes: 4,
             lifecycleStatus: 'Bedingt finalisiert'
         } )
     } )

@@ -153,7 +153,24 @@ class MemoModel {
                     ? question.frage
                     : ( typeof question.title === 'string' ? question.title : '' )
 
-                return { id: question.id, text, answered: question.answered === true }
+                // Memo 038 Kap 6/7 (P1c): keep { id, text, answered } intact for back-compat and
+                // additively project the answer-provenance fields when present. `answeredBy` always
+                // exists on a parsed question (defaults to 'user'); the decision pair is only carried
+                // when the answered entry actually wrote it — so legacy memos keep the thin shape.
+                const projected = { id: question.id, text, answered: question.answered === true }
+
+                const answeredBy = question.answeredBy === 'ai-on-behalf' ? 'ai-on-behalf' : 'user'
+                projected.answeredBy = answeredBy
+
+                if( typeof question.userDecision === 'string' && question.userDecision.length > 0 ) {
+                    projected.userDecision = question.userDecision
+                }
+
+                if( typeof question.aiRecommendationWas === 'string' && question.aiRecommendationWas.length > 0 ) {
+                    projected.aiRecommendationWas = question.aiRecommendationWas
+                }
+
+                return projected
             } )
     }
 

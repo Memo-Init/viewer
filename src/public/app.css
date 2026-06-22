@@ -2608,6 +2608,21 @@
             flex-shrink: 0;
         }
 
+        /* Memo 038 Kap 7 (P3a): provenance pill for an AI "im Namen des Users" pre-decision.
+           Prominent amber so an ai-on-behalf decision is never mistaken for a user answer. A
+           'user' answer (the default) renders no badge. */
+        .qw-prov-badge {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            letter-spacing: 0.02em;
+            padding: 2px 8px;
+            border-radius: 10px;
+            border: 1px solid var(--warning);
+            background: rgba(210, 153, 34, 0.12);
+            color: var(--warning);
+            flex-shrink: 0;
+        }
+
         .qw-toggle {
             font-family: var(--font-mono);
             font-size: 16px;
@@ -3008,6 +3023,10 @@
         }
 
         img { max-width: 100%; border-radius: 6px; }
+
+        /* Memo 038 Kap 11: content images are click-to-zoom (image lightbox), mirroring the
+           diagram zoom affordance. Scoped to #content so UI icons keep their default cursor. */
+        #content img { cursor: zoom-in; }
 
         .mermaid {
             background: var(--text-on-accent);

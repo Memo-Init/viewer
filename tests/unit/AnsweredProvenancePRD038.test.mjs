@@ -13,11 +13,11 @@ import { MemoValidator } from '../../src/MemoValidator.mjs'
 // userDecision/aiRecommendationWas extraction (inline `·`-form + multi-line form); the finalize
 // schranke (an ai-on-behalf answer does not satisfy the gate); MEMO-025 stays green with the split.
 
+// REV-05 of Memo 038 is the dogfooded target structure. It is committed as a REPO-LOCAL fixture
+// (a copy under tests/fixtures) — NOT read from the live .memo store, which lives outside this repo
+// and is absent in CI (the ENOENT that failed the first push). Test-isolation: fixtures stay in-repo.
 const __dirname = dirname( fileURLToPath( import.meta.url ) )
-const REV05_PATH = resolve(
-    __dirname,
-    '../../../../.memo/memos/038-plan-f3-vergleich-indydevdan-planungsstr/revisions/REV-05.md'
-)
+const REV05_PATH = resolve( __dirname, '../fixtures/memo-038-REV-05.md' )
 
 
 describe( 'P3a — answeredBy in the questions-json schema', () => {

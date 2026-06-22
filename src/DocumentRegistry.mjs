@@ -791,8 +791,18 @@ class DocumentRegistry {
                 }
             } )
 
-        const typ = safe[ 'typ' ] === 'multi' ? 'multi' : 'single'
-        const aiRecommendation = typeof safe[ 'aiRecommendation' ] === 'string' ? safe[ 'aiRecommendation' ] : ''
+        // PRD-036-0403 (Memo 036, Frage-Schema, F13=C): the DOCS/spec now use ENGLISH field
+        // names while the German fields stay valid for back-compat. The READ side therefore
+        // accepts both spellings per field, with the German name taking precedence when both
+        // are present (no behaviour change for existing German blocks). The INTERNAL question
+        // shape keeps the German keys (frage/hintergrund/typ/aiRecommendation) — downstream
+        // rendering depends on them; only the input read gains aliases.
+        const { value: hintergrund } = DocumentRegistry.#readAliased( { safe, names: [ 'hintergrund', 'background' ] } )
+        const { value: frage } = DocumentRegistry.#readAliased( { safe, names: [ 'frage', 'question' ] } )
+        const { value: rawTyp } = DocumentRegistry.#readAliased( { safe, names: [ 'typ', 'type' ] } )
+        const { value: aiRecommendation } = DocumentRegistry.#readAliased( { safe, names: [ 'aiRecommendation', 'recommendation', 'ai_recommendation' ] } )
+
+        const typ = rawTyp === 'multi' ? 'multi' : 'single'
 
         // PRD-004 (Memo 011 Kap 11, Bug A): the JSON path previously never set `preselected`,
         // so the KI-recommendation was never pre-selected or shown. Mirror the markdown path
@@ -813,8 +823,8 @@ class DocumentRegistry {
         const question = {
             'id': typeof safe[ 'id' ] === 'string' ? safe[ 'id' ] : '',
             'title': typeof safe[ 'title' ] === 'string' ? safe[ 'title' ] : '',
-            'hintergrund': typeof safe[ 'hintergrund' ] === 'string' ? safe[ 'hintergrund' ] : '',
-            'frage': typeof safe[ 'frage' ] === 'string' ? safe[ 'frage' ] : '',
+            hintergrund,
+            frage,
             aiRecommendation,
             typ,
             'options': optionsWithDefaults,
@@ -824,6 +834,21 @@ class DocumentRegistry {
         }
 
         return { question }
+    }
+
+
+    static #readAliased( { safe, names } ) {
+        // PRD-036-0403 (Memo 036, Frage-Schema, F13=C): read a string field from the FIRST of
+        // several accepted names. The names are ordered by precedence — the German name leads,
+        // the English alias(es) follow — so a block carrying both spellings keeps the German
+        // value (back-compat). Only string values count; anything else falls through to the
+        // next name and finally to '' (no invented default).
+        const source = ( safe !== null && typeof safe === 'object' ) ? safe : {}
+        const found = names
+            .find( ( name ) => typeof source[ name ] === 'string' )
+        const value = found !== undefined ? source[ found ] : ''
+
+        return { value }
     }
 
 

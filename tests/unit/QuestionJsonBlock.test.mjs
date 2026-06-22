@@ -238,6 +238,127 @@ describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselec
 } )
 
 
+describe( 'PRD-036-0403 (Memo 036, Frage-Schema F13=C) — tolerant English field aliases', () => {
+    const ENGLISH = [
+        {
+            'id': 'F1',
+            'title': 'A single question',
+            'background': 'Background text',
+            'question': 'What should happen?',
+            'recommendation': 'A',
+            'type': 'single',
+            'options': [
+                { 'key': 'A', 'label': 'First option', 'kind': 'option' },
+                { 'key': 'B', 'label': 'Second option', 'kind': 'option' }
+            ],
+            'answered': false
+        }
+    ]
+
+    const GERMAN = [
+        {
+            'id': 'F1',
+            'title': 'A single question',
+            'hintergrund': 'Background text',
+            'frage': 'What should happen?',
+            'aiRecommendation': 'A',
+            'typ': 'single',
+            'options': [
+                { 'key': 'A', 'label': 'First option', 'kind': 'option' },
+                { 'key': 'B', 'label': 'Second option', 'kind': 'option' }
+            ],
+            'answered': false
+        }
+    ]
+
+
+    it( 'parses English field names into the German internal shape', () => {
+        const content = '```questions-json\n' + JSON.stringify( ENGLISH ) + '\n```'
+        const { questions, found } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( found ).toBe( true )
+        expect( questions[ 0 ][ 'hintergrund' ] ).toBe( 'Background text' )
+        expect( questions[ 0 ][ 'frage' ] ).toBe( 'What should happen?' )
+        expect( questions[ 0 ][ 'aiRecommendation' ] ).toBe( 'A' )
+        expect( questions[ 0 ][ 'typ' ] ).toBe( 'single' )
+    } )
+
+
+    it( 'yields the same normalized object for English and German authoring', () => {
+        const englishContent = '```questions-json\n' + JSON.stringify( ENGLISH ) + '\n```'
+        const germanContent = '```questions-json\n' + JSON.stringify( GERMAN ) + '\n```'
+
+        const { questions: fromEnglish } = DocumentRegistry.parseQuestionJsonBlock( { content: englishContent } )
+        const { questions: fromGerman } = DocumentRegistry.parseQuestionJsonBlock( { content: germanContent } )
+
+        expect( fromEnglish[ 0 ] ).toEqual( fromGerman[ 0 ] )
+    } )
+
+
+    it( 'still parses the legacy German field names (back-compat)', () => {
+        const content = '```questions-json\n' + JSON.stringify( GERMAN ) + '\n```'
+        const { questions, found } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( found ).toBe( true )
+        expect( questions[ 0 ][ 'hintergrund' ] ).toBe( 'Background text' )
+        expect( questions[ 0 ][ 'frage' ] ).toBe( 'What should happen?' )
+        expect( questions[ 0 ][ 'aiRecommendation' ] ).toBe( 'A' )
+        expect( questions[ 0 ][ 'typ' ] ).toBe( 'single' )
+    } )
+
+
+    it( 'accepts recommendation and ai_recommendation as aliases for aiRecommendation', () => {
+        const camel = [ { 'id': 'F1', 'question': 'Q?', 'recommendation': 'B', 'type': 'single', 'options': [], 'answered': false } ]
+        const snake = [ { 'id': 'F1', 'question': 'Q?', 'ai_recommendation': 'B', 'type': 'single', 'options': [], 'answered': false } ]
+
+        const camelContent = '```questions-json\n' + JSON.stringify( camel ) + '\n```'
+        const snakeContent = '```questions-json\n' + JSON.stringify( snake ) + '\n```'
+
+        const { questions: fromCamel } = DocumentRegistry.parseQuestionJsonBlock( { content: camelContent } )
+        const { questions: fromSnake } = DocumentRegistry.parseQuestionJsonBlock( { content: snakeContent } )
+
+        expect( fromCamel[ 0 ][ 'aiRecommendation' ] ).toBe( 'B' )
+        expect( fromSnake[ 0 ][ 'aiRecommendation' ] ).toBe( 'B' )
+    } )
+
+
+    it( 'resolves type alias multi the same as typ multi', () => {
+        const english = [ { 'id': 'F1', 'question': 'Q?', 'type': 'multi', 'options': [], 'answered': false } ]
+        const content = '```questions-json\n' + JSON.stringify( english ) + '\n```'
+        const { questions } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( questions[ 0 ][ 'typ' ] ).toBe( 'multi' )
+        expect( questions[ 0 ][ 'allowCustomEntries' ] ).toBe( true )
+    } )
+
+
+    it( 'lets the German name win when both German and English are present', () => {
+        const mixed = [
+            {
+                'id': 'F1',
+                'frage': 'Deutsche Frage',
+                'question': 'English question',
+                'hintergrund': 'Deutscher Hintergrund',
+                'background': 'English background',
+                'typ': 'multi',
+                'type': 'single',
+                'aiRecommendation': 'A',
+                'recommendation': 'B',
+                'options': [ { 'key': 'A', 'label': 'Alpha', 'kind': 'option' } ],
+                'answered': false
+            }
+        ]
+        const content = '```questions-json\n' + JSON.stringify( mixed ) + '\n```'
+        const { questions } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        expect( questions[ 0 ][ 'frage' ] ).toBe( 'Deutsche Frage' )
+        expect( questions[ 0 ][ 'hintergrund' ] ).toBe( 'Deutscher Hintergrund' )
+        expect( questions[ 0 ][ 'typ' ] ).toBe( 'multi' )
+        expect( questions[ 0 ][ 'aiRecommendation' ] ).toBe( 'A' )
+    } )
+} )
+
+
 describe( 'Round-trip JSON -> Markdown -> parseQuestionSchema (PRD-039)', () => {
     it( 'preserves id, typ and real options through the full cycle', () => {
         const { markdown } = DocumentRegistry.renderQuestionsMarkdown( { questions: QUESTIONS } )

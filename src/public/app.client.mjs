@@ -5185,6 +5185,11 @@
         //   - aiRecommendation present + non-empty,
         //   - >= 2 real options (kind 'option') with distinct, non-empty key AND non-empty label,
         //   - the aiRecommendation references an existing option key (single: exactly one such key).
+        // Memo 041 Teil B (Kap 10): this function is the browser MIRROR of QuestionContract.isRenderable
+        // (src/QuestionContract.mjs) — the ONE render contract, shared with MemoValidator. This client
+        // script is inlined into the page (not an importable module), so the logic is hand-kept in
+        // lock-step; tests/unit/QuestionContract.test.mjs asserts the two return identical verdicts so
+        // they can never drift again (the split-brain Memo 041 fixes).
         function isQuestionCleanParse( q ) {
             if( !q || typeof q !== 'object' ) { return false }
 

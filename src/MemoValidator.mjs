@@ -1,5 +1,6 @@
 import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
+import { invalidOptionKinds } from './QuestionContract.mjs'
 
 
 // PRD-036/037/038 (Memo 016, Kap 13): deterministic, server-side, STRUCTURAL validation of
@@ -41,6 +42,7 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'MEMO-050', 'severity': 'ERROR', 'theme': 'json-block', 'description': 'Questions JSON codeblock is malformed' },
     { 'code': 'MEMO-031', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option marker is bold-wrapped (e.g. "**A)**" / "**A:**") and does not parse as an option' },
     { 'code': 'MEMO-032', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Duplicate option within a question (duplicate key, or an authored option duplicates the injected custom/topic default)' },
+    { 'code': 'MEMO-033', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option kind is not one of {option, custom, topic} — the renderer drops such an option (Memo 041 Teil B, the split-brain fix)' },
     { 'code': 'MEMO-060', 'severity': 'ERROR', 'theme': 'filename', 'description': 'Revision filename suffix malformed (expected REV-NN.md, REV-NN-prepare.md or REV-NN-update.md)' },
     { 'code': 'MEMO-070', 'severity': 'ERROR', 'theme': 'lifecycle', 'description': 'Unresolved "[Research offen]" marker present outside code spans' },
     { 'code': 'MEMO-080', 'severity': 'ERROR', 'theme': 'block-meta', 'description': 'block-meta overlay block is malformed (invalid JSON; topic/prd ids not in T001 / PRD-001 shape; or a Parent/Child invariant is violated — child carrying prds, a block mixing singular topic with plural topics, or a grandchild/second level)' },
@@ -80,7 +82,8 @@ class MemoValidator {
         const sections = MemoValidator.#validateRequiredSections( { doc } )
         const header = MemoValidator.#validateHeaderFields( { doc } )
         const json = MemoValidator.#validateJsonBlock( { doc, jsonFound, jsonError } )
-        const questions = MemoValidator.#validateQuestions( { doc, questionSchema } )
+        const questions = MemoValidator.#validateQuestions( { doc, questionSchema, jsonFound } )
+        const optionKinds = MemoValidator.#validateOptionKinds( { doc, jsonFound } )
         const lintExt = MemoValidator.#validateLintExtensions( { doc, fileName } )
 
         const messages = []
@@ -88,6 +91,7 @@ class MemoValidator {
             .concat( header[ 'messages' ] )
             .concat( json[ 'messages' ] )
             .concat( questions[ 'messages' ] )
+            .concat( optionKinds[ 'messages' ] )
             .concat( lintExt[ 'messages' ] )
 
         const info = []
@@ -95,6 +99,7 @@ class MemoValidator {
             .concat( header[ 'info' ] )
             .concat( json[ 'info' ] )
             .concat( questions[ 'info' ] )
+            .concat( optionKinds[ 'info' ] )
             .concat( lintExt[ 'info' ] )
 
         struct[ 'messages' ] = messages
@@ -297,7 +302,7 @@ class MemoValidator {
     }
 
 
-    static #validateQuestions( { doc, questionSchema } ) {
+    static #validateQuestions( { doc, questionSchema, jsonFound } ) {
         const struct = { 'messages': [], 'info': [] }
         const questions = ( questionSchema !== null && typeof questionSchema === 'object' && Array.isArray( questionSchema[ 'questions' ] ) )
             ? questionSchema[ 'questions' ]
@@ -306,7 +311,7 @@ class MemoValidator {
         // PRD-038 Re-Check: "Did question parsing work?" — compare ### F{N} headings in the
         // raw markdown with the number of parsed questions. A mismatch means a heading exists
         // that the parser did not capture as a question.
-        const { messages: parseMessages, info: parseInfo } = MemoValidator.#validateQuestionParse( { doc, questionSchema } )
+        const { messages: parseMessages, info: parseInfo } = MemoValidator.#validateQuestionParse( { doc, questionSchema, jsonFound } )
         struct[ 'messages' ] = struct[ 'messages' ].concat( parseMessages )
         struct[ 'info' ] = struct[ 'info' ].concat( parseInfo )
 
@@ -525,7 +530,7 @@ class MemoValidator {
     }
 
 
-    static #validateQuestionParse( { doc, questionSchema } ) {
+    static #validateQuestionParse( { doc, questionSchema, jsonFound } ) {
         const struct = { 'messages': [], 'info': [] }
         const questions = ( questionSchema !== null && typeof questionSchema === 'object' && Array.isArray( questionSchema[ 'questions' ] ) )
             ? questionSchema[ 'questions' ]
@@ -534,7 +539,15 @@ class MemoValidator {
         const headingMatches = doc.match( /^###\s+F\d+\b/gm ) || []
         const headingCount = headingMatches.length
 
-        if( headingCount !== questions.length ) {
+        // Memo 041 Teil B (Kap 9, 12): json is the source. When a questions-json block is present it is
+        // FULLY authoritative — the `### F{N}` markdown is no longer a required render mirror. Open
+        // questions live json-only (the split-brain fix), while answered questions keep their
+        // `## Beantwortete Fragen` decision records (the AI-Empfehlung-war / User-Entscheidung pairs that
+        // memo-mental-model-derive reads). Because those two artefacts legitimately differ in count, the
+        // heading-vs-question cross-check does NOT apply to a json-source revision — and old hybrid memos
+        // (every question mirrored) keep passing on re-registration. Only the MARKDOWN-ONLY path keeps the
+        // original rule: a `### F{N}` heading that did not parse into a question is still a defect.
+        if( jsonFound !== true && headingCount !== questions.length ) {
             MemoValidator.#route( {
                 'code': 'MEMO-025',
                 'feldPfad': 'questions',
@@ -543,6 +556,55 @@ class MemoValidator {
                 'info': struct[ 'info' ]
             } )
         }
+
+        return struct
+    }
+
+
+    static #validateOptionKinds( { doc, jsonFound } ) {
+        // MEMO-033 (Memo 041 Teil B, Kap 10): the kind-validity check the renderer needs but the
+        // validator was missing. Inspect the RAW questions-json options (before #normalizeJsonQuestion
+        // coerces unknown kinds to 'option') so a bad authored kind — e.g. kind:"normal" — fails LOUD
+        // at the door instead of silently dropping the option into the browser fallback. Only meaningful
+        // when a questions-json block exists; the markdown mirror never carries an explicit kind.
+        const struct = { 'messages': [], 'info': [] }
+
+        if( jsonFound !== true ) { return struct }
+
+        const blockPattern = /```questions-json\s*\n([\s\S]*?)\n```/
+        const matched = doc.match( blockPattern )
+        if( matched === null ) { return struct }
+
+        let parsed
+        try {
+            parsed = JSON.parse( matched[ 1 ] )
+        } catch {
+            // A malformed block is already reported as MEMO-050 by #validateJsonBlock — do not double-report.
+            return struct
+        }
+
+        const list = Array.isArray( parsed )
+            ? parsed
+            : ( parsed !== null && typeof parsed === 'object' && Array.isArray( parsed[ 'questions' ] ) ? parsed[ 'questions' ] : [] )
+
+        list
+            .forEach( ( entry ) => {
+                const safe = ( entry !== null && typeof entry === 'object' ) ? entry : {}
+                const id = typeof safe[ 'id' ] === 'string' && safe[ 'id' ].length > 0 ? safe[ 'id' ] : 'F?'
+                const invalid = invalidOptionKinds( { options: safe[ 'options' ] } )
+
+                invalid
+                    .forEach( ( option ) => {
+                        const keyLabel = option[ 'key' ].length > 0 ? option[ 'key' ] : '?'
+                        MemoValidator.#route( {
+                            'code': 'MEMO-033',
+                            'feldPfad': `${ id }.options.${ keyLabel }.kind`,
+                            'description': `Option kind "${ option[ 'kind' ] }" is not one of {option, custom, topic} — the renderer drops it`,
+                            'messages': struct[ 'messages' ],
+                            'info': struct[ 'info' ]
+                        } )
+                    } )
+            } )
 
         return struct
     }

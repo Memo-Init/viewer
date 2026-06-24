@@ -359,15 +359,29 @@ describe( 'MemoValidator question checks (PRD-038)', () => {
     } )
 
 
-    it( 'parse re-check: an F-heading the parser misses yields MEMO-025', () => {
-        // Add a JSON block declaring only 1 question while markdown has 2 headings.
-        const doc = VALID_DOC.replace(
-            '### F1 — Eine Frage',
-            '### F3 — Zweite Frage\n\n**Hintergrund:** x\n\n**Frage:** y\n\n**AI-Empfehlung:** A\n\nA) opt\n\n### F1 — Eine Frage'
-        ) + '\n\n```questions-json\n' + JSON.stringify( [ { 'id': 'F1', 'frage': 'y', 'hintergrund': 'x', 'aiRecommendation': 'A', 'typ': 'single', 'options': [ { 'key': 'A', 'label': 'a', 'kind': 'option' } ] } ] ) + '\n```'
+    it( 'parse re-check (markdown-only): a stray F-heading the parser misses yields MEMO-025', () => {
+        // A `### F5` heading living OUTSIDE the question sections (here under "## Phasen") is counted
+        // by the whole-doc heading regex but never parsed into a question by parseQuestionSchema —
+        // exactly the PRD-038 silent-degradation case. No json block, so the markdown-only rule applies.
+        const doc = VALID_DOC.replace( '### Phase 1: Test', '### F5 — Verirrt\n\n### Phase 1: Test' )
         const result = MemoValidator.validate( { doc } )
 
         expect( result[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-025' ) ) ).toBe( true )
+    } )
+
+
+    it( 'Memo 041 Teil B: with a json block present, a heading/json count mismatch does NOT yield MEMO-025', () => {
+        // json is the source (Kap 9/12): the `### F{N}` markdown is no longer a required render mirror,
+        // so a heading count that differs from the json question count is NOT a defect anymore. Two
+        // markdown headings + a json block declaring only one question → the old rule would flag MEMO-025;
+        // the new rule trusts the json and stays silent.
+        const doc = VALID_DOC.replace(
+            '### F1 — Eine Frage',
+            '### F3 — Zweite Frage\n\n**Hintergrund:** x\n\n**Frage:** y\n\n**AI-Empfehlung:** A\n\nA) opt\n\n### F1 — Eine Frage'
+        ) + '\n\n```questions-json\n' + JSON.stringify( [ { 'id': 'F1', 'frage': 'y', 'hintergrund': 'x', 'aiRecommendation': 'A', 'typ': 'single', 'options': [ { 'key': 'A', 'label': 'a', 'kind': 'option' }, { 'key': 'B', 'label': 'b', 'kind': 'option' } ] } ] ) + '\n```'
+        const result = MemoValidator.validate( { doc } )
+
+        expect( result[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-025' ) ) ).toBe( false )
     } )
 
 

@@ -822,6 +822,29 @@ class MemoView {
                     return
                 }
 
+                // Memo 041 Teil B (Kap 11, F7=A): fail-loud at the door. Validate the YOUNGEST revision
+                // of the just-registered memo with the SAME MemoValidator the View uses, and answer
+                // 422 + the concrete Error-Codes instead of a blind 200 when it would not render. So the
+                // AI learns a broken question-format at registration, not the user at the screen. The
+                // memo stays registered (visible on refresh) — the AI reads the messages, fixes the
+                // revision, and re-registers (then 200 + live broadcast). Companion to the read-only
+                // /api/validate pre-submit check (the discipline the writing skills now follow).
+                const latestRevision = await MemoView.#registry.getLatestRevision( { documentId: result[ 'documentId' ] } )
+
+                if( latestRevision[ 'found' ] === true ) {
+                    const { validation } = MemoView.#computeValidation( { content: latestRevision[ 'content' ] } )
+
+                    if( validation !== null && typeof validation === 'object' && validation[ 'status' ] === false ) {
+                        sendJson( res, 422, {
+                            'error': `Latest revision (${ latestRevision[ 'fileName' ] }) failed validation — fix it and re-register`,
+                            'messages': validation[ 'messages' ],
+                            'documentId': result[ 'documentId' ]
+                        } )
+
+                        return
+                    }
+                }
+
                 // PRD-004 Auto-Register-Hook: when a memo is registered, auto-register the
                 // sibling .memo/plans/ root for the same projectId (no-op if already registered).
                 // Handles both layouts: <root>/.memo/memos/<slug>/ (ressources) and <root>/.memo/<slug>/ (flowmcp).

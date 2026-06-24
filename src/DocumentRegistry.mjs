@@ -1,6 +1,7 @@
 import { readdir, readFile, access, stat } from 'node:fs/promises'
 import { watch } from 'node:fs'
 import { resolve, basename, dirname } from 'node:path'
+import { VALID_OPTION_KINDS } from './QuestionContract.mjs'
 
 
 const LATEST_LIMIT = 5
@@ -104,6 +105,34 @@ class DocumentRegistry {
         struct['status'] = true
         struct['documentId'] = documentId
         struct['revisionsFound'] = revisions.length
+
+        return struct
+    }
+
+
+    async getLatestRevision( { documentId } ) {
+        // Memo 041 Teil B (Kap 11): read the content of the youngest revision of a registered memo so
+        // the POST /api/documents door-gate can validate it. #scanRevisions sorts newest-first, so
+        // revisions[0] is the latest. Never throws — a missing document or unreadable file returns
+        // found:false and the caller simply skips the validation gate (fail-open, never blocks).
+        const struct = { 'found': false, 'content': '', 'fileName': '' }
+
+        const document = this.#documents.get( documentId )
+        if( document === undefined ) { return struct }
+
+        const revisions = Array.isArray( document[ 'revisions' ] ) ? document[ 'revisions' ] : []
+        if( revisions.length === 0 ) { return struct }
+
+        const latest = revisions[ 0 ]
+
+        try {
+            const content = await readFile( latest[ 'absolutePath' ], 'utf-8' )
+            struct[ 'found' ] = true
+            struct[ 'content' ] = content
+            struct[ 'fileName' ] = latest[ 'fileName' ]
+        } catch {
+            return struct
+        }
 
         return struct
     }
@@ -654,6 +683,21 @@ class DocumentRegistry {
             return struct
         }
 
+        // Memo 041 Teil B (Kap 9): json is the source. When a questions-json block is present, count
+        // its questions directly (open = answered!==true, answered = answered===true) so a single-source
+        // revision without a `### F{N}` markdown mirror shows the correct counts instead of "0 Fragen".
+        const { found: jsonFound, questions: jsonQuestions } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+
+        if( jsonFound === true ) {
+            const list = Array.isArray( jsonQuestions ) ? jsonQuestions : []
+            struct[ 'answeredCount' ] = list
+                .filter( ( q ) => q !== null && typeof q === 'object' && q[ 'answered' ] === true )
+                .length
+            struct[ 'openCount' ] = list.length - struct[ 'answeredCount' ]
+
+            return struct
+        }
+
         const { sectionLines: openLines } = DocumentRegistry.#extractSection( { content, 'heading': 'Offene Fragen' } )
         const { sectionLines: answeredLines } = DocumentRegistry.#extractSection( { content, 'heading': 'Beantwortete Fragen' } )
 
@@ -782,7 +826,12 @@ class DocumentRegistry {
         const options = rawOptions
             .map( ( option ) => {
                 const obj = ( option !== null && typeof option === 'object' ) ? option : {}
-                const kind = typeof obj[ 'kind' ] === 'string' ? obj[ 'kind' ] : 'option'
+                // Memo 041 Teil B (Kap 10): coerce an unknown/invalid kind defensively to 'option'
+                // (belt + suspenders) so a payload that slips past MEMO-033 still RENDERS as a card
+                // instead of silently vanishing. A missing kind also defaults to 'option'. The valid
+                // values (option/custom/topic) pass through unchanged — custom/topic are the injected
+                // defaults appended below.
+                const kind = VALID_OPTION_KINDS.includes( obj[ 'kind' ] ) ? obj[ 'kind' ] : 'option'
 
                 return {
                     'key': typeof obj[ 'key' ] === 'string' ? obj[ 'key' ] : '',
@@ -1522,8 +1571,15 @@ class DocumentRegistry {
     // marker (TranscriptHeader.detectSchema) is NOT applied to memo .md revisions — those files
     // never carry that header, so applying it flagged every revision. Never throws.
     static detectRevisionLegacy( { content } ) {
+        // Memo 041 Teil B (Kap 9): json is the source. A revision is "neu" when it carries a
+        // question structure in EITHER form — a parsable `### F{N}` markdown block OR a valid
+        // questions-json block. Before Memo 041 only the markdown form counted, so a single-source
+        // json-only revision was wrongly flagged legacy ("alte Version") and muted.
         const { questions } = DocumentRegistry.parseQuestionSchema( { content } )
-        const hasQuestionStructure = Array.isArray( questions ) && questions.length > 0
+        const { found: jsonFound, questions: jsonQuestions } = DocumentRegistry.parseQuestionJsonBlock( { content } )
+        const hasMarkdownStructure = Array.isArray( questions ) && questions.length > 0
+        const hasJsonStructure = jsonFound === true && Array.isArray( jsonQuestions ) && jsonQuestions.length > 0
+        const hasQuestionStructure = hasMarkdownStructure || hasJsonStructure
         const isLegacy = hasQuestionStructure === false
 
         return { isLegacy, hasQuestionStructure }

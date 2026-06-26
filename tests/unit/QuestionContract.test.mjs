@@ -120,6 +120,33 @@ describe( 'Memo 041 Teil B — QuestionContract is the one render contract', () 
 } )
 
 
+// Memo 045 (Kap 16): the single-select gate must NOT re-scrape recommendation prose for A-H letters.
+// Two real-world false negatives this pins: (1) a prose-only recommendation that names no letter
+// (e.g. the auto Finalisierungs-Checkliste question); (2) a recommendation containing the German
+// abbreviation "z. B." whose standalone "B" was mis-read as a phantom second option key. Both are
+// structurally valid single-selects and MUST render as clickable cards. Structural rejections stay.
+describe( 'Memo 045 — single-select renderable on structure, not on prose-scraped letters', () => {
+    const twoOpts = [ { 'key': 'A', 'label': 'X', 'kind': 'option' }, { 'key': 'B', 'label': 'Y', 'kind': 'option' } ]
+
+    it( 'renders a single-select whose recommendation names NO option letter (prose-only)', () => {
+        const q = { 'id': 'F1', 'frage': 'Q', 'aiRecommendation': 'Checkliste prüfen und ggf. ergänzen — kein Blocker.', 'typ': 'single', 'options': twoOpts }
+        expect( isRenderable( { question: q } ) ).toBe( true )
+    } )
+
+    it( 'renders a single-select whose recommendation contains "z. B." (no phantom-B rejection)', () => {
+        const q = { 'id': 'F8', 'frage': 'Q', 'aiRecommendation': 'A — registry.json wird Discovery-Quelle, z. B. .workbench/registry.json.', 'typ': 'single', 'options': twoOpts }
+        expect( isRenderable( { question: q } ) ).toBe( true )
+    } )
+
+    it( 'still rejects structurally broken questions (frage, <2 options, id, empty single rec)', () => {
+        expect( isRenderable( { question: { 'id': 'F2', 'frage': '', 'aiRecommendation': 'A', 'typ': 'single', 'options': twoOpts } } ) ).toBe( false )
+        expect( isRenderable( { question: { 'id': 'F3', 'frage': 'Q', 'aiRecommendation': 'A', 'typ': 'single', 'options': [ twoOpts[ 0 ] ] } } ) ).toBe( false )
+        expect( isRenderable( { question: { 'id': 'X1', 'frage': 'Q', 'aiRecommendation': 'A', 'typ': 'single', 'options': twoOpts } } ) ).toBe( false )
+        expect( isRenderable( { question: { 'id': 'F4', 'frage': 'Q', 'aiRecommendation': '', 'typ': 'single', 'options': twoOpts } } ) ).toBe( false )
+    } )
+} )
+
+
 describe( 'Memo 041 Teil B — MEMO-033 fail-loud at the door', () => {
     it( 'reports MEMO-033 for an invalid option.kind and fails the validator', () => {
         const doc = buildQuestionsJsonDoc( { questions: [

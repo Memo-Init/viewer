@@ -49,16 +49,13 @@ const isRenderable = ( { question } ) => {
     const distinctKeys = optionKeys.filter( ( key, idx ) => optionKeys.indexOf( key ) === idx )
     if( distinctKeys.length < 2 ) { return false }
 
-    if( !isMulti ) {
-        const recommendedKeys = ( aiRecommendation.toUpperCase().match( /\b([A-H])\b/g ) || [] )
-        const referencesExisting = recommendedKeys.some( ( key ) => distinctKeys.indexOf( key ) !== -1 )
-        if( !referencesExisting ) { return false }
-
-        const distinctRec = recommendedKeys.filter( ( key, idx ) => recommendedKeys.indexOf( key ) === idx )
-        const existingRec = distinctRec.filter( ( key ) => distinctKeys.indexOf( key ) !== -1 )
-        if( existingRec.length !== 1 ) { return false }
-    }
-
+    // Memo 045 (Kap 16): a single-select is renderable on STRUCTURE alone — valid F-id, non-empty
+    // Frage, non-empty recommendation, >= 2 distinct real options. The old gate re-scraped the
+    // recommendation prose with /\b([A-H])\b/g and required "exactly one referenced key"; that naive
+    // letter-scan rejected a prose-only recommendation (names no A-H letter) AND mis-read the
+    // standalone "B" in the German abbreviation "z. B." ("zum Beispiel") as a phantom second key —
+    // the very phantom-letter class questions-json was meant to kill. Preselection is advisory and is
+    // resolved by the renderer from the structured `preselected`, never re-derived from prose here.
     return true
 }
 

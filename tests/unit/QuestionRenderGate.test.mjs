@@ -144,14 +144,17 @@ describe( 'PRD-004 render gate — emitted browser string', () => {
     } )
 
 
-    // AC-4: recommendation references a non-existing option -> not clean.
-    it( 'rejects when aiRecommendation references no existing option (AC-4)', () => {
+    // Memo 045 (Kap 16): the recommendation prose is NO LONGER scraped for option letters. A
+    // structurally valid single-select renders even if the recommendation names no existing key —
+    // the recommendation is advisory (preselection comes from structured `preselected`). This
+    // replaces the old AC-4 "references a non-existing option -> fallback" behaviour.
+    it( 'renders a single-select even when aiRecommendation names no existing option (Memo 045)', () => {
         const q = {
             'id': 'F1', 'frage': 'Was tun?', 'aiRecommendation': 'Z', 'typ': 'single',
             'options': [ { 'key': 'A', 'label': 'X', 'kind': 'option' }, { 'key': 'B', 'label': 'Y', 'kind': 'option' } ]
         }
 
-        expect( cleanParse( q ) ).toBe( false )
+        expect( cleanParse( q ) ).toBe( true )
     } )
 
 
@@ -255,13 +258,16 @@ describe( 'PRD-004 render gate — emitted browser string', () => {
     } )
 
 
-    it( 'keeps single-select strict — AI must reference exactly one existing key (PRD-003 no regression)', () => {
+    // Memo 045 (Kap 16): a recommendation mentioning more than one capital letter no longer blocks
+    // rendering. The classic false negative is the German abbreviation "z. B." whose standalone "B"
+    // was mis-read as a phantom second option key. The single-select stays clickable; preselection
+    // stays advisory. (Single-select still requires a NON-EMPTY recommendation — see the test above.)
+    it( 'renders a single-select whose recommendation contains a phantom extra letter / "z. B." (Memo 045)', () => {
         const q = {
-            'id': 'F1', 'frage': 'Q', 'aiRecommendation': 'A B', 'typ': 'single',
+            'id': 'F1', 'frage': 'Q', 'aiRecommendation': 'A — nimm Variante A, z. B. wegen X', 'typ': 'single',
             'options': [ { 'key': 'A', 'label': 'X', 'kind': 'option' }, { 'key': 'B', 'label': 'Y', 'kind': 'option' } ]
         }
 
-        // Two referenced keys -> single-select still requires EXACTLY one.
-        expect( cleanParse( q ) ).toBe( false )
+        expect( cleanParse( q ) ).toBe( true )
     } )
 } )

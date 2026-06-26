@@ -5218,20 +5218,12 @@
             var distinctKeys = optionKeys.filter( function( key, idx ) { return optionKeys.indexOf( key ) === idx } )
             if( distinctKeys.length < 2 ) { return false }
 
-            // Single-select: the recommendation must reference EXACTLY one existing option key.
-            // PRD-003: the AI-Empfehlung-references-key check is RELAXED for the multi/checklist
-            // case — a checklist has >= 2 real options but no letter-based AI reference, so the
-            // >= 2-options rule above is the sufficient cleanliness signal for it.
-            if( !isMulti ) {
-                var recommendedKeys = ( aiRecommendation.toUpperCase().match( /\b([A-H])\b/g ) || [] )
-                var referencesExisting = recommendedKeys.some( function( key ) { return distinctKeys.indexOf( key ) !== -1 } )
-                if( !referencesExisting ) { return false }
-
-                var distinctRec = recommendedKeys.filter( function( key, idx ) { return recommendedKeys.indexOf( key ) === idx } )
-                var existingRec = distinctRec.filter( function( key ) { return distinctKeys.indexOf( key ) !== -1 } )
-                if( existingRec.length !== 1 ) { return false }
-            }
-
+            // Memo 045 (Kap 16): a single-select is renderable on STRUCTURE alone. The old gate
+            // re-scraped the recommendation prose with /\b([A-H])\b/g and required "exactly one
+            // referenced key" — that rejected a prose-only recommendation and mis-read the "B" in the
+            // German "z. B." as a phantom second key. Preselection is advisory (the renderer reads the
+            // structured `preselected`), so the prose scan is gone. Keep this mirror in lock-step with
+            // QuestionContract.isRenderable (tests/unit/QuestionContract.test.mjs is the drift guard).
             return true
         }
 

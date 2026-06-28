@@ -67,6 +67,8 @@ Naechste Revision (zu erstellen): \`{REV-NEXT}.md\`
 
 // Type "memo-init" — leerer Kontext. No memo number, no revision fields, no path:
 // the storage location is unknown at this point (Memo 016 Kap 3 Real-World-Constraint).
+// PRD-013 (Memo 054 Kap 7): precondition line injected before step 1 so every written
+// init-transcript carries the memo-sop requirement explicitly.
 const MEMO_INIT_TEMPLATE = `# Transcript fuer neues Memo (memo-init)
 
 ${ SCHEMA_LINE }
@@ -77,6 +79,8 @@ ${ SCHEMA_LINE }
 
 Kontext-Modus: leerer Kontext. Es ist KEINE Memo-Nummer, KEIN Ablageort und KEIN
 Revisions-Feld vordefiniert — der Ort wird erst bei \`memo-init\` bestimmt.
+
+**Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
 
 Pflicht-Workflow (Skill-Aufrufe):
 

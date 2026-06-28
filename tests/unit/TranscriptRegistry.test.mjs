@@ -765,14 +765,15 @@ describe( 'TranscriptRegistry', () => {
         } )
 
 
-        it( 'AC-7: addInitTranscript writes init.md and does NOT overwrite an existing one', async () => {
+        it( 'AC-7: addInitTranscript writes memo-init-transcript.md and does NOT overwrite an existing one', async () => {
             const memoDir = join( tempDir, '022-init-write' )
             await mkdir( memoDir, { recursive: true } )
 
             const first = await registry.addInitTranscript( { projectId: 'proj', memoId: '022-init-write', content: 'original idea', memoPath: memoDir } )
 
             expect( first['status'] ).toBe( true )
-            expect( first['absolutePath'].endsWith( 'init.md' ) ).toBe( true )
+            // PRD-004 (Memo 054 Kap 2): canonical filename is memo-init-transcript.md
+            expect( first['absolutePath'].endsWith( 'memo-init-transcript.md' ) ).toBe( true )
             expect( first['transcriptId'] ).toBe( 'proj--022-init-write--init' )
 
             const originalRaw = await readFile( first['absolutePath'], 'utf-8' )

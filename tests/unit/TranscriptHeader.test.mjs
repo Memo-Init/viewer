@@ -429,3 +429,33 @@ describe( 'TranscriptHeader — Header-Vertrag-Sync Round-Trip (PRD-009)', () =>
         expect( headMatch[ 2 ] ).toBe( 'binding' )
     } )
 } )
+
+
+describe( 'TranscriptHeader PRD-013 (Memo 054 Kap 7) — memo-sop precondition in MEMO_INIT_TEMPLATE', () => {
+    it( 'memo-init header contains the Voraussetzung/memo-sop precondition line', () => {
+        const { status, header } = TranscriptHeader.build( { type: 'memo-init' } )
+
+        expect( status ).toBe( true )
+        expect( header ).toContain( 'Voraussetzung' )
+        expect( header ).toContain( 'memo-sop' )
+    } )
+
+    it( 'precondition appears BEFORE the Pflicht-Workflow step list', () => {
+        const { header } = TranscriptHeader.build( { type: 'memo-init' } )
+
+        const voraussetzungIdx = header.indexOf( 'Voraussetzung' )
+        const workflowIdx = header.indexOf( 'Pflicht-Workflow' )
+
+        expect( voraussetzungIdx ).toBeGreaterThan( -1 )
+        expect( workflowIdx ).toBeGreaterThan( -1 )
+        expect( voraussetzungIdx ).toBeLessThan( workflowIdx )
+    } )
+
+    it( 'frei and plan-start templates do NOT carry the memo-sop precondition', () => {
+        const frei = TranscriptHeader.build( { type: 'frei' } )
+        const planStart = TranscriptHeader.build( { type: 'plan-start' } )
+
+        expect( frei[ 'header' ] ).not.toContain( 'memo-sop' )
+        expect( planStart[ 'header' ] ).not.toContain( 'memo-sop' )
+    } )
+} )

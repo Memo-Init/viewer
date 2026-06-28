@@ -890,6 +890,14 @@ class MemoView {
                             projectId,
                             'memoId': memoName
                         } )
+
+                        // PRD-004 (Memo 054 Kap 2): auto-bind a memo-init other-transcript as the
+                        // memo's init file, if one exists and none is bound yet (NO-OVERWRITE).
+                        await MemoView.#transcriptRegistry.autoBindInitTranscript( {
+                            projectId,
+                            'memoId': memoName,
+                            'memoPath': memoDir
+                        } )
                     }
                 }
 
@@ -1677,10 +1685,13 @@ class MemoView {
                     return
                 }
 
+                // PRD-013 (Memo 054 Kap 7): surface the memo-sop precondition in the API response
+                // so callers (CLI, frontend) can surface it to the user without hard-coding it.
                 sendJson( res, 200, {
                     'status': 'ok',
                     'transcriptId': result[ 'transcriptId' ],
-                    'url': result[ 'url' ]
+                    'url': result[ 'url' ],
+                    'precondition': 'memo-sop muss geladen sein (Skill-Kontext aktuell halten)'
                 } )
 
                 process.stdout.write( `  Transcript added (init): ${ result[ 'transcriptId' ] }\n` )

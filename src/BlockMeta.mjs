@@ -32,13 +32,16 @@ const T_ID = /^T\d{3}$/
 const PRD_ID = /^PRD-\d{3}$/
 const B_ID = /^B\d{3}$/
 
-// PRD-008 body sections: the three structured Markdown headings a Block carries below its fence.
-// Mapped to flat fields problem/solution/openQuestions so the downstream PRD derivation (Kap 8)
-// can read them machine-readably without re-parsing prose.
+// PRD-003 (Memo 054 Kap 6) body sections: four canonical Markdown headings a Block carries below
+// its fence, aligned with the spec-primitive / core MemoBlock. Mapped to flat fields so the
+// downstream PRD derivation (Kap 8) can read them machine-readably without re-parsing prose.
+// `aliases` provides legacy heading names that still match (additive, no hard break for old memos):
+//   factualAccount: canonical "### Faktenlage", alias "### Problem-Beschreibung" (pre-054 memos).
 const BODY_SECTIONS = [
-    { field: 'problem', heading: 'Problem-Beschreibung' },
-    { field: 'solution', heading: 'Loesungsansatz' },
-    { field: 'openQuestions', heading: 'Offene Fragen' }
+    { field: 'factualAccount', heading: 'Faktenlage', aliases: [ 'Problem-Beschreibung' ] },
+    { field: 'assessment', heading: 'Bewertung', aliases: [] },
+    { field: 'solution', heading: 'Loesungsansatz', aliases: [] },
+    { field: 'openQuestions', heading: 'Offene Fragen', aliases: [] }
 ]
 
 
@@ -117,9 +120,11 @@ class BlockMeta {
         const hasChildMarker = typeof value.topic === 'string' && value.topic.length > 0
         const role = hasChildMarker ? 'child' : 'parent'
 
-        // PRD-008: id (B-id) and tags are additive block-meta fields; the three body sections are
+        // PRD-008: id (B-id) and tags are additive block-meta fields; the four body sections are
         // merged in as flat fields. A "strand" key is deliberately NOT read — the strand is emergent
         // (PRD-009), so a fence carrying strand:"x" produces NO strand field on the parsed block.
+        // PRD-003 (Memo 054 Kap 6): `problem` renamed to `factualAccount`; `assessment` added as
+        // the second section. Old "### Problem-Beschreibung" headings are accepted as alias.
         return {
             ok: true,
             chapter,
@@ -132,7 +137,8 @@ class BlockMeta {
             prds: BlockMeta.#stringArray( { value: value.prds } ),
             requirements: BlockMeta.#stringArray( { value: value.requirements } ),
             requirementsPlus: BlockMeta.#stringArray( { value: value[ 'requirements+' ] } ),
-            problem: body.problem,
+            factualAccount: body.factualAccount,
+            assessment: body.assessment,
             solution: body.solution,
             openQuestions: body.openQuestions,
             hasIdKey: Object.prototype.hasOwnProperty.call( value, 'id' ),
@@ -217,10 +223,13 @@ class BlockMeta {
     }
 
 
-    // PRD-008: extract the three structured body sections (### Problem-Beschreibung, ### Loesungsansatz,
-    // ### Offene Fragen) that follow a block-meta fence. The body region runs from the fence end to the
-    // next chapter ("## ") or the next block-meta fence, whichever comes first — sections are scoped to
-    // THIS block only. A missing section yields null (no silent default). Non-throwing.
+    // PRD-003 (Memo 054 Kap 6): extract the four canonical body sections that follow a block-meta
+    // fence: ### Faktenlage (factualAccount), ### Bewertung (assessment), ### Loesungsansatz
+    // (solution), ### Offene Fragen (openQuestions). Legacy "### Problem-Beschreibung" is accepted
+    // as an alias for factualAccount so pre-054 memos keep working without any hard break.
+    // The body region runs from the fence end to the next chapter ("## ") or the next block-meta
+    // fence, whichever comes first — sections are scoped to THIS block only. A missing section
+    // yields null (no silent default). Non-throwing.
     static #bodySections( { doc, fenceEnd } ) {
         const after = doc.slice( fenceEnd )
         const nextChapter = after.search( /^##\s+/m )
@@ -234,8 +243,14 @@ class BlockMeta {
             .map( ( line, index ) => ( { line, index } ) )
             .filter( ( entry ) => /^###\s+/.test( entry.line ) )
 
-        const sectionFor = ( heading ) => {
-            const start = headingIndexes.find( ( entry ) => entry.line.replace( /^###\s+/, '' ).trim() === heading )
+        const sectionFor = ( section ) => {
+            const headings = [ section.heading ].concat( section.aliases || [] )
+            const start = headingIndexes.find( ( entry ) => {
+                const text = entry.line.replace( /^###\s+/, '' ).trim()
+
+                return headings.includes( text )
+            } )
+
             if( start === undefined ) {
                 return null
             }
@@ -248,7 +263,7 @@ class BlockMeta {
         }
 
         return BODY_SECTIONS.reduce( ( acc, section ) => {
-            acc[ section.field ] = sectionFor( section.heading )
+            acc[ section.field ] = sectionFor( section )
 
             return acc
         }, {} )

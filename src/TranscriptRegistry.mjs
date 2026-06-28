@@ -16,7 +16,9 @@ const REV_FILE_PATTERN = /^REV-(\d+)(?:--(\d+))?\.md$/
 const REVIEW_FILE_PATTERN = /^REV-(\d+)--review--(\d+)\.md$/
 // PRD-001 (Memo 022): the init transcript (memo-erstellen -> REV-01). NOT feedback to an existing
 // revision, so it is stored separately and NEVER bound to a REV (no revisionId).
-const INIT_FILE_PATTERN = /^init\.md$/
+// PRD-004 (Memo 054 Kap 2): canonical write name is now 'memo-init-transcript.md'. Legacy 'init.md'
+// is still recognised on scan for backward compatibility (no auto-rename on read).
+const INIT_FILE_PATTERN = /^(?:memo-init-transcript|init)\.md$/
 const REVISION_ID_PATTERN = /^REV-\d+$/
 const PLAN_ID_PATTERN = /^PLAN-\d{3}-[a-z0-9-]+$/
 // Slug is encoded in the filename so other transcripts survive a server restart:
@@ -950,12 +952,13 @@ class TranscriptRegistry {
     }
 
 
-    // PRD-001 (Memo 022): write the Init-Transcript transcripts/init.md — the very first transcript
-    // a memo grew out of (memo-erstellen -> REV-01). It is NOT feedback to an existing revision, so
-    // it carries the memo-init header (no number, no path, no revision fields) and is NEVER bound to
-    // a REV. Fixed filename 'init.md' (one per memo). NO-OVERWRITE: an existing init.md is never
-    // overwritten — a status message is returned instead (gleiches Muster wie der access-Check in
-    // addTranscript / addFreeMemoTranscript). Goes into #otherTranscripts (no revisionId).
+    // PRD-001 (Memo 022): write the Init-Transcript — the very first transcript a memo grew out of
+    // (memo-erstellen -> REV-01). It is NOT feedback to an existing revision, so it carries the
+    // memo-init header (no number, no path, no revision fields) and is NEVER bound to a REV.
+    // PRD-004 (Memo 054 Kap 2): canonical filename is 'memo-init-transcript.md' (one per memo).
+    // NO-OVERWRITE: an existing memo-init-transcript.md is never overwritten — a status message is
+    // returned instead (gleiches Muster wie der access-Check in addTranscript /
+    // addFreeMemoTranscript). Goes into #otherTranscripts (no revisionId).
     async addInitTranscript( { projectId, memoId, content, memoPath } ) {
         const struct = { 'status': false, 'messages': [], 'transcriptId': null, 'url': null, 'absolutePath': null }
 
@@ -1001,11 +1004,13 @@ class TranscriptRegistry {
             return struct
         }
 
-        const fileName = 'init.md'
+        // PRD-004 (Memo 054 Kap 2): canonical write name. Scan recognises both this and the legacy
+        // 'init.md' via INIT_FILE_PATTERN, but only this name is ever written.
+        const fileName = 'memo-init-transcript.md'
         const finalPath = resolve( transcriptsDir, fileName )
         const tmpPath = `${ finalPath }.tmp`
 
-        // NO-OVERWRITE: never replace an existing init.md (one Init-Transcript per memo).
+        // NO-OVERWRITE: never replace an existing memo-init-transcript.md (one Init-Transcript per memo).
         try {
             await access( finalPath )
             struct[ 'messages' ].push( `TRANSCRIPT-SEQ-001: Init transcript already exists: ${ fileName }` )
@@ -1060,6 +1065,35 @@ class TranscriptRegistry {
         struct[ 'absolutePath' ] = finalPath
 
         return struct
+    }
+
+
+    // PRD-004 (Memo 054 Kap 2): auto-bind the first available `memo-init`-typed other transcript
+    // for `projectId` as the memo's init transcript, if not already bound. Called automatically
+    // after a document is registered (POST /api/documents → scanMemo hook in MemoView.mjs).
+    // NO-OVERWRITE: if a bound init transcript already exists for this memo, returns skipped=true
+    // without writing. Never clobbers an existing file.
+    async autoBindInitTranscript( { projectId, memoId, memoPath } ) {
+        const existingInitId = `${ projectId }--${ memoId }--init`
+
+        if( this.#otherTranscripts.has( existingInitId ) ) {
+            return { 'status': false, 'skipped': true, 'reason': 'already-bound' }
+        }
+
+        // Find the first "other area" transcript of type memo-init for this projectId.
+        // Other-area entries have transcriptId of the form {projectId}--other--{seq}.
+        const candidate = [ ...this.#otherTranscripts.values() ]
+            .find( ( t ) => t[ 'projectId' ] === projectId
+                && t[ 'type' ] === 'memo-init'
+                && t[ 'transcriptId' ].includes( '--other--' ) )
+
+        if( !candidate ) {
+            return { 'status': false, 'skipped': true, 'reason': 'no-candidate' }
+        }
+
+        const content = await readFile( candidate[ 'absolutePath' ], 'utf-8' )
+
+        return this.addInitTranscript( { projectId, memoId, content, memoPath } )
     }
 
 

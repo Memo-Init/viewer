@@ -3855,7 +3855,8 @@
                     : ( ( block.requirementsPlus && block.requirementsPlus.length > 0 ) ? block.requirementsPlus : [] )
                 addSection( 'requirements', 'Effektive Requirements', reqs.length > 0 ? reqs.join( ', ' ) : '' )
             } else {
-                addSection( 'problem', 'Problem-Beschreibung', block.problem )
+                addSection( 'factual-account', 'Faktenlage', block.factualAccount )
+                addSection( 'assessment', 'Bewertung', block.assessment )
                 addSection( 'solution', 'Loesungsansatz', block.solution )
                 addSection( 'open-questions', 'Offene Fragen', block.openQuestions )
             }

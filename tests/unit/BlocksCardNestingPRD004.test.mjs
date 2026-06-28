@@ -369,12 +369,14 @@ describe( 'inline block modal — PRD-004 (A8/A9)', () => {
             'block-modal-title': modalTitle
         } )
 
+        // PRD-003 (Memo 054 Kap 6): block now carries factualAccount + assessment (4 sections).
         const parentCard = fns.buildBlockItem( {
             role: 'parent',
             id: 'B001',
             chapter: '3. Block-Struktur',
             topics: [ 'T012' ],
-            problem: 'P',
+            factualAccount: 'P',
+            assessment: null,
             solution: 'S',
             openQuestions: 'Q'
         } )
@@ -383,7 +385,7 @@ describe( 'inline block modal — PRD-004 (A8/A9)', () => {
 
         const sectionKeys = collectByAttr( modalBody, 'data-block-section' )
             .map( ( n ) => n.getAttribute( 'data-block-section' ) ).sort()
-        expect( sectionKeys ).toEqual( [ 'open-questions', 'problem', 'solution' ] )
+        expect( sectionKeys ).toEqual( [ 'assessment', 'factual-account', 'open-questions', 'solution' ] )
     } )
 } )
 

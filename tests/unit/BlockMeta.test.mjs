@@ -178,14 +178,17 @@ describe( 'BlockMeta PRD-008 — id (B-id), tags, body sections, no strand', () 
         ''
     ].join( '\n' )
 
-    it( 'parses id, tags, problem, solution, openQuestions for a full block', () => {
+    it( 'parses id, tags, factualAccount (via alias), solution, openQuestions for a full block', () => {
         const { blocks } = BlockMeta.parse( { doc: FULL_BLOCK } )
 
         expect( blocks ).toHaveLength( 1 )
         const block = blocks[ 0 ]
         expect( block.id ).toBe( 'B001' )
         expect( block.tags ).toEqual( [ 'nodejs', 'outward-facing' ] )
-        expect( block.problem ).toBe( 'The block format lacks an id and tags.\nSecond problem line.' )
+        // "### Problem-Beschreibung" is the legacy alias for factualAccount (PRD-003 Memo 054 Kap 6)
+        expect( block.factualAccount ).toBe( 'The block format lacks an id and tags.\nSecond problem line.' )
+        expect( block.problem ).toBeUndefined()
+        expect( block.assessment ).toBeNull()
         expect( block.solution ).toBe( 'Add B-id, tags and three body sections.' )
         expect( block.openQuestions ).toBe( 'How do tags feed auto-requirements?' )
     } )
@@ -229,7 +232,9 @@ describe( 'BlockMeta PRD-008 — id (B-id), tags, body sections, no strand', () 
             doc: '## X\n```block-meta\n{ "id": "B002", "topics": ["T014"] }\n```\n### Problem-Beschreibung\nonly a problem here.\n'
         } ).blocks[ 0 ]
 
-        expect( block.problem ).toBe( 'only a problem here.' )
+        // "### Problem-Beschreibung" is the legacy alias — resolves to factualAccount
+        expect( block.factualAccount ).toBe( 'only a problem here.' )
+        expect( block.assessment ).toBeNull()
         expect( block.solution ).toBeNull()
         expect( block.openQuestions ).toBeNull()
     } )
@@ -249,7 +254,8 @@ describe( 'BlockMeta PRD-008 — id (B-id), tags, body sections, no strand', () 
         ].join( '\n' )
         const block = BlockMeta.parse( { doc } ).blocks[ 0 ]
 
-        expect( block.problem ).toBe( 'first block problem.' )
+        // "### Problem-Beschreibung" is the legacy alias — resolves to factualAccount
+        expect( block.factualAccount ).toBe( 'first block problem.' )
         // the second chapter's ### Loesungsansatz must NOT leak into the first block
         expect( block.solution ).toBeNull()
     } )
@@ -261,6 +267,85 @@ describe( 'BlockMeta PRD-008 — id (B-id), tags, body sections, no strand', () 
 
         expect( Object.prototype.hasOwnProperty.call( block, 'strand' ) ).toBe( false )
         expect( block.strand ).toBeUndefined()
+    } )
+} )
+
+
+describe( 'BlockMeta PRD-003 (Memo 054 Kap 6) — 4-section migration: factualAccount/assessment/solution/openQuestions', () => {
+    it( 'parses all four canonical sections (### Faktenlage, ### Bewertung, ### Loesungsansatz, ### Offene Fragen)', () => {
+        const doc = [
+            '## 7. Neues Block-Format',
+            '```block-meta',
+            '{ "id": "B002", "topics": ["T054"], "prds": ["PRD-003"] }',
+            '```',
+            '',
+            '### Faktenlage',
+            'Der Ist-Zustand vor der Migration.',
+            '',
+            '### Bewertung',
+            'Die Migration ist notwendig fuer die Konsistenz.',
+            '',
+            '### Loesungsansatz',
+            'Sektionen umbenennen und Alias einbauen.',
+            '',
+            '### Offene Fragen',
+            'Wie lange bleibt der Alias aktiv?',
+            ''
+        ].join( '\n' )
+        const { blocks } = BlockMeta.parse( { doc } )
+
+        expect( blocks ).toHaveLength( 1 )
+        const block = blocks[ 0 ]
+        expect( block.factualAccount ).toBe( 'Der Ist-Zustand vor der Migration.' )
+        expect( block.assessment ).toBe( 'Die Migration ist notwendig fuer die Konsistenz.' )
+        expect( block.solution ).toBe( 'Sektionen umbenennen und Alias einbauen.' )
+        expect( block.openQuestions ).toBe( 'Wie lange bleibt der Alias aktiv?' )
+    } )
+
+    it( 'legacy "### Problem-Beschreibung" is accepted as factualAccount alias (additive, no hard break)', () => {
+        const doc = [
+            '## 8. Legacy-Memo',
+            '```block-meta',
+            '{ "id": "B003", "topics": ["T054"] }',
+            '```',
+            '',
+            '### Problem-Beschreibung',
+            'Das alte Problem.',
+            '',
+            '### Loesungsansatz',
+            'Die alte Loesung.',
+            ''
+        ].join( '\n' )
+        const { blocks } = BlockMeta.parse( { doc } )
+
+        expect( blocks ).toHaveLength( 1 )
+        const block = blocks[ 0 ]
+        // alias maps to factualAccount — the `problem` field no longer exists
+        expect( block.factualAccount ).toBe( 'Das alte Problem.' )
+        expect( block.problem ).toBeUndefined()
+        expect( block.assessment ).toBeNull()
+        expect( block.solution ).toBe( 'Die alte Loesung.' )
+    } )
+
+    it( 'parsed block has no `problem` field — only factualAccount and assessment', () => {
+        const doc = '## X\n```block-meta\n{ "topics": ["T054"] }\n```\n'
+        const { blocks } = BlockMeta.parse( { doc } )
+        const block = blocks[ 0 ]
+
+        expect( Object.prototype.hasOwnProperty.call( block, 'factualAccount' ) ).toBe( true )
+        expect( Object.prototype.hasOwnProperty.call( block, 'assessment' ) ).toBe( true )
+        expect( Object.prototype.hasOwnProperty.call( block, 'problem' ) ).toBe( false )
+    } )
+
+    it( 'all four sections missing each yield null independently', () => {
+        const doc = '## X\n```block-meta\n{ "topics": ["T054"] }\n```\n'
+        const { blocks } = BlockMeta.parse( { doc } )
+        const block = blocks[ 0 ]
+
+        expect( block.factualAccount ).toBeNull()
+        expect( block.assessment ).toBeNull()
+        expect( block.solution ).toBeNull()
+        expect( block.openQuestions ).toBeNull()
     } )
 } )
 

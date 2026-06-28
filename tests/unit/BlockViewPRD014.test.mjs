@@ -197,9 +197,10 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
     } )
 
 
-    // Click a block -> opens the REUSED #block-modal (removes t-hidden) and populates the three body
+    // Click a block -> opens the REUSED #block-modal (removes t-hidden) and populates the four body
     // sections with stable data-block-section hooks. Closing re-adds t-hidden.
-    it( 'opens the reused #block-modal on block click, shows 3 body sections, toggles t-hidden', () => {
+    // PRD-003 (Memo 054 Kap 6): four sections — factual-account, assessment, solution, open-questions.
+    it( 'opens the reused #block-modal on block click, shows 4 body sections, toggles t-hidden', () => {
         const modal = makeElement( 'div' )
         modal.classList.add( 't-modal' )
         modal.classList.add( 't-hidden' )
@@ -218,7 +219,8 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
             repos: [ 'repos/viewer' ],
             tags: [ 'Code' ],
             topics: [],
-            problem: 'Die Bloecke sind unsichtbar.',
+            factualAccount: 'Die Bloecke sind unsichtbar.',
+            assessment: null,
             solution: 'Ein Overlay rendert sie.',
             openQuestions: 'Wie viele Bloecke pro Memo?'
         } )
@@ -231,10 +233,10 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
         // After click: modal visible (t-hidden removed == display:flex equivalent, centered via .t-modal).
         expect( modal.classList.contains( 't-hidden' ) ).toBe( false )
 
-        // The body carries exactly the three data-block-section hooks.
+        // The body carries exactly the four data-block-section hooks (PRD-003: +assessment).
         const sectionNodes = collectByAttr( modalBody, 'data-block-section' )
         const sectionKeys = sectionNodes.map( ( n ) => n.getAttribute( 'data-block-section' ) ).sort()
-        expect( sectionKeys ).toEqual( [ 'open-questions', 'problem', 'solution' ] )
+        expect( sectionKeys ).toEqual( [ 'assessment', 'factual-account', 'open-questions', 'solution' ] )
 
         // Section values come from the block fields.
         const detailTexts = sectionNodes
@@ -283,7 +285,8 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
         expect( block.repos ).toEqual( [ 'repos/viewer' ] )
         expect( block.tags ).toEqual( [ 'Code' ] )
         expect( block.topics ).toEqual( [ 'T014' ] )
-        expect( block.problem ).toBe( 'Der Block hat keinen Viewer-Overlay.' )
+        // "### Problem-Beschreibung" is the legacy alias for factualAccount (PRD-003 Memo 054 Kap 6)
+        expect( block.factualAccount ).toBe( 'Der Block hat keinen Viewer-Overlay.' )
         expect( block.solution ).toBe( 'Ein read-only Overlay, das .t-modal wiederverwendet.' )
         expect( block.openQuestions ).toBe( 'Welche Felder zeigt das Overlay?' )
     } )

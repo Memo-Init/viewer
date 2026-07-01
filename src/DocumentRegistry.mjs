@@ -860,6 +860,11 @@ class DocumentRegistry {
         const optionsWithDefaults = [ ...options ]
         optionsWithDefaults.push( { 'key': 'custom', 'label': 'ablehnen', 'kind': 'custom' } )
         optionsWithDefaults.push( { 'key': 'topic', 'label': 'Über das Topic springen', 'kind': 'topic' } )
+        // Memo 059 (Kap 7, F3=A): `reframe` is the third injected sibling default. It signals the
+        // question rests on a FALSE PREMISE — the answer is to re-formulate it (a discussion turn),
+        // not to pick an option (no decision record). A non-'option' kind, so #resolvePreselected
+        // skips it and isRenderable never counts it toward the two-real-option render minimum.
+        optionsWithDefaults.push( { 'key': 'reframe', 'label': 'Frage neu formulieren', 'kind': 'reframe' } )
 
         // An explicit `preselected` array on the JSON entry wins (the author already decided);
         // otherwise derive it from the AI recommendation. Empty recommendation -> [] (no crash).
@@ -1089,6 +1094,9 @@ class DocumentRegistry {
         // already-correct control — this is only the parser's custom option.
         optionsWithDefaults.push( { 'key': 'custom', 'label': 'ablehnen', 'kind': 'custom' } )
         optionsWithDefaults.push( { 'key': 'topic', 'label': 'Über das Topic springen', 'kind': 'topic' } )
+        // Memo 059 (Kap 7, F3=A): mirror the JSON path — inject `reframe` as the third sibling
+        // default so the markdown-authored path offers the same false-premise / re-formulate turn.
+        optionsWithDefaults.push( { 'key': 'reframe', 'label': 'Frage neu formulieren', 'kind': 'reframe' } )
 
         const { topicPositions } = DocumentRegistry.#extractTopicPositions( { body } )
         const { preselected } = DocumentRegistry.#resolvePreselected( { typ, aiRecommendation, options: optionsWithDefaults } )

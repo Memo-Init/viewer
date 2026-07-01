@@ -67,6 +67,12 @@ const CORPUS = [
         'options': [ { 'key': 'A', 'label': 'X', 'kind': 'option' } ] } },
     { 'name': 'single aiRec references two keys', 'q': { 'id': 'F10', 'frage': 'Q', 'aiRecommendation': 'A B', 'typ': 'single',
         'options': [ { 'key': 'A', 'label': 'X', 'kind': 'option' }, { 'key': 'B', 'label': 'Y', 'kind': 'option' } ] } },
+    // Memo 059 (F3): a `reframe` sibling is a NON-'option' kind — it must never count toward the
+    // two-real-option minimum, on the server contract and the client mirror alike.
+    { 'name': 'reframe sibling does not count toward the two-option minimum', 'q': { 'id': 'F11', 'frage': 'Q', 'aiRecommendation': 'A', 'typ': 'single',
+        'options': [ { 'key': 'A', 'label': 'X', 'kind': 'option' }, { 'key': 'reframe', 'label': 'Frage neu formulieren', 'kind': 'reframe' } ] } },
+    { 'name': 'two real options plus a reframe sibling still renders', 'q': { 'id': 'F12', 'frage': 'Q', 'aiRecommendation': 'A', 'typ': 'single',
+        'options': [ { 'key': 'A', 'label': 'X', 'kind': 'option' }, { 'key': 'B', 'label': 'Y', 'kind': 'option' }, { 'key': 'reframe', 'label': 'Frage neu formulieren', 'kind': 'reframe' } ] } },
     { 'name': 'not an object', 'q': null }
 ]
 
@@ -100,20 +106,22 @@ describe( 'Memo 041 Teil B — QuestionContract is the one render contract', () 
     } )
 
 
-    it( 'exposes the three valid option kinds', () => {
-        expect( VALID_OPTION_KINDS ).toEqual( [ 'option', 'custom', 'topic' ] )
+    it( 'exposes the four valid option kinds', () => {
+        expect( VALID_OPTION_KINDS ).toEqual( [ 'option', 'custom', 'topic', 'reframe' ] )
     } )
 
 
-    it( 'invalidOptionKinds flags only present, invalid string kinds (missing kind is allowed)', () => {
+    it( 'invalidOptionKinds flags only present, invalid string kinds (missing kind is allowed, reframe is valid)', () => {
         const options = [
             { 'key': 'A', 'label': 'X', 'kind': 'option' },
             { 'key': 'B', 'label': 'Y', 'kind': 'normal' },
             { 'key': 'C', 'label': 'Z' },
-            { 'key': 'D', 'label': 'W', 'kind': 'weird' }
+            { 'key': 'D', 'label': 'W', 'kind': 'weird' },
+            { 'key': 'reframe', 'label': 'Frage neu formulieren', 'kind': 'reframe' }
         ]
         const invalid = invalidOptionKinds( { options } )
 
+        // 'reframe' is now a valid kind (Memo 059), so it is NOT flagged; only 'normal'/'weird' are.
         expect( invalid.map( ( o ) => o[ 'key' ] ) ).toEqual( [ 'B', 'D' ] )
         expect( invalid.map( ( o ) => o[ 'kind' ] ) ).toEqual( [ 'normal', 'weird' ] )
     } )
@@ -205,7 +213,7 @@ describe( 'Memo 041 Teil B — defensive kind coercion (suspenders)', () => {
     } )
 
 
-    it( 'leaves the injected custom/topic defaults intact', () => {
+    it( 'leaves the injected custom/topic/reframe defaults intact', () => {
         const doc = buildQuestionsJsonDoc( { questions: [
             { 'id': 'F1', 'title': 'T', 'typ': 'single', 'hintergrund': 'h', 'frage': 'f', 'aiRecommendation': 'A',
               'options': [ { 'key': 'A', 'label': 'X', 'kind': 'option' }, { 'key': 'B', 'label': 'Y', 'kind': 'option' } ] }
@@ -216,5 +224,7 @@ describe( 'Memo 041 Teil B — defensive kind coercion (suspenders)', () => {
 
         expect( kinds ).toContain( 'custom' )
         expect( kinds ).toContain( 'topic' )
+        // Memo 059 (F3): the reframe sibling is injected on the JSON path too.
+        expect( kinds ).toContain( 'reframe' )
     } )
 } )

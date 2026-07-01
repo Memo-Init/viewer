@@ -42,7 +42,7 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'MEMO-050', 'severity': 'ERROR', 'theme': 'json-block', 'description': 'Questions JSON codeblock is malformed' },
     { 'code': 'MEMO-031', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option marker is bold-wrapped (e.g. "**A)**" / "**A:**") and does not parse as an option' },
     { 'code': 'MEMO-032', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Duplicate option within a question (duplicate key, or an authored option duplicates the injected custom/topic default)' },
-    { 'code': 'MEMO-033', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option kind is not one of {option, custom, topic} — the renderer drops such an option (Memo 041 Teil B, the split-brain fix)' },
+    { 'code': 'MEMO-033', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option kind is not one of {option, custom, topic, reframe} — the renderer drops such an option (Memo 041 Teil B, the split-brain fix)' },
     { 'code': 'MEMO-060', 'severity': 'ERROR', 'theme': 'filename', 'description': 'Revision filename suffix malformed (expected REV-NN.md, REV-NN-prepare.md or REV-NN-update.md)' },
     { 'code': 'MEMO-070', 'severity': 'ERROR', 'theme': 'lifecycle', 'description': 'Unresolved "[Research offen]" marker present outside code spans' },
     { 'code': 'MEMO-080', 'severity': 'ERROR', 'theme': 'block-meta', 'description': 'block-meta overlay block is malformed (invalid JSON; topic/prd ids not in T001 / PRD-001 shape; or a Parent/Child invariant is violated — child carrying prds, a block mixing singular topic with plural topics, or a grandchild/second level)' },
@@ -599,7 +599,7 @@ class MemoValidator {
                         MemoValidator.#route( {
                             'code': 'MEMO-033',
                             'feldPfad': `${ id }.options.${ keyLabel }.kind`,
-                            'description': `Option kind "${ option[ 'kind' ] }" is not one of {option, custom, topic} — the renderer drops it`,
+                            'description': `Option kind "${ option[ 'kind' ] }" is not one of {option, custom, topic, reframe} — the renderer drops it`,
                             'messages': struct[ 'messages' ],
                             'info': struct[ 'info' ]
                         } )

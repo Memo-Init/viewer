@@ -48,6 +48,8 @@ Besprochene Revision (Bindung): \`{REV-DISCUSSED}\`
 
 Abgeleitete Workflow-Info (KEIN Bindungsschluessel): Feedback zu {REV-DISCUSSED} → erzeugt {REV-NEXT}
 
+**Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
+
 Pflicht-Workflow (Skill-Aufrufe):
 
 1. \`memo-input-processing\` mit diesem Pfad

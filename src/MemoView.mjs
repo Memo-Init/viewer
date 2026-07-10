@@ -1,8 +1,9 @@
 import { createServer } from 'node:http'
-import { readFile, access, readdir } from 'node:fs/promises'
+import { readFile, access, readdir, mkdir, writeFile } from 'node:fs/promises'
 import { watch, existsSync, readFileSync } from 'node:fs'
-import { resolve, basename, dirname } from 'node:path'
+import { resolve, basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 import { exec } from 'node:child_process'
 
 import { WebSocketServer } from 'ws'
@@ -24,6 +25,12 @@ const PORT_SCHEMA = [ 3333, 4444, 5555, 6666, 7777, 8888 ]
 // on one interface did not predict the real bind on the other. One constant, used by the
 // probe AND every server.listen, closes that interface-mismatch.
 const BIND_HOST = '127.0.0.1'
+
+// PRD-031 (Memo 067 Phase 9, WI-8-04/05): the reverse-channel wake flags live in an ephemeral,
+// loopback-local tmp dir — NEVER in the repo, .env or .memo (no state leak). A wake POST drops an
+// empty `<sessionId>.flag` here; a background `until [ -f flag ]` loop in the waiting session polls
+// it at 0 token cost and exits + cleans up on the button press. os.tmpdir() is reaped on reboot.
+const WAKE_DIR = join( tmpdir(), 'memo-view-wake' )
 
 // Memo 038 Kap 13: realistic dictation speed. Spoken transcript minutes are derived at this rate
 // (~110-150 wpm for dictation); the old magic 200 wpm was a reading speed and made every spoken
@@ -201,6 +208,78 @@ class MemoView {
     static #wssInstance = null
     // PRD-004 (Memo 022 Kap 8): config boot result, read ONCE at startup (see startServer).
     static #config = null
+
+    // PRD-031 (Memo 067 Phase 9, WI-8-05): session-flüchtige Arm-Map transcriptId → Set<sessionId>.
+    // No persistence — arming lives only as long as the server runs; a reboot clears it with the
+    // flags. The same session_id identity is shared with the conflict detector (WI-7-05), not a
+    // second source.
+    static #sessionArmMap = new Map()
+
+
+    // PRD-031 (Memo 067 Phase 9, WI-8-05): strict session-id whitelist — the id flows into a file
+    // path (WAKE_DIR/<id>.flag), so anything outside [A-Za-z0-9_-] (dots, slashes, %2f-decoded
+    // traversal) is rejected BEFORE it ever touches the filesystem. This is the AC-4 path-traversal
+    // guard, shared by the wake and arm routes.
+    static validateSessionId( { sessionId } ) {
+        if( typeof sessionId !== 'string' || sessionId.length === 0 ) {
+            return { 'status': false, 'messages': [ 'sessionId: must be a non-empty string' ] }
+        }
+
+        if( !/^[A-Za-z0-9_-]+$/.test( sessionId ) ) {
+            return { 'status': false, 'messages': [ 'sessionId: only [A-Za-z0-9_-] allowed (path-traversal guard)' ] }
+        }
+
+        return { 'status': true, 'messages': [] }
+    }
+
+
+    // PRD-031 WI-8-04: drop an empty wake flag for a session. Ephemeral tmp only (WAKE_DIR under
+    // os.tmpdir(), created lazily); no repo/.memo/.env write. Returns the flag path so callers and
+    // tests can binary-prove it exists.
+    static async writeWakeFlag( { sessionId } ) {
+        const validation = MemoView.validateSessionId( { sessionId } )
+
+        if( !validation[ 'status' ] ) {
+            return { 'status': false, 'messages': validation[ 'messages' ] }
+        }
+
+        await mkdir( WAKE_DIR, { 'recursive': true } )
+        const flagPath = join( WAKE_DIR, `${ sessionId }.flag` )
+        await writeFile( flagPath, '' )
+
+        return { 'status': true, 'flagPath': flagPath }
+    }
+
+
+    // PRD-031 WI-8-05: register that `sessionId` waits on `transcriptId`, so a button press on that
+    // transcript wakes ONLY the armed session(s) — parallel sessions at the same memo never cross-wake.
+    // The map is session-flüchtig; the sessionId is whitelist-validated like every wake target.
+    static armSession( { sessionId, transcriptId } ) {
+        const validation = MemoView.validateSessionId( { sessionId } )
+
+        if( !validation[ 'status' ] ) {
+            return { 'status': false, 'messages': validation[ 'messages' ] }
+        }
+
+        if( typeof transcriptId !== 'string' || transcriptId.length === 0 ) {
+            return { 'status': false, 'messages': [ 'transcriptId: must be a non-empty string' ] }
+        }
+
+        const existing = MemoView.#sessionArmMap.has( transcriptId ) ? MemoView.#sessionArmMap.get( transcriptId ) : new Set()
+        existing.add( sessionId )
+        MemoView.#sessionArmMap.set( transcriptId, existing )
+
+        return { 'status': true, 'messages': [] }
+    }
+
+
+    // PRD-031 WI-8-05: the armed session-ids for a transcript — the button's "GET-Anteil" reads this
+    // to know which session(s) to wake.
+    static getArmedSessions( { transcriptId } ) {
+        const set = MemoView.#sessionArmMap.has( transcriptId ) ? MemoView.#sessionArmMap.get( transcriptId ) : new Set()
+
+        return { 'sessions': Array.from( set ) }
+    }
 
 
     static async startServer( { port } ) {
@@ -1411,6 +1490,70 @@ class MemoView {
                 sendJson( res, 200, { 'status': 'ok', 'revisionId': result[ 'revisionId' ] } )
 
                 process.stdout.write( `  Transcript logged out: ${ transcriptId }\n` )
+
+                return
+            }
+
+            // PRD-031 (Memo 067 Phase 9, WI-8-05): arm registration — map transcriptId → sessionId so
+            // the "Abschliessen" button wakes only the session(s) waiting on THIS transcript. Hangs off
+            // the existing loopback-bound server; no new listener.
+            if( url.startsWith( '/api/session/' ) && url.endsWith( '/arm' ) && req.method === 'POST' ) {
+
+                const sessionId = url.slice( '/api/session/'.length, -'/arm'.length )
+                const { body } = await readBody( req )
+                let parsed = {}
+
+                if( body.length > 0 ) {
+                    try {
+                        parsed = JSON.parse( body )
+                    } catch {
+                        sendJson( res, 400, { 'error': 'Invalid JSON body' } )
+
+                        return
+                    }
+                }
+
+                const result = MemoView.armSession( { sessionId, 'transcriptId': parsed[ 'transcriptId' ] } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 400, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                sendJson( res, 200, { 'status': 'ok' } )
+
+                return
+            }
+
+            // PRD-031 WI-8-05: the button's GET-Anteil — armed session-ids for the active transcript.
+            if( url === '/api/session/armed' && req.method === 'GET' ) {
+
+                const queryString = req.url.split( '?' )[ 1 ] || ''
+                const params = new URLSearchParams( queryString )
+                const { sessions } = MemoView.getArmedSessions( { 'transcriptId': params.get( 'transcriptId' ) } )
+
+                sendJson( res, 200, { 'status': 'ok', sessions } )
+
+                return
+            }
+
+            // PRD-031 WI-8-04: wake endpoint — drop the session flag on the existing loopback-bound
+            // server (NO new server.listen, BIND_HOST 127.0.0.1 inherited). A background until-loop in
+            // the waiting session polls the flag at 0 token cost. sessionId is whitelist-validated, so a
+            // path-traversal id (../../etc, %2f-decoded) is rejected with 400 before any filesystem write.
+            if( url.startsWith( '/api/session/' ) && url.endsWith( '/wake' ) && req.method === 'POST' ) {
+
+                const sessionId = url.slice( '/api/session/'.length, -'/wake'.length )
+                const result = await MemoView.writeWakeFlag( { sessionId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 400, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                sendJson( res, 200, { 'status': 'ok' } )
 
                 return
             }

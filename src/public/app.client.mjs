@@ -4563,6 +4563,19 @@
                     .then( function( resp ) {
                         if( !resp.ok ) { return }
                         // The transcriptLoggedIn WS broadcast re-renders Zone 2; no reload.
+                        // PRD-031 (Memo 067 Phase 9, WI-8-04/05): additionally wake the session(s) armed
+                        // on THIS transcript — a token-free reverse-channel signal to the waiting agent.
+                        // Reads the armed session-ids (GET-Anteil), then POSTs wake to each; the flag
+                        // filename is session-scoped so parallel sessions never cross-wake.
+                        fetch( '/api/session/armed?transcriptId=' + encodeURIComponent( transcriptId ) )
+                            .then( function( r ) { return r.ok ? r.json() : { sessions: [] } } )
+                            .then( function( data ) {
+                                var sessions = ( data && data.sessions ) ? data.sessions : []
+                                sessions.forEach( function( sessionId ) {
+                                    fetch( '/api/session/' + encodeURIComponent( sessionId ) + '/wake', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' } ).catch( function() {} )
+                                } )
+                            } )
+                            .catch( function() {} )
                     } )
                     .catch( function() {} )
             } )

@@ -136,7 +136,7 @@ describe( 'PRD-005 node-error-codes conformity (AC-7)', () => {
 
         catalog
             .forEach( ( entry ) => {
-                expect( entry[ 'code' ] ).toMatch( /^(MEMO|INFO)-\d{3}[a-d]?$/ )
+                expect( entry[ 'code' ] ).toMatch( /^(MEMO|INFO|WARN)-\d{3}[a-d]?$/ )
                 const { severity } = MemoValidator.classify( { code: entry[ 'code' ] } )
                 expect( severity ).toBe( entry[ 'severity' ] )
             } )

@@ -1,5 +1,8 @@
 // Memo 016 Phase 1 — 4-Typen-Datenmodell, Nummern-Fix, Versions-Marker.
-// The four transcript types, their context mode, and per-type injection templates.
+// Memo 067 WI-6-05 (F5=C) — 5th type `rollout`, header modernization: every template addresses
+// ONLY a public entry point (memo-init, memo-revision-generate, memo-finalize, memo-plan) and
+// carries the memo-sop precondition. memo-input-processing stays private (internally delegated).
+// The transcript types, their context mode, and per-type injection templates.
 
 const SCHEMA_VERSION = 2
 
@@ -7,20 +10,29 @@ const TRANSCRIPT_TYPES = {
     'FREI': 'frei',
     'MEMO_INIT': 'memo-init',
     'REVISION': 'revision',
-    'PLAN_START': 'plan-start'
+    'PLAN_START': 'plan-start',
+    'ROLLOUT': 'rollout'
 }
 
-const TYPE_VALUES = [ 'frei', 'memo-init', 'revision', 'plan-start' ]
+const TYPE_VALUES = [ 'frei', 'memo-init', 'revision', 'plan-start', 'rollout' ]
 
 const CONTEXT_MODES = {
     'frei': 'im-thread',
     'memo-init': 'leerer-kontext',
     'revision': 'im-thread',
-    'plan-start': 'leerer-kontext'
+    'plan-start': 'leerer-kontext',
+    'rollout': 'leerer-kontext'
 }
 
 const SCHEMA_LINE = `Schema-Version: ${ SCHEMA_VERSION }`
 const SCHEMA_DETECT_REGEX = /^Schema-Version:\s*(\d+)\s*$/m
+
+// Shared audio-transcript notice. Memo 067 WI-6-05 (F5=C): Input-Processing is an internal,
+// delegated pipeline — NOT a public entry point — so it is described here as prose but never
+// named as a numbered workflow STEP in any template.
+const ACHTUNG_BLOCK = `**ACHTUNG:** Diese Datei ist ein Audio-Transcript. Transcripts koennen Fehler enthalten
+(falsche Aussprache, Hintergrund-Geraeusche, Verwechslungen wie PRD↔PAD). Die interne
+Input-Processing-Pipeline (delegiert, kein Eintrittspunkt) erkennt und korrigiert diese Fehler.`
 
 // Type "revision" — the only template carrying a memo number and revision fields.
 //
@@ -34,13 +46,14 @@ const SCHEMA_DETECT_REGEX = /^Schema-Version:\s*(\d+)\s*$/m
 // Das alte "erzeugt-die-naechste"-Schema (Ueberschrift nennt {REV-NEXT}) ist LEGACY und wird
 // von detectLegacyBinding() weiter gelesen, aber NICHT mehr neu erzeugt (keine Auto-Migration,
 // Memo 016 Kap 2.1).
+//
+// Memo 067 WI-6-05 (F5=C): step 1 is the PUBLIC entry point memo-revision-generate; the private
+// loop skills (memo-revision-execute/-evaluate) run internally and are no longer mandatory steps.
 const REVISION_TEMPLATE = `# Transcript zu Memo {NNN} {Memo-Name} — Revision {REV-DISCUSSED}
 
 ${ SCHEMA_LINE }
 
-**ACHTUNG:** Diese Datei ist ein Audio-Transcript. Transcripts koennen Fehler enthalten
-(falsche Aussprache, Hintergrund-Geraeusche, Verwechslungen wie PRD↔PAD). Die Pipeline
-\`memo-input-processing\` erkennt und korrigiert diese Fehler.
+${ ACHTUNG_BLOCK }
 
 **Dieser Transcript darf NICHT direkt in eine Revision uebernommen werden.**
 
@@ -50,12 +63,14 @@ Abgeleitete Workflow-Info (KEIN Bindungsschluessel): Feedback zu {REV-DISCUSSED}
 
 **Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
 
+Oeffentlicher Eintrittspunkt: \`memo-revision-generate\`
+
 Pflicht-Workflow (Skill-Aufrufe):
 
-1. \`memo-input-processing\` mit diesem Pfad
-2. \`memo-revision-generate\` (erstellt PREPARE-{REV-NEXT}.md)
-3. \`memo-revision-execute\` (schreibt {REV-NEXT}.md)
-4. \`memo-revision-evaluate\` (Auto-Check)
+1. \`memo-revision-generate\` (verarbeitet diesen Transcript, erstellt PREPARE-{REV-NEXT}.md und schreibt {REV-NEXT}.md)
+
+Der Revisions-Loop (Execute/Evaluate) und die Transcript-Aufbereitung laufen als delegierte,
+interne Schritte des oeffentlichen Skills — sie sind KEINE eigenen Eintrittspunkte.
 
 Memo-Pfad: \`.memo/memos/{NNN}-{slug}/revisions/\`
 Vorherige Revision: \`{REV-PREV}.md\`
@@ -71,23 +86,23 @@ Naechste Revision (zu erstellen): \`{REV-NEXT}.md\`
 // the storage location is unknown at this point (Memo 016 Kap 3 Real-World-Constraint).
 // PRD-013 (Memo 054 Kap 7): precondition line injected before step 1 so every written
 // init-transcript carries the memo-sop requirement explicitly.
+// Memo 067 WI-6-05 (F5=C): step 1 is the PUBLIC entry point memo-init.
 const MEMO_INIT_TEMPLATE = `# Transcript fuer neues Memo (memo-init)
 
 ${ SCHEMA_LINE }
 
-**ACHTUNG:** Diese Datei ist ein Audio-Transcript. Transcripts koennen Fehler enthalten
-(falsche Aussprache, Hintergrund-Geraeusche, Verwechslungen wie PRD↔PAD). Die Pipeline
-\`memo-input-processing\` erkennt und korrigiert diese Fehler.
+${ ACHTUNG_BLOCK }
 
 Kontext-Modus: leerer Kontext. Es ist KEINE Memo-Nummer, KEIN Ablageort und KEIN
 Revisions-Feld vordefiniert — der Ort wird erst bei \`memo-init\` bestimmt.
 
 **Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
 
+Oeffentlicher Eintrittspunkt: \`memo-init\`
+
 Pflicht-Workflow (Skill-Aufrufe):
 
-1. \`memo-input-processing\` mit diesem Pfad
-2. \`memo-init\` (neues Memo anlegen)
+1. \`memo-init\` (neues Memo anlegen; die Transcript-Aufbereitung laeuft intern)
 
 ---
 
@@ -96,21 +111,50 @@ Pflicht-Workflow (Skill-Aufrufe):
 `
 
 // Type "plan-start" — leerer Kontext. Plan creation + memo selection, no number/revision/path.
+// Memo 067 WI-6-05 (F5=C): step 1 is the PUBLIC entry point memo-plan; the private
+// memo-plan-init / memo-plan-add skills run as internal delegates + memo-sop precondition added.
 const PLAN_START_TEMPLATE = `# Transcript fuer Plan-Start (plan-start)
 
 ${ SCHEMA_LINE }
 
-**ACHTUNG:** Diese Datei ist ein Audio-Transcript. Transcripts koennen Fehler enthalten
-(falsche Aussprache, Hintergrund-Geraeusche, Verwechslungen wie PRD↔PAD). Die Pipeline
-\`memo-input-processing\` erkennt und korrigiert diese Fehler.
+${ ACHTUNG_BLOCK }
 
 Kontext-Modus: leerer Kontext. KEINE Memo-Nummer, KEIN Ablageort, KEIN Revisions-Feld.
 Zweck: einen Plan erstellen und mehrere Memos auswaehlen.
 
+**Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
+
+Oeffentlicher Eintrittspunkt: \`memo-plan\`
+
 Pflicht-Workflow (Skill-Aufrufe):
 
-1. \`memo-input-processing\` mit diesem Pfad
-2. \`memo-plan-init\` / \`memo-plan-add\` (Plan erstellen, Memos auswaehlen)
+1. \`memo-plan\` (Plan erstellen, Memos auswaehlen; delegiert intern an memo-plan-init / memo-plan-add)
+
+---
+
+## Transcript-Inhalt
+
+`
+
+// Type "rollout" — leerer Kontext. Memo 067 WI-6-05 (F5=C): the FOURTH verb ("arbeite Memo N ab").
+// A finalized memo is executed. No revision field; the memo is selected on entry. Public entry
+// point = memo-plan (the memo-rollout entry is reached through it) + memo-sop precondition.
+const ROLLOUT_TEMPLATE = `# Transcript fuer Rollout (rollout)
+
+${ SCHEMA_LINE }
+
+${ ACHTUNG_BLOCK }
+
+Kontext-Modus: leerer Kontext. Trigger "arbeite Memo N ab": ein finalisiertes Memo wird
+ausgefuehrt. KEIN Revisions-Feld; die Memo-Auswahl geschieht beim Eintritt.
+
+**Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
+
+Oeffentlicher Eintrittspunkt: \`memo-plan\` (Rollout-Einstieg ueber \`memo-rollout\`)
+
+Pflicht-Workflow (Skill-Aufrufe):
+
+1. \`memo-plan\` (Rollout-Einstieg mit Memo-Auswahl; fuehrt das finalisierte Memo aus)
 
 ---
 
@@ -119,19 +163,21 @@ Pflicht-Workflow (Skill-Aufrufe):
 `
 
 // Type "frei" — im Thread. Always stored (analytics), no number/revision.
+// Memo 067 WI-6-05 (F5=C): frei is the documented special case — NO public memo entry point,
+// but memo-sop is the Skill-Kontext. It starts no memo workflow.
 const FREI_TEMPLATE = `# Transcript (frei / undefiniert)
 
 ${ SCHEMA_LINE }
 
-**ACHTUNG:** Diese Datei ist ein Audio-Transcript. Transcripts koennen Fehler enthalten
-(falsche Aussprache, Hintergrund-Geraeusche, Verwechslungen wie PRD↔PAD). Die Pipeline
-\`memo-input-processing\` erkennt und korrigiert diese Fehler.
+${ ACHTUNG_BLOCK }
 
 Achtung Transcript. Input-Processing — aber KEINE Revision/Memo.
 
-Pflicht-Workflow (Skill-Aufrufe):
+**Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
 
-1. \`memo-input-processing\` mit diesem Pfad
+Einordnung: \`frei\` ist KEIN oeffentlicher Memo-Eintrittspunkt (weder memo-init noch
+memo-revision-generate, memo-finalize oder memo-plan). Der Transcript wird nur gespeichert
+(Self-Analytics); \`memo-sop\` bildet den Skill-Kontext, es wird KEIN Memo-Workflow gestartet.
 
 ---
 
@@ -143,11 +189,12 @@ const TYPE_TEMPLATES = {
     'frei': FREI_TEMPLATE,
     'memo-init': MEMO_INIT_TEMPLATE,
     'revision': REVISION_TEMPLATE,
-    'plan-start': PLAN_START_TEMPLATE
+    'plan-start': PLAN_START_TEMPLATE,
+    'rollout': ROLLOUT_TEMPLATE
 }
 
 // Matches the first line of every type-template above.
-const HEADER_DETECT_REGEX = /^# Transcript (zu Memo |fuer neues Memo|fuer Plan-Start|\(frei)/
+const HEADER_DETECT_REGEX = /^# Transcript (zu Memo |fuer neues Memo|fuer Plan-Start|fuer Rollout|\(frei)/
 
 // PRD-007: reconstruct the transcript type from the first header line. The first line
 // of each TYPE_TEMPLATE is unique per type, so the type is recoverable on scan.
@@ -155,6 +202,7 @@ const TYPE_FIRST_LINE_REGEX = {
     'revision': /^# Transcript zu Memo /,
     'memo-init': /^# Transcript fuer neues Memo /,
     'plan-start': /^# Transcript fuer Plan-Start /,
+    'rollout': /^# Transcript fuer Rollout /,
     'frei': /^# Transcript \(frei/
 }
 

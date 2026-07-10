@@ -785,34 +785,76 @@ class DocumentRegistry {
             return struct
         }
 
-        const blockPattern = /```questions-json\s*\n([\s\S]*?)\n```/
-        const matched = content.match( blockPattern )
+        // Memo 067 WI-6-09: the old NON-GLOBAL match read only the first/newest questions-json block.
+        // When update revisions each carried only their NEW questions, the union was invisible
+        // (15 of 17 open questions dropped). The scan is now GLOBAL: every questions-json block is
+        // parsed and the questions are merged into one ordered set (dedup by id, else by frage-text;
+        // a later block wins per key, first-seen order is kept). The completeness rule (Skill + Spec
+        // 34/07) keeps the newest block already complete; this union is the belt for revisions that
+        // predate it. Single-block documents behave exactly as before.
+        const blockPattern = /```questions-json\s*\n([\s\S]*?)\n```/g
+        const rawBlocks = [ ...content.matchAll( blockPattern ) ]
+            .map( ( match ) => match[ 1 ] )
 
-        if( matched === null ) {
+        if( rawBlocks.length === 0 ) {
             return struct
         }
 
-        const raw = matched[ 1 ]
+        const parsedBlocks = rawBlocks
+            .map( ( raw ) => DocumentRegistry.#parseSingleQuestionBlock( { raw } ) )
+
+        const validBlocks = parsedBlocks
+            .filter( ( result ) => result[ 'list' ] !== null )
+
+        if( validBlocks.length === 0 ) {
+            // No block parsed — surface the first block's error (preserves single-block semantics).
+            const firstError = parsedBlocks
+                .find( ( result ) => result[ 'error' ] !== null )
+            struct[ 'error' ] = firstError !== undefined ? firstError[ 'error' ] : 'questions-json: Block must contain an array of question objects'
+
+            return struct
+        }
+
+        const merged = new Map()
+
+        validBlocks
+            .flatMap( ( result ) => result[ 'list' ] )
+            .map( ( entry ) => DocumentRegistry.#normalizeJsonQuestion( { entry } ) )
+            .map( ( result ) => result[ 'question' ] )
+            .forEach( ( question ) => {
+                const idKey = typeof question[ 'id' ] === 'string' && question[ 'id' ].length > 0 ? question[ 'id' ] : null
+                const key = idKey !== null ? `id:${ idKey }` : `frage:${ question[ 'frage' ] }`
+
+                merged.set( key, question )
+            } )
+
+        struct[ 'questions' ] = [ ...merged.values() ]
+        struct[ 'found' ] = true
+
+        return struct
+    }
+
+
+    static #parseSingleQuestionBlock( { raw } ) {
+        // Memo 067 WI-6-09: parse ONE questions-json block body. Returns { list, error } where a
+        // valid block yields a raw entry array and a malformed/non-array block yields list=null plus
+        // an error string. Never throws — the caller aggregates across all blocks.
+        const struct = { 'list': null, 'error': null }
 
         try {
             const parsed = JSON.parse( raw )
             const list = Array.isArray( parsed ) ? parsed : ( Array.isArray( parsed[ 'questions' ] ) ? parsed[ 'questions' ] : null )
 
             if( list === null ) {
-                struct[ 'found' ] = false
                 struct[ 'error' ] = 'questions-json: Block must contain an array of question objects'
 
                 return struct
             }
 
-            struct[ 'questions' ] = list
-                .map( ( entry ) => DocumentRegistry.#normalizeJsonQuestion( { entry } ) )
-                .map( ( result ) => result[ 'question' ] )
-            struct[ 'found' ] = true
+            struct[ 'list' ] = list
 
             return struct
         } catch( error ) {
-            struct[ 'found' ] = false
             struct[ 'error' ] = `questions-json: Malformed JSON (${ error.message })`
 
             return struct

@@ -1,11 +1,11 @@
 import { describe, it, expect } from '@jest/globals'
 
-import { TranscriptHeader, TYPE_VALUES, CONTEXT_MODES, SCHEMA_VERSION } from '../../src/TranscriptHeader.mjs'
+import { TranscriptHeader, TYPE_VALUES, CONTEXT_MODES, SCHEMA_VERSION, TYPE_TEMPLATES } from '../../src/TranscriptHeader.mjs'
 
 
-describe( 'TranscriptHeader — 4-Typen-Datenmodell (PRD-001)', () => {
-    it( 'exposes exactly the four type values', () => {
-        expect( TYPE_VALUES ).toEqual( [ 'frei', 'memo-init', 'revision', 'plan-start' ] )
+describe( 'TranscriptHeader — 5-Typen-Datenmodell (PRD-001, Memo 067 WI-6-05)', () => {
+    it( 'exposes exactly the five type values (incl. rollout)', () => {
+        expect( TYPE_VALUES ).toEqual( [ 'frei', 'memo-init', 'revision', 'plan-start', 'rollout' ] )
     } )
 
 
@@ -451,11 +451,69 @@ describe( 'TranscriptHeader PRD-013 (Memo 054 Kap 7) — memo-sop precondition i
         expect( voraussetzungIdx ).toBeLessThan( workflowIdx )
     } )
 
-    it( 'frei and plan-start templates do NOT carry the memo-sop precondition', () => {
-        const frei = TranscriptHeader.build( { type: 'frei' } )
-        const planStart = TranscriptHeader.build( { type: 'plan-start' } )
+    it( 'ALL templates carry the memo-sop precondition (Memo 067 WI-6-05, F5=C)', () => {
+        const types = [ 'frei', 'memo-init', 'plan-start', 'rollout' ]
+            .map( ( type ) => TranscriptHeader.build( { type } ) )
+            .concat( [ TranscriptHeader.build( { type: 'revision', memoId: '067-x', maxRevNumber: 3 } ) ] )
 
-        expect( frei[ 'header' ] ).not.toContain( 'memo-sop' )
-        expect( planStart[ 'header' ] ).not.toContain( 'memo-sop' )
+        types.forEach( ( result ) => {
+            expect( result[ 'header' ] ).toContain( 'Voraussetzung' )
+            expect( result[ 'header' ] ).toContain( 'memo-sop' )
+        } )
+    } )
+} )
+
+
+describe( 'TranscriptHeader — Header-Modernisierung (Memo 067 WI-6-05, F5=C)', () => {
+    it( 'no template names memo-input-processing as a numbered workflow step', () => {
+        Object.values( TYPE_TEMPLATES )
+            .forEach( ( template ) => {
+                // A step is a numbered "N. `skill`" line; the private pipeline must not be one.
+                expect( template ).not.toMatch( /^\s*\d+\.\s*`?memo-input-processing/m )
+            } )
+    } )
+
+
+    it( 'revision step 1 addresses the public entry point memo-revision-generate', () => {
+        const { header } = TranscriptHeader.build( { type: 'revision', memoId: '067-x', maxRevNumber: 3 } )
+
+        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-revision-generate`' )
+        expect( header ).toMatch( /1\.\s*`memo-revision-generate`/ )
+    } )
+
+
+    it( 'plan-start step 1 addresses the public entry point memo-plan', () => {
+        const { header } = TranscriptHeader.build( { type: 'plan-start' } )
+
+        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-plan`' )
+        expect( header ).toMatch( /1\.\s*`memo-plan`/ )
+    } )
+
+
+    it( 'rollout: new fifth type, leerer-kontext, public entry point + memo-sop + Schema marker', () => {
+        const { status, header, contextMode } = TranscriptHeader.build( { type: 'rollout' } )
+
+        expect( status ).toBe( true )
+        expect( header ).toContain( '# Transcript fuer Rollout (rollout)' )
+        expect( header ).toContain( 'Schema-Version: 2' )
+        expect( header ).toContain( 'memo-sop' )
+        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-plan`' )
+        expect( contextMode ).toBe( 'leerer-kontext' )
+    } )
+
+
+    it( 'detects the rollout type from its header first line', () => {
+        const { header } = TranscriptHeader.build( { type: 'rollout' } )
+        const { type } = TranscriptHeader.detectType( { content: header } )
+
+        expect( type ).toBe( 'rollout' )
+    } )
+
+
+    it( 'detect() recognises a rollout header', () => {
+        const { header } = TranscriptHeader.build( { type: 'rollout' } )
+        const { hasHeader } = TranscriptHeader.detect( { content: header } )
+
+        expect( hasHeader ).toBe( true )
     } )
 } )

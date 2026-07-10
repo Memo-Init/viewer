@@ -4,12 +4,17 @@ import { resolve, basename, dirname } from 'node:path'
 import { TranscriptHeader } from './TranscriptHeader.mjs'
 
 
-// REV_FILE_PATTERN is used ONLY for the revisions/ folder scan (#scanRevNumbers / #maxRevNumber):
-// real revision files are REV-NN.md. It must stay as-is — transcripts/ no longer uses it.
 // Memo 038 Kap 13: realistic dictation speed for spoken transcript minutes (~110-150 wpm). Replaces
 // the too-fast magic 200 (a reading rate). Mirrored in MemoView.mjs + app.client.mjs — one value.
 const SPOKEN_WORDS_PER_MINUTE = 130
+// REV_FILE_PATTERN stays the strict form (REV-NN.md / REV-NN--MM.md). It is NOT the number scan.
 const REV_FILE_PATTERN = /^REV-(\d+)(?:--(\d+))?\.md$/
+// Memo 067 WI-6-08: the revision-number scan must count the base number of EVERY suffix form
+// (REV-NN.md, REV-NN--MM.md, REV-NN-update.md, REV-NN-consolidated.md, ...). The bug bound three
+// review transcripts to REV-02 because REV-0x-update.md (no `--\d+` suffix) never matched the strict
+// REV_FILE_PATTERN, so `max` stayed 2. This scan extracts m[1] = the base number for any dash suffix.
+// PREPARE-REV-*.md is still ignored — it has no `REV-` prefix at the start of the line.
+const REV_NUMBER_SCAN = /^REV-(\d+)(?:[-–].*)?\.md$/
 // PRD-001 (Memo 022): the transcripts/ binding key. A revision transcript = feedback ZU REV-N is
 // bound to REV-N. The filename encodes the DISCUSSED revision, not the produced one. Group 1 = the
 // discussed revision number, group 2 = the running, collision-free sequence (01, 02, ...).
@@ -1825,8 +1830,10 @@ class TranscriptRegistry {
             return struct
         }
 
+        // Memo 067 WI-6-08: count the base number of EVERY suffix form via REV_NUMBER_SCAN, so
+        // update/consolidated revisions raise `max` too (not only the strict REV-NN.md / REV-NN--MM.md).
         struct[ 'numbers' ] = files
-            .map( ( f ) => f.match( REV_FILE_PATTERN ) )
+            .map( ( f ) => f.match( REV_NUMBER_SCAN ) )
             .filter( ( m ) => m !== null )
             .map( ( m ) => parseInt( m[ 1 ], 10 ) )
 

@@ -277,7 +277,13 @@ class MemoView {
 
         // Re-register bootstrapped ("other") transcripts from disk so their URLs survive a
         // server restart. projectId/sequence are recovered from the filename.
-        const { registered: otherRegistered } = await transcriptRegistry.scanOther( { 'otherRoot': process.cwd() } )
+        // PRD-022 (Memo 067 WI-6-01): at boot no project is registered yet, so the store scan uses
+        // process.cwd() as the LOGGED notfall-fallback (never silent). Per-project canonical stores
+        // ({projektRoot}/.memo/transcripts/) are (re-)scanned deterministically on document
+        // registration (addDocument hook), independent of the server's start directory.
+        const bootOtherRoot = process.cwd()
+        process.stdout.write( `  OTHERROOT-FALLBACK-001 (boot): scanning other-store from cwd ${ bootOtherRoot }\n` )
+        const { registered: otherRegistered } = await transcriptRegistry.scanOther( { 'otherRoot': bootOtherRoot } )
 
         if( otherRegistered > 0 ) {
             process.stdout.write( `  Re-registered ${ otherRegistered } other transcript(s) from disk\n` )
@@ -383,6 +389,45 @@ class MemoView {
         struct[ 'status' ] = true
         struct[ 'requirementsDir' ] = requirementsDir
         struct[ 'memoName' ] = setName
+
+        return struct
+    }
+
+
+    // PRD-022 (Memo 067 WI-6-01): resolve the deterministic other-store root for a projectId. The
+    // canonical store of a registered project is {projektRoot}/.memo/transcripts/, where projektRoot
+    // is derived from any registered memoPath of that projectId via the /.memo/ marker (same marker
+    // resolveRequirementsLocation and the plans auto-register hook use). This makes the store location
+    // INDEPENDENT of the server process cwd (T014, FAKT). Returns { status, otherRoot, source }; a
+    // status:false lets the caller fall back to cwd as a LOGGED notfall-fallback (no silent default).
+    static resolveOtherRootForProject( { projectId } ) {
+        const struct = { 'status': false, 'otherRoot': null, 'source': 'none' }
+
+        if( typeof projectId !== 'string' || projectId.length === 0 ) {
+            return struct
+        }
+
+        if( !MemoView.#registry ) {
+            return struct
+        }
+
+        const { documents } = MemoView.#registry.getDocuments()
+        const match = documents
+            .find( ( doc ) => doc[ 'projectId' ] === projectId && typeof doc[ 'memoPath' ] === 'string' )
+
+        if( match === undefined ) {
+            return struct
+        }
+
+        const memoMarkerIndex = match[ 'memoPath' ].indexOf( '/.memo/' )
+
+        if( memoMarkerIndex === -1 ) {
+            return struct
+        }
+
+        struct[ 'status' ] = true
+        struct[ 'otherRoot' ] = match[ 'memoPath' ].slice( 0, memoMarkerIndex )
+        struct[ 'source' ] = 'registered-project-root'
 
         return struct
     }
@@ -891,8 +936,19 @@ class MemoView {
                             'memoId': memoName
                         } )
 
+                        // PRD-022 (Memo 067 WI-6-01): (re-)scan the project's CANONICAL other-store
+                        // ({projektRoot}/.memo/transcripts/) so the auto-bind below sees it regardless
+                        // of the server's start cwd. The root is resolved deterministically from the
+                        // just-registered memoPath (not process.cwd()).
+                        const { status: otherRootStatus, otherRoot: projectOtherRoot } = MemoView.resolveOtherRootForProject( { projectId } )
+
+                        if( otherRootStatus === true ) {
+                            await MemoView.#transcriptRegistry.scanOther( { 'otherRoot': projectOtherRoot } )
+                        }
+
                         // PRD-004 (Memo 054 Kap 2): auto-bind a memo-init other-transcript as the
                         // memo's init file, if one exists and none is bound yet (NO-OVERWRITE).
+                        // PRD-022 (Memo 067 WI-6-03): the bind is now mtime-nearest + ambiguity-guarded.
                         await MemoView.#transcriptRegistry.autoBindInitTranscript( {
                             projectId,
                             'memoId': memoName,
@@ -1559,13 +1615,37 @@ class MemoView {
                 }
 
                 const { projectId, content } = parsed
-                const otherRoot = parsed[ 'otherRoot' ] || process.cwd()
+                // PRD-022 (Memo 067 WI-6-01): deterministic otherRoot. Order: (1) explicit param,
+                // (2) the registered project root of projectId (independent of the server cwd),
+                // (3) process.cwd() as the LOGGED notfall-fallback (OTHERROOT-FALLBACK-001) — never a
+                // silent default. This stops init transcripts from landing in whatever folder the
+                // server happened to be started in (the Memo-064 rogue-store root cause, T014).
+                let otherRoot = parsed[ 'otherRoot' ]
+                let otherRootSource = 'explicit'
+
+                if( otherRoot === undefined || otherRoot === null || otherRoot === '' ) {
+                    const { status: rootStatus, otherRoot: resolvedRoot } = MemoView.resolveOtherRootForProject( { projectId } )
+
+                    if( rootStatus === true ) {
+                        otherRoot = resolvedRoot
+                        otherRootSource = 'registered-project-root'
+                    } else {
+                        otherRoot = process.cwd()
+                        otherRootSource = 'cwd-fallback'
+                        process.stdout.write( `  WARN OTHERROOT-FALLBACK-001: no registered project root for '${ projectId }', using cwd ${ otherRoot }\n` )
+                    }
+                }
+
                 // PRD-002 (Memo 019 Kap 2): the "Neues Memo erstellen"-Flow passes type:'memo-init'
                 // so the saved transcript carries the memo-init header. Undefined -> 'frei' default
                 // in addOtherTranscript (kein stiller Default — bewusst vom Memo vorgegeben).
                 const type = parsed[ 'type' ]
 
                 const result = await MemoView.#transcriptRegistry.addOtherTranscript( { projectId, content, otherRoot, type } )
+
+                if( result[ 'status' ] === true ) {
+                    process.stdout.write( `  otherRoot resolved via ${ otherRootSource }: ${ otherRoot }\n` )
+                }
 
                 if( !result[ 'status' ] ) {
                     sendJson( res, 400, { 'error': result[ 'messages' ].join( '; ' ) } )

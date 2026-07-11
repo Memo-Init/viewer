@@ -1,8 +1,9 @@
 import { createServer } from 'node:http'
-import { readFile, access, readdir } from 'node:fs/promises'
+import { readFile, access, readdir, mkdir, writeFile } from 'node:fs/promises'
 import { watch, existsSync, readFileSync } from 'node:fs'
-import { resolve, basename, dirname } from 'node:path'
+import { resolve, basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 import { exec } from 'node:child_process'
 
 import { WebSocketServer } from 'ws'
@@ -24,6 +25,12 @@ const PORT_SCHEMA = [ 3333, 4444, 5555, 6666, 7777, 8888 ]
 // on one interface did not predict the real bind on the other. One constant, used by the
 // probe AND every server.listen, closes that interface-mismatch.
 const BIND_HOST = '127.0.0.1'
+
+// PRD-031 (Memo 067 Phase 9, WI-8-04/05): the reverse-channel wake flags live in an ephemeral,
+// loopback-local tmp dir — NEVER in the repo, .env or .memo (no state leak). A wake POST drops an
+// empty `<sessionId>.flag` here; a background `until [ -f flag ]` loop in the waiting session polls
+// it at 0 token cost and exits + cleans up on the button press. os.tmpdir() is reaped on reboot.
+const WAKE_DIR = join( tmpdir(), 'memo-view-wake' )
 
 // Memo 038 Kap 13: realistic dictation speed. Spoken transcript minutes are derived at this rate
 // (~110-150 wpm for dictation); the old magic 200 wpm was a reading speed and made every spoken
@@ -202,6 +209,78 @@ class MemoView {
     // PRD-004 (Memo 022 Kap 8): config boot result, read ONCE at startup (see startServer).
     static #config = null
 
+    // PRD-031 (Memo 067 Phase 9, WI-8-05): session-flüchtige Arm-Map transcriptId → Set<sessionId>.
+    // No persistence — arming lives only as long as the server runs; a reboot clears it with the
+    // flags. The same session_id identity is shared with the conflict detector (WI-7-05), not a
+    // second source.
+    static #sessionArmMap = new Map()
+
+
+    // PRD-031 (Memo 067 Phase 9, WI-8-05): strict session-id whitelist — the id flows into a file
+    // path (WAKE_DIR/<id>.flag), so anything outside [A-Za-z0-9_-] (dots, slashes, %2f-decoded
+    // traversal) is rejected BEFORE it ever touches the filesystem. This is the AC-4 path-traversal
+    // guard, shared by the wake and arm routes.
+    static validateSessionId( { sessionId } ) {
+        if( typeof sessionId !== 'string' || sessionId.length === 0 ) {
+            return { 'status': false, 'messages': [ 'sessionId: must be a non-empty string' ] }
+        }
+
+        if( !/^[A-Za-z0-9_-]+$/.test( sessionId ) ) {
+            return { 'status': false, 'messages': [ 'sessionId: only [A-Za-z0-9_-] allowed (path-traversal guard)' ] }
+        }
+
+        return { 'status': true, 'messages': [] }
+    }
+
+
+    // PRD-031 WI-8-04: drop an empty wake flag for a session. Ephemeral tmp only (WAKE_DIR under
+    // os.tmpdir(), created lazily); no repo/.memo/.env write. Returns the flag path so callers and
+    // tests can binary-prove it exists.
+    static async writeWakeFlag( { sessionId } ) {
+        const validation = MemoView.validateSessionId( { sessionId } )
+
+        if( !validation[ 'status' ] ) {
+            return { 'status': false, 'messages': validation[ 'messages' ] }
+        }
+
+        await mkdir( WAKE_DIR, { 'recursive': true } )
+        const flagPath = join( WAKE_DIR, `${ sessionId }.flag` )
+        await writeFile( flagPath, '' )
+
+        return { 'status': true, 'flagPath': flagPath }
+    }
+
+
+    // PRD-031 WI-8-05: register that `sessionId` waits on `transcriptId`, so a button press on that
+    // transcript wakes ONLY the armed session(s) — parallel sessions at the same memo never cross-wake.
+    // The map is session-flüchtig; the sessionId is whitelist-validated like every wake target.
+    static armSession( { sessionId, transcriptId } ) {
+        const validation = MemoView.validateSessionId( { sessionId } )
+
+        if( !validation[ 'status' ] ) {
+            return { 'status': false, 'messages': validation[ 'messages' ] }
+        }
+
+        if( typeof transcriptId !== 'string' || transcriptId.length === 0 ) {
+            return { 'status': false, 'messages': [ 'transcriptId: must be a non-empty string' ] }
+        }
+
+        const existing = MemoView.#sessionArmMap.has( transcriptId ) ? MemoView.#sessionArmMap.get( transcriptId ) : new Set()
+        existing.add( sessionId )
+        MemoView.#sessionArmMap.set( transcriptId, existing )
+
+        return { 'status': true, 'messages': [] }
+    }
+
+
+    // PRD-031 WI-8-05: the armed session-ids for a transcript — the button's "GET-Anteil" reads this
+    // to know which session(s) to wake.
+    static getArmedSessions( { transcriptId } ) {
+        const set = MemoView.#sessionArmMap.has( transcriptId ) ? MemoView.#sessionArmMap.get( transcriptId ) : new Set()
+
+        return { 'sessions': Array.from( set ) }
+    }
+
 
     static async startServer( { port } ) {
         let portNumber
@@ -277,7 +356,13 @@ class MemoView {
 
         // Re-register bootstrapped ("other") transcripts from disk so their URLs survive a
         // server restart. projectId/sequence are recovered from the filename.
-        const { registered: otherRegistered } = await transcriptRegistry.scanOther( { 'otherRoot': process.cwd() } )
+        // PRD-022 (Memo 067 WI-6-01): at boot no project is registered yet, so the store scan uses
+        // process.cwd() as the LOGGED notfall-fallback (never silent). Per-project canonical stores
+        // ({projektRoot}/.memo/transcripts/) are (re-)scanned deterministically on document
+        // registration (addDocument hook), independent of the server's start directory.
+        const bootOtherRoot = process.cwd()
+        process.stdout.write( `  OTHERROOT-FALLBACK-001 (boot): scanning other-store from cwd ${ bootOtherRoot }\n` )
+        const { registered: otherRegistered } = await transcriptRegistry.scanOther( { 'otherRoot': bootOtherRoot } )
 
         if( otherRegistered > 0 ) {
             process.stdout.write( `  Re-registered ${ otherRegistered } other transcript(s) from disk\n` )
@@ -383,6 +468,45 @@ class MemoView {
         struct[ 'status' ] = true
         struct[ 'requirementsDir' ] = requirementsDir
         struct[ 'memoName' ] = setName
+
+        return struct
+    }
+
+
+    // PRD-022 (Memo 067 WI-6-01): resolve the deterministic other-store root for a projectId. The
+    // canonical store of a registered project is {projektRoot}/.memo/transcripts/, where projektRoot
+    // is derived from any registered memoPath of that projectId via the /.memo/ marker (same marker
+    // resolveRequirementsLocation and the plans auto-register hook use). This makes the store location
+    // INDEPENDENT of the server process cwd (T014, FAKT). Returns { status, otherRoot, source }; a
+    // status:false lets the caller fall back to cwd as a LOGGED notfall-fallback (no silent default).
+    static resolveOtherRootForProject( { projectId } ) {
+        const struct = { 'status': false, 'otherRoot': null, 'source': 'none' }
+
+        if( typeof projectId !== 'string' || projectId.length === 0 ) {
+            return struct
+        }
+
+        if( !MemoView.#registry ) {
+            return struct
+        }
+
+        const { documents } = MemoView.#registry.getDocuments()
+        const match = documents
+            .find( ( doc ) => doc[ 'projectId' ] === projectId && typeof doc[ 'memoPath' ] === 'string' )
+
+        if( match === undefined ) {
+            return struct
+        }
+
+        const memoMarkerIndex = match[ 'memoPath' ].indexOf( '/.memo/' )
+
+        if( memoMarkerIndex === -1 ) {
+            return struct
+        }
+
+        struct[ 'status' ] = true
+        struct[ 'otherRoot' ] = match[ 'memoPath' ].slice( 0, memoMarkerIndex )
+        struct[ 'source' ] = 'registered-project-root'
 
         return struct
     }
@@ -891,8 +1015,19 @@ class MemoView {
                             'memoId': memoName
                         } )
 
+                        // PRD-022 (Memo 067 WI-6-01): (re-)scan the project's CANONICAL other-store
+                        // ({projektRoot}/.memo/transcripts/) so the auto-bind below sees it regardless
+                        // of the server's start cwd. The root is resolved deterministically from the
+                        // just-registered memoPath (not process.cwd()).
+                        const { status: otherRootStatus, otherRoot: projectOtherRoot } = MemoView.resolveOtherRootForProject( { projectId } )
+
+                        if( otherRootStatus === true ) {
+                            await MemoView.#transcriptRegistry.scanOther( { 'otherRoot': projectOtherRoot } )
+                        }
+
                         // PRD-004 (Memo 054 Kap 2): auto-bind a memo-init other-transcript as the
                         // memo's init file, if one exists and none is bound yet (NO-OVERWRITE).
+                        // PRD-022 (Memo 067 WI-6-03): the bind is now mtime-nearest + ambiguity-guarded.
                         await MemoView.#transcriptRegistry.autoBindInitTranscript( {
                             projectId,
                             'memoId': memoName,
@@ -1359,6 +1494,70 @@ class MemoView {
                 return
             }
 
+            // PRD-031 (Memo 067 Phase 9, WI-8-05): arm registration — map transcriptId → sessionId so
+            // the "Abschliessen" button wakes only the session(s) waiting on THIS transcript. Hangs off
+            // the existing loopback-bound server; no new listener.
+            if( url.startsWith( '/api/session/' ) && url.endsWith( '/arm' ) && req.method === 'POST' ) {
+
+                const sessionId = url.slice( '/api/session/'.length, -'/arm'.length )
+                const { body } = await readBody( req )
+                let parsed = {}
+
+                if( body.length > 0 ) {
+                    try {
+                        parsed = JSON.parse( body )
+                    } catch {
+                        sendJson( res, 400, { 'error': 'Invalid JSON body' } )
+
+                        return
+                    }
+                }
+
+                const result = MemoView.armSession( { sessionId, 'transcriptId': parsed[ 'transcriptId' ] } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 400, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                sendJson( res, 200, { 'status': 'ok' } )
+
+                return
+            }
+
+            // PRD-031 WI-8-05: the button's GET-Anteil — armed session-ids for the active transcript.
+            if( url === '/api/session/armed' && req.method === 'GET' ) {
+
+                const queryString = req.url.split( '?' )[ 1 ] || ''
+                const params = new URLSearchParams( queryString )
+                const { sessions } = MemoView.getArmedSessions( { 'transcriptId': params.get( 'transcriptId' ) } )
+
+                sendJson( res, 200, { 'status': 'ok', sessions } )
+
+                return
+            }
+
+            // PRD-031 WI-8-04: wake endpoint — drop the session flag on the existing loopback-bound
+            // server (NO new server.listen, BIND_HOST 127.0.0.1 inherited). A background until-loop in
+            // the waiting session polls the flag at 0 token cost. sessionId is whitelist-validated, so a
+            // path-traversal id (../../etc, %2f-decoded) is rejected with 400 before any filesystem write.
+            if( url.startsWith( '/api/session/' ) && url.endsWith( '/wake' ) && req.method === 'POST' ) {
+
+                const sessionId = url.slice( '/api/session/'.length, -'/wake'.length )
+                const result = await MemoView.writeWakeFlag( { sessionId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 400, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                sendJson( res, 200, { 'status': 'ok' } )
+
+                return
+            }
+
             if( url.startsWith( '/api/transcripts/' ) && req.method === 'DELETE' ) {
 
                 if( !MemoView.#transcriptRegistry ) {
@@ -1559,13 +1758,37 @@ class MemoView {
                 }
 
                 const { projectId, content } = parsed
-                const otherRoot = parsed[ 'otherRoot' ] || process.cwd()
+                // PRD-022 (Memo 067 WI-6-01): deterministic otherRoot. Order: (1) explicit param,
+                // (2) the registered project root of projectId (independent of the server cwd),
+                // (3) process.cwd() as the LOGGED notfall-fallback (OTHERROOT-FALLBACK-001) — never a
+                // silent default. This stops init transcripts from landing in whatever folder the
+                // server happened to be started in (the Memo-064 rogue-store root cause, T014).
+                let otherRoot = parsed[ 'otherRoot' ]
+                let otherRootSource = 'explicit'
+
+                if( otherRoot === undefined || otherRoot === null || otherRoot === '' ) {
+                    const { status: rootStatus, otherRoot: resolvedRoot } = MemoView.resolveOtherRootForProject( { projectId } )
+
+                    if( rootStatus === true ) {
+                        otherRoot = resolvedRoot
+                        otherRootSource = 'registered-project-root'
+                    } else {
+                        otherRoot = process.cwd()
+                        otherRootSource = 'cwd-fallback'
+                        process.stdout.write( `  WARN OTHERROOT-FALLBACK-001: no registered project root for '${ projectId }', using cwd ${ otherRoot }\n` )
+                    }
+                }
+
                 // PRD-002 (Memo 019 Kap 2): the "Neues Memo erstellen"-Flow passes type:'memo-init'
                 // so the saved transcript carries the memo-init header. Undefined -> 'frei' default
                 // in addOtherTranscript (kein stiller Default — bewusst vom Memo vorgegeben).
                 const type = parsed[ 'type' ]
 
                 const result = await MemoView.#transcriptRegistry.addOtherTranscript( { projectId, content, otherRoot, type } )
+
+                if( result[ 'status' ] === true ) {
+                    process.stdout.write( `  otherRoot resolved via ${ otherRootSource }: ${ otherRoot }\n` )
+                }
 
                 if( !result[ 'status' ] ) {
                     sendJson( res, 400, { 'error': result[ 'messages' ].join( '; ' ) } )

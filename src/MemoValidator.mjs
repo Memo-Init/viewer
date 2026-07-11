@@ -46,7 +46,8 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'MEMO-060', 'severity': 'ERROR', 'theme': 'filename', 'description': 'Revision filename suffix malformed (expected REV-NN.md, REV-NN-prepare.md or REV-NN-update.md)' },
     { 'code': 'MEMO-070', 'severity': 'ERROR', 'theme': 'lifecycle', 'description': 'Unresolved "[Research offen]" marker present outside code spans' },
     { 'code': 'MEMO-080', 'severity': 'ERROR', 'theme': 'block-meta', 'description': 'block-meta overlay block is malformed (invalid JSON; topic/prd ids not in T001 / PRD-001 shape; or a Parent/Child invariant is violated — child carrying prds, a block mixing singular topic with plural topics, or a grandchild/second level)' },
-    { 'code': 'INFO-010', 'severity': 'INFO', 'theme': 'header', 'description': 'Schema-Version marker missing (advisory until writing skills set it)' }
+    { 'code': 'INFO-010', 'severity': 'INFO', 'theme': 'header', 'description': 'Schema-Version marker missing (advisory until writing skills set it)' },
+    { 'code': 'WARN-010', 'severity': 'WARNING', 'theme': 'frage-continuity', 'description': 'Open-question set shrank between revisions without a matching new answered entry (Memo 067 WI-6-09: every revision must carry the FULL open-questions set)' }
 ]
 
 
@@ -112,9 +113,43 @@ class MemoValidator {
 
     static classify( { code } ) {
         const prefix = typeof code === 'string' ? code.split( '-' )[ 0 ] : ''
-        const severity = prefix === 'INFO' ? 'INFO' : 'ERROR'
+        // Memo 067 WI-6-09: WARN-NNN is a non-blocking WARNING channel (viewer-lint), distinct from
+        // the blocking MEMO-NNN ERROR channel and the advisory INFO-NNN channel.
+        const severity = prefix === 'INFO' ? 'INFO' : ( prefix === 'WARN' ? 'WARNING' : 'ERROR' )
 
         return { severity }
+    }
+
+
+    static checkQuestionContinuity( { current, previous } ) {
+        // Memo 067 WI-6-09 (F6=A) — non-blocking viewer-lint (WARN-010). Every revision must carry
+        // the FULL open-questions set; a question may only LEAVE the open set by being answered
+        // (moving to `## Beantwortete Fragen`). This compares a revision against its predecessor: if
+        // the OPEN set shrank but the shrink is NOT covered by a matching gain in answered questions,
+        // questions vanished silently -> emit WARN-010. Never blocks, never throws.
+        const struct = { 'warnings': [] }
+
+        if( typeof current !== 'string' || typeof previous !== 'string' ) {
+            return struct
+        }
+
+        const prev = DocumentRegistry.parseQuestions( { content: previous } )
+        const curr = DocumentRegistry.parseQuestions( { content: current } )
+
+        const openShrink = prev[ 'openCount' ] - curr[ 'openCount' ]
+        const answeredGain = Math.max( curr[ 'answeredCount' ] - prev[ 'answeredCount' ], 0 )
+
+        if( openShrink > answeredGain && openShrink > 0 ) {
+            const vanished = openShrink - answeredGain
+            const { message } = MemoValidator.#buildMessage( {
+                'code': 'WARN-010',
+                'feldPfad': 'Offene Fragen',
+                'description': `Open-question set shrank by ${ openShrink }, only ${ answeredGain } moved to Beantwortete Fragen — ${ vanished } question(s) vanished without an answer`
+            } )
+            struct[ 'warnings' ].push( message )
+        }
+
+        return struct
     }
 
 

@@ -4,12 +4,17 @@ import { resolve, basename, dirname } from 'node:path'
 import { TranscriptHeader } from './TranscriptHeader.mjs'
 
 
-// REV_FILE_PATTERN is used ONLY for the revisions/ folder scan (#scanRevNumbers / #maxRevNumber):
-// real revision files are REV-NN.md. It must stay as-is — transcripts/ no longer uses it.
 // Memo 038 Kap 13: realistic dictation speed for spoken transcript minutes (~110-150 wpm). Replaces
 // the too-fast magic 200 (a reading rate). Mirrored in MemoView.mjs + app.client.mjs — one value.
 const SPOKEN_WORDS_PER_MINUTE = 130
+// REV_FILE_PATTERN stays the strict form (REV-NN.md / REV-NN--MM.md). It is NOT the number scan.
 const REV_FILE_PATTERN = /^REV-(\d+)(?:--(\d+))?\.md$/
+// Memo 067 WI-6-08: the revision-number scan must count the base number of EVERY suffix form
+// (REV-NN.md, REV-NN--MM.md, REV-NN-update.md, REV-NN-consolidated.md, ...). The bug bound three
+// review transcripts to REV-02 because REV-0x-update.md (no `--\d+` suffix) never matched the strict
+// REV_FILE_PATTERN, so `max` stayed 2. This scan extracts m[1] = the base number for any dash suffix.
+// PREPARE-REV-*.md is still ignored — it has no `REV-` prefix at the start of the line.
+const REV_NUMBER_SCAN = /^REV-(\d+)(?:[-–].*)?\.md$/
 // PRD-001 (Memo 022): the transcripts/ binding key. A revision transcript = feedback ZU REV-N is
 // bound to REV-N. The filename encodes the DISCUSSED revision, not the produced one. Group 1 = the
 // discussed revision number, group 2 = the running, collision-free sequence (01, 02, ...).
@@ -27,6 +32,12 @@ const OTHER_FILE_PATTERN = /^(.+?)--other--(\d+)\.md$/
 // PRD-003 (Memo 019 Kap 3): a FREE transcript stored inside an existing memo's transcripts/
 // folder. Must NOT start with "REV-" so scanMemo never mistakes it for a revision. Group 1 = seq.
 const FREE_MEMO_FILE_PATTERN = /^frei--(\d+)\.md$/
+// PRD-022 (Memo 067 WI-6-03): auto-bind ambiguity guard. When the two nearest memo-init candidates
+// sit within this many ms of each other (measured as the delta of their mtime-distance to the
+// memo's creation time), the choice is NOT deterministic enough — do not silently bind. 60s is a
+// generous separation: a genuine init transcript is written within seconds of memo creation, so a
+// second candidate within a minute of that distance is treated as too close to disambiguate.
+const AUTOBIND_AMBIGUITY_THRESHOLD_MS = 60000
 
 
 /**
@@ -42,6 +53,11 @@ class TranscriptRegistry {
     #otherTranscripts = new Map()
     #onChangeCallback = null
     #defaultHost = 'http://localhost:3333'
+    // PRD-022 (Memo 067 WI-6-03): other-transcript ids already consumed by a successful auto-bind in
+    // this session. A bound candidate must never be re-bound to a DIFFERENT memo (the root of the
+    // cross-store mis-binding, Memo 067 T014). Rebuilt implicitly per session — the on-disk init file
+    // plus the `already-bound` check cover the persisted case across restarts.
+    #boundOtherTranscriptIds = new Set()
 
 
     static create( { onChange, host } ) {
@@ -1080,20 +1096,91 @@ class TranscriptRegistry {
             return { 'status': false, 'skipped': true, 'reason': 'already-bound' }
         }
 
-        // Find the first "other area" transcript of type memo-init for this projectId.
-        // Other-area entries have transcriptId of the form {projectId}--other--{seq}.
-        const candidate = [ ...this.#otherTranscripts.values() ]
-            .find( ( t ) => t[ 'projectId' ] === projectId
+        // PRD-022 (Memo 067 WI-6-03): candidate set = all UNBOUND memo-init "other area" transcripts
+        // of this projectId. Other-area entries have transcriptId of the form {projectId}--other--{seq}.
+        const candidates = [ ...this.#otherTranscripts.values() ]
+            .filter( ( t ) => t[ 'projectId' ] === projectId
                 && t[ 'type' ] === 'memo-init'
-                && t[ 'transcriptId' ].includes( '--other--' ) )
+                && typeof t[ 'transcriptId' ] === 'string'
+                && t[ 'transcriptId' ].includes( '--other--' )
+                && !this.#boundOtherTranscriptIds.has( t[ 'transcriptId' ] ) )
 
-        if( !candidate ) {
+        if( candidates.length === 0 ) {
             return { 'status': false, 'skipped': true, 'reason': 'no-candidate' }
         }
 
-        const content = await readFile( candidate[ 'absolutePath' ], 'utf-8' )
+        // PRD-022: pick the candidate whose mtime is NEAREST the memo's creation time (mtime of
+        // revisions/REV-01.md, else the memo folder) — NOT the first .find() in insertion order,
+        // which silently mis-bound across colliding sequences (Memo 067 T014).
+        const { mtimeMs: targetMtimeMs } = await TranscriptRegistry.#resolveMemoCreationMtime( { memoPath } )
 
-        return this.addInitTranscript( { projectId, memoId, content, memoPath } )
+        const ranked = candidates
+            .map( ( t ) => {
+                const candidateMtime = typeof t[ 'mtimeMs' ] === 'number' ? t[ 'mtimeMs' ] : 0
+                const distance = Math.abs( candidateMtime - targetMtimeMs )
+
+                return { 'transcript': t, distance }
+            } )
+            .sort( ( a, b ) => a[ 'distance' ] - b[ 'distance' ] )
+
+        const nearest = ranked[ 0 ]
+
+        // Ambiguity guard: if a runner-up is nearly equidistant (delta below threshold) the choice is
+        // not deterministic — WARN and skip. Binding is then left to the memo-init skill (Schritt 4b,
+        // explicit cp). NO SILENT DEFAULT: never pick the first of two near-equal candidates.
+        if( ranked.length > 1 ) {
+            const runnerUp = ranked[ 1 ]
+            const deltaMs = Math.abs( runnerUp[ 'distance' ] - nearest[ 'distance' ] )
+
+            if( deltaMs < AUTOBIND_AMBIGUITY_THRESHOLD_MS ) {
+                process.stderr.write( `  WARN AUTOBIND-AMBIGUOUS-001: ${ candidates.length } near-equidistant memo-init candidates for ${ projectId }/${ memoId } (delta ${ deltaMs }ms < ${ AUTOBIND_AMBIGUITY_THRESHOLD_MS }ms) — not binding, left to memo-init skill\n` )
+
+                return { 'status': false, 'skipped': true, 'reason': 'ambiguous-candidate', 'candidateCount': candidates.length }
+            }
+        }
+
+        const candidate = nearest[ 'transcript' ]
+        const content = await readFile( candidate[ 'absolutePath' ], 'utf-8' )
+        const result = await this.addInitTranscript( { projectId, memoId, content, memoPath } )
+
+        // Mark the source candidate as consumed only on a real bind, so it can never bind a 2nd memo.
+        if( result[ 'status' ] === true ) {
+            this.#boundOtherTranscriptIds.add( candidate[ 'transcriptId' ] )
+        }
+
+        return result
+    }
+
+
+    // PRD-022 (Memo 067 WI-6-03): the memo's creation time for the mtime-nearest auto-bind. Prefer
+    // the youngest anchor revisions/REV-01.md; fall back to the memo folder mtime. Missing/unreadable
+    // paths yield 0 (candidates then rank by absolute mtime — still deterministic, just uncalibrated).
+    static async #resolveMemoCreationMtime( { memoPath } ) {
+        const struct = { 'mtimeMs': 0 }
+
+        if( typeof memoPath !== 'string' || memoPath.length === 0 ) {
+            return struct
+        }
+
+        const revOnePath = resolve( memoPath, 'revisions', 'REV-01.md' )
+
+        try {
+            const revStat = await stat( revOnePath )
+            struct[ 'mtimeMs' ] = revStat.mtimeMs
+
+            return struct
+        } catch {
+            // REV-01 absent — fall back to the memo folder mtime below.
+        }
+
+        try {
+            const dirStat = await stat( memoPath )
+            struct[ 'mtimeMs' ] = dirStat.mtimeMs
+        } catch {
+            // memoPath unreadable — leave 0.
+        }
+
+        return struct
     }
 
 
@@ -1483,11 +1570,17 @@ class TranscriptRegistry {
     // — one level flatter, no "other" sub-folder. Breaking change (Kap 2.1, F5): there is
     // NO auto-migration. Existing files under the old .memo/other/transcripts/ are neither
     // moved nor deleted; they simply stop being scanned from the new location.
+    // PRD-022 (Memo 067 WI-6-01): the canonical other-store of a project is {otherRoot}/.memo/transcripts/.
+    // otherRoot is resolved deterministically by the caller (MemoView: the registered project root of
+    // the projectId). Only when no otherRoot is supplied does this fall back to process.cwd(); that
+    // branch is surfaced via usedCwdFallback so the caller can log it (OTHERROOT-FALLBACK-001) — the
+    // cwd default is never silent (node-class-architecture: NO SILENT DEFAULTS).
     static #resolveOtherDir( { otherRoot } ) {
-        const base = ( typeof otherRoot === 'string' && otherRoot.length > 0 ) ? resolve( otherRoot ) : resolve( process.cwd() )
+        const hasExplicit = typeof otherRoot === 'string' && otherRoot.length > 0
+        const base = hasExplicit ? resolve( otherRoot ) : resolve( process.cwd() )
         const transcriptsDir = resolve( base, '.memo', 'transcripts' )
 
-        return { transcriptsDir }
+        return { transcriptsDir, 'usedCwdFallback': !hasExplicit }
     }
 
 
@@ -1825,8 +1918,10 @@ class TranscriptRegistry {
             return struct
         }
 
+        // Memo 067 WI-6-08: count the base number of EVERY suffix form via REV_NUMBER_SCAN, so
+        // update/consolidated revisions raise `max` too (not only the strict REV-NN.md / REV-NN--MM.md).
         struct[ 'numbers' ] = files
-            .map( ( f ) => f.match( REV_FILE_PATTERN ) )
+            .map( ( f ) => f.match( REV_NUMBER_SCAN ) )
             .filter( ( m ) => m !== null )
             .map( ( m ) => parseInt( m[ 1 ], 10 ) )
 

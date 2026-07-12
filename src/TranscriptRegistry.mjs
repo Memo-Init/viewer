@@ -39,6 +39,16 @@ const FREE_MEMO_FILE_PATTERN = /^frei--(\d+)\.md$/
 // second candidate within a minute of that distance is treated as too close to disambiguate.
 const AUTOBIND_AMBIGUITY_THRESHOLD_MS = 60000
 
+// Auto-bind staleness sanity window. Per the design intent above, "a genuine init transcript is
+// written within seconds of memo creation" — so the mtime-nearest candidate is only a credible match
+// when it sits within this window of the memo's creation time. A candidate older than this is a stale
+// pool leftover (e.g. a bootstrapped --other-- transcript from a different memo/era), NOT this memo's
+// input; binding it silently mis-attributes provenance (observed: a Jun-17 grading transcript bound to
+// unrelated Jul-9/Jul-12 memos 151/153). Fail-safe: skip + WARN and leave the bind to the explicit
+// memo-init skill (Schritt 4b). 24h is generous vs. "within seconds" while decisively rejecting
+// days/weeks-old candidates. Only applied when the memo's creation time is known (targetMtimeMs > 0).
+const AUTOBIND_MAX_STALENESS_MS = 86400000
+
 
 /**
  * Transcripts are persistent. There is no automatic deletion.
@@ -1137,6 +1147,18 @@ class TranscriptRegistry {
 
                 return { 'status': false, 'skipped': true, 'reason': 'ambiguous-candidate', 'candidateCount': candidates.length }
             }
+        }
+
+        // Staleness sanity gate: the nearest candidate must be temporally plausible for THIS memo.
+        // When the memo's creation time is known (targetMtimeMs > 0) and the nearest candidate sits
+        // farther than the staleness window from it, the candidate is a stale pool leftover, not this
+        // memo's input — do NOT bind (NO SILENT DEFAULT, mirrors the ambiguity guard above). Left to
+        // the explicit memo-init skill bind. Skipped when targetMtimeMs is 0 (uncalibrated: preserve
+        // the documented absolute-mtime fallback rather than over-skipping).
+        if( targetMtimeMs > 0 && nearest[ 'distance' ] > AUTOBIND_MAX_STALENESS_MS ) {
+            process.stderr.write( `  WARN AUTOBIND-STALE-001: nearest memo-init candidate for ${ projectId }/${ memoId } is ${ Math.round( nearest[ 'distance' ] / 3600000 ) }h from memo creation (> ${ Math.round( AUTOBIND_MAX_STALENESS_MS / 3600000 ) }h) — stale pool leftover, not binding, left to memo-init skill\n` )
+
+            return { 'status': false, 'skipped': true, 'reason': 'stale-candidate', 'candidateCount': candidates.length }
         }
 
         const candidate = nearest[ 'transcript' ]

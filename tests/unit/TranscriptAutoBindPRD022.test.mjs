@@ -108,6 +108,12 @@ describe( 'PRD-022 WI-6-03 — mtime-nearest auto-bind', () => {
         const memoB = join( tempDir, '.memo', 'memos', '073-second' )
         await mkdir( memoA, { recursive: true } )
         await mkdir( memoB, { recursive: true } )
+        // Keep both memos within the staleness window of the candidate so this test isolates the
+        // consumption guard, not the Memo-153 staleness gate (without utimes the folder mtime defaults
+        // to the real current time, which is years past BASE_MS and would trip the staleness gate).
+        const memoDate = new Date( BASE_MS + 30 * 1000 )
+        await utimes( memoA, memoDate, memoDate )
+        await utimes( memoB, memoDate, memoDate )
 
         const first = await registry.autoBindInitTranscript( { projectId: 'proj', memoId: '072-first', memoPath: memoA } )
         expect( first[ 'status' ] ).toBe( true )
@@ -115,6 +121,49 @@ describe( 'PRD-022 WI-6-03 — mtime-nearest auto-bind', () => {
         const second = await registry.autoBindInitTranscript( { projectId: 'proj', memoId: '073-second', memoPath: memoB } )
         expect( second[ 'status' ] ).toBe( false )
         expect( second[ 'reason' ] ).toBe( 'no-candidate' )
+    } )
+
+
+    // Memo 153 (FlowMCP rollout follow-up): the mtime-nearest candidate must also be temporally
+    // PLAUSIBLE. A stale pool leftover (e.g. a bootstrapped --other-- transcript weeks older than the
+    // memo) must NOT be auto-bound — it silently mis-attributes provenance (the observed 151/153 bug).
+    it( 'skips with reason stale-candidate when the nearest candidate is older than the staleness window', async () => {
+        const stale = await addMemoInitOther( { registry, otherRoot: tempDir, content: 'STALE grading leftover' } )
+        expect( stale.result[ 'status' ] ).toBe( true )
+
+        const staleDate = new Date( BASE_MS )
+        await utimes( stale.result[ 'absolutePath' ], staleDate, staleDate )
+        await registry.scanOther( { otherRoot: tempDir } )
+
+        const memoDir = join( tempDir, '.memo', 'memos', '074-fresh-memo' )
+        await mkdir( memoDir, { recursive: true } )
+        const memoDate = new Date( BASE_MS + 25 * 24 * 60 * 60 * 1000 ) // 25 days after the stale candidate
+        await utimes( memoDir, memoDate, memoDate )
+
+        const result = await registry.autoBindInitTranscript( { projectId: 'proj', memoId: '074-fresh-memo', memoPath: memoDir } )
+
+        expect( result[ 'status' ] ).toBe( false )
+        expect( result[ 'skipped' ] ).toBe( true )
+        expect( result[ 'reason' ] ).toBe( 'stale-candidate' )
+    } )
+
+
+    it( 'still binds a candidate that sits within the staleness window (same-day workflow)', async () => {
+        const fresh = await addMemoInitOther( { registry, otherRoot: tempDir, content: 'FRESH within-window candidate' } )
+        const freshDate = new Date( BASE_MS )
+        await utimes( fresh.result[ 'absolutePath' ], freshDate, freshDate )
+        await registry.scanOther( { otherRoot: tempDir } )
+
+        const memoDir = join( tempDir, '.memo', 'memos', '075-same-day' )
+        await mkdir( memoDir, { recursive: true } )
+        const memoDate = new Date( BASE_MS + 12 * 60 * 60 * 1000 ) // 12h after — within the 24h window
+        await utimes( memoDir, memoDate, memoDate )
+
+        const result = await registry.autoBindInitTranscript( { projectId: 'proj', memoId: '075-same-day', memoPath: memoDir } )
+
+        expect( result[ 'status' ] ).toBe( true )
+        const written = await readFile( result[ 'absolutePath' ], 'utf-8' )
+        expect( written ).toContain( 'FRESH within-window candidate' )
     } )
 } )
 

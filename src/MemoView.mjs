@@ -9,6 +9,7 @@ import { exec } from 'node:child_process'
 import { WebSocketServer } from 'ws'
 
 import { DocumentRegistry } from './DocumentRegistry.mjs'
+import { ProjectAutoRegister } from './ProjectAutoRegister.mjs'
 import { MemoValidator } from './MemoValidator.mjs'
 import { PlanRegistry } from './PlanRegistry.mjs'
 import { TranscriptRegistry } from './TranscriptRegistry.mjs'
@@ -422,6 +423,22 @@ class MemoView {
             } )
         } catch {
             // cwd has no .memo/plans — skip auto-register
+        }
+
+        // Memo 070, Phase 4 — AUTO-REGISTRATION trigger. When the server boots in a project that
+        // already has a VALID structure (a .memo/ with at least one numbered memo carrying revisions),
+        // register all of that project's memos automatically instead of requiring a manual POST per
+        // memo. The trigger delegates to the SAME DocumentRegistry.addDocument mechanism the manual
+        // door uses. Fail-open: an invalid structure is simply skipped (logged, never thrown). This is
+        // "auto-registration", deliberately NOT "auto-login" — it never touches the transcript
+        // loggedIn / "eingeloggt" status, which is a separate transcript concern.
+        const { status: autoStatus, registered: autoRegistered, projectId: autoProjectId, reasons: autoReasons } =
+            await ProjectAutoRegister.autoRegister( { projectRoot: process.cwd(), registry } )
+
+        if( autoStatus === true ) {
+            process.stdout.write( `  Auto-registration: ${autoRegistered.length} memo(s) of "${autoProjectId}" registered from a valid structure\n` )
+        } else if( autoReasons.length > 0 ) {
+            process.stdout.write( `  Auto-registration: skipped (${autoReasons[ 0 ]})\n` )
         }
 
         process.stdout.write( `\n  memo-view server started (multi-document mode)\n` )

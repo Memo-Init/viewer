@@ -689,6 +689,46 @@ class MemoView {
     }
 
 
+    // Env-independent active-memo channel (Memo 072 K1): the memo-view server is a long-lived SHARED
+    // server without a per-session CLAUDE_MEMO, so the active memo is derived from the FRESHEST session
+    // mark across the loaded memos (the same memo-local sessions.jsonl the rollout writes). Returns
+    // [{ activeMemo, latestMarkAt }] — the memo leading-number (normalised) + its newest mark ISO
+    // timestamp. Backs SessionHead.resolveActiveMemo's listMarkedMemos injection. Read-only; a memo with
+    // no marks is dropped (never invents an active memo).
+    static async listMarkedMemos() {
+        if( !MemoView.#registry ) {
+            return []
+        }
+
+        const { documents } = MemoView.#registry.getDocuments()
+        const seen = {}
+        const memos = documents
+            .filter( ( doc ) => typeof doc[ 'memoPath' ] === 'string' && typeof doc[ 'memoName' ] === 'string' )
+            .map( ( doc ) => {
+                const numberMatch = doc[ 'memoName' ].match( /^(\d{1,})/ )
+                // Keep the memo number as authored (zero-padded, e.g. "072") so the head displays it the
+                // same way the CLAUDE_MEMO path does; resolveActiveMemoDir normalises internally for matching.
+                const activeMemo = numberMatch !== null ? numberMatch[ 1 ] : null
+                const memoPath = doc[ 'memoPath' ]
+                const memoDir = basename( memoPath ) === 'revisions' ? dirname( memoPath ) : memoPath
+
+                return { activeMemo, memoDir }
+            } )
+            .filter( ( entry ) => entry.activeMemo !== null && seen[ entry.activeMemo ] === undefined && ( seen[ entry.activeMemo ] = true ) === true )
+
+        const withMarks = await Promise.all( memos.map( async ( entry ) => {
+            const { marks } = await SessionHead.readMarks( { memoDir: entry.memoDir } )
+            const latestMarkAt = marks
+                .map( ( mark ) => mark !== null && typeof mark.timestamp === 'string' ? mark.timestamp : '' )
+                .reduce( ( best, ts ) => ts > best ? ts : best, '' )
+
+            return { activeMemo: entry.activeMemo, latestMarkAt }
+        } ) )
+
+        return withMarks.filter( ( entry ) => entry.latestMarkAt.length > 0 )
+    }
+
+
     static #currentDirectoryPath = null
     static #currentDirectoryState = null
 
@@ -2239,7 +2279,8 @@ class MemoView {
 
                 const head = await SessionHead.resolve( {
                     'env': process.env,
-                    'lookupMemoDir': ( { activeMemo } ) => MemoView.resolveActiveMemoDir( { activeMemo } )
+                    'lookupMemoDir': ( { activeMemo } ) => MemoView.resolveActiveMemoDir( { activeMemo } ),
+                    'listMarkedMemos': () => MemoView.listMarkedMemos()
                 } )
 
                 sendJson( res, 200, {
@@ -2261,7 +2302,8 @@ class MemoView {
             // does not collide with /api/session or the /api/session/<id>/… routes.
             if( url === '/api/cockpit' && req.method === 'GET' ) {
 
-                const activeMemo = SessionHead.activeMemo( { 'env': process.env } )
+                const resolved = await SessionHead.resolveActiveMemo( { 'env': process.env, 'listMarkedMemos': () => MemoView.listMarkedMemos() } )
+                const activeMemo = resolved.activeMemo
                 const located = activeMemo === null
                     ? { 'memoDir': null }
                     : MemoView.resolveActiveMemoDir( { activeMemo } )

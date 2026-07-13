@@ -43,8 +43,9 @@ class SessionHead {
     //  - lookupMemoDir: async ({ activeMemo }) => ({ memoDir, namespace }) — maps the active memo number
     //    to its memo-local dir + project namespace (the viewer backs it with the DocumentRegistry; a test
     //    passes a fixture). No match -> { memoDir: null, namespace: null } (never a silent default).
-    static async resolve( { env, lookupMemoDir } ) {
-        const activeMemo = SessionHead.activeMemo( { env } )
+    static async resolve( { env, lookupMemoDir, listMarkedMemos } ) {
+        const resolved = await SessionHead.resolveActiveMemo( { env, listMarkedMemos } )
+        const activeMemo = resolved.activeMemo
         const located = activeMemo === null || typeof lookupMemoDir !== 'function'
             ? { memoDir: null, namespace: null }
             : await lookupMemoDir( { activeMemo } )
@@ -65,6 +66,34 @@ class SessionHead {
         const raw = environment[ 'CLAUDE_MEMO' ]
 
         return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : null
+    }
+
+
+    // Resolve the active memo NUMBER env-INDEPENDENTLY (Memo 072 K1). The primary source stays the ambient
+    // CLAUDE_MEMO (harness-exported, per-session). But the memo-view server is a LONG-LIVED SHARED server
+    // started without a per-session env, so when CLAUDE_MEMO is unset the active memo is the one carrying
+    // the FRESHEST session mark across the project's memos — the same append-only sessions.jsonl the
+    // rollout/init/finalize already write. This is what makes the Session-Kopf actually POPULATE in the
+    // real shared server (K1: close the "gebaut, aber unsichtbar" gap for real, not just when an env is
+    // hand-set). Still No-Silent-Default: no env and no marks anywhere -> explicit null (client renders —).
+    //  - listMarkedMemos: async () => [{ activeMemo, latestMarkAt }] — each memo's leading number + its
+    //    newest mark ISO timestamp. Injected so this stays unit-testable without a registry/filesystem.
+    static async resolveActiveMemo( { env, listMarkedMemos } ) {
+        const fromEnv = SessionHead.activeMemo( { env } )
+        if( fromEnv !== null ) {
+            return { activeMemo: fromEnv, source: 'env' }
+        }
+        if( typeof listMarkedMemos !== 'function' ) {
+            return { activeMemo: null, source: 'none' }
+        }
+
+        const listed = await listMarkedMemos()
+        const marked = Array.isArray( listed ) === true ? listed : []
+        const newest = marked
+            .filter( ( entry ) => entry !== null && typeof entry === 'object' && typeof entry.activeMemo === 'string' && entry.activeMemo.length > 0 && typeof entry.latestMarkAt === 'string' && entry.latestMarkAt.length > 0 )
+            .reduce( ( best, entry ) => best === null || entry.latestMarkAt > best.latestMarkAt ? entry : best, null )
+
+        return newest === null ? { activeMemo: null, source: 'none' } : { activeMemo: newest.activeMemo, source: 'mark' }
     }
 
 

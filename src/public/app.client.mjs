@@ -215,6 +215,60 @@
             }
         }
 
+        // PRD-012 (Memo 072, Phase 4, F6=A): the SESSION head. Fetch the session-driven snapshot
+        // { namespace, activeMemo, workMode } from /api/session and render Namespace/Memo/Mode plus the
+        // SECOND lamp #session-status (Session-Health), which is SEPARATE from the #status server-connect
+        // lamp (T003 #3). A missing source is rendered as an em dash (—), never a guessed value. The
+        // workMode is the CORE work-mode (SessionMarkStore-derived); the viewer only displays it.
+        var sessionNamespaceEl = document.getElementById( 'session-namespace' )
+        var sessionMemoEl = document.getElementById( 'session-memo' )
+        var sessionModeEl = document.getElementById( 'session-mode' )
+        var sessionStatusEl = document.getElementById( 'session-status' )
+
+        function renderSessionHead( head ) {
+            var safe = ( head && typeof head === 'object' ) ? head : {}
+            var namespace = ( typeof safe.namespace === 'string' && safe.namespace.length > 0 ) ? safe.namespace : '—'
+            var activeMemo = ( typeof safe.activeMemo === 'string' && safe.activeMemo.length > 0 ) ? safe.activeMemo : '—'
+            var workMode = ( typeof safe.workMode === 'string' && safe.workMode.length > 0 ) ? safe.workMode : '—'
+
+            if( sessionNamespaceEl ) { sessionNamespaceEl.textContent = namespace }
+            if( sessionMemoEl ) { sessionMemoEl.textContent = activeMemo }
+            if( sessionModeEl ) { sessionModeEl.textContent = workMode }
+            if( sessionStatusEl ) {
+                var active = workMode !== '—'
+                sessionStatusEl.classList.toggle( 'active', active )
+                sessionStatusEl.title = active ? ( 'Session aktiv — Mode: ' + workMode ) : 'Keine aktive Session'
+            }
+        }
+
+        function refreshSessionHead() {
+            fetch( '/api/session' )
+                .then( function( resp ) { return resp.json() } )
+                .then( function( head ) { renderSessionHead( head ) } )
+                .catch( function() { renderSessionHead( null ) } )
+        }
+
+        // PRD-013 (Memo 072, Phase 4, F6=A): the cockpit line, MERGED into the SAME session head (F6=A)
+        // as Namespace/Memo/Mode — the ONE interface surface, not a second CockpitWatcher.serve() port
+        // (T003 #10/#11). Fetch the rendered `phase • pct • worker • budget • age` line from /api/cockpit
+        // and drop it into #session-cockpit. A missing/corrupt snapshot (or no active memo) renders the
+        // em-dash fallback line the endpoint already returns — never a guessed value.
+        var sessionCockpitEl = document.getElementById( 'session-cockpit' )
+
+        function renderCockpit( view ) {
+            var safe = ( view && typeof view === 'object' ) ? view : {}
+            var line = ( typeof safe.line === 'string' && safe.line.length > 0 ) ? safe.line : '—'
+
+            if( sessionCockpitEl ) { sessionCockpitEl.textContent = line }
+        }
+
+        function refreshCockpit() {
+            fetch( '/api/cockpit' )
+                .then( function( resp ) { return resp.json() } )
+                .then( function( view ) { renderCockpit( view ) } )
+                .catch( function() { renderCockpit( null ) } )
+        }
+
         window.selectRevision = function( documentId, fileName ) {
             // PRD-009 (Memo 016 Kap 7, F4): explicitly picking a memo/revision returns home to
             // prose — the incoming content broadcast must NOT be gated off by a stale open panel.
@@ -6201,6 +6255,14 @@
                 updateConnectionStatus( 'connected' )
                 reconnectAttempts = 0
 
+                // PRD-012 (Memo 072, Phase 4): (re)load the SESSION head on every (re)connect — the
+                // work-mode can advance mid-session (a rollout mark appended -> Create becomes Rollout),
+                // so a reconnect refreshes it without a page reload.
+                refreshSessionHead()
+                // PRD-013 (Memo 072, Phase 4): the cockpit line advances continuously mid-rollout
+                // (phase/pct/worker), so re-pull it on every (re)connect too — one interface, one refresh.
+                refreshCockpit()
+
                 if( reconnectTimer ) {
                     clearTimeout( reconnectTimer )
                     reconnectTimer = null
@@ -6371,6 +6433,11 @@
         })()
 
         connect()
+        // PRD-012 (Memo 072, Phase 4): first paint of the SESSION head at boot (before the WS opens),
+        // so Namespace/Memo/Mode + the session-health lamp are populated immediately.
+        refreshSessionHead()
+        // PRD-013 (Memo 072, Phase 4): first paint of the MERGED cockpit line at boot too.
+        refreshCockpit()
 
         var mermaidModal = document.getElementById( 'mermaid-modal' )
         var mermaidModalSvg = document.getElementById( 'mermaid-modal-svg' )

@@ -175,6 +175,46 @@
 
         #status.connected { background: var(--accent-bright); }
 
+        /* PRD-012 (Memo 072, Phase 4, F6=A): the SESSION head — the running session's
+           Namespace/Memo/Mode. A plain label row (no pill group), so it is visually distinct from
+           the #mode-toggle VIEW switcher and the two are never confused (T003 #2). */
+        #session-head {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 6px;
+            font-size: 12px;
+            color: var(--text-muted);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .session-head-item { display: inline-flex; align-items: baseline; gap: 4px; }
+        .session-head-label { color: var(--text-muted); font-weight: 500; }
+        .session-head-value { color: var(--text-1); font-weight: 600; font-family: var(--font-mono); }
+        .session-head-sep { color: var(--border); }
+
+        /* PRD-013 (Memo 072, Phase 4, F6=A): the cockpit line MERGED into the session head (F6=A) — the
+           ONE interface surface, not a second CockpitWatcher.serve() port. Compact + truncating so a long
+           "phase • pct • worker • budget • age" line never blows up the nav width. */
+        #session-cockpit { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+
+        /* PRD-012 (Memo 072, Phase 4, T003 #3): SECOND lamp = Session-Health, SEPARATE from #status
+           (Server-Verbindung). Grey when no active session / work-mode, green when a session is
+           active — two distinct signals instead of one overloaded lamp. */
+        #session-status {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--text-muted);
+            opacity: 0.6;
+            transition: background 0.3s;
+            flex-shrink: 0;
+            margin-left: 2px;
+        }
+
+        #session-status.active { background: var(--accent-bright); opacity: 1; }
+
         /* PRD-016 (Memo 016, E9): visible offline banner, shown from the 1st failed attempt. */
         .offline-banner {
             display: block;

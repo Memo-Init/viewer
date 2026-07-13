@@ -16,6 +16,8 @@ import { TranscriptRegistry } from './TranscriptRegistry.mjs'
 import { RequirementsStore } from './RequirementsStore.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
 import { RevisionLogic } from './RevisionLogic.mjs'
+import { SessionHead } from './SessionHead.mjs'
+import { CockpitLine } from './CockpitLine.mjs'
 import { Config } from './data/config.mjs'
 
 
@@ -529,6 +531,47 @@ class MemoView {
     }
 
 
+    // PRD-012 (Memo 072, Phase 4): map the ambient active-memo NUMBER (CLAUDE_MEMO) to its memo-local
+    // dir + project namespace, from the ALREADY-loaded DocumentRegistry (no fresh scan). The dir is where
+    // the append-only sessions.jsonl lives — the memo ROOT, not the revisions/ subdir (the same basename
+    // adjustment the transcript scan uses). Match is by the memo's leading number, normalised so "072"
+    // and "72" resolve alike. No registry / no match -> nulls (No-Silent-Default: never a guessed memo).
+    // Read-only — the backing of SessionHead.resolve's lookupMemoDir injection.
+    static resolveActiveMemoDir( { activeMemo } ) {
+        const struct = { 'memoDir': null, 'namespace': null }
+
+        if( typeof activeMemo !== 'string' || activeMemo.length === 0 || !MemoView.#registry ) {
+            return struct
+        }
+
+        const wanted = String( parseInt( activeMemo, 10 ) )
+
+        if( wanted === 'NaN' ) {
+            return struct
+        }
+
+        const { documents } = MemoView.#registry.getDocuments()
+        const match = documents
+            .find( ( doc ) => {
+                const name = typeof doc[ 'memoName' ] === 'string' ? doc[ 'memoName' ] : ''
+                const numberMatch = name.match( /^(\d{1,})/ )
+                const num = numberMatch !== null ? String( parseInt( numberMatch[ 1 ], 10 ) ) : null
+
+                return num !== null && num === wanted && typeof doc[ 'memoPath' ] === 'string'
+            } )
+
+        if( match === undefined ) {
+            return struct
+        }
+
+        const memoPath = match[ 'memoPath' ]
+        struct[ 'memoDir' ] = basename( memoPath ) === 'revisions' ? dirname( memoPath ) : memoPath
+        struct[ 'namespace' ] = typeof match[ 'projectId' ] === 'string' ? match[ 'projectId' ] : null
+
+        return struct
+    }
+
+
     static #currentDirectoryPath = null
     static #currentDirectoryState = null
 
@@ -678,6 +721,30 @@ class MemoView {
             <button id="mode-transcripts" class="mode-toggle">Transcripts</button>
             <button id="mode-memos" class="mode-toggle active">Memos</button>
             <button id="mode-plans" class="mode-toggle">Plans</button>
+        </div>
+        <!-- PRD-012 (Memo 072, Phase 4, F6=A): the SESSION head — the running session's Namespace +
+             active Memo + Work-Mode (Create/Rollout), plus a session-health lamp (#session-status).
+             This is the SESSION state, deliberately distinct from the #mode-toggle VIEW switcher above
+             (Transcripts/Memos/Plans) — the two must not be confusable (T003 #2). Values are filled by
+             the /api/session fetch (client renderSessionHead); a missing source shows an em dash (—),
+             never a guessed value (No-Silent-Default). NOTE (T003 #8/#9): there is deliberately NO
+             viewer "Tools" area — the "Tools" the user means is the TERMINAL statusline / session-tool
+             contract (sessiontools-check.sh, statusline-command.sh), not the viewer; the expectation is
+             redirected there, not built here. -->
+        <div id="session-head" role="status" aria-live="polite" aria-label="Laufende Session">
+            <span class="session-head-item"><span class="session-head-label">Namespace:</span> <span id="session-namespace" class="session-head-value">—</span></span>
+            <span class="session-head-sep">·</span>
+            <span class="session-head-item"><span class="session-head-label">Memo:</span> <span id="session-memo" class="session-head-value">—</span></span>
+            <span class="session-head-sep">·</span>
+            <span class="session-head-item"><span class="session-head-label">Mode:</span> <span id="session-mode" class="session-head-value">—</span></span>
+            <span class="session-head-sep">·</span>
+            <!-- PRD-013 (Memo 072, Phase 4, F6=A): the cockpit line MERGED into the SAME session head
+                 (F6=A) — the ONE interface surface, not a second CockpitWatcher.serve() port/tunnel
+                 (T003 #10/#11). Filled by the /api/cockpit fetch (client renderCockpit) as the compact
+                 live line "phase - pct - worker - budget - age"; a missing/corrupt snapshot shows an em
+                 dash (—), never a guessed value (No-Silent-Default). -->
+            <span class="session-head-item"><span class="session-head-label">Cockpit:</span> <span id="session-cockpit" class="session-head-value">—</span></span>
+            <div id="session-status" title="Session-Health" role="status" aria-live="polite" aria-label="Session-Health"></div>
         </div>
         <span id="nav-spacer"></span>
         <button id="transcript-new" class="nav-btn-secondary" title="Transcript hinzufügen oder neues Memo bootstrappen">Transcript</button>
@@ -2211,6 +2278,60 @@ class MemoView {
                 const statusCode = safe[ 'status' ] === true ? 200 : 422
 
                 sendJson( res, statusCode, safe )
+
+                return
+            }
+
+            // PRD-012 (Memo 072, Phase 4, F6=A): the Session-Kopf data source. Returns the session-driven
+            // snapshot { namespace, activeMemo, workMode } that the nav head renders. The workMode is the
+            // CORE work-mode — SessionHead mirrors SessionMarkStore.deriveWorkMode over the memo-local
+            // sessions.jsonl; the viewer only READS it, it never invents a new work-mode state (F6
+            // Nicht-Ziel). activeMemo/namespace come from the ambient CLAUDE_MEMO snapshot resolved against
+            // the DocumentRegistry (NOT the user-clicked document); a missing source resolves to null (the
+            // client renders an em dash), never a guessed memo. This exact `/api/session` GET is matched
+            // before the `/api/` catch-all and does not collide with the `/api/session/<id>/…` routes.
+            if( url === '/api/session' && req.method === 'GET' ) {
+
+                const head = await SessionHead.resolve( {
+                    'env': process.env,
+                    'lookupMemoDir': ( { activeMemo } ) => MemoView.resolveActiveMemoDir( { activeMemo } )
+                } )
+
+                sendJson( res, 200, {
+                    'namespace': head[ 'namespace' ],
+                    'activeMemo': head[ 'activeMemo' ],
+                    'workMode': head[ 'workMode' ]
+                } )
+
+                return
+            }
+
+            // PRD-013 (Memo 072, Phase 4, F6=A): the cockpit line, MERGED into the viewer (F6=A) instead
+            // of the separate CockpitWatcher.serve() loopback surface — the ONE interface, no second port,
+            // no tunnel (dissolves T003 #10/#11). Reads the memo-local rollout/cockpit-snapshot.json of the
+            // AMBIENT active memo (CLAUDE_MEMO resolved against the DocumentRegistry — the SAME source
+            // /api/session uses, NOT the user-clicked document) and returns the vendored CockpitLine.render
+            // view. A missing/corrupt snapshot — or no active memo at all — renders the "—" fallback line,
+            // never a crash (readSnapshot semantics). Matched BEFORE the /api/ catch-all; the exact path
+            // does not collide with /api/session or the /api/session/<id>/… routes.
+            if( url === '/api/cockpit' && req.method === 'GET' ) {
+
+                const activeMemo = SessionHead.activeMemo( { 'env': process.env } )
+                const located = activeMemo === null
+                    ? { 'memoDir': null }
+                    : MemoView.resolveActiveMemoDir( { activeMemo } )
+                const memoDir = located !== null && typeof located === 'object' ? located[ 'memoDir' ] : null
+                const view = await CockpitLine.resolveLine( { memoDir, 'now': new Date().toISOString() } )
+
+                sendJson( res, 200, {
+                    'activeMemo': activeMemo,
+                    'line': view[ 'line' ],
+                    'phase': view[ 'phase' ],
+                    'pct': view[ 'pct' ],
+                    'worker': view[ 'worker' ],
+                    'budget': view[ 'budget' ],
+                    'ageSec': view[ 'ageSec' ]
+                } )
 
                 return
             }

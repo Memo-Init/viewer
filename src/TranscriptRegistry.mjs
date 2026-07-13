@@ -59,6 +59,13 @@ const AUTOBIND_MAX_STALENESS_MS = 86400000
  * Cleanup-Routines MUST skip the transcripts/ directory.
  */
 class TranscriptRegistry {
+    // PRD-016 (Memo 072 WI-T011-5): the pseudo-memo node key under which memo-less transcripts
+    // (#otherTranscripts — frei / memo-init / other) are hung in getTranscriptTree, so the tree
+    // carries ALL transcripts and the Transcripts-tab has ONE source. Parenthesised so it can
+    // never collide with a real numeric/slug memoId. Mirrored as a literal in app.client.mjs
+    // (renderSidebarTranscripts) — keep the two in sync.
+    static OTHER_TRANSCRIPTS_MEMO_ID = '(ungebunden)'
+
     #transcripts = new Map()
     #otherTranscripts = new Map()
     #onChangeCallback = null
@@ -1534,13 +1541,50 @@ class TranscriptRegistry {
                     'url': transcript[ 'url' ],
                     'revisionId': transcript[ 'revisionId' ],
                     'sequence': transcript[ 'sequence' ],
+                    // PRD-016 (Memo 072 WI-T011-5): memo-bound review transcripts are revision-type
+                    // by construction — expose it so the Transcripts-tree leaf can badge without a
+                    // second lookup (the same shape as the other-transcript branch below).
+                    'type': transcript[ 'type' ] || 'revision',
                     // PRD-005 (Kap 8): expose the per-revision Einloggen-Zustand to the frontend
                     // tree so the sticky-header status row + Einloggen-button can reflect it.
                     'loggedIn': transcript[ 'loggedIn' ] === true,
                     // PRD-001 (Memo 019 Kap 1): expose the spoken word count so the frontend can
                     // aggregate the finalized-memo minutes chip (~200 Woerter/Min). 0 when unknown.
                     'words': typeof transcript[ 'words' ] === 'number' ? transcript[ 'words' ] : 0,
-                    'mtime': transcript[ 'mtime' ] || null
+                    'mtime': transcript[ 'mtime' ] || null,
+                    // PRD-016: memo-bound transcripts are revision-bound (not ungebunden).
+                    'ungebunden': false
+                } )
+            } )
+
+        // PRD-016 (Memo 072 WI-T011-5): hang the memo-less transcripts (#otherTranscripts — frei,
+        // memo-init, other, incl. free-in-memo frei--NN) under a per-project pseudo-memo node
+        // (OTHER_TRANSCRIPTS_MEMO_ID), so the tree carries ALL transcripts and the Transcripts-tab
+        // has ONE source instead of two ad-hoc fetches. They carry NO revisionId (never
+        // revision-bound); the client renders them under the ungebunden node with a type badge.
+        this.#otherTranscripts
+            .forEach( ( transcript ) => {
+                const projectId = transcript[ 'projectId' ]
+                const memoId = TranscriptRegistry.OTHER_TRANSCRIPTS_MEMO_ID
+
+                if( !tree[ projectId ] ) { tree[ projectId ] = {} }
+                if( !tree[ projectId ][ memoId ] ) { tree[ projectId ][ memoId ] = [] }
+
+                tree[ projectId ][ memoId ].push( {
+                    'transcriptId': transcript[ 'transcriptId' ],
+                    'url': transcript[ 'url' ],
+                    // No revision binding — null keeps the leaf out of every revisionId-scoped
+                    // lookup (enrichRevisionStatus, transcriptsForRevision) and off the REV-badge.
+                    'revisionId': null,
+                    'sequence': transcript[ 'sequence' ] || null,
+                    // frei / memo-init / other (or null for a legacy header) — drives the badge and
+                    // the frei -> memo-init transform affordance in the tree leaf.
+                    'type': transcript[ 'type' ] || null,
+                    'loggedIn': false,
+                    'words': typeof transcript[ 'words' ] === 'number' ? transcript[ 'words' ] : 0,
+                    'mtime': transcript[ 'mtime' ] || null,
+                    // Flags the pseudo node so the client can render it distinctly (Bootstrap/Frei).
+                    'ungebunden': true
                 } )
             } )
 
@@ -1549,8 +1593,13 @@ class TranscriptRegistry {
                 Object.values( memos )
                     .forEach( ( transcripts ) => {
                         transcripts.sort( ( a, b ) => {
-                            if( a[ 'revisionId' ] !== b[ 'revisionId' ] ) {
-                                return a[ 'revisionId' ].localeCompare( b[ 'revisionId' ] )
+                            // revisionId is null for ungebundene Transcripts (own pseudo node) —
+                            // guard the localeCompare so a null never crashes the sort.
+                            const revA = a[ 'revisionId' ] || ''
+                            const revB = b[ 'revisionId' ] || ''
+
+                            if( revA !== revB ) {
+                                return revA.localeCompare( revB )
                             }
 
                             const seqA = a[ 'sequence' ] ? parseInt( a[ 'sequence' ], 10 ) : 0

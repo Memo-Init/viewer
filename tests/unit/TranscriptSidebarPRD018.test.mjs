@@ -99,15 +99,22 @@ describe( 'PRD-018 Transcript sidebar focus', () => {
             const here = dirname( fileURLToPath( import.meta.url ) )
             const clientPath = join( here, '..', '..', 'src', 'public', 'app.client.mjs' )
             const source = await readFile( clientPath, 'utf8' )
-            const start = source.indexOf( 'async function renderSidebarTranscripts(' )
+            // PRD-016 (Memo 072 WI-T011-4) rewrote renderSidebarTranscripts from an async two-fetch
+            // flat list into a SYNC namespace-tree render over the server tree — match the sync
+            // signature (the substring also matches the old async form, so this stays robust).
+            const start = source.indexOf( 'function renderSidebarTranscripts(' )
             const end = source.indexOf( 'async function loadTranscriptIntoContent(', start )
             const fnSource = source.slice( start, end )
 
             expect( fnSource.includes( 'transcript-sb-new' ) ).toBe( true )
             expect( fnSource.includes( '&#43; Memo erstellen' ) ).toBe( true )
             expect( fnSource.includes( 'openTranscriptModal' ) ).toBe( true )
-            // US-2 / Out of Scope: the sidebar render adds no hard-delete affordance.
-            expect( /delete/i.test( fnSource ) ).toBe( false )
+            // US-2 / Out of Scope: the sidebar render adds no hard-delete affordance — no DELETE
+            // call, no delete button/label. PRD-016 introduced Set.delete on the tab-local
+            // collapse-state sets (namespace/memo toggle); that is not a delete affordance, so the
+            // guard is scoped to a real DELETE endpoint or delete UI instead of the bare word.
+            expect( fnSource.includes( 'DELETE' ) ).toBe( false )
+            expect( /delete[-_ ]?(?:btn|button|transcript|memo)|hard-delete|löschen/i.test( fnSource ) ).toBe( false )
         } )
     } )
 } )

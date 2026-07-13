@@ -10,8 +10,10 @@ import { WebSocketServer } from 'ws'
 
 import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { ProjectAutoRegister } from './ProjectAutoRegister.mjs'
+import { SpecRegistry } from './SpecRegistry.mjs'
+import { SpecAutoRegister } from './SpecAutoRegister.mjs'
+import { SpecPublishStatus } from './SpecPublishStatus.mjs'
 import { MemoValidator } from './MemoValidator.mjs'
-import { PlanRegistry } from './PlanRegistry.mjs'
 import { TranscriptRegistry } from './TranscriptRegistry.mjs'
 import { RequirementsStore } from './RequirementsStore.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
@@ -212,6 +214,14 @@ class MemoView {
     // PRD-004 (Memo 022 Kap 8): config boot result, read ONCE at startup (see startServer).
     static #config = null
 
+    // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer. #specRegistry holds the auto-discovered
+    // project spec/ namespaces (SpecAutoRegister, no user-local store); #specRoots keeps the two disk
+    // roots the publish-badge deriver compares — the workshop spec/ and the public promotion target
+    // repos/spec/. Both are seeded ONCE in startServer and read by the /api/specs + /api/spec-page
+    // routes.
+    static #specRegistry = null
+    static #specRoots = { workshopRoot: null, publicRoot: null }
+
     // PRD-031 (Memo 067 Phase 9, WI-8-05): session-flüchtige Arm-Map transcriptId → Set<sessionId>.
     // No persistence — arming lives only as long as the server runs; a reboot clears it with the
     // flags. The same session_id identity is shared with the conflict detector (WI-7-05), not a
@@ -408,25 +418,6 @@ class MemoView {
 
         MemoView.#registerShutdown( { server, wss, state } )
 
-        const { registry: planRegistry } = PlanRegistry.create()
-        MemoView.#planRegistry = planRegistry
-        await MemoView.#planRegistry.loadFromDisk()
-
-        const plansRoot = resolve( process.cwd(), '.memo', 'plans' )
-        MemoView.#startPlansWatcher( { wss, rootPath: plansRoot } )
-
-        try {
-            await access( plansRoot )
-            const cwdProjectId = basename( process.cwd() ).replace( /[^a-zA-Z0-9_-]/g, '-' )
-            await MemoView.#planRegistry.add( {
-                'absolutePath': plansRoot,
-                'projectId': cwdProjectId,
-                'onChange': () => { MemoView.#broadcastPlanList( { wss } ) }
-            } )
-        } catch {
-            // cwd has no .memo/plans — skip auto-register
-        }
-
         // Memo 070, Phase 4 — AUTO-REGISTRATION trigger. When the server boots in a project that
         // already has a VALID structure (a .memo/ with at least one numbered memo carrying revisions),
         // register all of that project's memos automatically instead of requiring a manual POST per
@@ -441,6 +432,27 @@ class MemoView {
             process.stdout.write( `  Auto-registration: ${autoRegistered.length} memo(s) of "${autoProjectId}" registered from a valid structure\n` )
         } else if( autoReasons.length > 0 ) {
             process.stdout.write( `  Auto-registration: skipped (${autoReasons[ 0 ]})\n` )
+        }
+
+        // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer's SPEC AUTO-DISCOVERY. Discover the
+        // project's spec/ workshop namespaces (each an immediate subfolder with a spec.json family
+        // head) and register them into #specRegistry — no user-local ~/.spec-view/registry.json, no
+        // manual POST (dissolves the separate cli/spec-view store). The public promotion target
+        // repos/spec/ is recorded alongside so the publish-badge deriver can compare the two locally.
+        // Fail-open: a project without a spec/ simply registers zero namespaces (logged, never thrown).
+        MemoView.#specRegistry = new SpecRegistry()
+        MemoView.#specRoots = {
+            'workshopRoot': resolve( process.cwd(), 'spec' ),
+            'publicRoot': resolve( process.cwd(), 'repos', 'spec' )
+        }
+
+        const { status: specStatus, registered: specRegistered, reasons: specReasons } =
+            await SpecAutoRegister.autoRegister( { specRoot: MemoView.#specRoots[ 'workshopRoot' ], registry: MemoView.#specRegistry } )
+
+        if( specStatus === true ) {
+            process.stdout.write( `  Spec auto-discovery: ${specRegistered.length} namespace(s) registered (${specRegistered.join( ', ' )})\n` )
+        } else if( specReasons.length > 0 ) {
+            process.stdout.write( `  Spec auto-discovery: skipped (${specReasons[ 0 ]})\n` )
         }
 
         process.stdout.write( `\n  memo-view server started (multi-document mode)\n` )
@@ -492,10 +504,115 @@ class MemoView {
     }
 
 
+    // PRD-018 (Memo 072 Kap 13, F10=A): normalise a registered memoPath to the memo DIRECTORY that
+    // holds the shared stores (_topics/ + blocks/). The memoPath may point at the memo dir itself OR
+    // at its revisions/ subfolder (mirror of the getSelectedRevision handling, line ~580). Returns
+    // { status, memoDir }; a missing/empty memoPath fails loudly (no silent guess of the memo).
+    static resolveMemoDir( { memoPath } ) {
+        if( typeof memoPath !== 'string' || memoPath.length === 0 ) {
+            return { 'status': false, 'memoDir': null }
+        }
+
+        const memoDir = basename( memoPath ) === 'revisions' ? dirname( memoPath ) : memoPath
+
+        return { 'status': true, 'memoDir': memoDir }
+    }
+
+
+    // PRD-018 (Memo 072 Kap 13, F10=A): read the Topic/Block STORE of one memo — the deterministic
+    // chapter<->topic binding the viewer reads to inject the chapter topic-pille and cross-link line.
+    // UNLIKE the /blocks route (which reads block-meta FENCES via BlockMeta.parse from the revision
+    // markdown), this reads the STORE on disk: <memoDir>/_topics/T###.json + <memoDir>/blocks/B###/
+    // block.json. Read-only, never writes. Returns { topics:[{id,title,blockId,chapter,workItemIds,
+    // researchFile,dependsOn,status}], blocks:[{blockId,topicIds,tags}] }; an absent store yields the
+    // empty shape rather than throwing (a memo with no store looks empty, not broken).
+    static async readTopicStore( { memoDir } ) {
+        const empty = { 'topics': [], 'blocks': [] }
+
+        if( typeof memoDir !== 'string' || memoDir.length === 0 ) { return empty }
+
+        const topicsDir = resolve( memoDir, '_topics' )
+        const blocksDir = resolve( memoDir, 'blocks' )
+
+        const topics = existsSync( topicsDir ) === true
+            ? await MemoView.#readTopicFiles( { topicsDir } )
+            : []
+        const blocks = existsSync( blocksDir ) === true
+            ? await MemoView.#readBlockFiles( { blocksDir } )
+            : []
+
+        return { 'topics': topics, 'blocks': blocks }
+    }
+
+
+    // PRD-018: load the canonical <Tid>.json topic files (NEVER the archived <Tid>.<stamp>.json
+    // versions — Memo 054 Kap 4, archive-then-write). Projects each record onto the read-only view
+    // shape the route emits; a broken/unreadable file is dropped rather than crashing the whole read.
+    static async #readTopicFiles( { topicsDir } ) {
+        const entries = await readdir( topicsDir ).catch( () => [] )
+        const files = entries.filter( ( name ) => /^T\d{3}\.json$/.test( name ) )
+        const loaded = await Promise.all( files.map( async ( name ) => {
+            const raw = await readFile( resolve( topicsDir, name ), 'utf8' ).catch( () => null )
+
+            if( raw === null ) { return null }
+
+            try {
+                const t = JSON.parse( raw )
+
+                return {
+                    'id': t[ 'id' ],
+                    'title': typeof t[ 'title' ] === 'string' ? t[ 'title' ] : '',
+                    'blockId': t[ 'blockId' ] == null ? null : t[ 'blockId' ],
+                    'chapter': t[ 'chapter' ] == null ? null : t[ 'chapter' ],
+                    'workItemIds': Array.isArray( t[ 'workItemIds' ] ) ? t[ 'workItemIds' ] : [],
+                    'researchFile': t[ 'researchFile' ] == null ? null : t[ 'researchFile' ],
+                    'dependsOn': Array.isArray( t[ 'dependsOn' ] ) ? t[ 'dependsOn' ] : [],
+                    'status': typeof t[ 'status' ] === 'string' ? t[ 'status' ] : 'registered'
+                }
+            } catch( e ) {
+                return null
+            }
+        } ) )
+
+        return loaded
+            .filter( ( t ) => t !== null )
+            .sort( ( a, b ) => String( a[ 'id' ] ).localeCompare( String( b[ 'id' ] ) ) )
+    }
+
+
+    // PRD-018: load the canonical blocks/B###/block.json records (NEVER the archived block.<stamp>.json
+    // versions). Projects each onto the read-only view shape; a broken/unreadable file is dropped.
+    static async #readBlockFiles( { blocksDir } ) {
+        const entries = await readdir( blocksDir ).catch( () => [] )
+        const blockDirs = entries.filter( ( name ) => /^B\d{3}$/.test( name ) )
+        const loaded = await Promise.all( blockDirs.map( async ( name ) => {
+            const raw = await readFile( resolve( blocksDir, name, 'block.json' ), 'utf8' ).catch( () => null )
+
+            if( raw === null ) { return null }
+
+            try {
+                const b = JSON.parse( raw )
+
+                return {
+                    'blockId': b[ 'blockId' ],
+                    'topicIds': Array.isArray( b[ 'topicIds' ] ) ? b[ 'topicIds' ] : [],
+                    'tags': Array.isArray( b[ 'tags' ] ) ? b[ 'tags' ] : []
+                }
+            } catch( e ) {
+                return null
+            }
+        } ) )
+
+        return loaded
+            .filter( ( b ) => b !== null )
+            .sort( ( a, b ) => String( a[ 'blockId' ] ).localeCompare( String( b[ 'blockId' ] ) ) )
+    }
+
+
     // PRD-022 (Memo 067 WI-6-01): resolve the deterministic other-store root for a projectId. The
     // canonical store of a registered project is {projektRoot}/.memo/transcripts/, where projektRoot
-    // is derived from any registered memoPath of that projectId via the /.memo/ marker (same marker
-    // resolveRequirementsLocation and the plans auto-register hook use). This makes the store location
+    // is derived from any registered memoPath of that projectId via the /.memo/ marker (the same
+    // /.memo/ marker resolveRequirementsLocation uses). This makes the store location
     // INDEPENDENT of the server process cwd (T014, FAKT). Returns { status, otherRoot, source }; a
     // status:false lets the caller fall back to cwd as a LOGGED notfall-fallback (no silent default).
     static resolveOtherRootForProject( { projectId } ) {
@@ -684,6 +801,55 @@ class MemoView {
     }
 
 
+    // PRD-017 (Memo 072, Phase 5, F9=A): compose the /api/specs payload. For every auto-discovered
+    // namespace, list its versions NEWEST-FIRST (so the client preselects the latest), and for each
+    // version resolve its draft-channel left-nav groups + a local publish badge. The badge is a pure
+    // spec/ ↔ repos/spec/ dist comparison (SpecPublishStatus) — deterministic, loopback-only. A
+    // namespace whose disk layout is not understood still appears (with warnings + empty groups) so
+    // the tree never silently drops a namespace.
+    static async #buildSpecTree() {
+        const { namespaces } = MemoView.#specRegistry.listNamespaces()
+        const { workshopRoot, publicRoot } = MemoView.#specRoots
+
+        const specs = await Promise.all( namespaces.map( async ( ns ) => {
+            const latest = await MemoView.#specRegistry.getLatest( { namespace: ns.namespace } )
+            const versionNames = latest.found ? [ ...latest.versions ].reverse() : []
+
+            const versions = await Promise.all( versionNames.map( async ( version ) => {
+                const pages = await MemoView.#specRegistry.listPages( { namespace: ns.namespace, version } )
+                const report = await MemoView.#specRegistry.validate( { namespace: ns.namespace, version } )
+                const badge = await SpecPublishStatus.derive( {
+                    workshopNsDir: join( workshopRoot, ns.namespace ),
+                    publicNsDir: join( publicRoot, ns.namespace ),
+                    version
+                } )
+
+                return {
+                    'version': version,
+                    'understood': report.understood,
+                    'manifestFound': pages.manifestFound,
+                    'badge': badge.badge,
+                    'badgeReason': badge.reason,
+                    'warnings': report.warnings,
+                    'groups': pages.groups.map( ( group ) => ( {
+                        'id': group.id,
+                        'label': group.label,
+                        'pages': group.pages.map( ( page ) => ( { 'stem': page.stem, 'slug': page.slug, 'title': page.title } ) )
+                    } ) )
+                }
+            } ) )
+
+            return {
+                'namespace': ns.namespace,
+                'latestVersion': latest.found ? latest.version : null,
+                'versions': versions
+            }
+        } ) )
+
+        return { specs }
+    }
+
+
     static #buildHtmlPage( { port } ) {
         const faviconColor = PORT_COLORS[ port ] || '8b949e'
 
@@ -720,12 +886,16 @@ class MemoView {
         <div id="mode-toggle">
             <button id="mode-transcripts" class="mode-toggle">Transcripts</button>
             <button id="mode-memos" class="mode-toggle active">Memos</button>
-            <button id="mode-plans" class="mode-toggle">Plans</button>
+            <!-- PRD-017 (Memo 072, Phase 5, F9=A): the 4th VIEW mode — the merged Spec-Viewer.
+                 Namespace → version → pages of the project's spec/ workshop, latest preselected,
+                 with a local 3-stage publish badge. Replaces the separate cli/spec-view (port 3344)
+                 with ONE surface in this viewer, no second port. -->
+            <button id="mode-specs" class="mode-toggle">Specs</button>
         </div>
         <!-- PRD-012 (Memo 072, Phase 4, F6=A): the SESSION head — the running session's Namespace +
              active Memo + Work-Mode (Create/Rollout), plus a session-health lamp (#session-status).
              This is the SESSION state, deliberately distinct from the #mode-toggle VIEW switcher above
-             (Transcripts/Memos/Plans) — the two must not be confusable (T003 #2). Values are filled by
+             (Transcripts/Memos) — the two must not be confusable (T003 #2). Values are filled by
              the /api/session fetch (client renderSessionHead); a missing source shows an em dash (—),
              never a guessed value (No-Silent-Default). NOTE (T003 #8/#9): there is deliberately NO
              viewer "Tools" area — the "Tools" the user means is the TERMINAL statusline / session-tool
@@ -856,39 +1026,6 @@ class MemoView {
                     <div class="t-actions">
                         <button id="t-close" class="t-btn-secondary">Schliessen</button>
                         <button id="t-copy" class="t-btn-primary">URL kopieren</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
-    <div id="plan-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="p-modal-title">
-        <div class="t-modal-content">
-            <div class="t-modal-header">
-                <span class="t-title" id="p-modal-title">🗂 Neuer Plan</span>
-                <span class="t-header-spacer"></span>
-                <button class="t-close" id="p-cancel-x" title="Schliessen">&times;</button>
-            </div>
-            <div class="t-modal-body">
-                <div class="t-hint">= Prompt-Generierung · absolute Pfade zu den Memos · memo-plan-init / memo-plan-add</div>
-                <span class="t-field-label-strong">Memos auswählen (required · nur finalisierte · mehrere möglich)</span>
-                <input id="p-search" placeholder="Memo suchen..." />
-                <div id="p-memo-list" class="plan-memo-list"></div>
-                <span class="t-field-label-strong">Transcript (optional)</span>
-                <label class="t-attach-row">＋ Transcript anhängen (optional) <input id="p-transcript" placeholder="Transcript-URL oder leer lassen" style="margin-top:6px" /></label>
-                <div id="p-error" class="t-error t-hidden"></div>
-                <div class="t-actions">
-                    <button id="p-cancel" class="t-btn-secondary">Abbrechen</button>
-                    <button id="p-create" class="t-btn-primary">Plan erstellen &rarr;</button>
-                </div>
-                <div id="p-saved-state" class="t-saved-state t-hidden">
-                    <p>Plan-URL:</p>
-                    <code class="t-url" id="p-saved-url"></code>
-                    <p>Injizierter Prompt (memo-plan-init / memo-plan-add):</p>
-                    <pre class="t-url" id="p-saved-prompt"></pre>
-                    <div class="t-actions">
-                        <button id="p-close" class="t-btn-secondary">Schliessen</button>
-                        <button id="p-copy-prompt" class="t-btn-secondary">Prompt kopieren</button>
-                        <button id="p-copy" class="t-btn-primary">URL kopieren</button>
                     </div>
                 </div>
             </div>
@@ -1050,37 +1187,6 @@ class MemoView {
                         } )
 
                         return
-                    }
-                }
-
-                // PRD-004 Auto-Register-Hook: when a memo is registered, auto-register the
-                // sibling .memo/plans/ root for the same projectId (no-op if already registered).
-                // Handles both layouts: <root>/.memo/memos/<slug>/ (ressources) and <root>/.memo/<slug>/ (flowmcp).
-                if( MemoView.#planRegistry && typeof memoPath === 'string' ) {
-                    const memoMarkerIndex = memoPath.indexOf( '/.memo/' )
-
-                    if( memoMarkerIndex !== -1 ) {
-                        const projectRoot = memoPath.slice( 0, memoMarkerIndex )
-                        const candidatePlansRoot = resolve( projectRoot, '.memo', 'plans' )
-                        const existing = await MemoView.#planRegistry.resolveByProjectId( { projectId } )
-
-                        if( !existing[ 'status' ] ) {
-                            try {
-                                await access( candidatePlansRoot )
-                                await MemoView.#planRegistry.add( {
-                                    'absolutePath': candidatePlansRoot,
-                                    projectId,
-                                    'onChange': () => { MemoView.#broadcastPlanList( { 'wss': MemoView.#wssInstance } ) }
-                                } )
-                                process.stdout.write( `  Plans-Root auto-registered: ${projectId} -> ${candidatePlansRoot}\n` )
-
-                                if( MemoView.#wssInstance ) {
-                                    MemoView.#broadcastPlanList( { 'wss': MemoView.#wssInstance } )
-                                }
-                            } catch {
-                                // no sibling .memo/plans/ for this project — skip silently
-                            }
-                        }
                     }
                 }
 
@@ -1298,6 +1404,40 @@ class MemoView {
                 // PRD-014 (Memo 016 Kap 9, A10): `errors` is surfaced so the view can show the parse
                 // failures instead of a blank panel (reuses the same empty-/error-state component).
                 sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'blocks': enrichedBlocks, 'errors': errors } )
+
+                return
+            }
+
+            // PRD-018 (Memo 072 Kap 13, F10=A): read-only Topic/Block STORE view model for one memo —
+            // the deterministic chapter<->topic binding the viewer reads to inject the chapter
+            // topic-pille and the cross-link line. UNLIKE /blocks (which reads block-meta FENCES via
+            // BlockMeta.parse), this route reads the STORE: <memoDir>/_topics/T###.json +
+            // <memoDir>/blocks/B###/block.json. MUST be matched BEFORE the generic /api/documents/<id>
+            // GET below (the suffix is more specific; otherwise the generic route would swallow
+            // "<id>/topics" as the id). Mirror of the /blocks + /requirements routes.
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/topics' ) && req.method === 'GET' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/topics'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                const doc = result[ 'document' ]
+                const location = MemoView.resolveMemoDir( { 'memoPath': doc[ 'memoPath' ] } )
+
+                if( !location[ 'status' ] ) {
+                    sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'topics': [], 'blocks': [] } )
+
+                    return
+                }
+
+                const store = await MemoView.readTopicStore( { 'memoDir': location[ 'memoDir' ] } )
+
+                sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'topics': store[ 'topics' ], 'blocks': store[ 'blocks' ] } )
 
                 return
             }
@@ -1685,143 +1825,6 @@ class MemoView {
                 return
             }
 
-            if( url === '/api/plans/open-memos' && req.method === 'GET' ) {
-
-                const queryString = req.url.split( '?' )[ 1 ] || ''
-                const params = new URLSearchParams( queryString )
-                const projectIdParam = params.get( 'projectId' )
-
-                const { plans } = await MemoView.#aggregatePlansFromRegistry()
-                const { documents } = MemoView.#registry.getDocuments()
-                const { openMemos } = MemoView.computeOpenFinalizedMemos( {
-                    'projectId': projectIdParam || undefined,
-                    plans,
-                    documents
-                } )
-
-                sendJson( res, 200, { openMemos } )
-
-                return
-            }
-
-            if( url === '/api/plans' && req.method === 'GET' ) {
-
-                if( !MemoView.#planRegistry ) {
-                    sendJson( res, 200, { 'roots': [] } )
-
-                    return
-                }
-
-                const { plans: entries } = await MemoView.#planRegistry.list()
-
-                const roots = await Promise.all(
-                    entries
-                        .map( async ( entry ) => {
-                            const { plans: rootPlans } = await MemoView.#scanPlans( { 'rootPath': entry['absolutePath'] } )
-
-                            return {
-                                'projectId': entry['projectId'],
-                                'absolutePath': entry['absolutePath'],
-                                'planCount': rootPlans.length
-                            }
-                        } )
-                )
-
-                sendJson( res, 200, { roots } )
-
-                return
-            }
-
-            if( url === '/api/plans' && req.method === 'POST' ) {
-
-                const { body } = await readBody( req )
-                let parsed
-
-                try {
-                    parsed = JSON.parse( body )
-                } catch {
-                    sendJson( res, 400, { 'error': 'Invalid JSON body' } )
-
-                    return
-                }
-
-                const { projectId, planPath } = parsed
-
-                if( !planPath || typeof planPath !== 'string' || planPath.trim() === '' ) {
-                    sendJson( res, 400, { 'error': 'planPath: Missing or invalid — must be a non-empty string' } )
-
-                    return
-                }
-
-                if( !projectId || typeof projectId !== 'string' || projectId.trim() === '' ) {
-                    sendJson( res, 400, { 'error': 'projectId: Missing or invalid — must be a non-empty string' } )
-
-                    return
-                }
-
-                const wssRef = MemoView.#wssInstance
-
-                const addResult = await MemoView.#planRegistry.add( {
-                    'absolutePath': planPath.trim(),
-                    'projectId': projectId.trim(),
-                    'onChange': () => { MemoView.#broadcastPlanList( { 'wss': wssRef } ) }
-                } )
-
-                if( !addResult['status'] ) {
-                    sendJson( res, 400, { 'error': addResult['messages'].join( '; ' ) } )
-
-                    return
-                }
-
-                const { plans: rootPlans } = await MemoView.#scanPlans( { 'rootPath': planPath.trim() } )
-
-                sendJson( res, 200, {
-                    'status': 'ok',
-                    'registeredCount': rootPlans.length,
-                    'projectId': projectId.trim(),
-                    'rootPath': planPath.trim()
-                } )
-
-                return
-            }
-
-            // DELETE /api/plans/:projectId — planRootKey is the projectId of the registered root.
-            // Design choice: projectId is used as the key because it is already validated as
-            // alphanumeric/hyphen/underscore-only, is unique per POST call, and matches how
-            // GET /api/plans lists roots. planId (the per-folder compound key) is NOT used here
-            // because a root registration groups multiple plan folders.
-            if( url.startsWith( '/api/plans/' ) && req.method === 'DELETE' ) {
-
-                const planRootKey = url.slice( '/api/plans/'.length )
-
-                if( !planRootKey || !MemoView.#planRegistry ) {
-                    sendJson( res, 404, { 'error': 'Not Found' } )
-
-                    return
-                }
-
-                const { plans: entries } = await MemoView.#planRegistry.list()
-                const matchingEntry = entries.find( ( e ) => e['projectId'] === planRootKey )
-
-                if( !matchingEntry ) {
-                    sendJson( res, 404, { 'error': `No registered root found for projectId: ${planRootKey}` } )
-
-                    return
-                }
-
-                // Remove all plans under this projectId
-                const toRemove = entries.filter( ( e ) => e['projectId'] === planRootKey )
-
-                await Promise.all(
-                    toRemove
-                        .map( ( e ) => MemoView.#planRegistry.remove( { 'planId': e['planId'] } ) )
-                )
-
-                sendJson( res, 200, { 'status': 'ok' } )
-
-                return
-            }
-
             if( url === '/api/other/transcripts' && req.method === 'POST' ) {
 
                 if( !MemoView.#transcriptRegistry ) {
@@ -2137,64 +2140,6 @@ class MemoView {
                 return
             }
 
-            if( url.startsWith( '/plans/' ) && req.method === 'GET' ) {
-
-                const planId = url.slice( '/plans/'.length )
-
-                // New compound format: {projectId}--{planFolderName}
-                if( planId.includes( '--' ) && MemoView.#planRegistry ) {
-                    const separatorIndex = planId.indexOf( '--' )
-                    const projectIdFromUrl = planId.slice( 0, separatorIndex )
-                    const planFolderName = planId.slice( separatorIndex + 2 )
-                    const resolveResult = await MemoView.#planRegistry.resolveByProjectId( { 'projectId': projectIdFromUrl } )
-
-                    if( resolveResult['status'] ) {
-                        const planMdPath = resolve( resolveResult['root']['absolutePath'], planFolderName, 'plan.md' )
-
-                        try {
-                            const content = await readFile( planMdPath, 'utf-8' )
-
-                            res.writeHead( 200, {
-                                'Content-Type': 'text/markdown; charset=utf-8',
-                                'Cache-Control': 'no-cache'
-                            } )
-                            res.end( content )
-                        } catch {
-                            res.writeHead( 404, { 'Content-Type': 'text/plain; charset=utf-8' } )
-                            res.end( `Not Found: plan.md for ${ planId }` )
-                        }
-
-                        return
-                    }
-                }
-
-                // Legacy format: plain PLAN-NNN-name (no projectId prefix) — use cwd-root
-                if( !/^PLAN-\d{3}-[a-z0-9-]+$/.test( planId ) ) {
-                    res.writeHead( 400, { 'Content-Type': 'text/plain; charset=utf-8' } )
-                    res.end( 'Invalid planId pattern' )
-
-                    return
-                }
-
-                const plansRoot = MemoView.#plansRootPath || resolve( process.cwd(), '.memo', 'plans' )
-                const planMdPath = resolve( plansRoot, planId, 'plan.md' )
-
-                try {
-                    const content = await readFile( planMdPath, 'utf-8' )
-
-                    res.writeHead( 200, {
-                        'Content-Type': 'text/markdown; charset=utf-8',
-                        'Cache-Control': 'no-cache'
-                    } )
-                    res.end( content )
-                } catch {
-                    res.writeHead( 404, { 'Content-Type': 'text/plain; charset=utf-8' } )
-                    res.end( `Not Found: plan.md for ${ planId }` )
-                }
-
-                return
-            }
-
             // PRD-010 (Memo 016, F1): static stylesheet route. The app CSS lives in
             // src/public/app.css (extracted from the formerly inline <style> block) and is
             // served from the module-load cache (APP_CSS) — never re-read per request.
@@ -2336,12 +2281,65 @@ class MemoView {
                 return
             }
 
-            if( url === '/api/mission-control' && req.method === 'GET' ) {
+            // PRD-017 (Memo 072, Phase 5, F9=A): the merged Spec-Viewer tree. Returns every
+            // auto-discovered spec/ namespace with its versions (newest first), each version carrying
+            // its left-nav groups (draft channel) AND a local 3-stage publish badge
+            // (PUBLISHED/DRAFT-ONLY/DRIFT) derived deterministically from spec/ ↔ repos/spec/. The
+            // client's version switcher preselects the latest. Loopback-only, no live-site poll.
+            if( url === '/api/specs' && req.method === 'GET' ) {
 
-                const { plans } = await MemoView.#aggregatePlansFromRegistry()
-                const { projects, totals } = MemoView.computeMissionControl( { plans } )
+                if( !MemoView.#specRegistry ) {
+                    sendJson( res, 200, { 'specs': [] } )
 
-                sendJson( res, 200, { projects, totals } )
+                    return
+                }
+
+                const payload = await MemoView.#buildSpecTree()
+                sendJson( res, 200, payload )
+
+                return
+            }
+
+            // PRD-017 (Memo 072, Phase 5): one spec page's RAW markdown + provenance (path/version/
+            // mtime). version defaults to the latest; an explicit ?version= loads an older version.
+            // channel defaults to draft (the authored private-preview value).
+            if( url === '/api/spec-page' && req.method === 'GET' ) {
+
+                if( !MemoView.#specRegistry ) {
+                    sendJson( res, 503, { 'error': 'Spec registry not initialized' } )
+
+                    return
+                }
+
+                const params = new URLSearchParams( req.url.split( '?' )[ 1 ] || '' )
+                const namespace = params.get( 'namespace' )
+                const pageStem = params.get( 'page' )
+                const version = params.get( 'version' ) || undefined
+                const channel = params.get( 'channel' ) || undefined
+
+                if( !namespace || !pageStem ) {
+                    sendJson( res, 400, { 'error': 'namespace and page query params are required' } )
+
+                    return
+                }
+
+                const result = await MemoView.#specRegistry.readPage( { namespace, pageStem, version, channel } )
+
+                if( !result.found ) {
+                    sendJson( res, 404, { 'error': result.messages.join( '; ' ) } )
+
+                    return
+                }
+
+                sendJson( res, 200, {
+                    'content': result.content,
+                    'title': result.title,
+                    'version': result.version,
+                    'namespace': namespace,
+                    'page': pageStem,
+                    'path': result.path,
+                    'mtime': result.mtime
+                } )
 
                 return
             }
@@ -2352,10 +2350,10 @@ class MemoView {
                 return
             }
 
-            // PRD-011: SPA routes. /memos and /plans (without a plan-id) must serve the same
-            // HTML page so direct navigation / reload does not 404. The client reads
-            // location.pathname and restores the matching view mode.
-            const isSpaRoute = url === '/' || url === '/memos' || url === '/plans'
+            // PRD-011: SPA routes. /memos must serve the same HTML page so direct navigation /
+            // reload does not 404. The client reads location.pathname and restores the matching
+            // view mode.
+            const isSpaRoute = url === '/' || url === '/memos' || url === '/specs'
 
             if( !isSpaRoute ) {
                 res.writeHead( 404, { 'Content-Type': 'text/plain; charset=utf-8' } )
@@ -2413,21 +2411,6 @@ class MemoView {
             // client that did not answer the previous one.
             ws.isAlive = true
             ws.on( 'pong', () => { ws.isAlive = true } )
-
-            MemoView.#aggregatePlansFromRegistry()
-                .then( ( { plans } ) => {
-                    const { documents } = MemoView.#registry ? MemoView.#registry.getDocuments() : { 'documents': [] }
-                    const { openMemos } = MemoView.computeOpenFinalizedMemos( { 'projectId': undefined, plans, documents } )
-
-                    if( ws.readyState === 1 ) {
-                        ws.send( JSON.stringify( { 'type': 'planList', plans, openMemos } ) )
-                    }
-                } )
-                .catch( () => {
-                    if( ws.readyState === 1 ) {
-                        ws.send( JSON.stringify( { 'type': 'planList', 'plans': [], 'openMemos': [] } ) )
-                    }
-                } )
 
             if( MemoView.#transcriptRegistry ) {
                 const { tree: tTree } = MemoView.#transcriptRegistry.getTranscriptTree()
@@ -2542,42 +2525,6 @@ class MemoView {
                             }
                         }
 
-                        if( msg.type === 'selectPlanPhase' ) {
-                            const planFolder = msg.planFolder
-
-                            if( typeof planFolder === 'string' ) {
-                                // Compound format: {projectId}--{planFolderName}
-                                if( planFolder.includes( '--' ) && MemoView.#planRegistry ) {
-                                    const separatorIndex = planFolder.indexOf( '--' )
-                                    const projectIdFromMsg = planFolder.slice( 0, separatorIndex )
-                                    const folderName = planFolder.slice( separatorIndex + 2 )
-                                    const resolveResult = await MemoView.#planRegistry.resolveByProjectId( { 'projectId': projectIdFromMsg } )
-
-                                    if( resolveResult['status'] ) {
-                                        const planMdPath = resolve( resolveResult['root']['absolutePath'], folderName, 'plan.md' )
-
-                                        try {
-                                            const planContent = await readFile( planMdPath, 'utf-8' )
-
-                                            ws.send( JSON.stringify( { 'type': 'content', 'content': planContent, 'fileName': 'plan.md', 'memoName': folderName, 'diff': null } ) )
-                                        } catch {
-                                            // plan.md not readable
-                                        }
-                                    }
-                                } else if( /^PLAN-\d{3}-[a-z0-9-]+$/.test( planFolder ) && MemoView.#plansRootPath ) {
-                                    // Legacy format: plain folder name — use cwd-root
-                                    const planMdPath = resolve( MemoView.#plansRootPath, planFolder, 'plan.md' )
-
-                                    try {
-                                        const planContent = await readFile( planMdPath, 'utf-8' )
-
-                                        ws.send( JSON.stringify( { 'type': 'content', 'content': planContent, 'fileName': 'plan.md', 'memoName': planFolder, 'diff': null } ) )
-                                    } catch {
-                                        // plan.md not readable
-                                    }
-                                }
-                            }
-                        }
                     } catch {
                         // ignore malformed messages
                     }
@@ -3161,109 +3108,6 @@ class MemoView {
         }
 
         return { diffResult }
-    }
-
-
-    static #planWatcher = null
-    static #plansRootPath = null
-    static #planRegistry = null
-
-
-    static computeMissionControl( { plans } ) {
-        // Mission-Control start (Memo 005 Kap 9, U4 — minimal read-only increment).
-        // Pure + deterministic: reduces the already-aggregated plans (each with
-        // projectId, planId, status, phases[]) to a flat phase overview. No file/
-        // net access here — the route does the I/O, this method only counts.
-        // Phase status follows the canonical kebab vocabulary (PRD-022); unknown
-        // values go to "other" (no loss, no crash); a missing phases[] counts 0.
-        const safePlans = Array.isArray( plans ) ? plans : []
-
-        const projects = safePlans
-            .map( ( plan ) => {
-                const phases = Array.isArray( plan && plan[ 'phases' ] ) ? plan[ 'phases' ] : []
-                const counts = phases
-                    .reduce( ( acc, phase ) => {
-                        const key = [ 'pending', 'in-progress', 'done', 'blocked' ].includes( phase && phase[ 'status' ] )
-                            ? phase[ 'status' ]
-                            : 'other'
-                        acc[ key ] = ( acc[ key ] || 0 ) + 1
-
-                        return acc
-                    }, {} )
-
-                return {
-                    'projectId': plan[ 'projectId' ] || 'unknown',
-                    'planId': plan[ 'planId' ] || plan[ 'folder' ] || 'unknown',
-                    'planStatus': plan[ 'status' ] || 'unknown',
-                    'phaseCounts': counts,
-                    'phaseTotal': phases.length
-                }
-            } )
-
-        const totals = projects
-            .reduce( ( acc, p ) => {
-                return { 'projects': acc[ 'projects' ] + 1, 'phases': acc[ 'phases' ] + p[ 'phaseTotal' ] }
-            }, { 'projects': 0, 'phases': 0 } )
-
-        return { 'projects': projects, 'totals': totals }
-    }
-
-
-    static computeOpenFinalizedMemos( { projectId, plans, documents } ) {
-        // "Open" = finalized memo not yet worked off by any plan (Memo 013 Kap 7).
-        // A memo is "worked off" when a scanned plan references it via namespace + memoId
-        // (namespace/memo-aware schema, Phase 1/2). Plans lacking that field never mark a
-        // memo as worked off (safe default: rather show it).
-        const planRefs = new Set()
-        const safePlans = Array.isArray( plans ) ? plans : []
-
-        safePlans
-            .forEach( ( plan ) => {
-                const planMemos = Array.isArray( plan && plan[ 'memos' ] ) ? plan[ 'memos' ] : []
-
-                planMemos
-                    .forEach( ( memoRef ) => {
-                        if( !memoRef || typeof memoRef !== 'object' ) { return }
-
-                        const namespace = memoRef[ 'namespace' ]
-                        const memoId = memoRef[ 'memoId' ]
-
-                        if( typeof namespace === 'string' && typeof memoId === 'string' ) {
-                            planRefs.add( `${ namespace }--${ memoId }` )
-                        }
-                    } )
-            } )
-
-        const safeDocuments = Array.isArray( documents ) ? documents : []
-        const openMemos = safeDocuments
-            .filter( ( doc ) => {
-                const isMemo = ( doc[ 'documentKind' ] || 'memo' ) === 'memo'
-                const isFinalized = doc[ 'memoStatus' ] === 'Finalisiert'
-                const namespaceMatch = projectId === undefined || doc[ 'projectId' ] === projectId
-
-                return isMemo && isFinalized && namespaceMatch
-            } )
-            .filter( ( doc ) => {
-                const memoIdMatch = ( doc[ 'memoName' ] || '' ).match( /^(\d{3})/ )
-
-                if( memoIdMatch === null ) { return true }
-
-                const key = `${ doc[ 'projectId' ] }--${ memoIdMatch[ 1 ] }`
-
-                return !planRefs.has( key )
-            } )
-            .map( ( doc ) => {
-                const entry = {
-                    'documentId': doc[ 'documentId' ],
-                    'projectId': doc[ 'projectId' ],
-                    'memoName': doc[ 'memoName' ],
-                    'memoStatus': doc[ 'memoStatus' ]
-                }
-
-                return entry
-            } )
-
-        return { openMemos }
     }
 
 
@@ -4097,230 +3941,6 @@ class MemoView {
     }
 
 
-    static #validatePlanStatus( { obj } ) {
-        const errors = []
-
-        if( !obj || typeof obj !== 'object' ) {
-            errors.push( 'plan-status.json must be an object' )
-
-            return { isValid: false, errors }
-        }
-
-        if( typeof obj['planId'] !== 'string' ) {
-            errors.push( 'planId: missing or not a string' )
-        } else if( !/^PLAN-\d{3}-[a-z0-9-]+$/.test( obj['planId'] ) ) {
-            errors.push( 'planId: pattern mismatch' )
-        }
-
-        const validatePhaseList = ( { phases, label } ) => {
-            const seenIds = new Set()
-            phases
-                .forEach( ( phase, idx ) => {
-                    if( !phase || typeof phase !== 'object' ) {
-                        errors.push( `${label}[${idx}]: not an object` )
-
-                        return
-                    }
-
-                    if( typeof phase['id'] !== 'string' || !/^P\d+$/.test( phase['id'] ) ) {
-                        errors.push( `${label}[${idx}].id: missing or pattern mismatch` )
-                    } else if( seenIds.has( phase['id'] ) ) {
-                        errors.push( `${label}[${idx}].id: duplicate (${phase['id']})` )
-                    } else {
-                        seenIds.add( phase['id'] )
-                    }
-                } )
-        }
-
-        const hasMemos = Array.isArray( obj['memos'] ) && obj['memos'].length > 0
-        const hasLegacyPhases = Array.isArray( obj['phases'] ) && obj['phases'].length > 0
-
-        if( hasMemos ) {
-            // namespace/memo-aware schema: phases are nested per memo
-            obj['memos']
-                .forEach( ( memo, mIdx ) => {
-                    if( !memo || typeof memo !== 'object' ) {
-                        errors.push( `memos[${mIdx}]: not an object` )
-
-                        return
-                    }
-
-                    if( typeof memo['namespace'] !== 'string' || memo['namespace'].length === 0 ) {
-                        errors.push( `memos[${mIdx}].namespace: missing` )
-                    }
-
-                    if( typeof memo['memoId'] !== 'string' || memo['memoId'].length === 0 ) {
-                        errors.push( `memos[${mIdx}].memoId: missing` )
-                    }
-
-                    if( !Array.isArray( memo['phases'] ) || memo['phases'].length === 0 ) {
-                        errors.push( `memos[${mIdx}].phases: must be a non-empty array` )
-                    } else {
-                        validatePhaseList( { phases: memo['phases'], label: `memos[${mIdx}].phases` } )
-                    }
-                } )
-        } else if( hasLegacyPhases ) {
-            // legacy schema: top-level phases array
-            validatePhaseList( { phases: obj['phases'], label: 'phases' } )
-        } else {
-            errors.push( 'memos or phases: must be a non-empty array' )
-        }
-
-        const isValid = errors.length === 0
-
-        return { isValid, errors }
-    }
-
-
-    static async #scanPlans( { rootPath } ) {
-        const plans = []
-
-        try {
-            await access( rootPath )
-        } catch {
-            return { plans }
-        }
-
-        let entries
-
-        try {
-            entries = await readdir( rootPath, { withFileTypes: true } )
-        } catch {
-            return { plans }
-        }
-
-        const planFolders = entries
-            .filter( ( e ) => e.isDirectory() && /^PLAN-\d{3}-[a-z0-9-]+$/.test( e.name ) )
-            .map( ( e ) => e.name )
-
-        const results = await Promise.all(
-            planFolders
-                .map( async ( folder ) => {
-                    const folderPath = resolve( rootPath, folder )
-                    const statusPath = resolve( folderPath, 'plan-status.json' )
-
-                    let raw
-
-                    try {
-                        raw = await readFile( statusPath, 'utf-8' )
-                    } catch {
-                        const result = {
-                            'folder': folder,
-                            'planId': folder,
-                            'status': 'unknown',
-                            'phases': [],
-                            'isInvalid': true,
-                            'validationErrors': [ 'plan-status.json missing' ]
-                        }
-
-                        return result
-                    }
-
-                    let parsed
-
-                    try {
-                        parsed = JSON.parse( raw )
-                    } catch( err ) {
-                        const result = {
-                            'folder': folder,
-                            'planId': folder,
-                            'status': 'unknown',
-                            'phases': [],
-                            'isInvalid': true,
-                            'validationErrors': [ `plan-status.json invalid JSON: ${err.message}` ]
-                        }
-
-                        return result
-                    }
-
-                    const { isValid, errors } = MemoView.#validatePlanStatus( { obj: parsed } )
-
-                    const result = {
-                        'folder': folder,
-                        'planId': parsed['planId'] || folder,
-                        'status': parsed['status'] || 'unknown',
-                        'memos': Array.isArray( parsed['memos'] ) ? parsed['memos'] : [],
-                        'phases': Array.isArray( parsed['phases'] ) ? parsed['phases'] : [],
-                        'isInvalid': !isValid,
-                        'validationErrors': errors
-                    }
-
-                    return result
-                } )
-        )
-
-        return { plans: results }
-    }
-
-
-    static async #broadcastPlanList( { wss } ) {
-        if( !wss ) { return }
-
-        const { plans: allPlans } = await MemoView.#aggregatePlansFromRegistry()
-        const { documents } = MemoView.#registry ? MemoView.#registry.getDocuments() : { 'documents': [] }
-        const { openMemos } = MemoView.computeOpenFinalizedMemos( { 'projectId': undefined, 'plans': allPlans, documents } )
-        const message = JSON.stringify( { 'type': 'planList', 'plans': allPlans, openMemos } )
-
-        wss.clients
-            .forEach( ( ws ) => {
-                if( ws.readyState === 1 ) {
-                    ws.send( message )
-                }
-            } )
-    }
-
-
-    static async #aggregatePlansFromRegistry() {
-        if( MemoView.#planRegistry ) {
-            const { plans: registryEntries } = await MemoView.#planRegistry.list()
-
-            if( registryEntries.length > 0 ) {
-                const perRootResults = await Promise.all(
-                    registryEntries
-                        .map( async ( entry ) => {
-                            const { plans: rootPlans } = await MemoView.#scanPlans( { 'rootPath': entry['absolutePath'] } )
-
-                            return rootPlans
-                                .map( ( plan ) => {
-                                    return { ...plan, 'projectId': entry['projectId'] }
-                                } )
-                        } )
-                )
-
-                const allPlans = perRootResults
-                    .reduce( ( acc, rootPlans ) => {
-                        return [ ...acc, ...rootPlans ]
-                    }, [] )
-
-                return { 'plans': allPlans }
-            }
-        }
-
-        // Fallback: legacy single-root scan
-        const fallbackRoot = MemoView.#plansRootPath || resolve( process.cwd(), '.memo', 'plans' )
-        const { plans } = await MemoView.#scanPlans( { 'rootPath': fallbackRoot } )
-
-        return { plans }
-    }
-
-
-    static #startPlansWatcher( { wss, rootPath } ) {
-        MemoView.#plansRootPath = rootPath
-
-        try {
-            const watcher = watch( rootPath, { recursive: false }, () => {
-                MemoView.#broadcastPlanList( { wss } )
-            } )
-
-            MemoView.#planWatcher = watcher
-
-            return { watcher }
-        } catch {
-            return { watcher: null }
-        }
-    }
-
-
     static #openBrowser( { url } ) {
         exec( `open "${url}"` )
     }
@@ -4332,11 +3952,6 @@ class MemoView {
 
             if( state.watcher ) {
                 state.watcher.close()
-            }
-
-            if( MemoView.#planWatcher ) {
-                MemoView.#planWatcher.close()
-                MemoView.#planWatcher = null
             }
 
             if( MemoView.#transcriptRegistry ) {

@@ -558,8 +558,8 @@ class DocumentRegistry {
     //   1. ABGESCHLOSSEN hat HÖCHSTE Priorität und kommt NICHT aus dem Frontmatter, sondern aus der
     //      externen Plan-/Rollout-Status-Quelle (planCompleted === true). Ein Memo gilt als
     //      abgeschlossen, sobald sein zugehöriger Plan/Rollout abgeschlossen ist — selbst wenn das
-    //      Frontmatter noch 'Finalisiert' zeigt. (HINWEIS/ANNAHME: PlanRegistry speichert heute nur
-    //      Plan-Pfade, KEINEN Abschluss-Status. planCompleted ist daher ein additiver Hook —
+    //      Frontmatter noch 'Finalisiert' zeigt. (HINWEIS/ANNAHME: heute liefert keine Plan-/Rollout-
+    //      Quelle einen Abschluss-Status. planCompleted ist daher ein additiver Hook —
     //      solange keine Quelle planCompleted=true liefert, wird 'Abgeschlossen' nie abgeleitet und
     //      das Verhalten bleibt unverändert rückwärtskompatibel.)
     //   2. Sonst gewinnt der FRONTMATTER-Status für die ersten Stufen + den Sonderfall:

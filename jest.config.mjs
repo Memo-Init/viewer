@@ -6,5 +6,8 @@
 export default {
     moduleNameMapper: {
         '^node:sqlite$': '<rootDir>/tests/helpers/nodeSqliteShim.cjs'
-    }
+    },
+    // The repo-local .trash/ holds retired sources/tests (e.g. the M072-05-01 plans-teardown).
+    // Keep jest's default node_modules ignore AND exclude .trash so retired *.test.mjs are not run.
+    testPathIgnorePatterns: [ '/node_modules/', '/\\.trash/' ]
 }

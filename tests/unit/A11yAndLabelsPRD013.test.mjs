@@ -55,7 +55,6 @@ describe( 'Memo 016 PRD-013 — A11y, Hierarchie, Labels', () => {
         const modalIds = [
             'mermaid-modal',
             'transcript-modal',
-            'plan-modal',
             'requirement-modal',
             'block-modal'
         ]

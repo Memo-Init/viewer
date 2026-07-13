@@ -888,12 +888,6 @@
             font-size: 13px;
         }
 
-        /* Plans-View narrows the sidebar to 280px */
-        #doc-sidebar.plans-mode {
-            width: 280px;
-            min-width: 280px;
-        }
-
         #doc-sidebar-body {
             padding: 12px;
             display: flex;
@@ -1296,49 +1290,6 @@
             display: none;
         }
 
-        /* Plans-View sidebar — plan pills + open memos */
-        .plan-pill {
-            display: block;
-            border-radius: 4px;
-            padding: 6px 8px;
-            cursor: pointer;
-            color: var(--text-2);
-            font-size: 12px;
-        }
-
-        .plan-pill:hover { background: var(--bg-2); }
-
-        .plan-pill.selected {
-            background: var(--bg-4);
-            color: var(--text-1);
-            font-weight: 700;
-        }
-
-        .plan-pill.invalid { color: var(--warning); }
-
-        .open-memo {
-            border-radius: 4px;
-            padding: 5px 8px;
-        }
-
-        .open-memo .om-name {
-            display: block;
-            color: var(--text-2);
-            font-size: 12px;
-            font-weight: 600;
-        }
-
-        .open-memo .om-status {
-            display: block;
-            color: var(--text-muted);
-            font-size: 10px;
-            margin-top: 1px;
-        }
-
-        .open-memo.not-final {
-            opacity: 0.45;
-        }
-
         /* PRD-016: sidebar Queue (Warteschlange) — FIFO list above the namespace groups. */
         .sb-queue {
             display: flex;
@@ -1611,267 +1562,6 @@
         /* PRD-002 (Memo 018 Kap 5): queue entries reuse the namespace revision-line markup
            (.rev-entry, rendered by renderRevEntry). The former .queue-entry/.qe-name/.qe-ns
            styles were removed — the queue now shares the .rev-entry styling. */
-
-        /* Plans-View content */
-        .plan-block {
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-            margin-bottom: 32px;
-        }
-
-        .plan-title {
-            color: var(--text-1);
-            font-size: 20px;
-            font-weight: 700;
-            border: 0;
-            padding: 0;
-            margin: 0;
-        }
-
-        /* Plan-URL row */
-        .plan-url-row {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .plan-url-box {
-            flex: 1 1 auto;
-            background: var(--bg-4);
-            border-radius: 6px;
-            padding: 6px 10px;
-            font-size: 12px;
-            color: var(--text-2);
-            font-family: var(--font-mono);
-            word-break: break-all;
-        }
-
-        .plan-copy-btn {
-            background: var(--bg-2);
-            border: 1px solid var(--border);
-            color: var(--text-1);
-            cursor: pointer;
-            padding: 6px 14px;
-            border-radius: 6px;
-            font-size: 13px;
-            font-family: inherit;
-            white-space: nowrap;
-            flex-shrink: 0;
-        }
-
-        .plan-copy-btn:hover { border-color: var(--text-muted); }
-
-        .plan-section-label {
-            color: var(--text-muted);
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-        }
-
-        .memo-tiles {
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-
-        .memo-tile {
-            background: var(--bg-2);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 14px;
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 12px;
-        }
-
-        .memo-tile .tile-left {
-            display: flex;
-            flex-direction: column;
-            gap: 3px;
-            flex: 1 1 auto;
-            min-width: 0;
-        }
-
-        .memo-tile .tile-name {
-            color: var(--text-1);
-            font-weight: 700;
-            font-size: 13px;
-        }
-
-        .memo-tile .tile-subtitle {
-            color: var(--text-muted);
-            font-size: 11px;
-        }
-
-        .memo-tile .tile-right {
-            display: flex;
-            flex-direction: column;
-            align-items: flex-end;
-            gap: 5px;
-            flex-shrink: 0;
-        }
-
-        .memo-tile .tile-ns-badge {
-            color: var(--text-2);
-            background: var(--bg-4);
-            border-radius: 10px;
-            padding: 2px 8px;
-            font-size: 10px;
-            font-weight: 600;
-            white-space: nowrap;
-        }
-
-        .memo-tile .tile-status {
-            color: var(--text-muted);
-            font-size: 10px;
-            white-space: nowrap;
-        }
-
-        table.trace-table {
-            display: table;
-            width: 100%;
-            border-collapse: collapse;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            overflow: hidden;
-            margin: 0;
-        }
-
-        table.trace-table th,
-        table.trace-table td {
-            border: 0;
-            border-bottom: 1px solid var(--bg-4);
-        }
-
-        table.trace-table thead th {
-            background: var(--bg-4);
-            color: var(--text-muted);
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-            text-align: left;
-            padding: 8px 12px;
-        }
-
-        table.trace-table thead th.tcol-fix {
-            text-align: center;
-            width: 50px;
-        }
-
-        table.trace-table thead th.tcol-commit {
-            text-align: center;
-            width: 84px;
-        }
-
-        table.trace-table tbody td {
-            padding: 7px 12px;
-            font-size: 11px;
-            vertical-align: middle;
-            text-align: center;
-        }
-
-        table.trace-table tbody td.tcell-strang {
-            text-align: left;
-            color: var(--text-2);
-        }
-
-        table.trace-table tbody tr.row-future {
-            opacity: 0.55;
-        }
-
-        .trace-sym-done { color: var(--text-1); }
-        .trace-sym-progress { color: var(--link); }
-        .trace-sym-pending { color: var(--text-muted-2); }
-
-        .trace-commit {
-            color: var(--text-muted);
-            font-family: var(--font-mono);
-            font-size: 10px;
-        }
-
-        .trace-commit-empty {
-            color: var(--text-muted-2);
-        }
-
-        /* Plan-Popup — memo checkbox rows */
-        .plan-memo-list {
-            max-height: 260px;
-            overflow-y: auto;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .plan-ns-group {
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .plan-ns-group > .plan-ns-title {
-            color: var(--text-muted);
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-            padding: 2px 0;
-        }
-
-        .plan-memo-option {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 10px;
-            border-radius: 6px;
-            border: 1px solid var(--border);
-            background: var(--bg-2);
-            cursor: pointer;
-            font-size: 13px;
-            color: var(--text-1);
-        }
-
-        .plan-memo-option:hover {
-            border-color: var(--text-muted);
-        }
-
-        .plan-memo-option .pm-box {
-            font-size: 14px;
-            flex-shrink: 0;
-            color: var(--text-muted);
-        }
-
-        .plan-memo-option.selected {
-            border-color: var(--link-bright);
-        }
-
-        .plan-memo-option.selected .pm-box {
-            color: var(--link-bright);
-        }
-
-        .plan-memo-option .pm-status {
-            color: var(--text-muted);
-            font-size: 11px;
-        }
-
-        /* Non-finalized: greyed out, not selectable */
-        .plan-memo-option.not-final {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .plan-memo-option.not-final:hover {
-            border-color: var(--border);
-        }
-
-        .plan-empty {
-            color: var(--text-muted);
-            font-size: 12px;
-            padding: 8px;
-        }
 
         /* Transcript indicator: dezentes Wort/Icon, KEIN farbiger Punkt (PRD-007 F14=A) */
         .transcript-indicator {
@@ -3015,6 +2705,90 @@
             color: var(--text, #ddd);
         }
 
+        /* PRD-018 (Memo 072 Kap 13, WI-T013-1/2, F10=A): collapsible tables. Default OPEN (the
+           details[open] carries the same precedence 1:1 as .qw-card.qw-collapsed .qw-body). The
+           summary is a compact, clickable label strip; collapsing is a user action. */
+        #content .table-collapsible {
+            margin: 12px 0;
+        }
+
+        #content .table-collapsible > .table-collapsible-summary {
+            cursor: pointer;
+            list-style: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-muted, #8b949e);
+            padding: 4px 0;
+            user-select: none;
+        }
+
+        #content .table-collapsible > .table-collapsible-summary::-webkit-details-marker {
+            display: none;
+        }
+
+        #content .table-collapsible > .table-collapsible-summary::before {
+            content: '▸';
+            display: inline-block;
+            color: var(--accent, #7c8cff);
+        }
+
+        #content .table-collapsible[open] > .table-collapsible-summary::before {
+            content: '▾';
+        }
+
+        #content .table-collapsible > table {
+            margin-top: 4px;
+        }
+
+        /* PRD-018 (WI-T013-4/5/8, F10=A): the chapter topic-pille header + cross-link line, injected
+           deterministically from the STORE (topic `chapter` field), NOT from block-meta fences. */
+        #content .topic-pill-header {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin: 6px 0 12px 0;
+        }
+
+        #content .topic-pill-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+
+        #content .topic-pill {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--accent, #7c8cff);
+            background: var(--bg-elev, #16161c);
+            border: 1px solid var(--border, #333);
+            border-radius: 999px;
+            padding: 2px 10px;
+        }
+
+        #content .topic-crosslink-line {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-muted, #8b949e);
+        }
+
+        /* PRD-018 (WI-T013-7): [[wiki-link]] rendered as a navigable link, no longer literal text. */
+        #content a.wiki-link {
+            color: var(--accent, #7c8cff);
+            text-decoration: none;
+            border-bottom: 1px dotted var(--accent, #7c8cff);
+            cursor: pointer;
+        }
+
+        #content a.wiki-link:hover {
+            border-bottom-style: solid;
+        }
+
         table {
             border-spacing: 0;
             border-collapse: collapse;
@@ -3186,3 +2960,32 @@
         }
 
         .task-list-item { list-style-type: none; }
+
+        /* PRD-017 (Memo 072, Phase 5, F9=A): the merged Spec-Viewer styles. Kept in app.css (NOT an
+           inline <style> block) so the PRD-010 asset-extraction invariant holds. Left-nav spec tree
+           (namespace groups / version switcher / publish badge / sub-categories / page links), the
+           RFC-2119 keyword highlight, and the provenance bar — ported from cli/spec-view. */
+        .spec-ns-group { margin-bottom: 14px; }
+        .spec-ns-header { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; color: var(--text-1, #e6edf3); padding: 4px 6px; user-select: none; }
+        .spec-ns-header .spec-ns-caret { font-size: 10px; color: var(--text-muted, #8b949e); transition: transform .12s; }
+        .spec-ns-group.collapsed .spec-ns-header .spec-ns-caret { transform: rotate(-90deg); }
+        .spec-ns-body { margin-left: 4px; }
+        .spec-ns-group.collapsed .spec-ns-body { display: none; }
+        .spec-version-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px 6px; flex-wrap: wrap; }
+        .spec-version-select { background: var(--bg-2, #21262d); color: var(--text-1, #e6edf3); border: 1px solid var(--border, #30363d); border-radius: 5px; font-size: 12px; padding: 2px 6px; }
+        .spec-badge { font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 1px 7px; border-radius: 10px; text-transform: uppercase; white-space: nowrap; border: 1px solid transparent; }
+        .spec-badge.published { color: #3fb950; background: rgba(63, 185, 80, .12); border-color: rgba(63, 185, 80, .35); }
+        .spec-badge.draft-only { color: #d29922; background: rgba(210, 153, 34, .12); border-color: rgba(210, 153, 34, .35); }
+        .spec-badge.drift { color: #f85149; background: rgba(248, 81, 73, .12); border-color: rgba(248, 81, 73, .35); }
+        .spec-warn { font-size: 11px; color: #d29922; padding: 2px 8px; }
+        .spec-sub-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted, #8b949e); padding: 8px 6px 2px; }
+        .spec-page-link { display: block; padding: 3px 10px; color: var(--text-2, #c9d1d9); text-decoration: none; border-radius: 5px; font-size: 13px; cursor: pointer; }
+        .spec-page-link:hover { background: var(--bg-2, #21262d); }
+        .spec-page-link.active { background: var(--bg-2, #21262d); color: var(--accent, #2ea043); font-weight: 600; }
+        .rfc-keyword { color: var(--accent, #2ea043); font-weight: 700; background: rgba(46, 160, 67, .10); padding: 0 3px; border-radius: 3px; }
+        #spec-page-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0 12px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #30363d); font-size: 12px; color: var(--text-muted, #8b949e); }
+        #spec-page-meta:empty { display: none; }
+        #spec-page-meta .spm-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-2, #c9d1d9); word-break: break-all; cursor: copy; }
+        #spec-page-meta .spm-path:hover { color: var(--accent, #2ea043); }
+        #spec-page-meta .spm-badge { background: var(--bg-2, #21262d); border: 1px solid var(--border, #30363d); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
+        #spec-page-meta .spm-sep { opacity: .45; }

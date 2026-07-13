@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mermaid Version Test — 11.4.1 — 013-memo-plan-vereinheitlichung-viewer-REV-02-02</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+</head>
+<body>
+<div id="status" data-status="pending"></div>
+<div id="target"></div>
+<pre id="source">%% Source: memos/013-memo-plan-vereinheitlichung-viewer/revisions/REV-02.md
+%% Heading: 10. Verzahnungs-Übersicht [Diagramme]
+%% Line: 253
+flowchart TD
+    subgraph Public[Öffentliche Skills]
+        SkillMemo[Skill: Memo<br/>Authoring]
+        SkillPlan[Skill: Plan<br/>Abarbeiten]
+    end
+    subgraph Memos-Welt
+        T[Transcript-Staging<br/>.memo/other/] --> S[Memo-Init-Score]
+        S --> M[Memo + Revisionen]
+        M --> Fin[finalisiert<br/>interner Break]
+    end
+    subgraph Plans-Welt
+        P[Plan 1..n Memos] --> Ab[Abarbeitung: Commits]
+        Ab --> Ev[Evaluation]
+    end
+    SkillMemo -.steuert.-> T
+    SkillMemo -.steuert.-> M
+    SkillPlan -.steuert.-> P
+    SkillPlan -.steuert.-> Ab
+    Fin -->|Namespace-Abo| NS[Plans-View: offene Memos]
+    NS --> P
+    Fin --> StatusIcon[Sidebar-Status-Icon]
+    M --> TransIcon[Transcript-Indikator pro Revision]
+</pre>
+<script>
+( async () => {
+    try {
+        const code = document.getElementById( 'source' ).textContent
+        const result = await mermaid.render( 'mm-013-memo-plan-vereinheitlichung-viewer-REV-02-02', code )
+        document.getElementById( 'target' ).innerHTML = result.svg || result
+        document.getElementById( 'status' ).dataset.status = 'ok'
+    } catch( err ) {
+        const status = document.getElementById( 'status' )
+        status.dataset.status = 'fail'
+        status.dataset.error = String( err && err.message ? err.message : err )
+    }
+} )()
+</script>
+</body>
+</html>

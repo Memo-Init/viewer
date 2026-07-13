@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Mermaid Version Test — 11.4.1 — 013-memo-plan-vereinheitlichung-viewer-REV-02-01</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+</head>
+<body>
+<div id="status" data-status="pending"></div>
+<div id="target"></div>
+<pre id="source">%% Source: memos/013-memo-plan-vereinheitlichung-viewer/revisions/REV-02.md
+%% Heading: 3. Memo-Lifecycle / Stadien [Diagramme]
+%% Line: 94
+flowchart TD
+    A[Transcript-Staging<br/>.memo/other/ — optional] --> B[Memo-Init-Score<br/>Vorstufe: Input gut genug?]
+    B -->|ausreichend| C[memo-init<br/>Topics + REV-01]
+    B -->|Lücken| A2[User ergänzt Kontext]
+    A2 --> B
+    C --> D[Revisionen<br/>generate/execute/evaluate]
+    D --> E[memo-finalize<br/>interner Pflicht-Break]
+    E --> F[Plan<br/>1..n finalisierte Memos]
+    F --> G[Abarbeitung<br/>Commits + Sicherheitschecks]
+    G --> H[Evaluation]
+</pre>
+<script>
+( async () => {
+    try {
+        const code = document.getElementById( 'source' ).textContent
+        const result = await mermaid.render( 'mm-013-memo-plan-vereinheitlichung-viewer-REV-02-01', code )
+        document.getElementById( 'target' ).innerHTML = result.svg || result
+        document.getElementById( 'status' ).dataset.status = 'ok'
+    } catch( err ) {
+        const status = document.getElementById( 'status' )
+        status.dataset.status = 'fail'
+        status.dataset.error = String( err && err.message ? err.message : err )
+    }
+} )()
+</script>
+</body>
+</html>

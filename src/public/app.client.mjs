@@ -172,11 +172,16 @@
         // PRD-006 (Memo 019 Kap 6.6): memos ALSO default to COLLAPSED on first open. Mirror the
         // namespace seed-once guard so a memo a user manually expanded is never re-collapsed.
         const seededCollapseMemos = new Set()
+        // PRD-016 (Memo 072 WI-T011-4): the Transcripts tab renders its OWN namespace tree
+        // (renderSidebarTranscripts) mirroring the Memos tree. It MUST keep separate collapse-state
+        // sets so collapsing a namespace/memo in one tab never moves the other tab's tree.
+        const collapsedTranscriptProjects = new Set()
+        const collapsedTranscriptMemos = new Set()
+        const seededCollapseTranscriptProjects = new Set()
+        const seededCollapseTranscriptMemos = new Set()
         let currentMode = 'memos'
         let lastTree = {}
         let lastLatest = []
-        let lastPlans = []
-        let lastOpenMemos = []
         let lastTranscriptTree = {}
         let pendingQuestionsScroll = false
         // PRD-016 (Memo 016, E8): no-op-skip guard. renderSidebar() does a full innerHTML rebuild
@@ -275,12 +280,6 @@
             currentContentView = 'prose'
             if( currentWs && currentWs.readyState === 1 ) {
                 currentWs.send( JSON.stringify( { 'type': 'selectRevision', 'documentId': documentId, 'fileName': fileName } ) )
-            }
-        }
-
-        window.selectPlanPhase = function( planFolder, phaseId ) {
-            if( currentWs && currentWs.readyState === 1 ) {
-                currentWs.send( JSON.stringify( { 'type': 'selectPlanPhase', 'planFolder': planFolder, 'phaseId': phaseId } ) )
             }
         }
 
@@ -743,6 +742,10 @@
         //   Line 2: "Transcript kopieren" + URL + Woerter/Minuten.
         // No 📍/📌 emoji (Phase 1). Diff-Toggle (#diff-toggle) lives here (moved out of Nav-Bar).
         function updateSidebarSticky( memoName, fileName ) {
+            // PRD-017 (Memo 072, Phase 5): the memo sticky header does not belong in the Specs view —
+            // its #main-header is left to the spec render. Skip so a transcriptList broadcast cannot
+            // inject a memo sticky bar while the user is browsing specs.
+            if( currentMode === 'specs' ) { return }
             var headerEl = document.getElementById( 'main-header' )
             if( !headerEl ) { return }
             if( !memoName && !fileName ) {
@@ -1537,374 +1540,6 @@
             }
         }
 
-        function planStatusIcon( s ) {
-            if( s === 'done' ) { return '<span style="color:#3fb950">&#10003;</span>' }
-            if( s === 'in-progress' ) { return '<span style="color:#4493f8">&#9696;</span>' }
-            if( s === 'blocked' ) { return '<span style="color:#f85149">&bull;</span>' }
-            return '<span style="color:#666">&bull;</span>'
-        }
-
-        var selectedPlanFolder = null
-
-        // Plans-View sidebar: AKTIVE PLÄNE pills + OFFENE MEMOS · {NS}.
-        function planCompoundId( plan ) {
-            var folder = plan.folder || plan.planId
-            return plan.projectId ? plan.projectId + '--' + folder : folder
-        }
-
-        function renderSidebarPlans() {
-            var navEl = document.getElementById( 'doc-sidebar-body' )
-            if( !navEl ) { return }
-            var plans = lastPlans || []
-            var validPlans = plans.filter( function( p ) { return !p.isInvalid } )
-
-            if( selectedPlanFolder === null && validPlans.length > 0 ) {
-                selectedPlanFolder = planCompoundId( validPlans[ 0 ] )
-            }
-
-            // Group plans by projectId (fallback bucket 'workbench' for legacy plans without projectId)
-            var buckets = {}
-            var bucketOrder = []
-            plans.forEach( function( plan ) {
-                var key = plan.projectId || 'workbench'
-                if( !buckets[ key ] ) {
-                    buckets[ key ] = []
-                    bucketOrder.push( key )
-                }
-                buckets[ key ].push( plan )
-            } )
-
-            var html = ''
-
-            if( plans.length === 0 ) {
-                html += '<div class="sb-group-header">AKTIVE PLÄNE</div>'
-                html += '<div style="color:#6e7681;font-size:11px;padding:4px 8px">Keine Plans gefunden.</div>'
-            }
-
-            bucketOrder.forEach( function( projectKey ) {
-                var label = bucketOrder.length === 1 && projectKey === 'workbench'
-                    ? 'AKTIVE PLÄNE'
-                    : 'AKTIVE PLÄNE · ' + projectKey.toUpperCase()
-                html += '<div class="sb-group-header">' + escapeAttr( label ) + '</div>'
-
-                buckets[ projectKey ].forEach( function( plan ) {
-                    if( plan.isInvalid ) {
-                        html += '<div class="plan-pill invalid">&#9888; ' + escapeAttr( plan.planId || plan.folder ) + '</div>'
-                        return
-                    }
-                    var compound = planCompoundId( plan )
-                    var sel = compound === selectedPlanFolder ? ' selected' : ''
-                    var namePart = plan.planId.replace( /^(PLAN-\d{3})-/, '$1 ' )
-                    html += '<div class="plan-pill' + sel + '" data-plan="' + escapeAttr( compound ) + '">' + escapeAttr( namePart ) + '</div>'
-                } )
-            } )
-
-            html += '<div class="sb-divider"></div>'
-
-            // OFFENE MEMOS · {NS} — finalized memos not yet worked off (server provides openMemos).
-            var openMemos = lastOpenMemos || []
-            var nsLabel = openMemos.length > 0 && openMemos[ 0 ].projectId ? openMemos[ 0 ].projectId.toUpperCase() : 'WORKBENCH'
-            html += '<div class="sb-group-header">OFFENE MEMOS · ' + escapeAttr( nsLabel ) + '</div>'
-
-            if( openMemos.length === 0 ) {
-                html += '<div style="color:#6e7681;font-size:11px;padding:4px 8px">Keine offenen Memos.</div>'
-            }
-
-            openMemos.forEach( function( m ) {
-                var isFinal = m.memoStatus === 'Finalisiert'
-                html += '<div class="open-memo' + ( isFinal ? '' : ' not-final' ) + '">'
-                html += '<span class="om-name">' + escapeAttr( m.memoName ) + '</span>'
-                html += '<span class="om-status">' + ( isFinal ? 'finalisiert' : 'nicht final' ) + '</span>'
-                html += '</div>'
-            } )
-
-            navEl.innerHTML = html
-
-            navEl.querySelectorAll( '.plan-pill[data-plan]' ).forEach( function( el ) {
-                el.addEventListener( 'click', function() {
-                    selectedPlanFolder = el.getAttribute( 'data-plan' )
-                    renderSidebarPlans()
-                    renderPlanTraceView()
-                } )
-            } )
-        }
-
-        // Plan-Trace-View — title + plan-URL row + tiles + trace table (Gen/Exec/Eval/Commit).
-        function phaseProgress( phases ) {
-            var list = phases || []
-            var total = list.length
-            var done = list.filter( function( p ) { return p.status === 'done' } ).length
-            var percent = total > 0 ? Math.round( ( done / total ) * 100 ) : 0
-            return { done: done, total: total, percent: percent }
-        }
-
-        // ✓ done · ◐ in-progress · ○ pending
-        function traceStep( status ) {
-            if( status === 'done' ) { return '<span class="trace-sym-done">&#10003;</span>' }
-            if( status === 'in-progress' ) { return '<span class="trace-sym-progress">&#9680;</span>' }
-            return '<span class="trace-sym-pending">&#9675;</span>'
-        }
-
-        function phaseRowFromPhase( phase, namespace, memoId ) {
-            var headCommit = phase.headCommit || ''
-            var isDone = phase.status === 'done'
-            // PRD-017 US-1: surface the HEAD-Commit for in-progress rows too, not only on
-            // completion — a commit pointer that appears only at the end arrives too late.
-            // Falls back to the empty cell when plan-status.json carries no headCommit.
-            var isInProgress = phase.status === 'in-progress'
-            var prds = Array.isArray( phase.prds ) ? phase.prds : []
-            var out = []
-
-            if( prds.length === 0 ) {
-                out.push( {
-                    namespace: namespace,
-                    strang: ( memoId ? memoId + ' · ' : '' ) + phase.id + ( phase.name ? ' ' + phase.name : '' ),
-                    generate: isDone ? 'done' : phase.status,
-                    execute: isDone ? 'done' : ( phase.status === 'in-progress' ? 'in-progress' : 'pending' ),
-                    evaluate: isDone ? 'done' : 'pending',
-                    headCommit: ( isDone || isInProgress ) ? headCommit : '',
-                    future: ( phase.status !== 'done' && phase.status !== 'in-progress' )
-                } )
-            } else {
-                prds.forEach( function( prd ) {
-                    var prdId = prd.id || prd.prdId || ''
-                    var prdName = prd.name || ''
-                    var prdDone = prd.execute === 'done' && prd.evaluate === 'done'
-                    var prdInProgress = prd.generate === 'in-progress' || prd.execute === 'in-progress' || prd.evaluate === 'in-progress'
-                    var prdCommit = prd.headCommit || headCommit
-                    out.push( {
-                        namespace: namespace,
-                        strang: ( memoId ? memoId + ' · ' : '' ) + phase.id + ' · ' + prdId + ( prdName ? ' ' + prdName : '' ),
-                        generate: prd.generate || 'pending',
-                        execute: prd.execute || 'pending',
-                        evaluate: prd.evaluate || 'pending',
-                        headCommit: ( prdDone || prdInProgress ) ? prdCommit : '',
-                        future: ( prd.generate !== 'done' && prd.generate !== 'in-progress' && prd.execute !== 'in-progress' )
-                    } )
-                } )
-            }
-
-            return out
-        }
-
-        // PRD-017 US-2: a phaseRef string identifies a row's phase on the plan-wide
-        // execution axis. Built from namespace/memo/phase so it can be matched against the
-        // entries in plan.executionOrder (which may be plain strings or objects).
-        function rowPhaseRef( namespace, memoId, phaseId ) {
-            return [ namespace || '', memoId || '', phaseId || '' ]
-                .filter( function( part ) { return part !== '' } )
-                .join( ' · ' )
-        }
-
-        // PRD-017 US-2: normalise one executionOrder entry (string OR object with phaseRef/
-        // namespace/memoId/phaseId) into a comparable ref-key, matching rowPhaseRef's shape.
-        function executionOrderKey( entry ) {
-            if( typeof entry === 'string' ) { return entry }
-            if( entry && typeof entry === 'object' ) {
-                if( entry.phaseRef ) { return entry.phaseRef }
-                return rowPhaseRef( entry.namespace, entry.memoId, entry.phaseId || entry.phase || entry.id )
-            }
-            return ''
-        }
-
-        // PRD-017 US-2: stable, purely presentational sort of trace rows by plan.executionOrder.
-        // Rows whose phaseRef matches an order entry come first in that order; unmatched rows
-        // keep their original array order at the end. Without executionOrder it is the identity.
-        function orderRows( rows, executionOrder ) {
-            var list = Array.isArray( rows ) ? rows : []
-            var order = Array.isArray( executionOrder ) ? executionOrder : []
-            if( order.length === 0 ) { return list.slice() }
-
-            var rank = {}
-            order.forEach( function( entry, idx ) {
-                var key = executionOrderKey( entry )
-                if( key !== '' && !( key in rank ) ) { rank[ key ] = idx }
-            } )
-
-            var ranked = []
-            var unranked = []
-            list.forEach( function( row, idx ) {
-                var hit = ( row && row.phaseRef && ( row.phaseRef in rank ) )
-                if( hit ) {
-                    ranked.push( { row: row, sort: rank[ row.phaseRef ], idx: idx } )
-                } else {
-                    unranked.push( { row: row, idx: idx } )
-                }
-            } )
-
-            ranked.sort( function( a, b ) {
-                if( a.sort !== b.sort ) { return a.sort - b.sort }
-                return a.idx - b.idx
-            } )
-
-            return ranked
-                .map( function( e ) { return e.row } )
-                .concat( unranked.map( function( e ) { return e.row } ) )
-        }
-
-        function collectTraceRows( plan ) {
-            var rows = []
-            var memos = Array.isArray( plan.memos ) ? plan.memos : []
-
-            if( memos.length > 0 ) {
-                // namespace/memo-aware schema: phases nested per memo
-                memos.forEach( function( m ) {
-                    var ns = m.namespace || ''
-                    var memoId = m.memoId || ''
-                    var phases = Array.isArray( m.phases ) ? m.phases : []
-                    phases.forEach( function( phase ) {
-                        var ref = rowPhaseRef( ns, memoId, phase.id )
-                        phaseRowFromPhase( phase, ns, memoId )
-                            .forEach( function( r ) {
-                                r.phaseRef = ref
-                                rows.push( r )
-                            } )
-                    } )
-                } )
-            } else {
-                // legacy schema: top-level phases
-                var legacyPhases = Array.isArray( plan.phases ) ? plan.phases : []
-                legacyPhases.forEach( function( phase ) {
-                    var ns = phase.namespace || phase.projectId || ''
-                    var memoId = phase.memoId || ''
-                    var ref = rowPhaseRef( ns, memoId, phase.id )
-                    phaseRowFromPhase( phase, ns, memoId )
-                        .forEach( function( r ) {
-                            r.phaseRef = ref
-                            rows.push( r )
-                        } )
-                } )
-            }
-
-            // PRD-017 US-2: presentational-only ordering by the plan's executionOrder; without
-            // it (single-memo / legacy plans) this is the identity and array order is kept.
-            return orderRows( rows, plan.executionOrder )
-        }
-
-        function collectMemoTiles( plan ) {
-            var tiles = []
-            var memos = Array.isArray( plan.memos ) ? plan.memos : []
-
-            if( memos.length > 0 ) {
-                memos.forEach( function( m ) {
-                    tiles.push( {
-                        memoName: m.name || m.memoId || '(unbenannt)',
-                        memoId: m.memoId || '',
-                        namespace: m.namespace || '',
-                        progress: phaseProgress( m.phases ),
-                        status: m.status || plan.status
-                    } )
-                } )
-            } else {
-                tiles.push( {
-                    memoName: plan.planId || plan.folder,
-                    memoId: '',
-                    namespace: '',
-                    progress: phaseProgress( plan.phases ),
-                    status: plan.status
-                } )
-            }
-
-            return tiles
-        }
-
-        function planStatusText( status ) {
-            if( status === 'done' || status === 'archived' ) { return 'finalisiert' }
-            if( status === 'in-progress' ) { return 'in Bearbeitung' }
-            return status || ''
-        }
-
-        function renderPlanTraceView() {
-            if( currentMode !== 'plans' ) { return }
-            var plans = ( lastPlans || [] ).filter( function( p ) { return !p.isInvalid } )
-
-            if( plans.length === 0 ) {
-                contentEl.innerHTML = '<p style="color:#888">Keine Plans gefunden.</p>'
-                return
-            }
-
-            var plan = plans.find( function( p ) {
-                return planCompoundId( p ) === selectedPlanFolder
-            } ) || plans[ 0 ]
-
-            var planFolder = plan.folder || plan.planId
-            var compound = planCompoundId( plan )
-            var planTitle = plan.planId.replace( /^(PLAN-\d{3})-/, '$1 · ' )
-            var planUrl = window.location.origin + '/plans/' + compound
-
-            var html = '<div class="plan-block">'
-            html += '<h1 class="plan-title" id="plan-' + escapeAttr( planFolder ) + '">' + escapeAttr( planTitle ) + '</h1>'
-
-            // Plan-URL row (URL box + copy button)
-            html += '<div class="plan-url-row">'
-            html += '<span class="plan-url-box" id="plan-url-text">' + escapeAttr( planUrl ) + '</span>'
-            html += '<button class="plan-copy-btn" id="plan-copy-btn">Kopieren</button>'
-            html += '</div>'
-
-            // ENTHALTENE MEMOS + tiles
-            html += '<div class="plan-section-label">ENTHALTENE MEMOS</div>'
-            var tiles = collectMemoTiles( plan )
-            html += '<div class="memo-tiles">'
-            tiles.forEach( function( tile ) {
-                var subtitle = ( tile.memoId ? tile.memoId + ' · ' : '' ) + tile.progress.done + '/' + tile.progress.total + ' Phasen · ' + tile.progress.percent + '%'
-                var statusText = planStatusText( tile.status )
-                html += '<div class="memo-tile">'
-                html += '<div class="tile-left">'
-                html += '<span class="tile-name">' + escapeAttr( tile.memoName ) + '</span>'
-                html += '<span class="tile-subtitle">' + escapeAttr( subtitle ) + '</span>'
-                html += '</div>'
-                html += '<div class="tile-right">'
-                if( tile.namespace ) {
-                    html += '<span class="tile-ns-badge">' + escapeAttr( tile.namespace ) + '</span>'
-                }
-                html += '<span class="tile-status">' + escapeAttr( statusText ) + '</span>'
-                html += '</div>'
-                html += '</div>'
-            } )
-            html += '</div>'
-
-            // ABLAUF-TRACE + trace table
-            html += '<div class="plan-section-label">ABLAUF-TRACE · Phasen memo-übergreifend swappbar</div>'
-            var rows = collectTraceRows( plan )
-            html += '<table class="trace-table"><thead><tr>'
-            html += '<th>Namespace › Memo · Ph · PRD</th>'
-            html += '<th class="tcol-fix">Gen</th><th class="tcol-fix">Exec</th><th class="tcol-fix">Eval</th><th class="tcol-commit">Commit</th>'
-            html += '</tr></thead><tbody>'
-            rows.forEach( function( row ) {
-                var rowCls = row.future ? ' class="row-future"' : ''
-                var strang = ( row.namespace ? row.namespace + ' · ' : '' ) + row.strang
-                html += '<tr' + rowCls + '>'
-                html += '<td class="tcell-strang">' + escapeAttr( strang ) + '</td>'
-                html += '<td>' + traceStep( row.generate ) + '</td>'
-                html += '<td>' + traceStep( row.execute ) + '</td>'
-                html += '<td>' + traceStep( row.evaluate ) + '</td>'
-                if( row.headCommit ) {
-                    html += '<td><span class="trace-commit">' + escapeAttr( String( row.headCommit ).slice( 0, 7 ) ) + '</span></td>'
-                } else {
-                    html += '<td class="trace-commit-empty">&mdash;</td>'
-                }
-                html += '</tr>'
-            } )
-            html += '</tbody></table>'
-            html += '</div>'
-
-            contentEl.innerHTML = html
-            updateSidebarSticky( '', '' )
-
-            var copyBtnEl = document.getElementById( 'plan-copy-btn' )
-            if( copyBtnEl ) {
-                copyBtnEl.addEventListener( 'click', function() {
-                    var txt = document.getElementById( 'plan-url-text' )
-                    if( !txt ) { return }
-                    navigator.clipboard.writeText( txt.textContent ).then( function() {
-                        var orig = copyBtnEl.textContent
-                        copyBtnEl.textContent = 'Kopiert!'
-                        setTimeout( function() { copyBtnEl.textContent = orig }, 2000 )
-                    } ).catch( function() {} )
-                } )
-            }
-        }
-
         // PRD-016 (Memo 016, E8): a cheap signature of everything that drives the sidebar markup
         // for the current mode. JSON of the mode + the broadcast data + the collapse-state and the
         // revision filter (so a user toggle / config change still redraws). Compared against
@@ -1919,9 +1554,6 @@
             if( currentMode === 'transcripts' ) {
                 return JSON.stringify( { mode: 'transcripts', t: lastTranscriptTree } )
             }
-            if( currentMode === 'plans' ) {
-                return JSON.stringify( { mode: 'plans', plans: lastPlans, openMemos: lastOpenMemos, selected: selectedPlanFolder } )
-            }
             return JSON.stringify( { mode: 'memos', tree: lastTree, latest: lastLatest, transcripts: lastTranscriptTree, collapse: collapse } )
         }
 
@@ -1934,6 +1566,10 @@
         }
 
         function renderSidebar() {
+            // PRD-017 (Memo 072, Phase 5): the Specs view owns the sidebar (renderSidebarSpecs) and is
+            // NOT driven by the memo/transcript WS broadcasts. Bail out so a documentList/transcriptList
+            // broadcast never clobbers the spec tree while the user is in Specs mode.
+            if( currentMode === 'specs' ) { return }
             // PRD-016 (Memo 016, E8): no-op skip. The WS broadcast re-renders on every message;
             // when the incoming data + collapse-state yields the same signature as the last render
             // there is nothing to redraw, so we return early instead of rebuilding innerHTML
@@ -1949,9 +1585,6 @@
                 // PRD-008: transcripts view — sidebar lists the latest transcripts of all
                 // storage locations; content shows a placeholder until one is selected.
                 renderSidebarTranscripts()
-            } else if( currentMode === 'plans' ) {
-                renderSidebarPlans()
-                renderPlanTraceView()
             } else {
                 renderSidebarMemos()
                 updateTranscriptIndicators()
@@ -2001,21 +1634,53 @@
             return list
         }
 
-        // PRD-008: Transcript-View sidebar — lists the latest transcripts of ALL storage
-        // locations (free transcripts from .memo/transcripts/ via /api/other/transcripts,
-        // memo-bound ones via /api/transcripts). Each entry shows type + origin so storage
-        // discrepancies surface immediately (Memo 016 Kap 4).
-        async function renderSidebarTranscripts() {
+        // PRD-016 (Memo 072 WI-T011-5): the pseudo-memo node key under which the server hangs the
+        // memo-less transcripts (#otherTranscripts). Kept in sync with
+        // TranscriptRegistry.OTHER_TRANSCRIPTS_MEMO_ID — the client cannot import the server class,
+        // so the literal is mirrored here (one place both read).
+        var TRANSCRIPT_UNBOUND_MEMO_ID = '(ungebunden)'
+
+        // PRD-016 (Memo 072 WI-T011-4): Transcript-View sidebar — renders the SAME namespace tree
+        // as the Memos tab (ns-box / ns-header / ns-body / memo-group), consuming the server tree
+        // (lastTranscriptTree via the WS transcriptList broadcast, extended by WI-T011-5 to also
+        // carry the memo-less transcripts under a pseudo-memo node). Replaces the old flat, mtime-
+        // sorted "Verlauf" list and its two ad-hoc fetches — the server tree is now the ONE source.
+        // Item actions (WI-T011-6) are carried over per leaf: click -> loadTranscriptIntoContent,
+        // frei -> memo-init transform, memo-init highlight. Own collapse-state sets keep this tab's
+        // collapse independent from the Memos tab (collapsedTranscriptProjects/-Memos).
+        function renderSidebarTranscripts() {
             var navEl = document.getElementById( 'doc-sidebar-body' )
             if( !navEl ) { return }
 
-            // PRD-018 US-2: the actually-used entry point ("Memo erstellen") is hoisted to the
-            // top as the dominant affordance; the long, rarely-used history list is secondary
-            // below it. No transcript is removed — only re-ordered and de-emphasised.
-            navEl.innerHTML = '<div class="sb-group-header">&#9662; Transcripts</div>'
+            var tree = lastTranscriptTree || {}
+
+            // Seed every namespace + memo of THIS tab into its own collapse set ONCE so groups
+            // render collapsed by default (mirrors renderSidebarMemos). A group the user has
+            // manually expanded is left untouched on re-render (seed-once guard). The memo key is
+            // scoped by projectId because the pseudo memoId repeats across namespaces.
+            Object.keys( tree ).forEach( function( projectId ) {
+                if( !seededCollapseTranscriptProjects.has( projectId ) ) {
+                    seededCollapseTranscriptProjects.add( projectId )
+                    collapsedTranscriptProjects.add( projectId )
+                }
+                var node = tree[ projectId ] || {}
+                Object.keys( node ).forEach( function( memoId ) {
+                    var key = projectId + '::' + memoId
+                    if( !seededCollapseTranscriptMemos.has( key ) ) {
+                        seededCollapseTranscriptMemos.add( key )
+                        collapsedTranscriptMemos.add( key )
+                    }
+                } )
+            } )
+
+            // The "+ Memo erstellen" entry point stays hoisted above the tree as the dominant
+            // affordance (WI-T011-6). The "Verlauf"-Subheader is gone (PRD-016) — the tree replaces
+            // the flat history list.
+            var head = '<div class="sb-group-header">&#9662; Transcripts</div>'
                 + '<button id="transcript-sb-new" class="transcript-sb-new" title="Neues Memo aus einem Transcript erstellen (Namespace waehlen)" style="display:block;width:calc(100% - 8px);margin:4px;padding:7px 8px;cursor:pointer;font-size:12px;font-weight:600;text-align:left;border:1px solid #4493f8;border-radius:6px;background:rgba(68,147,248,0.10);color:var(--text-1)">&#43; Memo erstellen</button>'
-                + '<div class="sb-group-subheader" style="padding:6px 6px 2px;font-size:10px;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted)">Verlauf</div>'
-                + '<div id="transcript-sb-list" style="padding:2px 4px;color:var(--text-muted);font-size:11px">Lade Transcripts...</div>'
+                + '<div id="transcript-sb-tree"></div>'
+
+            navEl.innerHTML = head
 
             var newBtn = document.getElementById( 'transcript-sb-new' )
             if( newBtn ) {
@@ -2028,92 +1693,157 @@
                 contentEl.innerHTML = '<p style="color:#888">Transcript auswaehlen...</p>'
             }
 
-            var freeList = []
-            var memoList = []
+            var treeEl = document.getElementById( 'transcript-sb-tree' )
+            if( !treeEl ) { return }
 
-            try {
-                var freeResp = await fetch( '/api/other/transcripts' )
-                var freeData = await freeResp.json()
-                freeList = ( freeData && freeData.transcripts ) || []
-            } catch {
-                freeList = []
+            // NS-Header inner markup — mirrors renderSidebarMemos.nsHeaderInner (chevron + folder +
+            // name + spacer + count chip), but counts Transcripts instead of Memos.
+            function tNsHeaderInner( projectId, count, collapsed ) {
+                var chevron = collapsed ? '&#9656;' : '&#9662;'
+                var folder = collapsed ? '📁' : '📂'
+                var inner = '<span class="ns-chevron" data-ns-chevron>' + chevron + '</span>'
+                inner += '<span class="ns-folder" aria-hidden="true">' + folder + '</span>'
+                inner += '<span class="ns-name" data-ns-name>' + escapeAttr( projectId ) + '</span>'
+                inner += '<span class="ns-spacer"></span>'
+                inner += '<span class="ns-count" data-ns-count>' + count + ' Transcripts</span>'
+                return inner
             }
 
-            try {
-                var memoResp = await fetch( '/api/transcripts' )
-                var memoData = await memoResp.json()
-                memoList = ( memoData && memoData.transcripts ) || []
-            } catch {
-                memoList = []
+            // One transcript leaf (WI-T011-6): the memo-bound review lines carry a REV-ID, the
+            // ungebundene ones a type label. memo-init is lifted as primary; a frei leaf offers the
+            // frei -> memo-init transform. Click loads the transcript into the content area.
+            function renderTranscriptLeaf( leaf ) {
+                var type = leaf.type || ( leaf.ungebunden ? 'frei' : 'revision' )
+                var primary = isPrimaryTranscriptType( type )
+                var canTransform = leaf.ungebunden === true && type === 'frei'
+                var mainLabel = leaf.revisionId ? leaf.revisionId : transcriptTypeLabel( type )
+                var seq = leaf.sequence ? ' · #' + escapeAttr( String( leaf.sequence ) ) : ''
+                var entryCls = primary ? 'transcript-entry transcript-entry-primary' : 'transcript-entry'
+                var badgeCls = primary ? 'transcript-type-badge transcript-type-badge-primary' : 'transcript-type-badge'
+                var leafHtml = '<li class="' + entryCls + '" data-transcript-id="' + escapeAttr( leaf.transcriptId ) + '" data-type="' + escapeAttr( type ) + '" title="' + escapeAttr( leaf.transcriptId ) + '" style="list-style:none;padding:4px 6px;cursor:pointer;border-bottom:1px solid var(--border,#222)' + ( primary ? ';border-left:2px solid #4493f8' : '' ) + '">'
+                leafHtml += '<div style="font-size:12px">' + escapeAttr( mainLabel ) + seq + '</div>'
+                leafHtml += '<div style="font-size:10px;color:var(--text-muted)"><span class="' + badgeCls + '">' + escapeAttr( transcriptTypeLabel( type ) ) + '</span></div>'
+                if( canTransform ) {
+                    leafHtml += '<button class="transcript-transform-btn" data-transcript-id="' + escapeAttr( leaf.transcriptId ) + '" title="Freies Transcript als Quelle fuer ein neues Memo verwenden (Re-Injection)" style="margin-top:4px;font-size:10px;padding:2px 6px;cursor:pointer">Als Memo-Init verwenden</button>'
+                }
+                leafHtml += '</li>'
+                return leafHtml
             }
 
-            var entries = []
-            freeList.forEach( function( t ) {
-                var freeType = t.type || 'frei'
-                entries.push( {
-                    transcriptId: t.transcriptId,
-                    type: freeType,
-                    origin: '.memo/transcripts/',
-                    label: t.projectId || t.transcriptId,
-                    sequence: t.sequence || '',
-                    mtime: t.mtime || '',
-                    // PRD-012: a free ("frei") transcript can be transformed into a memo-init
-                    // transcript (Re-Injection). Already-memo-init ones are not offered again.
-                    canTransform: freeType === 'frei'
+            // One memo group inside a namespace box — a real memo shows its memoId, the pseudo node
+            // (memo-less transcripts) shows a readable "Ungebunden" label. Collapse key is scoped by
+            // projectId (the pseudo memoId repeats across namespaces).
+            function renderTranscriptMemo( projectId, memoId, leaves ) {
+                var key = projectId + '::' + memoId
+                var isPseudo = memoId === TRANSCRIPT_UNBOUND_MEMO_ID
+                var memoLabel = isPseudo ? 'Ungebunden (Bootstrap / Frei)' : memoId
+                var isCollapsed = collapsedTranscriptMemos.has( key )
+                var caret = isCollapsed ? '&#9656;' : '&#9662;'
+                var listDisplay = isCollapsed ? 'none' : 'block'
+                var memoHtml = '<div class="memo-group" data-tmemo-key="' + escapeAttr( key ) + '">'
+                memoHtml += '<div class="memo-head" data-tmemo-toggle="' + escapeAttr( key ) + '" title="Transcripts ein-/ausklappen">'
+                memoHtml += '<span class="mh-caret">' + caret + '</span>'
+                memoHtml += '<span class="mh-name">' + escapeAttr( memoLabel ) + '</span>'
+                memoHtml += '<span class="mh-spacer"></span>'
+                memoHtml += '<span class="ns-count" data-tmemo-count>' + leaves.length + '</span>'
+                memoHtml += '</div>'
+                memoHtml += '<ul data-tmemo-list style="list-style:none;padding:0;margin:2px 0 0;display:' + listDisplay + '">'
+                leaves.forEach( function( leaf ) {
+                    memoHtml += renderTranscriptLeaf( leaf )
                 } )
-            } )
-            memoList.forEach( function( t ) {
-                entries.push( {
-                    transcriptId: t.transcriptId,
-                    type: t.type || 'revision',
-                    origin: ( t.memoId || '' ) + '/transcripts/',
-                    label: ( t.memoId || t.projectId || t.transcriptId ) + ' · ' + ( t.revisionId || '' ),
-                    sequence: t.sequence || '',
-                    mtime: t.mtime || '',
-                    canTransform: false
-                } )
-            } )
+                memoHtml += '</ul></div>'
+                return memoHtml
+            }
 
-            var listEl = document.getElementById( 'transcript-sb-list' )
-            if( !listEl ) { return }
+            var projectIds = Object.keys( tree )
+            var totalLeaves = projectIds.reduce( function( sum, projectId ) {
+                var node = tree[ projectId ] || {}
+                return sum + Object.keys( node ).reduce( function( s, memoId ) {
+                    return s + ( node[ memoId ] || [] ).length
+                }, 0 )
+            }, 0 )
 
-            if( entries.length === 0 ) {
-                listEl.innerHTML = 'Keine Transcripts.'
+            if( totalLeaves === 0 ) {
+                treeEl.innerHTML = '<div class="sb-queue-empty">Keine Transcripts.</div>'
                 return
             }
 
-            // PRD-018 US-2: order the history newest-first so "sehr viele Transcripts" no longer
-            // appear in arbitrary order. Purely presentational — no entry is dropped.
-            var sortedEntries = sortTranscriptEntries( entries )
-
             var html = ''
-            sortedEntries.forEach( function( e ) {
-                var seq = e.sequence ? ' · #' + escapeAttr( String( e.sequence ) ) : ''
-                // PRD-018 US-2: lift the primary type (memo-init) above the nachrangige rest.
-                var primary = isPrimaryTranscriptType( e.type )
-                var entryCls = primary ? 'transcript-entry transcript-entry-primary' : 'transcript-entry'
-                var badgeCls = primary ? 'transcript-type-badge transcript-type-badge-primary' : 'transcript-type-badge'
-                html += '<div class="' + entryCls + '" data-transcript-id="' + escapeAttr( e.transcriptId ) + '" data-type="' + escapeAttr( e.type ) + '" title="' + escapeAttr( e.origin ) + '" style="padding:4px 4px;cursor:pointer;border-bottom:1px solid var(--border,#222)' + ( primary ? ';border-left:2px solid #4493f8' : '' ) + '">'
-                html += '<div style="font-size:12px">' + escapeAttr( e.label ) + seq + '</div>'
-                html += '<div style="font-size:10px;color:var(--text-muted)"><span class="' + badgeCls + '">' + escapeAttr( transcriptTypeLabel( e.type ) ) + '</span> · ' + escapeAttr( e.origin ) + '</div>'
-                // PRD-012: transform action only for free transcripts (frei -> memo-init).
-                if( e.canTransform ) {
-                    html += '<button class="transcript-transform-btn" data-transcript-id="' + escapeAttr( e.transcriptId ) + '" title="Freies Transcript als Quelle fuer ein neues Memo verwenden (Re-Injection)" style="margin-top:4px;font-size:10px;padding:2px 6px;cursor:pointer">Als Memo-Init verwenden</button>'
-                }
-                html += '</div>'
-            } )
-            listEl.innerHTML = html
+            projectIds.forEach( function( projectId ) {
+                var node = tree[ projectId ] || {}
+                var memoIds = Object.keys( node )
+                var count = memoIds.reduce( function( s, memoId ) {
+                    return s + ( node[ memoId ] || [] ).length
+                }, 0 )
+                if( count === 0 ) { return }
 
-            listEl.querySelectorAll( '.transcript-entry' ).forEach( function( el ) {
+                var isCollapsed = collapsedTranscriptProjects.has( projectId )
+                var bodyDisplay = isCollapsed ? 'none' : 'block'
+                var boxCls = 'ns-box' + ( isCollapsed ? ' ns-box-collapsed' : '' )
+
+                html += '<div class="' + boxCls + '" data-transcript-namespace="' + escapeAttr( projectId ) + '">'
+                html += '<div class="ns-header" data-transcript-project="' + escapeAttr( projectId ) + '" title="Namespace ein-/ausklappen">'
+                html += tNsHeaderInner( projectId, count, isCollapsed )
+                html += '</div>'
+                html += '<div class="ns-body" style="display:' + bodyDisplay + '">'
+                memoIds.forEach( function( memoId ) {
+                    html += renderTranscriptMemo( projectId, memoId, node[ memoId ] || [] )
+                } )
+                html += '</div></div>'
+            } )
+
+            treeEl.innerHTML = html
+
+            // NS-box toggle (mirrors renderSidebarMemos). Traverses the DOM relative to the clicked
+            // header instead of a key-selector, so the parenthesised pseudo key never touches a CSS
+            // selector.
+            treeEl.querySelectorAll( '.ns-header[data-transcript-project]' ).forEach( function( el ) {
+                el.addEventListener( 'click', function() {
+                    var projectId = el.getAttribute( 'data-transcript-project' )
+                    if( collapsedTranscriptProjects.has( projectId ) ) {
+                        collapsedTranscriptProjects.delete( projectId )
+                    } else {
+                        collapsedTranscriptProjects.add( projectId )
+                    }
+                    var nowCollapsed = collapsedTranscriptProjects.has( projectId )
+                    var boxEl = el.closest( '.ns-box' )
+                    var bodyEl = boxEl ? boxEl.querySelector( '.ns-body' ) : null
+                    var leafCount = boxEl ? boxEl.querySelectorAll( '.transcript-entry' ).length : 0
+                    if( bodyEl ) { bodyEl.style.display = nowCollapsed ? 'none' : 'block' }
+                    if( boxEl ) { boxEl.classList.toggle( 'ns-box-collapsed', nowCollapsed ) }
+                    el.innerHTML = tNsHeaderInner( projectId, leafCount, nowCollapsed )
+                } )
+            } )
+
+            // Memo-group toggle — collapses/expands the leaves of ONE memo (or the pseudo node).
+            treeEl.querySelectorAll( '.memo-head[data-tmemo-toggle]' ).forEach( function( el ) {
+                el.addEventListener( 'click', function() {
+                    var key = el.getAttribute( 'data-tmemo-toggle' )
+                    if( collapsedTranscriptMemos.has( key ) ) {
+                        collapsedTranscriptMemos.delete( key )
+                    } else {
+                        collapsedTranscriptMemos.add( key )
+                    }
+                    var nowCollapsed = collapsedTranscriptMemos.has( key )
+                    var group = el.closest( '.memo-group' )
+                    var listEl = group ? group.querySelector( '[data-tmemo-list]' ) : null
+                    var caretEl = el.querySelector( '.mh-caret' )
+                    if( listEl ) { listEl.style.display = nowCollapsed ? 'none' : 'block' }
+                    if( caretEl ) { caretEl.innerHTML = nowCollapsed ? '&#9656;' : '&#9662;' }
+                } )
+            } )
+
+            // WI-T011-6: leaf click loads the transcript into the content area.
+            treeEl.querySelectorAll( '.transcript-entry' ).forEach( function( el ) {
                 el.addEventListener( 'click', function() {
                     var transcriptId = el.getAttribute( 'data-transcript-id' )
                     if( transcriptId ) { loadTranscriptIntoContent( transcriptId ) }
                 } )
             } )
 
-            // PRD-012: trigger the frei -> memo-init transformation. stopPropagation so the
-            // entry-click (load into content) does not also fire.
-            listEl.querySelectorAll( '.transcript-transform-btn' ).forEach( function( btn ) {
+            // WI-T011-6: frei -> memo-init transform. stopPropagation so the leaf-click (load into
+            // content) does not also fire.
+            treeEl.querySelectorAll( '.transcript-transform-btn' ).forEach( function( btn ) {
                 btn.addEventListener( 'click', function( ev ) {
                     ev.stopPropagation()
                     var transcriptId = btn.getAttribute( 'data-transcript-id' )
@@ -2326,63 +2056,68 @@
 
         var modeTranscriptsBtn = document.getElementById( 'mode-transcripts' )
         var modeMemosBtn = document.getElementById( 'mode-memos' )
-        var modePlansBtn = document.getElementById( 'mode-plans' )
+        // PRD-017 (Memo 072, Phase 5): the 4th VIEW mode button (merged Spec-Viewer).
+        var modeSpecsBtn = document.getElementById( 'mode-specs' )
         var transcriptNavBtn = document.getElementById( 'transcript-new' )
         var docSidebarEl = document.getElementById( 'doc-sidebar' )
 
-        // NavBar chrome per active view (REV-05 R4/F6): the redundant "+ Neues Memo" /
-        // "+ Neuer Plan" primary button was removed — "Transcript" bootstraps new memos,
-        // plan creation is Memo-013 territory. Only the Transcript visibility + sidebar
-        // mode class depend on the view now.
+        // PRD-017: set the active class on exactly the one mode button (three-way now).
+        function setActiveModeButton( mode ) {
+            if( modeTranscriptsBtn ) { modeTranscriptsBtn.classList.toggle( 'active', mode === 'transcripts' ) }
+            if( modeMemosBtn ) { modeMemosBtn.classList.toggle( 'active', mode === 'memos' ) }
+            if( modeSpecsBtn ) { modeSpecsBtn.classList.toggle( 'active', mode === 'specs' ) }
+        }
+
+        // NavBar chrome per active view (REV-05 R4/F6): the redundant "+ Neues Memo" primary
+        // button was removed — "Transcript" bootstraps new memos. Only the Transcript
+        // visibility + sidebar mode class depend on the view now.
         function applyModeChrome() {
             if( currentMode === 'transcripts' ) {
                 // Transcripts view: hide the "+ Transcript" bootstrap button (it belongs to
                 // the memos view) and tag the sidebar so it can be styled per view.
                 if( transcriptNavBtn ) { transcriptNavBtn.style.display = 'none' }
                 if( docSidebarEl ) {
-                    docSidebarEl.classList.remove( 'plans-mode' )
                     docSidebarEl.classList.add( 'transcripts-mode' )
+                    docSidebarEl.classList.remove( 'specs-mode' )
                 }
-            } else if( currentMode === 'plans' ) {
+            } else if( currentMode === 'specs' ) {
+                // PRD-017 (Memo 072, Phase 5): Specs view — like transcripts, the memo-only
+                // "+ Transcript" button is hidden; the sidebar is tagged for spec-tree styling.
                 if( transcriptNavBtn ) { transcriptNavBtn.style.display = 'none' }
                 if( docSidebarEl ) {
                     docSidebarEl.classList.remove( 'transcripts-mode' )
-                    docSidebarEl.classList.add( 'plans-mode' )
+                    docSidebarEl.classList.add( 'specs-mode' )
                 }
             } else {
                 if( transcriptNavBtn ) { transcriptNavBtn.style.display = '' }
                 if( docSidebarEl ) {
-                    docSidebarEl.classList.remove( 'plans-mode' )
                     docSidebarEl.classList.remove( 'transcripts-mode' )
+                    docSidebarEl.classList.remove( 'specs-mode' )
                 }
             }
         }
 
-        // PRD-006/011: apply a view mode (transcripts | memos | plans) without touching the
+        // PRD-006/011: apply a view mode (transcripts | memos) without touching the
         // URL. setMode() couples it to the History-API route.
         function applyMode( mode ) {
-            if( mode === 'transcripts' ) {
-                currentMode = 'transcripts'
-                if( modeTranscriptsBtn ) { modeTranscriptsBtn.classList.add( 'active' ) }
-                if( modeMemosBtn ) { modeMemosBtn.classList.remove( 'active' ) }
-                if( modePlansBtn ) { modePlansBtn.classList.remove( 'active' ) }
+            if( mode === 'specs' ) {
+                // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer. Fetch the spec tree and
+                // render the namespace/version sidebar; the first page auto-selects on cold start.
+                currentMode = 'specs'
+                setActiveModeButton( 'specs' )
                 applyModeChrome()
-                renderSidebar()
-            } else if( mode === 'plans' ) {
-                currentMode = 'plans'
-                if( modePlansBtn ) { modePlansBtn.classList.add( 'active' ) }
-                if( modeMemosBtn ) { modeMemosBtn.classList.remove( 'active' ) }
-                if( modeTranscriptsBtn ) { modeTranscriptsBtn.classList.remove( 'active' ) }
+                loadSpecs()
+            } else if( mode === 'transcripts' ) {
+                currentMode = 'transcripts'
+                setActiveModeButton( 'transcripts' )
                 applyModeChrome()
                 renderSidebar()
             } else {
                 currentMode = 'memos'
-                if( modeMemosBtn ) { modeMemosBtn.classList.add( 'active' ) }
-                if( modePlansBtn ) { modePlansBtn.classList.remove( 'active' ) }
-                if( modeTranscriptsBtn ) { modeTranscriptsBtn.classList.remove( 'active' ) }
+                setActiveModeButton( 'memos' )
                 applyModeChrome()
                 renderSidebar()
-                // Restore memo content when leaving the plan-trace view.
+                // Restore memo content when leaving the transcripts view.
                 if( lastContent ) {
                     slugCounts.clear()
                     contentEl.innerHTML = marked.parse( lastContent )
@@ -2397,17 +2132,17 @@
         }
 
         // PRD-006/011: route <-> mode are kept consistent. /transcripts -> transcripts,
-        // /plans -> plans, /memos (and default) -> memos (default lands on the current memo).
+        // /memos (and default) -> memos (default lands on the current memo).
         // pushState updates the URL on user toggle; popstate restores the mode on back/forward.
         function modeForPath( pathname ) {
             if( pathname === '/transcripts' || pathname.indexOf( '/transcripts/' ) === 0 ) { return 'transcripts' }
-            if( pathname === '/plans' || pathname.indexOf( '/plans/' ) === 0 ) { return 'plans' }
+            if( pathname === '/specs' || pathname.indexOf( '/specs/' ) === 0 ) { return 'specs' }
             return 'memos'
         }
 
         function pathForMode( mode ) {
             if( mode === 'transcripts' ) { return '/transcripts' }
-            if( mode === 'plans' ) { return '/plans' }
+            if( mode === 'specs' ) { return '/specs' }
             return '/memos'
         }
 
@@ -2422,13 +2157,16 @@
             }
         }
 
-        if( modeMemosBtn && modePlansBtn ) {
+        if( modeMemosBtn ) {
             modeMemosBtn.addEventListener( 'click', function() { setMode( 'memos', { push: true } ) } )
-            modePlansBtn.addEventListener( 'click', function() { setMode( 'plans', { push: true } ) } )
         }
 
         if( modeTranscriptsBtn ) {
             modeTranscriptsBtn.addEventListener( 'click', function() { setMode( 'transcripts', { push: true } ) } )
+        }
+
+        if( modeSpecsBtn ) {
+            modeSpecsBtn.addEventListener( 'click', function() { setMode( 'specs', { push: true } ) } )
         }
 
         window.addEventListener( 'popstate', function( ev ) {
@@ -2444,6 +2182,300 @@
         } )()
 
         applyModeChrome()
+
+        // ====================================================================
+        // PRD-017 (Memo 072, Phase 5, F9=A): the merged Spec-Viewer client. The separate
+        // cli/spec-view (port 3344) is dissolved into this 4th VIEW mode — namespace → version →
+        // pages of the project's spec/ workshop, latest preselected, plus a local 3-stage publish
+        // badge (PUBLISHED/DRAFT-ONLY/DRIFT). It REUSES this client's render core (marked renderer
+        // with heading-slug ids, renderAllDiagrams, buildTOC) and adds only the spec-only pieces:
+        // the /api/specs tree, a version switcher, the publish badge, RFC-2119 keyword highlighting
+        // and relative ./NN-slug.md intra-spec link interception.
+        // ====================================================================
+        var specState = { specs: [], current: null, selectedVersion: {} }
+
+        function loadSpecs() {
+            fetch( '/api/specs' )
+                .then( function( res ) { return res.json() } )
+                .then( function( payload ) { applySpecList( payload ) } )
+                .catch( function() {} )
+        }
+
+        function applySpecList( payload ) {
+            specState.specs = ( payload && payload.specs ) || []
+            // Preselect the latest version per namespace on first sight; never override a user's
+            // explicit version-switcher choice on a later refresh.
+            specState.specs.forEach( function( spec ) {
+                if( !specState.selectedVersion[ spec.namespace ] && spec.latestVersion ) {
+                    specState.selectedVersion[ spec.namespace ] = spec.latestVersion
+                }
+            } )
+            if( currentMode === 'specs' ) {
+                renderSidebarSpecs()
+                if( !specState.current ) {
+                    autoSelectFirstSpecPage()
+                }
+            }
+        }
+
+        function specVersionEntry( spec, version ) {
+            var versions = spec.versions || []
+            return versions.find( function( v ) { return v.version === version } ) || null
+        }
+
+        function autoSelectFirstSpecPage() {
+            var firstSpec = specState.specs.find( function( s ) { return s.versions && s.versions.length > 0 } )
+            if( !firstSpec ) { return }
+            var version = specState.selectedVersion[ firstSpec.namespace ] || firstSpec.latestVersion
+            var entry = specVersionEntry( firstSpec, version )
+            if( !entry ) { return }
+            var firstGroup = ( entry.groups || [] ).find( function( g ) { return g.pages && g.pages.length > 0 } )
+            if( !firstGroup ) { return }
+            selectSpecPage( { namespace: firstSpec.namespace, version: version, stem: firstGroup.pages[ 0 ].stem } )
+        }
+
+        function specBadgeClass( badge ) {
+            if( badge === 'PUBLISHED' ) { return 'published' }
+            if( badge === 'DRIFT' ) { return 'drift' }
+            return 'draft-only'
+        }
+
+        function renderSidebarSpecs() {
+            var navEl = document.getElementById( 'doc-sidebar-body' )
+            if( !navEl ) { return }
+            navEl.innerHTML = ''
+
+            if( !specState.specs || specState.specs.length === 0 ) {
+                var empty = document.createElement( 'div' )
+                empty.className = 'spec-warn'
+                empty.textContent = 'Keine Spec entdeckt (spec/ Workshop leer?).'
+                navEl.appendChild( empty )
+                return
+            }
+
+            specState.specs.forEach( function( spec ) {
+                var group = document.createElement( 'div' )
+                group.className = 'spec-ns-group'
+
+                var header = document.createElement( 'div' )
+                header.className = 'spec-ns-header'
+                header.innerHTML = '<span class="spec-ns-caret">▾</span><span>' + escapeHtml( spec.namespace ) + '</span>'
+                header.addEventListener( 'click', function() { group.classList.toggle( 'collapsed' ) } )
+                group.appendChild( header )
+
+                var body = document.createElement( 'div' )
+                body.className = 'spec-ns-body'
+
+                var selected = specState.selectedVersion[ spec.namespace ] || spec.latestVersion
+                var entry = specVersionEntry( spec, selected )
+
+                // Version switcher + publish badge row.
+                var vrow = document.createElement( 'div' )
+                vrow.className = 'spec-version-row'
+                var versions = spec.versions || []
+                if( versions.length > 0 ) {
+                    var select = document.createElement( 'select' )
+                    select.className = 'spec-version-select'
+                    versions.forEach( function( v ) {
+                        var opt = document.createElement( 'option' )
+                        opt.value = v.version
+                        opt.textContent = v.version
+                        if( v.version === selected ) { opt.selected = true }
+                        select.appendChild( opt )
+                    } )
+                    select.addEventListener( 'change', function() {
+                        specState.selectedVersion[ spec.namespace ] = this.value
+                        specState.current = null
+                        renderSidebarSpecs()
+                        autoSelectFirstSpecPage()
+                    } )
+                    vrow.appendChild( select )
+                }
+                if( entry ) {
+                    var badge = document.createElement( 'span' )
+                    badge.className = 'spec-badge ' + specBadgeClass( entry.badge )
+                    badge.textContent = entry.badge
+                    badge.title = entry.badgeReason || ''
+                    vrow.appendChild( badge )
+                }
+                body.appendChild( vrow )
+
+                // Warnings (mixed levels / no manifest / no pages).
+                var warnings = ( entry && entry.warnings ) || []
+                warnings.forEach( function( w ) {
+                    var warn = document.createElement( 'div' )
+                    warn.className = 'spec-warn'
+                    warn.textContent = '⚠ ' + w
+                    body.appendChild( warn )
+                } )
+
+                // Sub-groups + page links.
+                var subGroups = ( entry && entry.groups ) || []
+                subGroups.forEach( function( sub ) {
+                    var label = document.createElement( 'div' )
+                    label.className = 'spec-sub-label'
+                    label.textContent = sub.label
+                    body.appendChild( label )
+
+                    var pages = sub.pages || []
+                    pages.forEach( function( page ) {
+                        var link = document.createElement( 'a' )
+                        link.className = 'spec-page-link'
+                        link.textContent = page.title
+                        link.setAttribute( 'data-namespace', spec.namespace )
+                        link.setAttribute( 'data-stem', page.stem )
+                        link.addEventListener( 'click', function() { selectSpecPage( { namespace: spec.namespace, version: selected, stem: page.stem } ) } )
+                        body.appendChild( link )
+                    } )
+                } )
+
+                group.appendChild( body )
+                navEl.appendChild( group )
+            } )
+
+            markActiveSpec()
+        }
+
+        function selectSpecPage( ref ) {
+            specState.current = { namespace: ref.namespace, version: ref.version, stem: ref.stem }
+            markActiveSpec()
+
+            var qs = '/api/spec-page?namespace=' + encodeURIComponent( ref.namespace )
+                + '&page=' + encodeURIComponent( ref.stem )
+                + ( ref.version ? '&version=' + encodeURIComponent( ref.version ) : '' )
+
+            fetch( qs )
+                .then( function( res ) {
+                    if( !res.ok ) { throw new Error( 'page not found' ) }
+                    return res.json()
+                } )
+                .then( function( payload ) { renderSpecPage( payload ) } )
+                .catch( function( err ) {
+                    contentEl.innerHTML = '<p style="color:#f85149">Konnte Spec-Seite nicht laden: ' + escapeHtml( String( err && err.message ? err.message : err ) ) + '</p>'
+                } )
+        }
+
+        function markActiveSpec() {
+            var navEl = document.getElementById( 'doc-sidebar-body' )
+            if( !navEl ) { return }
+            var links = navEl.querySelectorAll( '.spec-page-link' )
+            links.forEach( function( link ) {
+                var isActive = specState.current
+                    && link.getAttribute( 'data-namespace' ) === specState.current.namespace
+                    && link.getAttribute( 'data-stem' ) === specState.current.stem
+                link.classList.toggle( 'active', !!isActive )
+            } )
+        }
+
+        function renderSpecPage( payload ) {
+            slugCounts.clear()
+            // Provenance bar (path/version/mtime) prepended, then the RAW markdown rendered through
+            // THIS client's marked core, then diagrams + RFC highlight + intra-spec links + TOC.
+            var meta = buildSpecPageMeta( payload )
+            contentEl.innerHTML = meta + marked.parse( payload.content || '' )
+            wireSpecPageMeta( payload )
+            renderAllDiagrams()
+            specHighlightRfc()
+            interceptRelativeSpecLinks()
+            buildTOC( null )
+            window.scrollTo( { top: 0 } )
+        }
+
+        function buildSpecPageMeta( payload ) {
+            var parts = []
+            if( payload.path ) { parts.push( '<span class="spm-path" title="Pfad kopieren">' + escapeHtml( payload.path ) + '</span>' ) }
+            if( payload.version ) { parts.push( '<span class="spm-badge">' + escapeHtml( payload.version ) + '</span>' ) }
+            if( payload.mtime ) { parts.push( '<span class="spm-badge">geändert ' + escapeHtml( formatSpecMtime( payload.mtime ) ) + '</span>' ) }
+            return '<div id="spec-page-meta">' + parts.join( '<span class="spm-sep">·</span>' ) + '</div>'
+        }
+
+        function wireSpecPageMeta( payload ) {
+            var pathEl = contentEl.querySelector( '#spec-page-meta .spm-path' )
+            if( !pathEl || !payload.path ) { return }
+            pathEl.addEventListener( 'click', function() {
+                if( navigator.clipboard ) { navigator.clipboard.writeText( payload.path ) }
+                var prev = pathEl.textContent
+                pathEl.textContent = 'kopiert ✓'
+                setTimeout( function() { pathEl.textContent = prev }, 1000 )
+            } )
+        }
+
+        function formatSpecMtime( ms ) {
+            try {
+                return new Date( ms ).toLocaleString( 'de-DE', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' } )
+            } catch( e ) {
+                return String( ms )
+            }
+        }
+
+        // RFC-2119 highlight (ported from cli/spec-view): a post-marked DOM text-node walk that wraps
+        // the ALL-CAPS keyword set only (BCP 14 — keywords count only in all capitals). Multi-word
+        // keywords match before their single-word prefixes. code/pre/a/.rfc-keyword subtrees are
+        // skipped so a keyword inside a code fence is never reformatted. Recursion + reduce replaces a
+        // TreeWalker loop (house rule: no for/while).
+        var SPEC_RFC_PATTERN = /\b(MUST NOT|MUST|SHALL NOT|SHALL|SHOULD NOT|SHOULD|REQUIRED|NOT RECOMMENDED|RECOMMENDED|MAY|OPTIONAL)\b/
+
+        function collectSpecRfcTextNodes( el ) {
+            var children = Array.prototype.slice.call( el.childNodes )
+            return children.reduce( function( acc, child ) {
+                if( child.nodeType === 3 ) {
+                    if( SPEC_RFC_PATTERN.test( child.nodeValue || '' ) ) { acc.push( child ) }
+                    return acc
+                }
+                if( child.nodeType === 1 ) {
+                    var tag = child.nodeName
+                    var skip = tag === 'CODE' || tag === 'PRE' || tag === 'A' || ( child.classList && child.classList.contains( 'rfc-keyword' ) )
+                    if( !skip ) { return acc.concat( collectSpecRfcTextNodes( child ) ) }
+                }
+                return acc
+            }, [] )
+        }
+
+        function specHighlightRfc() {
+            var globalPattern = new RegExp( SPEC_RFC_PATTERN.source, 'g' )
+            var nodes = collectSpecRfcTextNodes( contentEl )
+            nodes.forEach( function( textNode ) {
+                var text = textNode.nodeValue
+                var matches = Array.from( text.matchAll( globalPattern ) )
+                if( matches.length === 0 ) { return }
+
+                var frag = document.createDocumentFragment()
+                var cursor = 0
+
+                matches.forEach( function( match ) {
+                    if( match.index > cursor ) {
+                        frag.appendChild( document.createTextNode( text.slice( cursor, match.index ) ) )
+                    }
+                    var span = document.createElement( 'span' )
+                    span.className = 'rfc-keyword'
+                    span.textContent = match[ 0 ]
+                    frag.appendChild( span )
+                    cursor = match.index + match[ 0 ].length
+                } )
+
+                if( cursor < text.length ) {
+                    frag.appendChild( document.createTextNode( text.slice( cursor ) ) )
+                }
+
+                textNode.parentNode.replaceChild( frag, textNode )
+            } )
+        }
+
+        // Relative ./NN-slug.md (and NN-slug.md) intra-spec links → in-app page switch within the
+        // same namespace/version. The memo render has no inter-page link handling; this is spec-new.
+        function interceptRelativeSpecLinks() {
+            var links = contentEl.querySelectorAll( 'a[href]' )
+            links.forEach( function( a ) {
+                var href = a.getAttribute( 'href' )
+                var m = href && href.match( /^\.?\/?(\d+-[a-z0-9-]+)\.md(?:#.*)?$/i )
+                if( !m ) { return }
+                a.addEventListener( 'click', function( ev ) {
+                    if( !specState.current ) { return }
+                    ev.preventDefault()
+                    selectSpecPage( { namespace: specState.current.namespace, version: specState.current.version, stem: m[ 1 ] } )
+                } )
+            } )
+        }
 
         var transcriptMode = { active: false, transcriptId: null, originalContent: null, tab: 'revision' }
 
@@ -3126,34 +3158,6 @@
         if( ppApplyBtn ) { ppApplyBtn.addEventListener( 'click', applyPromptEdit ) }
         var ppContentEl = document.getElementById( 'pp-content' )
         if( ppContentEl ) { ppContentEl.addEventListener( 'input', updatePromptTranscriptCount ) }
-
-        // PRD-018: Plan-Popup — Memo-Auswahl required (nur finalisierte), Transcript optional, Plan-URL kopierbar.
-        // PRD-041 (Memo 016 Kap 3): Mehrfachauswahl — selectedDocumentIds haelt mehrere finalisierte
-        // Memos in Selektions-Reihenfolge (deterministisch). Klick togglet, deselektiert nichts anderes.
-        var planMode = { selectedDocumentIds: [] }
-
-        function openPlanModal() {
-            planMode.selectedDocumentIds = []
-            var modal = document.getElementById( 'plan-modal' )
-            var errorBox = document.getElementById( 'p-error' )
-            var savedState = document.getElementById( 'p-saved-state' )
-            var searchInput = document.getElementById( 'p-search' )
-            var transcriptInput = document.getElementById( 'p-transcript' )
-
-            if( errorBox ) { errorBox.classList.add( 't-hidden' ) }
-            if( savedState ) { savedState.classList.add( 't-hidden' ) }
-            if( searchInput ) { searchInput.value = '' }
-            if( transcriptInput ) { transcriptInput.value = '' }
-
-            renderPlanMemoList( '' )
-            updatePlanCreateState()
-            modal.classList.remove( 't-hidden' )
-            if( searchInput ) { searchInput.focus() }
-        }
-
-        function closePlanModal() {
-            document.getElementById( 'plan-modal' ).classList.add( 't-hidden' )
-        }
 
         // PRD-005 (Memo 016 Kap 4, B1/B2): 1:1 inline mirror of MemoView.requirementsEmptyState.
         // Turns ( count, setPresent, missingCount ) into a ternary empty-state verdict + reason copy
@@ -3999,200 +4003,8 @@
             return groups
         }
 
-        function renderPlanMemoList( filter ) {
-            var listEl = document.getElementById( 'p-memo-list' )
-            if( !listEl ) { return }
-            var groups = allMemosByNamespace()
-            var needle = ( filter || '' ).toLowerCase()
-            var html = ''
-            var anyShown = false
-
-            Object.keys( groups ).forEach( function( projectId ) {
-                var memos = groups[ projectId ].filter( function( m ) {
-                    return ( m.memoName || '' ).toLowerCase().indexOf( needle ) !== -1
-                        || projectId.toLowerCase().indexOf( needle ) !== -1
-                } )
-                if( memos.length === 0 ) { return }
-                anyShown = true
-                html += '<div class="plan-ns-group">'
-                html += '<div class="plan-ns-title">' + escapeAttr( projectId ) + '</div>'
-                memos.forEach( function( m ) {
-                    var isFinal = m.memoStatus === 'Finalisiert'
-                    var isSel = isFinal && planMode.selectedDocumentIds.indexOf( m.documentId ) !== -1
-                    var cls = 'plan-memo-option'
-                    if( isSel ) { cls += ' selected' }
-                    if( !isFinal ) { cls += ' not-final' }
-                    var box = isSel ? '☑' : '☐'
-                    var statusText = isFinal ? '✓ finalisiert' : 'nicht finalisiert'
-                    html += '<div class="' + cls + '" data-document-id="' + escapeAttr( m.documentId ) + '" data-final="' + ( isFinal ? '1' : '0' ) + '">'
-                    html += '<span class="pm-box">' + box + '</span>'
-                    html += '<span>' + escapeAttr( m.memoName ) + '</span>'
-                    html += '<span class="pm-status"> · ' + statusText + '</span>'
-                    html += '</div>'
-                } )
-                html += '</div>'
-            } )
-
-            if( !anyShown ) {
-                html = '<div class="plan-empty">Keine Memos verfuegbar.</div>'
-            }
-
-            listEl.innerHTML = html
-
-            listEl.querySelectorAll( '.plan-memo-option' ).forEach( function( el ) {
-                if( el.getAttribute( 'data-final' ) !== '1' ) { return }
-                el.addEventListener( 'click', function() {
-                    // PRD-041: toggle this option only — never deselect the others.
-                    var docId = el.getAttribute( 'data-document-id' )
-                    var idx = planMode.selectedDocumentIds.indexOf( docId )
-                    if( idx === -1 ) {
-                        planMode.selectedDocumentIds.push( docId )
-                        el.classList.add( 'selected' )
-                        var boxOn = el.querySelector( '.pm-box' )
-                        if( boxOn ) { boxOn.textContent = '☑' }
-                    } else {
-                        planMode.selectedDocumentIds.splice( idx, 1 )
-                        el.classList.remove( 'selected' )
-                        var boxOff = el.querySelector( '.pm-box' )
-                        if( boxOff ) { boxOff.textContent = '☐' }
-                    }
-                    updatePlanCreateState()
-                } )
-            } )
-        }
-
-        function updatePlanCreateState() {
-            var createBtn = document.getElementById( 'p-create' )
-            if( !createBtn ) { return }
-            // PRD-041: active as soon as at least one finalized memo is selected.
-            createBtn.disabled = planMode.selectedDocumentIds.length === 0
-            createBtn.title = createBtn.disabled ? 'Memo-Auswahl erforderlich' : ''
-        }
-
-        function buildPlanUrlFor( documentId ) {
-            // Plan-URL convention (Backend-Quelle PRD-014 / buildPlanUrl); shown + copyable after create.
-            return window.location.origin + '/plans/' + encodeURIComponent( documentId )
-        }
-
-        function resolvePlanMemoPaths( documentIds ) {
-            // PRD-042: map selected documentIds to their absolute memoPath from lastTree.
-            // No invented/relative paths — only paths the registry actually surfaced.
-            var byId = {}
-            Object.keys( lastTree || {} ).forEach( function( projectId ) {
-                var node = lastTree[ projectId ]
-                var memos = ( node && node.memos ) ? node.memos : ( Array.isArray( node ) ? node : [] )
-                memos.forEach( function( m ) {
-                    if( m && m.documentId && typeof m.memoPath === 'string' ) {
-                        byId[ m.documentId ] = m.memoPath
-                    }
-                } )
-            } )
-            return documentIds
-                .map( function( id ) { return byId[ id ] } )
-                .filter( function( p ) { return typeof p === 'string' && p.length > 0 } )
-        }
-
-        function buildPlanStartPrompt( memoPaths ) {
-            // PRD-042 (Memo 016 Kap 3): mirror of TranscriptHeader.buildPlanStartPrompt (Node-side,
-            // Jest-getestet). Ortfreier plan-start-Prompt — KEINE Plan-Nummer, KEIN Plan-Ziel,
-            // KEIN Revisions-Feld; nur Skill-Bindung + absolute Pfade der ausgewaehlten Memos.
-            // Newlines are written as escaped backslash-n so the outer HTML template literal collapses them correctly.
-            var pathLines = memoPaths
-                .map( function( p ) { return '- ' + p } )
-                .join( '\n' )
-            return '# Transcript fuer Plan-Start (plan-start)\n\n'
-                + 'Plan-Erstellung + Memo-Auswahl.\n\n'
-                + 'Skill-Bindung:\n'
-                + '- Neuer Plan: memo-plan-init {slug} (legt einen neuen Plan an; die Plan-Nummer wird vom Skill selbst vergeben — KEINE Nummer und KEIN Ablageort hier vordefinieren).\n'
-                + '- Bestehender Plan: memo-plan-add {plan-id} {memo-path} (fuegt je Memo eines zu einem bestehenden Plan hinzu).\n\n'
-                + 'Ausgewaehlte finalisierte Memos (absolute Pfade):\n'
-                + pathLines + '\n'
-        }
-
-        function createPlan() {
-            var errorBox = document.getElementById( 'p-error' )
-            var savedState = document.getElementById( 'p-saved-state' )
-            var savedUrlEl = document.getElementById( 'p-saved-url' )
-            var savedPromptEl = document.getElementById( 'p-saved-prompt' )
-
-            if( errorBox ) { errorBox.classList.add( 't-hidden' ) }
-
-            if( planMode.selectedDocumentIds.length === 0 ) {
-                if( errorBox ) {
-                    errorBox.textContent = 'Memo-Auswahl erforderlich'
-                    errorBox.classList.remove( 't-hidden' )
-                }
-                return
-            }
-
-            var memoPaths = resolvePlanMemoPaths( planMode.selectedDocumentIds )
-
-            if( memoPaths.length === 0 ) {
-                if( errorBox ) {
-                    errorBox.textContent = 'Memo-Pfade konnten nicht aufgeloest werden'
-                    errorBox.classList.remove( 't-hidden' )
-                }
-                return
-            }
-
-            var url = buildPlanUrlFor( planMode.selectedDocumentIds[ 0 ] )
-            savedUrlEl.textContent = url
-            if( savedPromptEl ) { savedPromptEl.textContent = buildPlanStartPrompt( memoPaths ) }
-            savedState.classList.remove( 't-hidden' )
-        }
-
-        async function copyPlanUrl() {
-            var savedUrlEl = document.getElementById( 'p-saved-url' )
-            var copyBtn = document.getElementById( 'p-copy' )
-            try {
-                await navigator.clipboard.writeText( savedUrlEl.textContent )
-                var original = copyBtn.textContent
-                copyBtn.textContent = 'Kopiert!'
-                setTimeout( function() { copyBtn.textContent = original }, 2000 )
-            } catch {
-                copyBtn.textContent = 'Fehler — bitte manuell kopieren'
-            }
-        }
-
-        async function copyPlanPrompt() {
-            var savedPromptEl = document.getElementById( 'p-saved-prompt' )
-            var copyBtn = document.getElementById( 'p-copy-prompt' )
-            try {
-                await navigator.clipboard.writeText( savedPromptEl.textContent )
-                var original = copyBtn.textContent
-                copyBtn.textContent = 'Kopiert!'
-                setTimeout( function() { copyBtn.textContent = original }, 2000 )
-            } catch {
-                copyBtn.textContent = 'Fehler — bitte manuell kopieren'
-            }
-        }
-
-        var planNewBtn = document.getElementById( 'plan-new' )
-        if( planNewBtn ) { planNewBtn.addEventListener( 'click', openPlanModal ) }
-
-        var pSearchEl = document.getElementById( 'p-search' )
-        if( pSearchEl ) { pSearchEl.addEventListener( 'input', function() { renderPlanMemoList( pSearchEl.value ) } ) }
-
-        var pCreateBtn = document.getElementById( 'p-create' )
-        if( pCreateBtn ) { pCreateBtn.addEventListener( 'click', createPlan ) }
-
-        var pCancelBtn = document.getElementById( 'p-cancel' )
-        if( pCancelBtn ) { pCancelBtn.addEventListener( 'click', closePlanModal ) }
-
-        var pCancelXBtn = document.getElementById( 'p-cancel-x' )
-        if( pCancelXBtn ) { pCancelXBtn.addEventListener( 'click', closePlanModal ) }
-
-        var pCopyBtn = document.getElementById( 'p-copy' )
-        if( pCopyBtn ) { pCopyBtn.addEventListener( 'click', copyPlanUrl ) }
-
-        var pCopyPromptBtn = document.getElementById( 'p-copy-prompt' )
-        if( pCopyPromptBtn ) { pCopyPromptBtn.addEventListener( 'click', copyPlanPrompt ) }
-
-        var pCloseBtn = document.getElementById( 'p-close' )
-        if( pCloseBtn ) { pCloseBtn.addEventListener( 'click', closePlanModal ) }
-
         // PRD-012 (Memo 011 Kap 4, F16=A): requirement-modal close wiring — X button, Esc,
-        // overlay click. Same toggle mechanic (.t-hidden) as the existing transcript/plan modals.
+        // overlay click. Same toggle mechanic (.t-hidden) as the existing transcript modal.
         var reqCloseBtn = document.getElementById( 'req-modal-close' )
         if( reqCloseBtn ) { reqCloseBtn.addEventListener( 'click', closeRequirementModal ) }
 
@@ -4732,6 +4544,257 @@
             // prose H3s nor claim heading anchors. Runs after hideRawQuestionBodies (a block's own
             // "### Offene Fragen" is already raw-question-hidden; this covers the other two).
             hideBlockBodySections()
+            // PRD-018 (Memo 072 Kap 13, F10=A): the deterministic Block↔Topic UI from the STORE.
+            // resolveWikiLinks + wrapTablesCollapsible are pure sync DOM surgery; applyTopicPillsFromStore
+            // is async (reads /api/documents/<id>/topics) and runs fire-and-forget so it never blocks the
+            // sync render. Order: [[…]] links first (before tables reparent nodes), then collapse tables,
+            // then the store-driven chapter pill + cross-link line.
+            resolveWikiLinks()
+            wrapTablesCollapsible()
+            applyTopicPillsFromStore( currentDocumentId )
+        }
+
+
+        // PRD-018 (Memo 072 Kap 13, WI-T013-1/2, F10=A): wrap every rendered content table in a
+        // <details class="table-collapsible" open> so long tables can be collapsed by the reader.
+        // Default OPEN (F10=A: the reading flow stays intact; collapsing is a user action). The summary
+        // label is the nearest preceding heading or bold lead-in (e.g. "Befund", "Work-Items"), falling
+        // back to "Tabelle". Runs AFTER applyMetatagChips (which replaces the Metatags table with chips),
+        // so that table is already gone and never wrapped. No while-loop (Memo-Standard).
+        function wrapTablesCollapsible() {
+            var tables = contentEl.querySelectorAll( 'table' )
+            tables.forEach( function( table ) {
+                // Idempotent: skip a table already inside a collapsible wrapper (re-render safety).
+                if( table.closest && table.closest( '.table-collapsible' ) ) { return }
+
+                var label = tableSummaryLabel( table )
+                var details = document.createElement( 'details' )
+                details.className = 'table-collapsible'
+                details.setAttribute( 'open', '' )
+                var summary = document.createElement( 'summary' )
+                summary.className = 'table-collapsible-summary'
+                summary.textContent = label
+                table.parentNode.insertBefore( details, table )
+                details.appendChild( summary )
+                details.appendChild( table )
+            } )
+        }
+
+
+        // PRD-018: derive a human summary label for a collapsible table from the nearest preceding
+        // heading or bold lead-in paragraph. Walks previous siblings (no while-loop — bounded recursion,
+        // stops at the first heading or bold lead-in). Falls back to "Tabelle".
+        function tableSummaryLabel( table ) {
+            var fromSibling = function( node ) {
+                if( !node ) { return null }
+                if( headingLevel( node ) > 0 ) { return ( node.textContent || '' ).trim() }
+                if( node.tagName === 'P' ) {
+                    var strong = node.querySelector( 'strong, b' )
+                    if( strong && ( strong.textContent || '' ).trim().length > 0 ) { return strong.textContent.trim() }
+                }
+                return fromSibling( node.previousElementSibling )
+            }
+
+            var label = fromSibling( table.previousElementSibling )
+
+            return ( label && label.length > 0 ) ? label : 'Tabelle'
+        }
+
+
+        // PRD-018 (Memo 072 Kap 13, WI-T013-7): turn literal [[slug]] wiki-links (rendered today as
+        // plain text) into navigable links. Post-render text-node pass — skips code/pre/a/script/style so
+        // a [[…]] inside a code sample stays literal. A click scrolls to a matching in-page heading id
+        // when present, otherwise asks the server to navigate (WS 'navigate' to slug.md). No while-loop:
+        // the tree is walked via recursion, each matching text node replaced by a fragment of anchors.
+        var WIKI_LINK_RE = /\[\[([^\[\]]+)\]\]/g
+
+        function resolveWikiLinks() {
+            var skip = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true }
+            var textNodes = []
+            var collect = function( node ) {
+                node.childNodes.forEach( function( child ) {
+                    if( child.nodeType === 3 ) {
+                        WIKI_LINK_RE.lastIndex = 0
+                        if( WIKI_LINK_RE.test( child.nodeValue || '' ) ) { textNodes.push( child ) }
+
+                        return
+                    }
+                    if( child.nodeType === 1 && !skip[ child.tagName ] ) { collect( child ) }
+                } )
+            }
+            collect( contentEl )
+
+            textNodes.forEach( function( node ) {
+                var frag = document.createDocumentFragment()
+                // split on a capturing group interleaves [text, slug, text, slug, …, text].
+                var parts = String( node.nodeValue ).split( WIKI_LINK_RE )
+                parts.forEach( function( part, idx ) {
+                    if( idx % 2 === 1 ) {
+                        frag.appendChild( buildWikiLink( part ) )
+                    } else if( part.length > 0 ) {
+                        frag.appendChild( document.createTextNode( part ) )
+                    }
+                } )
+                node.parentNode.replaceChild( frag, node )
+            } )
+        }
+
+
+        // PRD-018: one wiki-link anchor. Clicking scrolls to an in-page heading id when the slug
+        // matches one, otherwise asks the server to navigate to slug.md (reuses the WS 'navigate'
+        // channel interceptLinks uses). The visible text keeps the [[slug]] form so it reads as a link.
+        function buildWikiLink( slug ) {
+            var a = document.createElement( 'a' )
+            a.className = 'wiki-link'
+            a.setAttribute( 'href', '#' )
+            a.setAttribute( 'data-wiki', slug )
+            a.textContent = '[[' + slug + ']]'
+            a.addEventListener( 'click', function( e ) {
+                e.preventDefault()
+                var target = slug ? document.getElementById( slug ) : null
+                if( target && target.scrollIntoView ) {
+                    target.scrollIntoView( { behavior: 'smooth', block: 'start' } )
+
+                    return
+                }
+                if( currentWs ) {
+                    currentWs.send( JSON.stringify( { type: 'navigate', path: slug + '.md' } ) )
+                    window.scrollTo( 0, 0 )
+                }
+            } )
+
+            return a
+        }
+
+
+        // PRD-018 (Memo 072 Kap 13, WI-T013-4/5/8, F10=A): inject the chapter topic-pille + cross-link
+        // line DETERMINISTICALLY from the STORE (the topic `chapter` field), NOT from block-meta fences
+        // (the REV has 0 fences). Fetches /api/documents/<id>/topics, maps each topic's `chapter` onto
+        // its rendered "## N. Titel" heading, groups topics per heading, and injects one pill-header per
+        // chapter: a pill "T00N · Block B00X" per topic plus a cross-link line (topics · work-items ·
+        // deps · research). Fire-and-forget from applyContentStructure (the store read is async; the sync
+        // DOM surgery does not block on it). Idempotent: a heading already carrying a pill-header is left
+        // alone (no duplicate on a re-render race).
+        async function applyTopicPillsFromStore( documentId ) {
+            if( !documentId ) { return }
+
+            var payload = null
+            try {
+                var resp = await fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/topics' )
+                if( !resp.ok ) { return }
+                payload = await resp.json()
+            } catch( err ) {
+                return
+            }
+
+            var topics = ( payload && Array.isArray( payload.topics ) ) ? payload.topics : []
+            if( topics.length === 0 ) { return }
+
+            var headings = contentEl.querySelectorAll( 'h2' )
+            var byHeading = []
+            topics.forEach( function( topic ) {
+                if( !topic || typeof topic.chapter !== 'string' || topic.chapter.length === 0 ) { return }
+                var heading = matchChapterHeading( headings, topic.chapter )
+                if( !heading ) { return }
+                var entry = byHeading.find( function( e ) { return e.heading === heading } )
+                if( !entry ) {
+                    entry = { heading: heading, topics: [] }
+                    byHeading.push( entry )
+                }
+                entry.topics.push( topic )
+            } )
+
+            byHeading.forEach( function( entry ) {
+                injectTopicPillHeader( entry.heading, entry.topics )
+            } )
+        }
+
+
+        // PRD-018: map a topic's `chapter` string onto a rendered H2. Primary match is the shared
+        // slugify (same normaliser that builds heading ids) so Umlaut/punctuation drift never breaks it;
+        // a leading "N." number is the fallback when the title drifted. Returns the heading node or null.
+        function matchChapterHeading( headings, chapter ) {
+            var wantSlug = slugify( chapter )
+            var slugHit = null
+            headings.forEach( function( h ) {
+                if( slugHit ) { return }
+                if( slugify( ( h.textContent || '' ).trim() ) === wantSlug ) { slugHit = h }
+            } )
+            if( slugHit ) { return slugHit }
+
+            var wantNum = ( chapter.match( /^\s*(\d+)\b/ ) || [] )[ 1 ] || null
+            if( wantNum === null ) { return null }
+
+            var numHit = null
+            headings.forEach( function( h ) {
+                if( numHit ) { return }
+                var hNum = ( ( h.textContent || '' ).trim().match( /^\s*(\d+)\./ ) || [] )[ 1 ] || null
+                if( hNum !== null && hNum === wantNum ) { numHit = h }
+            } )
+
+            return numHit
+        }
+
+
+        // PRD-018: build + insert one topic pill-header directly after a chapter heading. Idempotent —
+        // a heading whose next sibling is already a .topic-pill-header is skipped. The cross-link line
+        // (WI-T013-8) lists the addressed topics, their linked work-items, deps and research file from
+        // the store fields — the user-wished "complexity", without duplicating prose.
+        function injectTopicPillHeader( heading, topics ) {
+            var next = heading.nextElementSibling
+            if( next && next.classList && next.classList.contains( 'topic-pill-header' ) ) { return }
+
+            var wrap = document.createElement( 'div' )
+            wrap.className = 'topic-pill-header'
+
+            var pillRow = document.createElement( 'div' )
+            pillRow.className = 'topic-pill-row'
+            topics.forEach( function( topic ) {
+                var pill = document.createElement( 'span' )
+                pill.className = 'topic-pill'
+                var blockPart = ( typeof topic.blockId === 'string' && topic.blockId.length > 0 ) ? ' · Block ' + topic.blockId : ''
+                pill.textContent = topic.id + blockPart
+                pill.title = topic.title || ''
+                pillRow.appendChild( pill )
+            } )
+            wrap.appendChild( pillRow )
+
+            var topicIds = topics.map( function( t ) { return t.id } )
+            var wis = topics.reduce( function( acc, t ) { return acc.concat( Array.isArray( t.workItemIds ) ? t.workItemIds : [] ) }, [] )
+            var deps = topics.reduce( function( acc, t ) { return acc.concat( Array.isArray( t.dependsOn ) ? t.dependsOn : [] ) }, [] )
+            var research = topics
+                .map( function( t ) { return t.researchFile } )
+                .filter( function( r ) { return typeof r === 'string' && r.length > 0 } )
+
+            var crossParts = [ 'Topics: ' + topicIds.join( ', ' ) ]
+            if( wis.length ) { crossParts.push( 'Work-Items: ' + uniqueList( wis ).join( ', ' ) ) }
+            if( deps.length ) { crossParts.push( 'Abhängt: ' + uniqueList( deps ).join( ', ' ) ) }
+            if( research.length ) { crossParts.push( 'Research: ' + uniqueList( research ).join( ', ' ) ) }
+
+            if( crossParts.length ) {
+                var cross = document.createElement( 'div' )
+                cross.className = 'topic-crosslink-line'
+                cross.textContent = crossParts.join( '  ·  ' )
+                wrap.appendChild( cross )
+            }
+
+            heading.parentNode.insertBefore( wrap, heading.nextSibling )
+        }
+
+
+        // PRD-018: order-stable de-dup for the cross-link lists (no Set spread — keeps the client
+        // classic-script style consistent with the rest of this file). No while-loop.
+        function uniqueList( arr ) {
+            var seen = {}
+            var out = []
+            arr.forEach( function( x ) {
+                var key = String( x )
+                if( seen[ key ] === true ) { return }
+                seen[ key ] = true
+                out.push( x )
+            } )
+
+            return out
         }
 
         // PRD-015 (D6): the three structured block-body section headings that follow a block-meta
@@ -6284,24 +6347,16 @@
                     }
                 }
 
-                if( data.type === 'planList' ) {
-                    lastPlans = data.plans || []
-                    lastOpenMemos = data.openMemos || []
-                    if( currentMode === 'plans' ) {
-                        renderSidebar()
-                    }
-                }
-
                 if( data.type === 'transcriptList' ) {
                     lastTranscriptTree = data.tree || {}
                     // PRD-016 (Memo 016 Kap 6.3) Auto-Move: a fresh transcript can push a memo
                     // out of the queue, so the memos sidebar (which renders the queue) must
                     // re-render here — not only the transcript indicators.
-                    if( currentMode === 'memos' ) {
-                        renderSidebar()
-                    } else {
-                        updateTranscriptIndicators()
-                    }
+                    // PRD-016 (Memo 072 WI-T011-4): the Transcripts tab now renders the server
+                    // tree too (renderSidebarTranscripts consumes lastTranscriptTree), so it must
+                    // re-render on a fresh broadcast as well. renderSidebar() dispatches per mode
+                    // (memos: memos + indicators; transcripts: the namespace tree).
+                    renderSidebar()
                     // PRD-005 (Kap 8): an einloggen/ausloggen change updates the per-revision
                     // loggedIn flag in the tree — refresh the sticky-header status row so the
                     // status pill + button label reflect the new state without a page reload.
@@ -6320,6 +6375,12 @@
                     // notification sound disabled in server mode
                     isFirstLoad = false
                     const scrollY = data.preserveScroll ? window.scrollY : 0
+                    // PRD-018 (Memo 072 Kap 13, F10=A): adopt the incoming documentId BEFORE the render
+                    // pipeline runs — applyContentStructure() -> applyTopicPillsFromStore reads
+                    // currentDocumentId to fetch the STORE, and the canonical assignment below sits AFTER
+                    // applyContentStructure (inside `if( data.fileName )`), so without this the pills
+                    // would fetch the previous doc's topics.
+                    if( data.documentId ) { currentDocumentId = data.documentId }
                     lastContent = data.content
                     lastQuestionSchema = data.questionSchema || []
                     lastVorwort = data.vorwort || ''
@@ -6339,27 +6400,33 @@
                     // (lastContent/diff/vorwort/questions) are already refreshed, so a later
                     // toggle-off restores the fresh prose without a destructive reset of the panel.
                     if( shouldRerenderOnBroadcast( currentContentView ) ) {
-                        if( showDiff && currentDiff ) {
-                            renderDiffView( data.content, currentDiff )
-                        } else {
-                            slugCounts.clear()
-                            contentEl.innerHTML = marked.parse( data.content )
-                            interceptLinks()
+                        // PRD-017 (Memo 072, Phase 5): the Specs view owns #content; a memo content
+                        // broadcast must NOT overwrite the open spec page. The snapshots above
+                        // (lastContent/diff/vorwort/questions) are already refreshed, so leaving Specs
+                        // (applyMode('memos')) restores the fresh memo prose without a page reload.
+                        if( currentMode !== 'specs' ) {
+                            if( showDiff && currentDiff ) {
+                                renderDiffView( data.content, currentDiff )
+                            } else {
+                                slugCounts.clear()
+                                contentEl.innerHTML = marked.parse( data.content )
+                                interceptLinks()
 
-                            renderAllDiagrams()
-                        }
+                                renderAllDiagrams()
+                            }
 
-                        applyContentStructure()
-                        renderVorwort( lastVorwort )
-                        renderQuestionWidgets( lastQuestionSchema )
-                        buildTOC( currentDiff )
+                            applyContentStructure()
+                            renderVorwort( lastVorwort )
+                            renderQuestionWidgets( lastQuestionSchema )
+                            buildTOC( currentDiff )
 
-                        // PRD-019: deep-link from questions icon -> scroll to "Offene Fragen" section.
-                        if( pendingQuestionsScroll ) {
-                            pendingQuestionsScroll = false
-                            scrollToOpenQuestions()
-                        } else {
-                            window.scrollTo( 0, scrollY )
+                            // PRD-019: deep-link from questions icon -> scroll to "Offene Fragen" section.
+                            if( pendingQuestionsScroll ) {
+                                pendingQuestionsScroll = false
+                                scrollToOpenQuestions()
+                            } else {
+                                window.scrollTo( 0, scrollY )
+                            }
                         }
                     }
 

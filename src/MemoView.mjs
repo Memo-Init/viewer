@@ -16,6 +16,7 @@ import { SpecPublishStatus } from './SpecPublishStatus.mjs'
 import { MemoValidator } from './MemoValidator.mjs'
 import { TranscriptRegistry } from './TranscriptRegistry.mjs'
 import { RequirementsStore } from './RequirementsStore.mjs'
+import { AnnotationStore } from './AnnotationStore.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
 import { RevisionLogic } from './RevisionLogic.mjs'
 import { SessionHead } from './SessionHead.mjs'
@@ -228,6 +229,16 @@ class MemoView {
     // second source.
     static #sessionArmMap = new Map()
 
+    // PRD-P3-01 (Memo 075 Phase 3, WI-009/011): session-flüchtige Client-Registry sessionId → record
+    // { sessionId, projectId, memoNumber, workMode, lastSeenAt }. Mirror of #sessionArmMap: no
+    // persistence (r6-G1), rebuilt by the SessionStart-Hook after a server restart. The derived status
+    // (working | waiting-for-user-answer | stale) is COMPUTED at read time (listClients), never stored.
+    static #clients = new Map()
+
+    // PRD-P3-01: a client is `stale` once no heartbeat arrived for this long. The SessionStart-Hook
+    // re-registers a session; a normal working session keeps its POST /api/clients heartbeat under TTL.
+    static #CLIENT_TTL_MS = 120000
+
 
     // PRD-031 (Memo 067 Phase 9, WI-8-05): strict session-id whitelist — the id flows into a file
     // path (WAKE_DIR/<id>.flag), so anything outside [A-Za-z0-9_-] (dots, slashes, %2f-decoded
@@ -246,10 +257,14 @@ class MemoView {
     }
 
 
-    // PRD-031 WI-8-04: drop an empty wake flag for a session. Ephemeral tmp only (WAKE_DIR under
+    // PRD-031 WI-8-04: drop a wake flag for a session. Ephemeral tmp only (WAKE_DIR under
     // os.tmpdir(), created lazily); no repo/.memo/.env write. Returns the flag path so callers and
     // tests can binary-prove it exists.
-    static async writeWakeFlag( { sessionId } ) {
+    // PRD-P3-03 (Memo 075 Phase 3, WI-010): the flag now carries a PAYLOAD — the transcriptId (or its
+    // /transcripts/<id> URL) — so the re-invoked agent knows WHICH transcript to full-read without a
+    // second lookup (r6-F12 gap). An empty/absent payload keeps the historical empty-flag behaviour so
+    // the wait-loop and the original wake test stay valid.
+    static async writeWakeFlag( { sessionId, payload } ) {
         const validation = MemoView.validateSessionId( { sessionId } )
 
         if( !validation[ 'status' ] ) {
@@ -258,9 +273,10 @@ class MemoView {
 
         await mkdir( WAKE_DIR, { 'recursive': true } )
         const flagPath = join( WAKE_DIR, `${ sessionId }.flag` )
-        await writeFile( flagPath, '' )
+        const body = typeof payload === 'string' ? payload : ''
+        await writeFile( flagPath, body )
 
-        return { 'status': true, 'flagPath': flagPath }
+        return { 'status': true, 'flagPath': flagPath, 'payload': body }
     }
 
 
@@ -292,6 +308,162 @@ class MemoView {
         const set = MemoView.#sessionArmMap.has( transcriptId ) ? MemoView.#sessionArmMap.get( transcriptId ) : new Set()
 
         return { 'sessions': Array.from( set ) }
+    }
+
+
+    // PRD-P3-01 (Memo 075 Phase 3, WI-009): register/heartbeat a CC instance. Upsert keyed by
+    // sessionId; a missing field on a heartbeat keeps the previously registered value. sessionId is
+    // whitelist-validated (it flows into the clientList broadcast). lastSeenAt is stamped on every call
+    // so the derived stale-TTL resets on each heartbeat.
+    static registerClient( { sessionId, projectId, memoNumber, workMode } ) {
+        const validation = MemoView.validateSessionId( { sessionId } )
+
+        if( !validation[ 'status' ] ) {
+            return { 'status': false, 'messages': validation[ 'messages' ] }
+        }
+
+        const existing = MemoView.#clients.has( sessionId ) ? MemoView.#clients.get( sessionId ) : {}
+        const record = {
+            'sessionId': sessionId,
+            'projectId': typeof projectId === 'string' ? projectId : ( existing[ 'projectId' ] || null ),
+            'memoNumber': memoNumber === undefined || memoNumber === null ? ( existing[ 'memoNumber' ] || null ) : String( memoNumber ),
+            'workMode': typeof workMode === 'string' ? workMode : ( existing[ 'workMode' ] || null ),
+            'lastSeenAt': Date.now()
+        }
+        MemoView.#clients.set( sessionId, record )
+
+        return { 'status': true, 'messages': [], 'record': record }
+    }
+
+
+    // PRD-P3-01 WI-009: deregister a CC instance (SessionEnd). Idempotent — deleting an unknown id is ok.
+    static deregisterClient( { sessionId } ) {
+        const removed = MemoView.#clients.delete( sessionId )
+
+        return { 'status': true, 'removed': removed }
+    }
+
+
+    // PRD-P3-01 WI-011: the pure status derivation (r6-F11). A client waits for a user answer when it is
+    // armed on at least one OPEN transcript (armed ∧ open revision) — derived, never a maintained field.
+    // Stale wins first (no heartbeat within the TTL). Fully injectable so it is unit-testable in isolation.
+    static deriveClientStatus( { lastSeenAt, now, ttlMs, armedTranscriptIds, openTranscriptIds } ) {
+        const seen = typeof lastSeenAt === 'number' ? lastSeenAt : 0
+        const age = now - seen
+
+        if( age > ttlMs ) {
+            return { 'status': 'stale' }
+        }
+
+        const openSet = openTranscriptIds instanceof Set ? openTranscriptIds : new Set()
+        const armed = Array.isArray( armedTranscriptIds ) ? armedTranscriptIds : []
+        const armedOnOpen = armed.some( ( transcriptId ) => openSet.has( transcriptId ) )
+
+        if( armedOnOpen ) {
+            return { 'status': 'waiting-for-user-answer' }
+        }
+
+        return { 'status': 'working' }
+    }
+
+
+    // PRD-P3-01 WI-011: the transcriptIds a session is armed on, read off the arm map (transcriptId →
+    // Set<sessionId>). The conjunction partner of "revision is open" in the status derivation.
+    static #armedTranscriptIdsFor( { sessionId } ) {
+        const transcriptIds = Array.from( MemoView.#sessionArmMap.keys() )
+            .filter( ( transcriptId ) => MemoView.#sessionArmMap.get( transcriptId ).has( sessionId ) )
+
+        return { transcriptIds }
+    }
+
+
+    // PRD-P3-01 WI-011: the set of transcriptIds whose revision is still OPEN (not logged in). Derived
+    // live from the transcript registry (loggedIn !== true). Empty when no registry is up.
+    static #openTranscriptIds() {
+        if( !MemoView.#transcriptRegistry ) {
+            return new Set()
+        }
+
+        const { transcripts } = MemoView.#transcriptRegistry.listTranscripts( {} )
+        const open = ( transcripts || [] )
+            .filter( ( entry ) => entry && entry[ 'loggedIn' ] !== true )
+            .map( ( entry ) => entry[ 'transcriptId' ] )
+
+        return new Set( open )
+    }
+
+
+    // PRD-P3-01 WI-009/011: the render-ready client list with the derived status + stale marking. The
+    // openTranscriptIds set is injectable (default: derived live) so the derivation stays testable.
+    static listClients( { now, ttlMs, openTranscriptIds } = {} ) {
+        const effectiveNow = typeof now === 'number' ? now : Date.now()
+        const effectiveTtl = typeof ttlMs === 'number' ? ttlMs : MemoView.#CLIENT_TTL_MS
+        const openSet = openTranscriptIds instanceof Set ? openTranscriptIds : MemoView.#openTranscriptIds()
+
+        const clients = Array.from( MemoView.#clients.values() )
+            .map( ( record ) => {
+                const { transcriptIds } = MemoView.#armedTranscriptIdsFor( { 'sessionId': record[ 'sessionId' ] } )
+                const { status } = MemoView.deriveClientStatus( {
+                    'lastSeenAt': record[ 'lastSeenAt' ],
+                    'now': effectiveNow,
+                    'ttlMs': effectiveTtl,
+                    'armedTranscriptIds': transcriptIds,
+                    'openTranscriptIds': openSet
+                } )
+
+                return {
+                    'sessionId': record[ 'sessionId' ],
+                    'projectId': record[ 'projectId' ],
+                    'memoNumber': record[ 'memoNumber' ],
+                    'workMode': record[ 'workMode' ],
+                    'lastSeenAt': record[ 'lastSeenAt' ],
+                    'armedTranscriptIds': transcriptIds,
+                    'status': status
+                }
+            } )
+            .sort( ( a, b ) => String( a[ 'sessionId' ] ).localeCompare( String( b[ 'sessionId' ] ) ) )
+
+        return { clients }
+    }
+
+
+    // PRD-P3-01 WI-009: broadcast the clientList to every connected viewer (mirror of the transcriptList
+    // broadcast, MV onTranscriptChange). Called after every register/heartbeat/deregister.
+    static #broadcastClientList() {
+        if( !MemoView.#wssInstance ) {
+            return
+        }
+
+        const { clients } = MemoView.listClients( {} )
+        const message = JSON.stringify( { 'type': 'clientList', clients } )
+
+        MemoView.#wssInstance.clients
+            .forEach( ( ws ) => {
+                if( ws.readyState === 1 ) {
+                    ws.send( message )
+                }
+            } )
+    }
+
+
+    // PRD-P3-04 (Memo 075 Phase 3, WI-012/013): broadcast the annotationList for one document (mirror of
+    // the transcriptList broadcast). Read the store fresh so every connected viewer re-runs its render
+    // pass on the current set. A broken store read degrades to an empty list, never a crash.
+    static async #broadcastAnnotationList( { documentId, memoDir } ) {
+        if( !MemoView.#wssInstance ) {
+            return
+        }
+
+        const listed = await AnnotationStore.list( { memoDir } )
+        const annotations = listed[ 'status' ] === true ? listed[ 'annotations' ] : []
+        const message = JSON.stringify( { 'type': 'annotationList', documentId, annotations } )
+
+        MemoView.#wssInstance.clients
+            .forEach( ( ws ) => {
+                if( ws.readyState === 1 ) {
+                    ws.send( message )
+                }
+            } )
     }
 
 
@@ -931,7 +1103,17 @@ class MemoView {
                  with a local 3-stage publish badge. Replaces the separate cli/spec-view (port 3344)
                  with ONE surface in this viewer, no second port. -->
             <button id="mode-specs" class="mode-toggle">Specs</button>
+            <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients VIEW mode — the live client
+                 registry (registered CC instances + derived status), mounted exactly like the
+                 M072 mode-specs 4th-view button. Loopback-only registry (POST /api/clients). -->
+            <button id="mode-clients" class="mode-toggle">Clients</button>
         </div>
+        <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009, r6-G7): a compact Clients SUMMARY ("N Clients ·
+             M warten"). Click routes to the Clients view. Additive to the #session-head above (the
+             M072 SessionHead stays; the per-terminal "du-bist-hier" remains canonical in the
+             terminal statusline, lesson you-are-here-belongs-in-terminal-statusline). Filled from
+             the clientList WS broadcast (renderClientsSummary); empty shows "0 Clients". -->
+        <button id="clients-head" class="clients-head" type="button" title="Registrierte CC-Instanzen anzeigen" aria-label="Registrierte Clients">0 Clients</button>
         <!-- PRD-012 (Memo 072, Phase 4, F6=A): the SESSION head — the running session's Namespace +
              active Memo + Work-Mode (Create/Rollout), plus a session-health lamp (#session-status).
              This is the SESSION state, deliberately distinct from the #mode-toggle VIEW switcher above
@@ -1020,6 +1202,20 @@ class MemoView {
                         <span class="pp-section-label" id="pp-questions-label" data-pp-questions-label>2 · FRAGEN BEANTWORTEN (0 / 0)</span>
                         <div id="pp-questions-list" class="pp-questions-list"></div>
                     </div>
+                    <!-- PRD-P3-08 (Memo 075 Phase 3, WI-026/027): on-demand quality-check selection.
+                         The four revision-accompanying checks (Evidence/Coherence/Balance/References)
+                         are opt-in per feedback round; the selection travels in the transcript payload
+                         as a "## Quality-Checks angefragt" section that the next memo-revision-generate
+                         reads and runs each chosen check in a separate subagent (design [ANNAHME]). -->
+                    <div class="pp-section pp-quality" data-pp-quality>
+                        <span class="pp-section-label" id="pp-quality-label">3 · QUALITY-CHECKS (optional)</span>
+                        <div id="pp-quality-list" class="pp-quality-list">
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="evidence" value="evidence"> Evidence</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="coherence" value="coherence"> Coherence</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="balance" value="balance"> Balance</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="references" value="references"> References</label>
+                        </div>
+                    </div>
                     <div id="pp-error" class="t-error t-hidden"></div>
                     <div id="pp-success" class="pp-success t-hidden"></div>
                 </div>
@@ -1097,6 +1293,31 @@ class MemoView {
             <div class="t-modal-body" id="block-modal-body"></div>
         </div>
     </div>
+    <!-- PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): annotation modal. REUSES the existing .t-modal /
+         .t-modal-content / .t-modal-header / .t-modal-body classes (centered flex overlay) exactly like
+         the requirement + block popups above. NO new overlay CSS. Opened from a text selection or a
+         table-row gutter button; the comment field + Speichern POSTs /api/annotations. -->
+    <div id="annotation-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="anm-modal-title">
+        <div class="t-modal-content">
+            <div class="t-modal-header">
+                <span class="t-title" id="anm-modal-title">Anmerkung</span>
+                <span class="t-header-spacer"></span>
+                <button class="t-close" id="anm-modal-close" title="Schliessen">&times;</button>
+            </div>
+            <div class="t-modal-body">
+                <div class="anm-quote" id="anm-modal-quote"></div>
+                <textarea id="anm-modal-comment" class="anm-comment" placeholder="Kommentar zur markierten Passage/Zeile..."></textarea>
+                <div id="anm-modal-error" class="t-error t-hidden"></div>
+                <div class="t-actions">
+                    <button id="anm-modal-cancel" class="t-btn-secondary">Abbrechen</button>
+                    <button id="anm-modal-save" class="t-btn-primary">Anmerkung speichern</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- PRD-P3-05 (Memo 075 Phase 3, WI-012): the floating "Anmerken" button, shown next to a live
+         text selection inside #content. Hidden by default; positioned near the selection on mouseup. -->
+    <button id="annotate-floating" class="annotate-floating t-hidden" type="button" title="Markierte Passage anmerken">Anmerken</button>
     <div id="layout">
         <nav id="doc-sidebar" aria-label="Dokumente">
             <div id="doc-sidebar-body"></div>
@@ -1482,6 +1703,38 @@ class MemoView {
                 return
             }
 
+            // PRD-P3-04 (Memo 075 Phase 3, WI-012/013): read-only annotation list for one memo, optional
+            // ?revisionId= filter. MUST be matched BEFORE the generic /api/documents/<id> GET below (the
+            // suffix is more specific; the generic route would otherwise swallow "<id>/annotations").
+            // Mirror of the /topics + /requirements + /blocks routes.
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/annotations' ) && req.method === 'GET' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/annotations'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                const location = MemoView.resolveMemoDir( { 'memoPath': result[ 'document' ][ 'memoPath' ] } )
+
+                if( !location[ 'status' ] ) {
+                    sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'annotations': [] } )
+
+                    return
+                }
+
+                const params = new URLSearchParams( req.url.split( '?' )[ 1 ] || '' )
+                const revisionId = params.get( 'revisionId' ) || undefined
+                const listed = await AnnotationStore.list( { 'memoDir': location[ 'memoDir' ], revisionId } )
+
+                sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'annotations': listed[ 'annotations' ] } )
+
+                return
+            }
+
             if( url.startsWith( '/api/documents/' ) && req.method === 'GET' ) {
 
                 const documentId = url.slice( '/api/documents/'.length )
@@ -1809,7 +2062,23 @@ class MemoView {
             if( url.startsWith( '/api/session/' ) && url.endsWith( '/wake' ) && req.method === 'POST' ) {
 
                 const sessionId = url.slice( '/api/session/'.length, -'/wake'.length )
-                const result = await MemoView.writeWakeFlag( { sessionId } )
+                // PRD-P3-03 (Memo 075 Phase 3, WI-010): pass the transcriptId through into the flag
+                // payload so the re-invoked agent full-reads the exact transcript without a second lookup.
+                const { body } = await readBody( req )
+                let parsed = {}
+
+                if( body.length > 0 ) {
+                    try {
+                        parsed = JSON.parse( body )
+                    } catch {
+                        sendJson( res, 400, { 'error': 'Invalid JSON body' } )
+
+                        return
+                    }
+                }
+
+                const payload = typeof parsed[ 'transcriptId' ] === 'string' ? parsed[ 'transcriptId' ] : undefined
+                const result = await MemoView.writeWakeFlag( { sessionId, payload } )
 
                 if( !result[ 'status' ] ) {
                     sendJson( res, 400, { 'error': result[ 'messages' ].join( '; ' ) } )
@@ -1818,6 +2087,122 @@ class MemoView {
                 }
 
                 sendJson( res, 200, { 'status': 'ok' } )
+
+                return
+            }
+
+            // PRD-P3-01 (Memo 075 Phase 3, WI-009/011): the client registry — register/heartbeat, list
+            // with derived status, and deregister. Hangs off the SAME loopback-bound listener (BIND_HOST
+            // 127.0.0.1 inherited); session-flüchtig, no persistence, no new server.listen.
+            if( url === '/api/clients' && req.method === 'POST' ) {
+
+                const { body } = await readBody( req )
+                let parsed = {}
+
+                if( body.length > 0 ) {
+                    try {
+                        parsed = JSON.parse( body )
+                    } catch {
+                        sendJson( res, 400, { 'error': 'Invalid JSON body' } )
+
+                        return
+                    }
+                }
+
+                const result = MemoView.registerClient( {
+                    'sessionId': parsed[ 'sessionId' ],
+                    'projectId': parsed[ 'projectId' ],
+                    'memoNumber': parsed[ 'memoNumber' ],
+                    'workMode': parsed[ 'workMode' ]
+                } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 400, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                MemoView.#broadcastClientList()
+                sendJson( res, 200, { 'ok': true } )
+
+                return
+            }
+
+            if( url === '/api/clients' && req.method === 'GET' ) {
+
+                const { clients } = MemoView.listClients( {} )
+                sendJson( res, 200, { clients } )
+
+                return
+            }
+
+            if( url.startsWith( '/api/clients/' ) && req.method === 'DELETE' ) {
+
+                const sessionId = url.slice( '/api/clients/'.length )
+                const validation = MemoView.validateSessionId( { sessionId } )
+
+                if( !validation[ 'status' ] ) {
+                    sendJson( res, 400, { 'error': validation[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                MemoView.deregisterClient( { sessionId } )
+                MemoView.#broadcastClientList()
+                sendJson( res, 200, { 'ok': true } )
+
+                return
+            }
+
+            // PRD-P3-04 (Memo 075 Phase 3, WI-012/013): create an annotation. The documentId in the body
+            // resolves to the memo dir (the store is memo-scoped); id is assigned max+1 (NO reuse). After
+            // the write the annotationList is broadcast so every viewer re-runs its render pass.
+            if( url === '/api/annotations' && req.method === 'POST' ) {
+
+                const { body } = await readBody( req )
+                let parsed
+
+                try {
+                    parsed = JSON.parse( body )
+                } catch {
+                    sendJson( res, 400, { 'error': 'Invalid JSON body' } )
+
+                    return
+                }
+
+                const documentId = parsed[ 'documentId' ]
+                const lookup = MemoView.#registry.getDocument( { documentId } )
+
+                if( !lookup[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': lookup[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                const location = MemoView.resolveMemoDir( { 'memoPath': lookup[ 'document' ][ 'memoPath' ] } )
+
+                if( !location[ 'status' ] ) {
+                    sendJson( res, 422, { 'error': 'Could not resolve the memo directory for this document' } )
+
+                    return
+                }
+
+                const result = await AnnotationStore.create( {
+                    documentId,
+                    'revisionId': parsed[ 'revisionId' ],
+                    'anchor': parsed[ 'anchor' ],
+                    'comment': parsed[ 'comment' ],
+                    'memoDir': location[ 'memoDir' ]
+                } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 422, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                await MemoView.#broadcastAnnotationList( { documentId, 'memoDir': location[ 'memoDir' ] } )
+                sendJson( res, 200, { 'id': result[ 'id' ] } )
 
                 return
             }
@@ -2460,6 +2845,13 @@ class MemoView {
                 if( ws.readyState === 1 ) {
                     ws.send( JSON.stringify( { 'type': 'transcriptList', 'tree': tTree } ) )
                 }
+            }
+
+            // PRD-P3-01 (Memo 075 Phase 3, WI-009): seed the fresh socket with the current client
+            // registry so the Clients view renders without waiting for the next register/heartbeat.
+            if( ws.readyState === 1 ) {
+                const { clients } = MemoView.listClients( {} )
+                ws.send( JSON.stringify( { 'type': 'clientList', clients } ) )
             }
 
             if( MemoView.#registry ) {

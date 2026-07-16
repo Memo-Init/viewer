@@ -34,5 +34,13 @@ mkdir -p "$WAKE_DIR"
 
 # WI-8-04 wait-loop: 0 tokens while waiting, exit on flag, one-shot cleanup.
 until [ -f "$FLAG" ]; do sleep 1; done
+# PRD-P3-03 (Memo 075 Phase 3, WI-010): the flag now carries a payload (the transcriptId / URL) —
+# read it BEFORE the one-shot cleanup and echo it after WOKEN so the re-invoked agent knows which
+# transcript to full-read without a second lookup. An empty flag keeps the historical "WOKEN <id>" form.
+PAYLOAD="$( cat "$FLAG" 2>/dev/null )"
 rm -f "$FLAG"
-echo "WOKEN $SESSION_ID"
+if [ -n "$PAYLOAD" ]; then
+    echo "WOKEN $SESSION_ID $PAYLOAD"
+else
+    echo "WOKEN $SESSION_ID"
+fi

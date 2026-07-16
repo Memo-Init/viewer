@@ -116,8 +116,12 @@ describe( 'MemoView.enrichRevisionStatus — transcript -> revisionStatus join',
 
 
     // The decisive end-to-end behavior: after the join, the queue drops the logged-in revision
-    // and keeps the transcript-eingetragen + offen ones.
-    it( 'feeds computeOpenRevisionQueue so eingeloggt drops, transcript-eingetragen stays', () => {
+    // and keeps the newest UNFINISHED revision. PRD-P1-03 (Memo 075, WI-008): older revisions of the
+    // SAME memo are now SUPERSEDED by the newest non-prepare one and leave the queue even when they
+    // never got a transcript (they used to stay 'offen' forever — live 075: REV-01/REV-02). Here
+    // REV-03 is the newest (transcript-eingetragen -> stays); REV-01 (offen, no transcript) and
+    // REV-02 (eingeloggt) are older -> superseded -> both drop. Queue = only the newest.
+    it( 'feeds computeOpenRevisionQueue so eingeloggt + superseded drop, the newest unfinished stays', () => {
         const tree = {
             ns: { memos: [
                 {
@@ -135,16 +139,23 @@ describe( 'MemoView.enrichRevisionStatus — transcript -> revisionStatus join',
         }
         const transcriptTree = {
             ns: { '010-a': [
-                { revisionId: 'REV-02', loggedIn: false },
-                { revisionId: 'REV-03', loggedIn: true }
+                { revisionId: 'REV-02', loggedIn: true },
+                { revisionId: 'REV-03', loggedIn: false }
             ] }
         }
 
         MemoView.enrichRevisionStatus( { tree, transcriptTree } )
+
+        const byFile = {}
+        tree.ns.memos[ 0 ].revisions.forEach( ( r ) => { byFile[ r.fileName ] = r } )
+        expect( byFile[ 'REV-01.md' ].isSuperseded ).toBe( true )
+        expect( byFile[ 'REV-02.md' ].isSuperseded ).toBe( true )
+        expect( byFile[ 'REV-03.md' ].isSuperseded ).toBe( false )
+
         const { queue } = MemoView.computeOpenRevisionQueue( { tree } )
         const labels = queue.map( ( pair ) => pair.rev.fileName )
 
-        expect( labels ).toEqual( [ 'REV-01.md', 'REV-02.md' ] )
+        expect( labels ).toEqual( [ 'REV-03.md' ] )
     } )
 } )
 

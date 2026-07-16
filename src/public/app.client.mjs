@@ -1081,7 +1081,11 @@
                     // (MemoView.enrichRevisionStatus). Legacy/parseError revisions never queue.
                     // Prepare-Revisionen (revisionType 'prepare') sind Basis-Snapshots (memo-revision-
                     // generate) und nie Queue-Material — sie spiegeln keinen offenen Transcript-Job.
-                    if( rev && rev.revisionStatus !== 'eingeloggt' && rev.isLegacy !== true && rev.parseError !== true && rev.revisionType !== 'prepare' ) {
+                    // PRD-P1-03 (Memo 075, WI-008): mirror DocumentRegistry.isInQueue — a revision
+                    // superseded by a newer non-prepare revision of the same memo (isSuperseded, joined
+                    // server-side in MemoView.#markSupersededRevisions) drops out too, so an old revision
+                    // without a transcript is no longer a perpetually-open dead end.
+                    if( rev && rev.revisionStatus !== 'eingeloggt' && rev.isLegacy !== true && rev.parseError !== true && rev.revisionType !== 'prepare' && rev.isSuperseded !== true ) {
                         pairs.push( { doc: doc, rev: rev } )
                     }
                 } )

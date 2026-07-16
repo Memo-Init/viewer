@@ -3153,6 +3153,43 @@ class MemoView {
     }
 
 
+    // PRD-P1-03 (Memo 075, WI-008): mark every revision of ONE memo except the newest non-prepare
+    // one with isSuperseded: true. Before this a revision could only leave the queue by logging in
+    // its transcript or by memo finalization; a revision WITHOUT a transcript was a dead end and
+    // stayed "offen" forever (live 075: REV-01/REV-02 perpetually open). The newest revision is
+    // derived purely from the `REV-\d+` filename numbers (deterministic, no transcript facts).
+    // Prepare revisions (REV-XX-prepare.md) never decide the "newest" line and never carry the flag —
+    // they are already excluded from the queue via isInQueue's isPrepare check. Mutates in place.
+    static #markSupersededRevisions( { revisions } ) {
+        const list = Array.isArray( revisions ) ? revisions : []
+        const revNumberOf = ( rev ) => {
+            const match = String( rev[ 'fileName' ] || '' ).match( /REV-(\d+)/i )
+
+            return match ? Number( match[ 1 ] ) : null
+        }
+
+        const nonPrepareNumbers = list
+            .filter( ( rev ) => rev && typeof rev === 'object' && rev[ 'revisionType' ] !== 'prepare' )
+            .map( ( rev ) => revNumberOf( rev ) )
+            .filter( ( number ) => number !== null )
+        const maxNumber = nonPrepareNumbers.length > 0 ? Math.max( ...nonPrepareNumbers ) : null
+
+        list
+            .filter( ( rev ) => rev && typeof rev === 'object' )
+            .forEach( ( rev ) => {
+                const number = revNumberOf( rev )
+                const isSuperseded = maxNumber !== null
+                    && number !== null
+                    && rev[ 'revisionType' ] !== 'prepare'
+                    && number < maxNumber
+
+                rev[ 'isSuperseded' ] = isSuperseded
+            } )
+
+        return { revisions: list }
+    }
+
+
     // BUGFIX (fix/transcript-abschliessen-queue): the JOIN-Punkt. The DocumentRegistry tree carries
     // a stub revisionStatus (always REVISION_STATUS_DEFAULT) because it has no knowledge of the
     // transcript registry. Here both trees are available, so we derive the authoritative
@@ -3178,6 +3215,8 @@ class MemoView {
                     .filter( ( doc ) => doc && typeof doc === 'object' )
                     .forEach( ( doc ) => {
                         const memoTranscripts = transcriptsForProject[ doc[ 'memoName' ] ] || []
+
+                        MemoView.#markSupersededRevisions( { revisions: doc[ 'revisions' ] || [] } )
 
                         ;( doc[ 'revisions' ] || [] )
                             .filter( ( rev ) => rev && typeof rev === 'object' )
@@ -3215,6 +3254,8 @@ class MemoView {
             .forEach( ( doc ) => {
                 const transcriptsForProject = ( tNode[ doc[ 'projectId' ] ] && typeof tNode[ doc[ 'projectId' ] ] === 'object' ) ? tNode[ doc[ 'projectId' ] ] : {}
                 const memoTranscripts = transcriptsForProject[ doc[ 'memoName' ] ] || []
+
+                MemoView.#markSupersededRevisions( { revisions: doc[ 'revisions' ] || [] } )
 
                 ;( doc[ 'revisions' ] || [] )
                     .filter( ( rev ) => rev && typeof rev === 'object' )

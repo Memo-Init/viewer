@@ -19,8 +19,6 @@ import { RequirementsStore } from './RequirementsStore.mjs'
 import { AnnotationStore } from './AnnotationStore.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
 import { RevisionLogic } from './RevisionLogic.mjs'
-import { SessionHead } from './SessionHead.mjs'
-import { CockpitLine } from './CockpitLine.mjs'
 import { Config } from './data/config.mjs'
 
 
@@ -820,85 +818,10 @@ class MemoView {
     }
 
 
-    // PRD-012 (Memo 072, Phase 4): map the ambient active-memo NUMBER (CLAUDE_MEMO) to its memo-local
-    // dir + project namespace, from the ALREADY-loaded DocumentRegistry (no fresh scan). The dir is where
-    // the append-only sessions.jsonl lives — the memo ROOT, not the revisions/ subdir (the same basename
-    // adjustment the transcript scan uses). Match is by the memo's leading number, normalised so "072"
-    // and "72" resolve alike. No registry / no match -> nulls (No-Silent-Default: never a guessed memo).
-    // Read-only — the backing of SessionHead.resolve's lookupMemoDir injection.
-    static resolveActiveMemoDir( { activeMemo } ) {
-        const struct = { 'memoDir': null, 'namespace': null }
-
-        if( typeof activeMemo !== 'string' || activeMemo.length === 0 || !MemoView.#registry ) {
-            return struct
-        }
-
-        const wanted = String( parseInt( activeMemo, 10 ) )
-
-        if( wanted === 'NaN' ) {
-            return struct
-        }
-
-        const { documents } = MemoView.#registry.getDocuments()
-        const match = documents
-            .find( ( doc ) => {
-                const name = typeof doc[ 'memoName' ] === 'string' ? doc[ 'memoName' ] : ''
-                const numberMatch = name.match( /^(\d{1,})/ )
-                const num = numberMatch !== null ? String( parseInt( numberMatch[ 1 ], 10 ) ) : null
-
-                return num !== null && num === wanted && typeof doc[ 'memoPath' ] === 'string'
-            } )
-
-        if( match === undefined ) {
-            return struct
-        }
-
-        const memoPath = match[ 'memoPath' ]
-        struct[ 'memoDir' ] = basename( memoPath ) === 'revisions' ? dirname( memoPath ) : memoPath
-        struct[ 'namespace' ] = typeof match[ 'projectId' ] === 'string' ? match[ 'projectId' ] : null
-
-        return struct
-    }
-
-
-    // Env-independent active-memo channel (Memo 072 K1): the memo-view server is a long-lived SHARED
-    // server without a per-session CLAUDE_MEMO, so the active memo is derived from the FRESHEST session
-    // mark across the loaded memos (the same memo-local sessions.jsonl the rollout writes). Returns
-    // [{ activeMemo, latestMarkAt }] — the memo leading-number (normalised) + its newest mark ISO
-    // timestamp. Backs SessionHead.resolveActiveMemo's listMarkedMemos injection. Read-only; a memo with
-    // no marks is dropped (never invents an active memo).
-    static async listMarkedMemos() {
-        if( !MemoView.#registry ) {
-            return []
-        }
-
-        const { documents } = MemoView.#registry.getDocuments()
-        const seen = {}
-        const memos = documents
-            .filter( ( doc ) => typeof doc[ 'memoPath' ] === 'string' && typeof doc[ 'memoName' ] === 'string' )
-            .map( ( doc ) => {
-                const numberMatch = doc[ 'memoName' ].match( /^(\d{1,})/ )
-                // Keep the memo number as authored (zero-padded, e.g. "072") so the head displays it the
-                // same way the CLAUDE_MEMO path does; resolveActiveMemoDir normalises internally for matching.
-                const activeMemo = numberMatch !== null ? numberMatch[ 1 ] : null
-                const memoPath = doc[ 'memoPath' ]
-                const memoDir = basename( memoPath ) === 'revisions' ? dirname( memoPath ) : memoPath
-
-                return { activeMemo, memoDir }
-            } )
-            .filter( ( entry ) => entry.activeMemo !== null && seen[ entry.activeMemo ] === undefined && ( seen[ entry.activeMemo ] = true ) === true )
-
-        const withMarks = await Promise.all( memos.map( async ( entry ) => {
-            const { marks } = await SessionHead.readMarks( { memoDir: entry.memoDir } )
-            const latestMarkAt = marks
-                .map( ( mark ) => mark !== null && typeof mark.timestamp === 'string' ? mark.timestamp : '' )
-                .reduce( ( best, ts ) => ts > best ? ts : best, '' )
-
-            return { activeMemo: entry.activeMemo, latestMarkAt }
-        } ) )
-
-        return withMarks.filter( ( entry ) => entry.latestMarkAt.length > 0 )
-    }
+    // Memo 075 Phase 3 (PRD-P3-02): the M072 helpers resolveActiveMemoDir + listMarkedMemos were removed
+    // together with the /api/session + /api/cockpit routes and the global viewer-head they backed (Kap 18:
+    // wrong interpretation — a single global "activeMemo" is wrong for a shared server with several CC
+    // instances; the per-client Clients registry is the replacement). They had no other caller.
 
 
     static #currentDirectoryPath = null
@@ -1109,35 +1032,14 @@ class MemoView {
             <button id="mode-clients" class="mode-toggle">Clients</button>
         </div>
         <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009, r6-G7): a compact Clients SUMMARY ("N Clients ·
-             M warten"). Click routes to the Clients view. Additive to the #session-head above (the
-             M072 SessionHead stays; the per-terminal "du-bist-hier" remains canonical in the
-             terminal statusline, lesson you-are-here-belongs-in-terminal-statusline). Filled from
-             the clientList WS broadcast (renderClientsSummary); empty shows "0 Clients". -->
+             M warten"). Click routes to the Clients view. This REPLACES the removed M072 SessionHead
+             (Namespace/Memo/Mode + the merged cockpit line): per Memo 075 Kap 18 that global,
+             shared-server viewer-head was the wrong interpretation — a single global "activeMemo" is
+             wrong when several CC instances run, and the per-terminal "du-bist-hier" belongs in the
+             terminal statusline (lesson you-are-here-belongs-in-terminal-statusline). This per-client
+             registry is the correct viewer surface. Filled from the clientList WS broadcast
+             (renderClientsSummary); empty shows "0 Clients". -->
         <button id="clients-head" class="clients-head" type="button" title="Registrierte CC-Instanzen anzeigen" aria-label="Registrierte Clients">0 Clients</button>
-        <!-- PRD-012 (Memo 072, Phase 4, F6=A): the SESSION head — the running session's Namespace +
-             active Memo + Work-Mode (Create/Rollout), plus a session-health lamp (#session-status).
-             This is the SESSION state, deliberately distinct from the #mode-toggle VIEW switcher above
-             (Transcripts/Memos) — the two must not be confusable (T003 #2). Values are filled by
-             the /api/session fetch (client renderSessionHead); a missing source shows an em dash (—),
-             never a guessed value (No-Silent-Default). NOTE (T003 #8/#9): there is deliberately NO
-             viewer "Tools" area — the "Tools" the user means is the TERMINAL statusline / session-tool
-             contract (sessiontools-check.sh, statusline-command.sh), not the viewer; the expectation is
-             redirected there, not built here. -->
-        <div id="session-head" role="status" aria-live="polite" aria-label="Laufende Session">
-            <span class="session-head-item"><span class="session-head-label">Namespace:</span> <span id="session-namespace" class="session-head-value">—</span></span>
-            <span class="session-head-sep">·</span>
-            <span class="session-head-item"><span class="session-head-label">Memo:</span> <span id="session-memo" class="session-head-value">—</span></span>
-            <span class="session-head-sep">·</span>
-            <span class="session-head-item"><span class="session-head-label">Mode:</span> <span id="session-mode" class="session-head-value">—</span></span>
-            <span class="session-head-sep">·</span>
-            <!-- PRD-013 (Memo 072, Phase 4, F6=A): the cockpit line MERGED into the SAME session head
-                 (F6=A) — the ONE interface surface, not a second CockpitWatcher.serve() port/tunnel
-                 (T003 #10/#11). Filled by the /api/cockpit fetch (client renderCockpit) as the compact
-                 live line "phase - pct - worker - budget - age"; a missing/corrupt snapshot shows an em
-                 dash (—), never a guessed value (No-Silent-Default). -->
-            <span class="session-head-item"><span class="session-head-label">Cockpit:</span> <span id="session-cockpit" class="session-head-value">—</span></span>
-            <div id="session-status" title="Session-Health" role="status" aria-live="polite" aria-label="Session-Health"></div>
-        </div>
         <span id="nav-spacer"></span>
         <button id="transcript-new" class="nav-btn-secondary" title="Transcript hinzufügen oder neues Memo bootstrappen">Transcript</button>
         <button id="nav-unlink" class="nav-btn-secondary" title="Memo entkoppeln">Unlink</button>
@@ -2652,61 +2554,13 @@ class MemoView {
                 return
             }
 
-            // PRD-012 (Memo 072, Phase 4, F6=A): the Session-Kopf data source. Returns the session-driven
-            // snapshot { namespace, activeMemo, workMode } that the nav head renders. The workMode is the
-            // CORE work-mode — SessionHead mirrors SessionMarkStore.deriveWorkMode over the memo-local
-            // sessions.jsonl; the viewer only READS it, it never invents a new work-mode state (F6
-            // Nicht-Ziel). activeMemo/namespace come from the ambient CLAUDE_MEMO snapshot resolved against
-            // the DocumentRegistry (NOT the user-clicked document); a missing source resolves to null (the
-            // client renders an em dash), never a guessed memo. This exact `/api/session` GET is matched
-            // before the `/api/` catch-all and does not collide with the `/api/session/<id>/…` routes.
-            if( url === '/api/session' && req.method === 'GET' ) {
-
-                const head = await SessionHead.resolve( {
-                    'env': process.env,
-                    'lookupMemoDir': ( { activeMemo } ) => MemoView.resolveActiveMemoDir( { activeMemo } ),
-                    'listMarkedMemos': () => MemoView.listMarkedMemos()
-                } )
-
-                sendJson( res, 200, {
-                    'namespace': head[ 'namespace' ],
-                    'activeMemo': head[ 'activeMemo' ],
-                    'workMode': head[ 'workMode' ]
-                } )
-
-                return
-            }
-
-            // PRD-013 (Memo 072, Phase 4, F6=A): the cockpit line, MERGED into the viewer (F6=A) instead
-            // of the separate CockpitWatcher.serve() loopback surface — the ONE interface, no second port,
-            // no tunnel (dissolves T003 #10/#11). Reads the memo-local rollout/cockpit-snapshot.json of the
-            // AMBIENT active memo (CLAUDE_MEMO resolved against the DocumentRegistry — the SAME source
-            // /api/session uses, NOT the user-clicked document) and returns the vendored CockpitLine.render
-            // view. A missing/corrupt snapshot — or no active memo at all — renders the "—" fallback line,
-            // never a crash (readSnapshot semantics). Matched BEFORE the /api/ catch-all; the exact path
-            // does not collide with /api/session or the /api/session/<id>/… routes.
-            if( url === '/api/cockpit' && req.method === 'GET' ) {
-
-                const resolved = await SessionHead.resolveActiveMemo( { 'env': process.env, 'listMarkedMemos': () => MemoView.listMarkedMemos() } )
-                const activeMemo = resolved.activeMemo
-                const located = activeMemo === null
-                    ? { 'memoDir': null }
-                    : MemoView.resolveActiveMemoDir( { activeMemo } )
-                const memoDir = located !== null && typeof located === 'object' ? located[ 'memoDir' ] : null
-                const view = await CockpitLine.resolveLine( { memoDir, 'now': new Date().toISOString() } )
-
-                sendJson( res, 200, {
-                    'activeMemo': activeMemo,
-                    'line': view[ 'line' ],
-                    'phase': view[ 'phase' ],
-                    'pct': view[ 'pct' ],
-                    'worker': view[ 'worker' ],
-                    'budget': view[ 'budget' ],
-                    'ageSec': view[ 'ageSec' ]
-                } )
-
-                return
-            }
+            // Memo 075 Phase 3 (PRD-P3-02): the M072 /api/session (Session-Kopf) and /api/cockpit routes
+            // were removed together with the global viewer-head they fed. Per Memo 075 Kap 18 that
+            // shared-server head (Namespace/Memo/Mode + cockpit) was the wrong interpretation — a single
+            // global "activeMemo" is wrong when several CC instances run; the per-terminal "du-bist-hier"
+            // belongs in the terminal statusline, and the per-client Clients registry (POST /api/clients)
+            // is the correct viewer surface. The /api/session/<id>/arm|wake + /api/session/armed routes
+            // (the reverse arm/wake channel, M067 PRD-031) are a DIFFERENT feature and stay.
 
             // PRD-017 (Memo 072, Phase 5, F9=A): the merged Spec-Viewer tree. Returns every
             // auto-discovered spec/ namespace with its versions (newest first), each version carrying

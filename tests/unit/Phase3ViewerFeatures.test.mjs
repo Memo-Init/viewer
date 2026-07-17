@@ -42,7 +42,8 @@ describe( 'PRD-P3-01 — client registry (register/list/derive)', () => {
         expect( mine.projectId ).toBe( 'flowmcp' )
         expect( mine.memoNumber ).toBe( '155' )
         expect( mine.workMode ).toBe( 'Create' )
-        expect( [ 'working', 'waiting-for-user-answer', 'stale' ] ).toContain( mine.status )
+        // PRD-015 (M076 P8, WI-023): a freshly registered client has turnCount 0 < 10 -> `idle`.
+        expect( [ 'idle', 'working', 'waiting-for-user-answer', 'stale' ] ).toContain( mine.status )
     } )
 
 
@@ -88,14 +89,16 @@ describe( 'PRD-P3-01 — deriveClientStatus (r6-F11 pure derivation)', () => {
     } )
 
 
-    it( 'working = fresh but not armed on any open transcript', () => {
-        const s = MemoView.deriveClientStatus( { lastSeenAt: 100, now: 200, ttlMs: 1000, armedTranscriptIds: [ 'T-closed' ], openTranscriptIds: open } )
+    it( 'working = fresh, not armed, and past the idle threshold (turnCount >= 10)', () => {
+        // PRD-015 (M076 P8, WI-023): idle now sits below waiting; a fresh client only reaches `working`
+        // once it has seen >= idleThreshold user instructions this session.
+        const s = MemoView.deriveClientStatus( { lastSeenAt: 100, now: 200, ttlMs: 1000, armedTranscriptIds: [ 'T-closed' ], openTranscriptIds: open, turnCount: 10 } )
         expect( s.status ).toBe( 'working' )
     } )
 
 
-    it( 'armed but on a CLOSED (not open) transcript is only working', () => {
-        const s = MemoView.deriveClientStatus( { lastSeenAt: 100, now: 200, ttlMs: 1000, armedTranscriptIds: [], openTranscriptIds: open } )
+    it( 'armed but on a CLOSED (not open) transcript with turns >= threshold is working', () => {
+        const s = MemoView.deriveClientStatus( { lastSeenAt: 100, now: 200, ttlMs: 1000, armedTranscriptIds: [], openTranscriptIds: open, turnCount: 10 } )
         expect( s.status ).toBe( 'working' )
     } )
 } )

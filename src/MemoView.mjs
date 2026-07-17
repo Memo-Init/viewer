@@ -335,7 +335,12 @@ class MemoView {
     // sessionId; a missing field on a heartbeat keeps the previously registered value. sessionId is
     // whitelist-validated (it flows into the clientList broadcast). lastSeenAt is stamped on every call
     // so the derived stale-TTL resets on each heartbeat.
-    static registerClient( { sessionId, projectId, memoNumber, workMode } ) {
+    // PRD-015 (Memo 076 Phase 8, WI-022): the record now carries `turnCount` — a per-session
+    // instruction counter (1 tick = 1 user prompt, fed by the UserPromptSubmit hook sessiontick.sh).
+    // A call with `tick === true` increments it; every other call (a plain heartbeat, e.g. the
+    // PreToolUse sessionheartbeat.sh, WI-012) keeps the previous count. lastSeenAt is ALWAYS restamped
+    // so a heartbeat resets the stale-TTL without touching the turn counter.
+    static registerClient( { sessionId, projectId, memoNumber, workMode, tick } ) {
         const validation = MemoView.validateSessionId( { sessionId } )
 
         if( !validation[ 'status' ] ) {
@@ -343,11 +348,13 @@ class MemoView {
         }
 
         const existing = MemoView.#clients.has( sessionId ) ? MemoView.#clients.get( sessionId ) : {}
+        const previousTurnCount = typeof existing[ 'turnCount' ] === 'number' ? existing[ 'turnCount' ] : 0
         const record = {
             'sessionId': sessionId,
             'projectId': typeof projectId === 'string' ? projectId : ( existing[ 'projectId' ] || null ),
             'memoNumber': memoNumber === undefined || memoNumber === null ? ( existing[ 'memoNumber' ] || null ) : String( memoNumber ),
             'workMode': typeof workMode === 'string' ? workMode : ( existing[ 'workMode' ] || null ),
+            'turnCount': tick === true ? previousTurnCount + 1 : previousTurnCount,
             'lastSeenAt': Date.now()
         }
         MemoView.#clients.set( sessionId, record )
@@ -367,7 +374,12 @@ class MemoView {
     // PRD-P3-01 WI-011: the pure status derivation (r6-F11). A client waits for a user answer when it is
     // armed on at least one OPEN transcript (armed ∧ open revision) — derived, never a maintained field.
     // Stale wins first (no heartbeat within the TTL). Fully injectable so it is unit-testable in isolation.
-    static deriveClientStatus( { lastSeenAt, now, ttlMs, armedTranscriptIds, openTranscriptIds } ) {
+    // PRD-015 (Memo 076 Phase 8, WI-023): a fourth `idle` state represents a freely open, work-less
+    // instance ("liegt frei offen") — one that has seen fewer than `idleThreshold` (default 10) user
+    // instructions this session. The order is preserved and extended: stale (age > TTL) →
+    // waiting-for-user-answer (armed ∧ open) → idle (turnCount < threshold) → working. idle sits BELOW
+    // waiting so an armed-on-open instance still reads as waiting even before its 10th turn.
+    static deriveClientStatus( { lastSeenAt, now, ttlMs, armedTranscriptIds, openTranscriptIds, turnCount, idleThreshold } ) {
         const seen = typeof lastSeenAt === 'number' ? lastSeenAt : 0
         const age = now - seen
 
@@ -381,6 +393,13 @@ class MemoView {
 
         if( armedOnOpen ) {
             return { 'status': 'waiting-for-user-answer' }
+        }
+
+        const turns = typeof turnCount === 'number' ? turnCount : 0
+        const threshold = typeof idleThreshold === 'number' ? idleThreshold : 10
+
+        if( turns < threshold ) {
+            return { 'status': 'idle' }
         }
 
         return { 'status': 'working' }
@@ -423,12 +442,14 @@ class MemoView {
         const clients = Array.from( MemoView.#clients.values() )
             .map( ( record ) => {
                 const { transcriptIds } = MemoView.#armedTranscriptIdsFor( { 'sessionId': record[ 'sessionId' ] } )
+                const turnCount = typeof record[ 'turnCount' ] === 'number' ? record[ 'turnCount' ] : 0
                 const { status } = MemoView.deriveClientStatus( {
                     'lastSeenAt': record[ 'lastSeenAt' ],
                     'now': effectiveNow,
                     'ttlMs': effectiveTtl,
                     'armedTranscriptIds': transcriptIds,
-                    'openTranscriptIds': openSet
+                    'openTranscriptIds': openSet,
+                    'turnCount': turnCount
                 } )
 
                 return {
@@ -437,6 +458,7 @@ class MemoView {
                     'memoNumber': record[ 'memoNumber' ],
                     'workMode': record[ 'workMode' ],
                     'lastSeenAt': record[ 'lastSeenAt' ],
+                    'turnCount': turnCount,
                     'armedTranscriptIds': transcriptIds,
                     'status': status
                 }
@@ -921,6 +943,25 @@ class MemoView {
         struct[ 'source' ] = 'registered-project-root'
 
         return struct
+    }
+
+
+    // PRD-016 (Memo 076 Phase 8, WI-018/020): map an opaque `--`-composite transcriptId to its
+    // canonical hierarchical read path /api/p/{project}/m/{memo}/transcripts/{revision}[/{seq}]. Pure
+    // inverse of TranscriptRegistry.buildUrl via parseTranscriptId. Returns { location: null } for an
+    // id that does not parse (legacy/opaque), so the caller serves it directly (fail-safe, no lost
+    // transcript). The sequence is 2-padded so the canonical route rebuilds the exact same composite.
+    static canonicalTranscriptLocation( { transcriptId } ) {
+        const parsed = TranscriptRegistry.parseTranscriptId( { transcriptId } )
+
+        if( parsed[ 'status' ] !== true ) {
+            return { 'location': null }
+        }
+
+        const seqPart = parsed[ 'sequence' ] ? '/' + String( parsed[ 'sequence' ] ).padStart( 2, '0' ) : ''
+        const location = `/api/p/${ parsed[ 'projectId' ] }/m/${ parsed[ 'memoId' ] }/transcripts/${ parsed[ 'revisionId' ] }${ seqPart }`
+
+        return { 'location': location }
     }
 
 
@@ -1831,6 +1872,83 @@ class MemoView {
                 return
             }
 
+            // PRD-016 (Memo 076 Phase 8, WI-019): a GET snapshot of the full tree (documents +
+            // transcripts + latest) — the HTTP mirror of the WebSocket documentList/transcriptList
+            // broadcasts, so a consumer can read the current tree without opening a WebSocket.
+            // Read-only, no state. 503 until the document registry is initialized.
+            if( url === '/api/index' && req.method === 'GET' ) {
+
+                if( !MemoView.#registry ) {
+                    sendJson( res, 503, { 'error': 'Registry not initialized' } )
+
+                    return
+                }
+
+                const { tree: documents, latest } = MemoView.buildDocumentListPayload()
+                const transcripts = MemoView.#transcriptRegistry
+                    ? MemoView.#transcriptRegistry.getTranscriptTree()[ 'tree' ]
+                    : {}
+
+                sendJson( res, 200, { documents, transcripts, latest } )
+
+                return
+            }
+
+            // PRD-016 (Memo 076 Phase 8, WI-018): the canonical hierarchical/RESTful transcript address
+            // space that replaces the opaque `--`-composite as the primary read path:
+            //   GET /api/p/{project}/m/{memo}/transcripts                    -> collection (listTranscripts)
+            //   GET /api/p/{project}/m/{memo}/transcripts/{revision}[/{seq}] -> single (rebuild the
+            //        composite via buildUrl -> getTranscript, the existing pipeline)
+            // Additive: the `--`-composite routes stay live (now 301 aliases to exactly this path).
+            if( url.startsWith( '/api/p/' ) && req.method === 'GET' ) {
+
+                if( !MemoView.#transcriptRegistry ) {
+                    sendJson( res, 503, { 'error': 'Transcript registry not initialized' } )
+
+                    return
+                }
+
+                const segments = url.split( '/' ).filter( ( segment ) => segment.length > 0 )
+                const wellFormed = segments.length >= 6 && segments[ 1 ] === 'p' && segments[ 3 ] === 'm' && segments[ 5 ] === 'transcripts'
+
+                if( !wellFormed ) {
+                    sendJson( res, 404, { 'error': 'Not Found', 'path': url } )
+
+                    return
+                }
+
+                const project = segments[ 2 ]
+                const memo = segments[ 4 ]
+
+                if( segments.length === 6 ) {
+                    const { transcripts } = MemoView.#transcriptRegistry.listTranscripts( { 'memoId': memo } )
+
+                    sendJson( res, 200, { transcripts } )
+
+                    return
+                }
+
+                const revision = segments[ 6 ]
+                const sequence = segments.length >= 8 ? segments[ 7 ] : undefined
+                const { transcriptId } = TranscriptRegistry.buildUrl( { 'projectId': project, 'memoId': memo, 'revisionId': revision, sequence } )
+                const result = await MemoView.#transcriptRegistry.getTranscript( { transcriptId } )
+
+                if( !result[ 'status' ] ) {
+                    res.writeHead( 404, { 'Content-Type': 'text/plain' } )
+                    res.end( result[ 'messages' ].join( '; ' ) )
+
+                    return
+                }
+
+                res.writeHead( 200, {
+                    'Content-Type': 'text/markdown; charset=utf-8',
+                    'Cache-Control': 'no-cache'
+                } )
+                res.end( result[ 'content' ] )
+
+                return
+            }
+
             if( url === '/api/transcripts' && req.method === 'POST' ) {
 
                 if( !MemoView.#transcriptRegistry ) {
@@ -1934,6 +2052,19 @@ class MemoView {
                 }
 
                 const transcriptId = url.slice( '/api/transcripts/'.length )
+
+                // PRD-016 (Memo 076 Phase 8, WI-020): the opaque `--`-composite short form is now an
+                // ALIAS — 301 to the canonical hierarchical path when the id parses; fail-safe direct
+                // serve for legacy/opaque ids that do not parse (no breaking change, no lost transcript).
+                const { location } = MemoView.canonicalTranscriptLocation( { transcriptId } )
+
+                if( location !== null ) {
+                    res.writeHead( 301, { 'Location': location, 'Cache-Control': 'no-cache' } )
+                    res.end()
+
+                    return
+                }
+
                 const result = await MemoView.#transcriptRegistry.getTranscript( { transcriptId } )
 
                 if( !result[ 'status' ] ) {
@@ -2139,7 +2270,8 @@ class MemoView {
                     'sessionId': parsed[ 'sessionId' ],
                     'projectId': parsed[ 'projectId' ],
                     'memoNumber': parsed[ 'memoNumber' ],
-                    'workMode': parsed[ 'workMode' ]
+                    'workMode': parsed[ 'workMode' ],
+                    'tick': parsed[ 'tick' ]
                 } )
 
                 if( !result[ 'status' ] ) {
@@ -2589,6 +2721,19 @@ class MemoView {
                 }
 
                 const transcriptId = url.slice( '/transcripts/'.length )
+
+                // PRD-016 (Memo 076 Phase 8, WI-020): the human copy-paste short form (also the wake
+                // payload URL) now 301-redirects to the canonical hierarchical path when the id parses;
+                // opaque/legacy ids fall through to the historical direct serve (fail-safe, no break).
+                const { location } = MemoView.canonicalTranscriptLocation( { transcriptId } )
+
+                if( location !== null ) {
+                    res.writeHead( 301, { 'Location': location, 'Cache-Control': 'no-cache' } )
+                    res.end()
+
+                    return
+                }
+
                 const result = await MemoView.#transcriptRegistry.getTranscript( { transcriptId } )
 
                 if( !result[ 'status' ] ) {

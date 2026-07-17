@@ -2982,23 +2982,43 @@
            inline <style> block) so the PRD-010 asset-extraction invariant holds. Left-nav spec tree
            (namespace groups / version switcher / publish badge / sub-categories / page links), the
            RFC-2119 keyword highlight, and the provenance bar — ported from cli/spec-view. */
-        .spec-ns-group { margin-bottom: 14px; }
-        .spec-ns-header { display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: 600; color: var(--text-1, #e6edf3); padding: 4px 6px; user-select: none; }
-        .spec-ns-header .spec-ns-caret { font-size: 10px; color: var(--text-muted, #8b949e); transition: transform .12s; }
-        .spec-ns-group.collapsed .spec-ns-header .spec-ns-caret { transform: rotate(-90deg); }
-        .spec-ns-body { margin-left: 4px; }
+        /* PRD-006 (Memo 076, Phase 4): the spec tree is lifted to the Memos-tree structure. Each
+           namespace carries the shared .ns-box + .ns-header classes (border/radius/bg, 42px header,
+           folder icon + count chip), so .spec-ns-* only adds the spec-specific bits: the collapsed
+           body toggle, the active-namespace highlight, the version row, the collapsible sub-groups
+           and the stepped page links. */
+        .spec-ns-group { margin-bottom: 6px; }
+        /* WI-067: the namespace of the active page gets an accent left-bar + a brighter name so the
+           active page's group is unmistakable (the base .ns-header is already var(--bg-4)). */
+        .spec-ns-group.spec-ns-active { border-color: var(--accent, #2ea043); }
+        .spec-ns-group.spec-ns-active > .spec-ns-header,
+        .spec-ns-header.active { box-shadow: inset 3px 0 0 var(--accent, #2ea043); }
+        .spec-ns-group.spec-ns-active > .spec-ns-header .ns-name,
+        .spec-ns-header.active .ns-name { color: var(--accent, #2ea043); }
+        .spec-ns-body { padding: 6px 8px 8px 8px; }
         .spec-ns-group.collapsed .spec-ns-body { display: none; }
-        .spec-version-row { display: flex; align-items: center; gap: 6px; padding: 4px 6px 6px; flex-wrap: wrap; }
+        .spec-version-row { display: flex; align-items: center; gap: 6px; padding: 2px 2px 6px; flex-wrap: wrap; }
         .spec-version-select { background: var(--bg-2, #21262d); color: var(--text-1, #e6edf3); border: 1px solid var(--border, #30363d); border-radius: 5px; font-size: 12px; padding: 2px 6px; }
         .spec-badge { font-size: 10px; font-weight: 700; letter-spacing: .03em; padding: 1px 7px; border-radius: 10px; text-transform: uppercase; white-space: nowrap; border: 1px solid transparent; }
         .spec-badge.published { color: #3fb950; background: rgba(63, 185, 80, .12); border-color: rgba(63, 185, 80, .35); }
         .spec-badge.draft-only { color: #d29922; background: rgba(210, 153, 34, .12); border-color: rgba(210, 153, 34, .35); }
         .spec-badge.drift { color: #f85149; background: rgba(248, 81, 73, .12); border-color: rgba(248, 81, 73, .35); }
         .spec-warn { font-size: 11px; color: #d29922; padding: 2px 8px; }
-        .spec-sub-label { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted, #8b949e); padding: 8px 6px 2px; }
-        .spec-page-link { display: block; padding: 3px 10px; color: var(--text-2, #c9d1d9); text-decoration: none; border-radius: 5px; font-size: 13px; cursor: pointer; }
+        /* WI-069: a failed /api/specs renders a distinct red error state, not the muted empty note. */
+        .spec-warn-error { color: #f85149; font-weight: 600; }
+        /* WI-066: sub-groups are a collapsible second level — the label is a click toggle. */
+        .spec-sub-label { display: flex; align-items: center; gap: 5px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted, #8b949e); padding: 6px 4px 2px; cursor: pointer; user-select: none; }
+        .spec-sub-label:hover { color: var(--text-2, #c9d1d9); }
+        .spec-sub-caret { font-size: 9px; color: var(--text-muted, #8b949e); width: 10px; text-align: center; flex-shrink: 0; }
+        .spec-sub-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .spec-sub-pages { display: flex; flex-direction: column; }
+        .spec-page-link { display: block; padding: 3px 10px; color: var(--text-2, #c9d1d9); text-decoration: none; border-radius: 5px; font-size: 13px; cursor: pointer; border-left: 1px solid transparent; }
         .spec-page-link:hover { background: var(--bg-2, #21262d); }
-        .spec-page-link.active { background: var(--bg-2, #21262d); color: var(--accent, #2ea043); font-weight: 600; }
+        .spec-page-link.active { background: var(--bg-2, #21262d); color: var(--accent, #2ea043); font-weight: 600; border-left-color: var(--accent, #2ea043); }
+        /* WI-065/068: the previously-DEAD .specs-mode hook now carries the tree's guide-line +
+           stepped indentation, so removing the class visibly flattens the spec tree (no dead code). */
+        #doc-sidebar.specs-mode .spec-sub { border-left: 1px solid var(--border, #30363d); margin: 2px 0 2px 2px; padding-left: 6px; }
+        #doc-sidebar.specs-mode .spec-page-link { padding-left: 14px; margin-left: 4px; }
         .rfc-keyword { color: var(--accent, #2ea043); font-weight: 700; background: rgba(46, 160, 67, .10); padding: 0 3px; border-radius: 3px; }
         #spec-page-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 0 12px; margin-bottom: 10px; border-bottom: 1px solid var(--border, #30363d); font-size: 12px; color: var(--text-muted, #8b949e); }
         #spec-page-meta:empty { display: none; }
@@ -3006,6 +3026,14 @@
         #spec-page-meta .spm-path:hover { color: var(--accent, #2ea043); }
         #spec-page-meta .spm-badge { background: var(--bg-2, #21262d); border: 1px solid var(--border, #30363d); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
         #spec-page-meta .spm-sep { opacity: .45; }
+        /* WI-061 (Memo 076, Phase 4): sticky context breadcrumb "namespace / version / seite" above
+           the spec content. The Memos view has no #main-header in specs mode (cleared on entry), so
+           the top nav bar (52px) is the only fixed frame — the breadcrumb pins just under it. */
+        #spec-breadcrumb { position: sticky; top: 52px; z-index: 5; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -24px -24px 12px; padding: 8px 24px; background: var(--bg-1, #161b22); border-bottom: 1px solid var(--border, #30363d); font-size: 12px; color: var(--text-muted, #8b949e); }
+        #spec-breadcrumb .sbc-ns { font-weight: 700; color: var(--text-2, #c9d1d9); }
+        #spec-breadcrumb .sbc-version { background: var(--bg-2, #21262d); border: 1px solid var(--border, #30363d); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
+        #spec-breadcrumb .sbc-page { color: var(--text-1, #e6edf3); font-weight: 600; }
+        #spec-breadcrumb .sbc-sep { opacity: .45; }
 
         /* PRD-P3-02 (Memo 075 Phase 3, WI-009): Clients head summary + Clients view. */
         .clients-head { background: var(--bg-2, #21262d); border: 1px solid var(--border, #30363d); border-radius: 12px; color: var(--text-2, #c9d1d9); font-size: 12px; padding: 2px 10px; cursor: pointer; white-space: nowrap; }

@@ -184,6 +184,16 @@
         const collapsedTranscriptMemos = new Set()
         const seededCollapseTranscriptProjects = new Set()
         const seededCollapseTranscriptMemos = new Set()
+        // PRD-006 (Memo 076, Phase 4, WI-058/059): the Specs tab renders its OWN namespace tree
+        // (renderSidebarSpecs) mirroring the Memos/Transcripts trees. Namespaces default to
+        // COLLAPSED via a seed-once guard so a namespace a user manually expanded is never
+        // re-collapsed on a re-render, and the collapse-state lives OUTSIDE the DOM so it survives
+        // the innerHTML rebuild. collapsedSpecSubs (WI-066) is the second collapse level per
+        // namespace sub-group (key: namespace + '::' + sub.label); sub-groups default EXPANDED, so
+        // expanding a namespace directly reveals its pages.
+        const collapsedSpecNamespaces = new Set()
+        const seededCollapseSpecNamespaces = new Set()
+        const collapsedSpecSubs = new Set()
         let currentMode = 'memos'
         let lastTree = {}
         let lastLatest = []
@@ -2157,7 +2167,9 @@
                 currentMode = 'specs'
                 setActiveModeButton( 'specs' )
                 applyModeChrome()
-                loadSpecs()
+                // WI-062 (PRD-007): entering the Specs view re-renders the page that was open before
+                // (reselect), so returning from Memos shows the last spec page, not a stale memo.
+                loadSpecs( { reselect: true } )
             } else if( mode === 'transcripts' ) {
                 // PRD-001 (Memo 076, Phase 1): clear the memo sticky header on the way into the
                 // Transcripts view — the Zone-1 header belongs to the memos view only.
@@ -2364,14 +2376,35 @@
         // ====================================================================
         var specState = { specs: [], current: null, selectedVersion: {} }
 
-        function loadSpecs() {
+        // PRD-007 (Memo 076, Phase 4): loadSpecs is called two ways — on ENTERING the Specs view
+        // (options.reselect = true → re-render the last selected page, WI-062) and on a live WS
+        // refresh (no options → refresh the tree only, keep the open page/scroll, WI-070). res.ok is
+        // checked so an /api/specs failure surfaces a visible error instead of being misread as
+        // "no specs" (WI-069).
+        function loadSpecs( options ) {
+            var reselect = !!( options && options.reselect )
             fetch( '/api/specs' )
-                .then( function( res ) { return res.json() } )
-                .then( function( payload ) { applySpecList( payload ) } )
-                .catch( function() {} )
+                .then( function( res ) {
+                    if( !res.ok ) { throw new Error( 'HTTP ' + res.status ) }
+                    return res.json()
+                } )
+                .then( function( payload ) { applySpecList( payload, reselect ) } )
+                .catch( function( err ) { renderSpecsError( err ) } )
         }
 
-        function applySpecList( payload ) {
+        // WI-069: a visible sidebar error state — a failed /api/specs must not look like an empty
+        // workshop. Mirrors the error-render pattern in selectSpecPage.
+        function renderSpecsError( err ) {
+            var navEl = document.getElementById( 'doc-sidebar-body' )
+            if( !navEl ) { return }
+            navEl.innerHTML = ''
+            var warn = document.createElement( 'div' )
+            warn.className = 'spec-warn spec-warn-error'
+            warn.textContent = 'Spec-Tree konnte nicht geladen werden: ' + String( err && err.message ? err.message : err )
+            navEl.appendChild( warn )
+        }
+
+        function applySpecList( payload, reselect ) {
             specState.specs = ( payload && payload.specs ) || []
             // Preselect the latest version per namespace on first sight; never override a user's
             // explicit version-switcher choice on a later refresh.
@@ -2382,7 +2415,14 @@
             } )
             if( currentMode === 'specs' ) {
                 renderSidebarSpecs()
-                if( !specState.current ) {
+                if( specState.current ) {
+                    // WI-062: re-entering the Specs view re-renders the page that was open before —
+                    // no stale memo, no manual click. A live refresh (reselect=false) keeps the open
+                    // page untouched (only the tree updates), preserving scroll.
+                    if( reselect ) {
+                        selectSpecPage( { namespace: specState.current.namespace, version: specState.current.version, stem: specState.current.stem } )
+                    }
+                } else {
                     autoSelectFirstSpecPage()
                 }
             }
@@ -2404,12 +2444,59 @@
             selectSpecPage( { namespace: firstSpec.namespace, version: version, stem: firstGroup.pages[ 0 ].stem } )
         }
 
+        // WI-060 (PRD-007): a version switch stays inside the SAME namespace — it keeps the current
+        // stem if that page still exists in the new version, otherwise it lands on the first page of
+        // THIS namespace. The old change-handler called autoSelectFirstSpecPage, which always jumped
+        // to the globally first namespace.
+        function selectFirstPageOfNamespace( namespace, version ) {
+            var spec = specState.specs.find( function( s ) { return s.namespace === namespace } )
+            if( !spec ) { return }
+            var useVersion = version || specState.selectedVersion[ namespace ] || spec.latestVersion
+            var entry = specVersionEntry( spec, useVersion )
+            if( !entry ) { return }
+            var groups = entry.groups || []
+            var keepStem = specState.current && specState.current.namespace === namespace ? specState.current.stem : null
+            var stemExists = keepStem && groups.some( function( g ) {
+                return ( g.pages || [] ).some( function( p ) { return p.stem === keepStem } )
+            } )
+            if( stemExists ) {
+                selectSpecPage( { namespace: namespace, version: useVersion, stem: keepStem } )
+
+                return
+            }
+            var firstGroup = groups.find( function( g ) { return g.pages && g.pages.length > 0 } )
+            if( !firstGroup ) { return }
+            selectSpecPage( { namespace: namespace, version: useVersion, stem: firstGroup.pages[ 0 ].stem } )
+        }
+
         function specBadgeClass( badge ) {
             if( badge === 'PUBLISHED' ) { return 'published' }
             if( badge === 'DRIFT' ) { return 'drift' }
             return 'draft-only'
         }
 
+        // WI-063/064: the namespace-header inner markup — a mirror of renderSidebarMemos.nsHeaderInner
+        // (chevron + flipping folder icon + name + spacer + count chip), reusing the shared .ns-*
+        // tokens. The chip counts the pages of the SELECTED version instead of "N Memos".
+        function specNsHeaderInner( namespace, pageCount, collapsed ) {
+            var chevron = collapsed ? '&#9656;' : '&#9662;'
+            var folder = collapsed ? '📁' : '📂'
+            var inner = '<span class="ns-chevron" data-ns-chevron>' + chevron + '</span>'
+            inner += '<span class="ns-folder" aria-hidden="true">' + folder + '</span>'
+            inner += '<span class="ns-name" data-ns-name>' + escapeAttr( namespace ) + '</span>'
+            inner += '<span class="ns-spacer"></span>'
+            inner += '<span class="ns-count" data-ns-count>' + pageCount + ' Seiten</span>'
+            return inner
+        }
+
+        // PRD-006 (Memo 076, Phase 4): the Specs sidebar rendered a flat wall — no section header,
+        // no box per namespace, everything expanded, and the collapse-state died on every innerHTML
+        // rebuild. This lifts it to the Memos-tree structure: a "Specs" section header, an .ns-box
+        // per namespace with a folder-icon + page-count header, seed-once default-collapse backed by
+        // the persistent collapsedSpecNamespaces Set (survives the rebuild), and a collapsible
+        // second level for the sub-groups. It REUSES the Memos-tree tokens (.ns-box/.ns-header/
+        // .ns-chevron/.ns-folder/.ns-name/.ns-count/.sb-group-header) rather than inventing a second
+        // tree language.
         function renderSidebarSpecs() {
             var navEl = document.getElementById( 'doc-sidebar-body' )
             if( !navEl ) { return }
@@ -2423,21 +2510,58 @@
                 return
             }
 
-            specState.specs.forEach( function( spec ) {
-                var group = document.createElement( 'div' )
-                group.className = 'spec-ns-group'
+            // WI-056: the "Specs" section header, mirroring the Memos "Namespaces" header.
+            var groupHeader = document.createElement( 'div' )
+            groupHeader.className = 'sb-group-header'
+            groupHeader.textContent = 'Specs'
+            navEl.appendChild( groupHeader )
 
-                var header = document.createElement( 'div' )
-                header.className = 'spec-ns-header'
-                header.innerHTML = '<span class="spec-ns-caret">▾</span><span>' + escapeHtml( spec.namespace ) + '</span>'
-                header.addEventListener( 'click', function() { group.classList.toggle( 'collapsed' ) } )
-                group.appendChild( header )
+            // WI-058/059: seed every namespace into collapsedSpecNamespaces ONCE (default collapsed).
+            // The seed-once guard leaves a namespace the user manually expanded untouched on re-render.
+            specState.specs.forEach( function( spec ) {
+                if( !seededCollapseSpecNamespaces.has( spec.namespace ) ) {
+                    seededCollapseSpecNamespaces.add( spec.namespace )
+                    collapsedSpecNamespaces.add( spec.namespace )
+                }
+            } )
+
+            specState.specs.forEach( function( spec ) {
+                var isCollapsed = collapsedSpecNamespaces.has( spec.namespace )
+                var selected = specState.selectedVersion[ spec.namespace ] || spec.latestVersion
+                var entry = specVersionEntry( spec, selected )
+                var pageCount = ( ( entry && entry.groups ) || [] ).reduce( function( sum, g ) {
+                    return sum + ( ( g.pages || [] ).length )
+                }, 0 )
+
+                // WI-057: each namespace is an .ns-box (border/radius/bg via the shared token).
+                var group = document.createElement( 'div' )
+                group.className = 'spec-ns-group ns-box' + ( isCollapsed ? ' collapsed ns-box-collapsed' : '' )
+                group.setAttribute( 'data-spec-namespace', spec.namespace )
 
                 var body = document.createElement( 'div' )
                 body.className = 'spec-ns-body'
+                body.style.display = isCollapsed ? 'none' : 'block'
 
-                var selected = specState.selectedVersion[ spec.namespace ] || spec.latestVersion
-                var entry = specVersionEntry( spec, selected )
+                // WI-063/064: the .ns-header with folder icon + page-count chip.
+                var header = document.createElement( 'div' )
+                header.className = 'spec-ns-header ns-header'
+                header.setAttribute( 'title', 'Namespace ein-/ausklappen' )
+                header.innerHTML = specNsHeaderInner( spec.namespace, pageCount, isCollapsed )
+                // WI-059: the toggle mutates the persistent Set (not just a DOM class), so the state
+                // survives the next innerHTML rebuild. Mirrors the Memos namespace toggle.
+                header.addEventListener( 'click', function() {
+                    if( collapsedSpecNamespaces.has( spec.namespace ) ) {
+                        collapsedSpecNamespaces.delete( spec.namespace )
+                    } else {
+                        collapsedSpecNamespaces.add( spec.namespace )
+                    }
+                    var nowCollapsed = collapsedSpecNamespaces.has( spec.namespace )
+                    group.classList.toggle( 'collapsed', nowCollapsed )
+                    group.classList.toggle( 'ns-box-collapsed', nowCollapsed )
+                    body.style.display = nowCollapsed ? 'none' : 'block'
+                    header.innerHTML = specNsHeaderInner( spec.namespace, pageCount, nowCollapsed )
+                } )
+                group.appendChild( header )
 
                 // Version switcher + publish badge row.
                 var vrow = document.createElement( 'div' )
@@ -2453,11 +2577,11 @@
                         if( v.version === selected ) { opt.selected = true }
                         select.appendChild( opt )
                     } )
+                    // WI-060 (PRD-007): stay in THIS namespace after a version switch.
                     select.addEventListener( 'change', function() {
                         specState.selectedVersion[ spec.namespace ] = this.value
-                        specState.current = null
                         renderSidebarSpecs()
-                        autoSelectFirstSpecPage()
+                        selectFirstPageOfNamespace( spec.namespace, this.value )
                     } )
                     vrow.appendChild( select )
                 }
@@ -2479,13 +2603,39 @@
                     body.appendChild( warn )
                 } )
 
-                // Sub-groups + page links.
+                // WI-066: collapsible sub-groups (second collapse level). The label is a toggle,
+                // its pages live in a wrapper whose display follows the collapsedSpecSubs Set (keyed
+                // namespace::label). Sub-groups default expanded so an opened namespace shows pages.
                 var subGroups = ( entry && entry.groups ) || []
                 subGroups.forEach( function( sub ) {
+                    var subKey = spec.namespace + '::' + sub.label
+                    var subCollapsed = collapsedSpecSubs.has( subKey )
+
+                    var subWrap = document.createElement( 'div' )
+                    subWrap.className = 'spec-sub' + ( subCollapsed ? ' collapsed' : '' )
+
                     var label = document.createElement( 'div' )
                     label.className = 'spec-sub-label'
-                    label.textContent = sub.label
-                    body.appendChild( label )
+                    label.innerHTML = '<span class="spec-sub-caret">' + ( subCollapsed ? '&#9656;' : '&#9662;' ) + '</span>'
+                        + '<span class="spec-sub-name">' + escapeHtml( sub.label ) + '</span>'
+
+                    var pagesWrap = document.createElement( 'div' )
+                    pagesWrap.className = 'spec-sub-pages'
+                    pagesWrap.style.display = subCollapsed ? 'none' : 'block'
+
+                    label.addEventListener( 'click', function() {
+                        if( collapsedSpecSubs.has( subKey ) ) {
+                            collapsedSpecSubs.delete( subKey )
+                        } else {
+                            collapsedSpecSubs.add( subKey )
+                        }
+                        var nowCollapsed = collapsedSpecSubs.has( subKey )
+                        subWrap.classList.toggle( 'collapsed', nowCollapsed )
+                        pagesWrap.style.display = nowCollapsed ? 'none' : 'block'
+                        var caret = label.querySelector( '.spec-sub-caret' )
+                        if( caret ) { caret.innerHTML = nowCollapsed ? '&#9656;' : '&#9662;' }
+                    } )
+                    subWrap.appendChild( label )
 
                     var pages = sub.pages || []
                     pages.forEach( function( page ) {
@@ -2494,9 +2644,13 @@
                         link.textContent = page.title
                         link.setAttribute( 'data-namespace', spec.namespace )
                         link.setAttribute( 'data-stem', page.stem )
+                        // WI-071 (PRD-007): carry the version so markActiveSpec can compare it.
+                        link.setAttribute( 'data-version', selected )
                         link.addEventListener( 'click', function() { selectSpecPage( { namespace: spec.namespace, version: selected, stem: page.stem } ) } )
-                        body.appendChild( link )
+                        pagesWrap.appendChild( link )
                     } )
+                    subWrap.appendChild( pagesWrap )
+                    body.appendChild( subWrap )
                 } )
 
                 group.appendChild( body )
@@ -2528,27 +2682,72 @@
         function markActiveSpec() {
             var navEl = document.getElementById( 'doc-sidebar-body' )
             if( !navEl ) { return }
+            var cur = specState.current
             var links = navEl.querySelectorAll( '.spec-page-link' )
             links.forEach( function( link ) {
-                var isActive = specState.current
-                    && link.getAttribute( 'data-namespace' ) === specState.current.namespace
-                    && link.getAttribute( 'data-stem' ) === specState.current.stem
+                // WI-071 (PRD-007): match namespace + stem + VERSION so that, with several visible
+                // versions, the right page is marked (not just the namespace/stem pair).
+                var isActive = cur
+                    && link.getAttribute( 'data-namespace' ) === cur.namespace
+                    && link.getAttribute( 'data-stem' ) === cur.stem
+                    && link.getAttribute( 'data-version' ) === cur.version
                 link.classList.toggle( 'active', !!isActive )
+            } )
+
+            // WI-067 (PRD-006): mark the active page's namespace header and expand it so the page is
+            // always visible. Done via direct DOM mutation (never a re-render — markActiveSpec is
+            // called FROM renderSidebarSpecs, so re-rendering here would recurse).
+            var groups = navEl.querySelectorAll( '.spec-ns-group' )
+            groups.forEach( function( groupEl ) {
+                var ns = groupEl.getAttribute( 'data-spec-namespace' )
+                var isActiveNs = !!( cur && ns === cur.namespace )
+                groupEl.classList.toggle( 'spec-ns-active', isActiveNs )
+                var headerEl = groupEl.querySelector( '.spec-ns-header' )
+                if( headerEl ) { headerEl.classList.toggle( 'active', isActiveNs ) }
+                if( isActiveNs && collapsedSpecNamespaces.has( ns ) ) {
+                    collapsedSpecNamespaces.delete( ns )
+                    groupEl.classList.remove( 'collapsed', 'ns-box-collapsed' )
+                    var bodyEl = groupEl.querySelector( '.spec-ns-body' )
+                    if( bodyEl ) { bodyEl.style.display = 'block' }
+                    if( headerEl ) {
+                        var pageCount = groupEl.querySelectorAll( '.spec-page-link' ).length
+                        headerEl.innerHTML = specNsHeaderInner( ns, pageCount, false )
+                    }
+                }
             } )
         }
 
         function renderSpecPage( payload ) {
             slugCounts.clear()
-            // Provenance bar (path/version/mtime) prepended, then the RAW markdown rendered through
-            // THIS client's marked core, then diagrams + RFC highlight + intra-spec links + TOC.
+            // WI-061 (PRD-007): a sticky breadcrumb "namespace / version / seite" above the
+            // provenance bar. Provenance bar (path/version/mtime) next, then the RAW markdown
+            // rendered through THIS client's marked core, then diagrams + RFC highlight +
+            // intra-spec links + TOC.
+            var breadcrumb = buildSpecBreadcrumb( payload )
             var meta = buildSpecPageMeta( payload )
-            contentEl.innerHTML = meta + marked.parse( payload.content || '' )
+            contentEl.innerHTML = breadcrumb + meta + marked.parse( payload.content || '' )
             wireSpecPageMeta( payload )
             renderAllDiagrams()
             specHighlightRfc()
             interceptRelativeSpecLinks()
             buildTOC( null )
             window.scrollTo( { top: 0 } )
+        }
+
+        // WI-061 (PRD-007): the sticky context anchor. Sources namespace/version from the page
+        // payload (falling back to specState.current) and the page title from the payload; renders
+        // nothing if all three are empty. position:sticky is applied in CSS (#spec-breadcrumb).
+        function buildSpecBreadcrumb( payload ) {
+            var cur = specState.current || {}
+            var ns = payload.namespace || cur.namespace || ''
+            var version = payload.version || cur.version || ''
+            var title = payload.title || cur.stem || ''
+            var parts = []
+            if( ns ) { parts.push( '<span class="sbc-ns">' + escapeHtml( ns ) + '</span>' ) }
+            if( version ) { parts.push( '<span class="sbc-version">' + escapeHtml( version ) + '</span>' ) }
+            if( title ) { parts.push( '<span class="sbc-page">' + escapeHtml( title ) + '</span>' ) }
+            if( parts.length === 0 ) { return '' }
+            return '<div id="spec-breadcrumb">' + parts.join( '<span class="sbc-sep">/</span>' ) + '</div>'
         }
 
         function buildSpecPageMeta( payload ) {
@@ -7132,6 +7331,13 @@
                     lastLatest = data.latest || []
                     if( currentMode === 'memos' ) {
                         renderSidebar()
+                    }
+                    // WI-070 (PRD-076, Phase 4): the server emits no dedicated specList broadcast, so
+                    // the Specs tree rides on the documentList broadcast (a filesystem change). Refresh
+                    // it live while in Specs mode — reselect=false keeps the open page + scroll, and
+                    // the version/collapse choices persist (selectedVersion map + collapsedSpec* Sets).
+                    if( currentMode === 'specs' ) {
+                        loadSpecs()
                     }
                 }
 

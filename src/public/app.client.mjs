@@ -88,7 +88,12 @@
 
         renderer.code = function( token ) {
             if( diagramRegistry[ token.lang ] ) {
-                return '<div class="' + token.lang + '">' + token.text + '</div>'
+                // PRD-003 (Memo 076 WI-031): the raw diagram source goes ESCAPED into a data-src
+                // attribute with an EMPTY body — never interpolated unescaped into innerHTML. Otherwise
+                // the browser parses <br/>, HTML entities and [[slug]] inside token.text before
+                // renderAllDiagrams ever reads them back. getAttribute('data-src') returns the source
+                // 1:1 (entity roundtrip, NO tag interpretation); the body stays empty until the SVG lands.
+                return '<div class="' + token.lang + '" data-src="' + escapeHtml( token.text ) + '"></div>'
             }
 
             if( token.lang === 'block-meta' ) {
@@ -331,7 +336,12 @@
                 .replace( /&/g, '&amp;' )
                 .replace( /</g, '&lt;' )
                 .replace( />/g, '&gt;' )
-            var safeOriginal = String( originalText == null ? '' : originalText )
+            // PRD-003 (Memo 076 WI-033): cap the raw source BEFORE escaping (~2000 chars) so a giant
+            // CSS-dump/spec cannot blow the error box up to full-page height. Capping before the escape
+            // avoids slicing a half-written &amp; entity in two.
+            var capped = String( originalText == null ? '' : originalText )
+            if( capped.length > 2000 ) { capped = capped.slice( 0, 2000 ) + '…' }
+            var safeOriginal = capped
                 .replace( /&/g, '&amp;' )
                 .replace( /</g, '&lt;' )
                 .replace( />/g, '&gt;' )
@@ -431,13 +441,21 @@
         }
 
         // Memo 020 Kap 4: the single post-parse render pass. Walks each registry entry's
-        // selector and renders every matching element from its textContent. Replaces the four
+        // selector and renders every matching element from its data-src source. Replaces the four
         // identical querySelectorAll('.mermaid') callsites (prose, diff-new, diff-prev, ws-update).
+        // PRD-003 (Memo 076 WI-030/WI-040): idempotent. The source is read from data-src, NEVER the
+        // element's textContent — after the first render textContent is the SVG's CSS, which is the
+        // root cause of the "No diagram type detected" second-pass error. A per-element renderedSrc
+        // guard skips an element whose source has not changed, so a repeated pass (rapid WS broadcasts)
+        // is a no-op instead of a re-render/flicker. Fallback to textContent guards against legacy DOM.
         function renderAllDiagrams() {
             Object.keys( diagramRegistry ).forEach( function( lang ) {
                 var entry = diagramRegistry[ lang ]
                 document.querySelectorAll( entry.selector ).forEach( function( el ) {
-                    var spec = el.textContent
+                    var spec = el.getAttribute( 'data-src' )
+                    if( spec == null ) { spec = el.textContent }
+                    if( el.dataset.renderedSrc === spec ) { return }
+                    el.dataset.renderedSrc = spec
                     entry.render( spec, el )
                 } )
             } )
@@ -450,6 +468,16 @@
             return Object.keys( diagramRegistry ).reduce( function( hit, lang ) {
                 return hit || el.closest( diagramRegistry[ lang ].selector )
             }, null )
+        }
+
+        // PRD-003 (Memo 076 WI-039): a node IS a diagram container when its OWN classList carries a
+        // registered diagram key (registry key K === selector '.K' === div class, see registry invariant).
+        // Registry-driven so a new renderer is covered automatically — resolveWikiLinks uses this to
+        // never descend into diagram source/SVG-label text (which would corrupt [[slug]] in a diagram).
+        function isDiagramContainer( el ) {
+            return Object.keys( diagramRegistry ).some( function( lang ) {
+                return !!( el.classList && el.classList.contains( lang ) )
+            } )
         }
 
         // PRD-001 (Memo 018 Kap 4, F7=A): the 3-state ball status is now DERIVED from the
@@ -2143,15 +2171,16 @@
                 setActiveModeButton( 'memos' )
                 applyModeChrome()
                 renderSidebar()
-                // Restore memo content when leaving the transcripts view.
+                // Restore memo content when returning from another view (transcripts/specs/clients).
+                // PRD-003 (Memo 076 WI-029/WI-037): route through the ONE shared renderProseContent(false)
+                // path instead of a hand-rolled subset. That subset rebuilt innerHTML but never called
+                // renderAllDiagrams (mermaid stayed raw source — the user's "Syntaxerror ganz unten") and
+                // had no diff branch (the diff view vanished on the way back). renderProseContent contains
+                // the exact slugCounts/marked/interceptLinks/applyContentStructure/vorwort/questions/TOC
+                // sequence PLUS the diff branch PLUS renderAllDiagrams. updateSidebarSticky stays AFTER —
+                // it is NOT part of renderProseContent and must re-set the sticky header after the return.
                 if( lastContent ) {
-                    slugCounts.clear()
-                    contentEl.innerHTML = marked.parse( lastContent )
-                    interceptLinks()
-                    applyContentStructure()
-                    renderVorwort( lastVorwort )
-                    renderQuestionWidgets( lastQuestionSchema )
-                    buildTOC( currentDiff )
+                    renderProseContent( false )
                     updateSidebarSticky( currentMemoName, currentFileName )
                 }
             }
@@ -4811,7 +4840,10 @@
 
                         return
                     }
-                    if( child.nodeType === 1 && !skip[ child.tagName ] ) { collect( child ) }
+                    // PRD-003 (Memo 076 WI-039): also skip diagram containers (.mermaid/.vega-lite) —
+                    // they are <div>s (not caught by the tagName skip-set), and their [[slug]] source /
+                    // SVG label text must never be rewritten into wiki-link anchors.
+                    if( child.nodeType === 1 && !skip[ child.tagName ] && !isDiagramContainer( child ) ) { collect( child ) }
                 } )
             }
             collect( contentEl )

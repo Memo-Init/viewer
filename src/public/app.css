@@ -15,6 +15,10 @@
             --text-muted: #8b949e;
             --text-muted-2: #6e7681;
             --text-on-accent: #f6f8fa;
+            /* PRD-003 (Memo 076 WI-035): dedicated diagram surface, decoupled from the semantic
+               "text-on-accent" token. Mermaid theme 'default' draws dark strokes on a light plate,
+               so the diagram plate stays light/neutral (dark-mode-safe by intent). */
+            --diagram-surface: #f6f8fa;
             --accent: #2ea043;
             --accent-bright: #3fb950;
             --danger: #f85149;
@@ -2631,7 +2635,8 @@
         .mermaid-error {
             color: var(--danger);
             border: 1px solid var(--danger);
-            border-radius: 6px;
+            /* PRD-003 (Memo 076 WI-036): flat bottom so it fuses with the source <pre> below into one block. */
+            border-radius: 6px 6px 0 0;
             padding: 12px;
             font-family: var(--font-mono);
             font-size: 13px;
@@ -2645,13 +2650,17 @@
             border: 1px solid var(--border, #333);
             border-top: none;
             border-radius: 0 0 6px 6px;
-            margin: -6px 0 0;
+            /* PRD-003 (Memo 076 WI-036): no negative pull-up — the -6px seam overlapped the error box's
+               rounded bottom. margin 0 lets the two boxes meet flush. */
+            margin: 0;
             padding: 12px;
             font-family: var(--font-mono);
             font-size: 12px;
             white-space: pre-wrap;
             text-align: left;
-            overflow-x: auto;
+            /* PRD-003 (Memo 076 WI-033): cap the height so a long source scrolls instead of blowing up the page. */
+            max-height: 240px;
+            overflow: auto;
             background: #0d0d12;
             color: var(--text, #ddd);
         }
@@ -2827,30 +2836,36 @@
         #content img { cursor: zoom-in; }
 
         .mermaid {
-            background: var(--text-on-accent);
+            background: var(--diagram-surface);
             border-radius: 6px;
             padding: 16px;
             margin: 0 0 16px 0;
             text-align: center;
-            cursor: zoom-in;
             transition: opacity 0.15s;
         }
 
-        .mermaid:hover { opacity: 0.85; }
+        /* PRD-003 (Memo 076 WI-032/WI-034/WI-035): the zoom affordance is bound to the RENDERED state
+           (:has(svg)) only — matching the modal handler that opens solely when an <svg> is present. An
+           error box / raw text carries no zoom cursor, no hover-dim, and drops the light success plate,
+           padding and centering so the error reads as a neutral left-aligned block. */
+        .mermaid:has( svg ) { cursor: zoom-in; }
+        .mermaid:has( svg ):hover { opacity: 0.85; }
+        .mermaid:not( :has( svg ) ) { background: transparent; padding: 0; text-align: left; cursor: default; }
 
         /* Memo 020 Kap 5/6: scientific (Vega-Lite) diagram container, modelled on .mermaid so the
            shared full-view modal (cursor zoom-in) behaves identically for both renderers. */
         .vega-lite {
-            background: var(--text-on-accent);
+            background: var(--diagram-surface);
             border-radius: 6px;
             padding: 16px;
             margin: 0 0 16px 0;
             text-align: center;
-            cursor: zoom-in;
             transition: opacity 0.15s;
         }
 
-        .vega-lite:hover { opacity: 0.85; }
+        .vega-lite:has( svg ) { cursor: zoom-in; }
+        .vega-lite:has( svg ):hover { opacity: 0.85; }
+        .vega-lite:not( :has( svg ) ) { background: transparent; padding: 0; text-align: left; cursor: default; }
 
         /* Memo 020 Kap 6: error fallback for a broken/rejected Vega-Lite spec, mirrors .mermaid-error. */
         .vega-error {

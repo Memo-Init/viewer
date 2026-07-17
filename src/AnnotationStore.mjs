@@ -145,6 +145,9 @@ class AnnotationStore {
 
 
     static #normalizeAnchor( { anchor } ) {
+        // PRD-005 (Memo 076 Phase 3, WI-122): `sourceLine` is the 1-based line of the quote/row in the
+        // discussed revision markdown, computed server-side (MemoView.computeSourceLine) and whitelisted
+        // here in BOTH anchor branches. No silent default — a missing/invalid value is an explicit null.
         const type = anchor.type
         if( type === 'table-row' ) {
             return {
@@ -152,7 +155,8 @@ class AnnotationStore {
                 tableLabel: typeof anchor.tableLabel === 'string' ? anchor.tableLabel : null,
                 rowKey: typeof anchor.rowKey === 'string' ? anchor.rowKey : null,
                 rowText: typeof anchor.rowText === 'string' ? anchor.rowText : null,
-                chapterSlug: typeof anchor.chapterSlug === 'string' ? anchor.chapterSlug : null
+                chapterSlug: typeof anchor.chapterSlug === 'string' ? anchor.chapterSlug : null,
+                sourceLine: Number.isInteger( anchor.sourceLine ) ? anchor.sourceLine : null
             }
         }
 
@@ -161,7 +165,8 @@ class AnnotationStore {
             exact: typeof anchor.exact === 'string' ? anchor.exact : '',
             prefix: typeof anchor.prefix === 'string' ? anchor.prefix : '',
             suffix: typeof anchor.suffix === 'string' ? anchor.suffix : '',
-            chapterSlug: typeof anchor.chapterSlug === 'string' ? anchor.chapterSlug : null
+            chapterSlug: typeof anchor.chapterSlug === 'string' ? anchor.chapterSlug : null,
+            sourceLine: Number.isInteger( anchor.sourceLine ) ? anchor.sourceLine : null
         }
     }
 
@@ -173,7 +178,9 @@ class AnnotationStore {
             messages.push( 'documentId: required non-empty string' )
         }
         if( typeof revisionId !== 'string' || revisionId.length === 0 ) {
-            messages.push( 'revisionId: required non-empty string' )
+            // PRD-005 (WI-127): precise cause — the open file is not a revision (REV-NN), not a generic
+            // "non-empty string". The user-facing German message is delivered client-side (app.client.mjs).
+            messages.push( 'revisionId: required — the open file is not a revision (REV-NN)' )
         }
         if( typeof comment !== 'string' || comment.trim().length === 0 ) {
             messages.push( 'comment: required non-empty string' )

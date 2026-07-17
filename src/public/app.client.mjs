@@ -4992,9 +4992,11 @@
             return nearestPrecedingH2Slug( fromEl.parentNode )
         }
 
-        // Text-quote anchor: walk text nodes (mirror of resolveWikiLinks), find the `exact` substring in
-        // the chapter scope, wrap the match in <mark class="anm-mark" data-anm="ANM-NNN"> + badge. Returns
-        // true when anchored. Cross-node exact matches are not wrapped (single-node match, note in PRD).
+        // Text-quote anchor (PRD-005 WI-128/129): linearize the chapter scope's text nodes in document
+        // order, find ALL `exact` candidates in the linearized string, pick the one whose surrounding text
+        // best matches prefix/suffix (W3C TextQuoteSelector — no longer blindly the first occurrence), then
+        // wrap the [start,end) range across possibly MULTIPLE text nodes/inline elements (**bold**, `code`)
+        // in <mark class="anm-mark" data-anm="ANM-NNN"> fragments + badge. Returns true when anchored.
         function anchorTextQuote( ann ) {
             // Already anchored in this pass? (idempotent skip.)
             if( contentEl.querySelector( '.anm-mark[data-anm="' + cssEscapeAttr( ann.id ) + '"]' ) ) { return true }
@@ -5004,13 +5006,18 @@
 
             var skip = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true, 'MARK': true }
             var scope = chapterScopeRoot( ann.anchor.chapterSlug )
-            var target = null
+
+            // Linearize: collect text nodes in document order with their cumulative offset into `full`.
+            var segments = []
+            var full = ''
             var collect = function( node ) {
-                if( target ) { return }
                 node.childNodes.forEach( function( child ) {
-                    if( target ) { return }
                     if( child.nodeType === 3 ) {
-                        if( String( child.nodeValue || '' ).indexOf( exact ) !== -1 ) { target = child }
+                        var value = String( child.nodeValue || '' )
+                        if( value.length > 0 ) {
+                            segments.push( { node: child, start: full.length, text: value } )
+                            full += value
+                        }
 
                         return
                     }
@@ -5019,24 +5026,72 @@
             }
             collect( scope )
 
-            if( !target ) { return false }
+            var offsets = allIndexesOf( full, exact )
+            if( offsets.length === 0 ) { return false }
 
-            var value = String( target.nodeValue )
-            var at = value.indexOf( exact )
-            var before = value.slice( 0, at )
-            var after = value.slice( at + exact.length )
+            var chosen = pickByContext( full, offsets, exact, ann.anchor.prefix || '', ann.anchor.suffix || '' )
 
-            var frag = document.createDocumentFragment()
-            if( before.length > 0 ) { frag.appendChild( document.createTextNode( before ) ) }
-            var mark = document.createElement( 'mark' )
-            mark.className = 'anm-mark'
-            mark.setAttribute( 'data-anm', ann.id )
-            mark.textContent = exact
-            frag.appendChild( mark )
-            frag.appendChild( annotationBadge( ann ) )
-            if( after.length > 0 ) { frag.appendChild( document.createTextNode( after ) ) }
+            return wrapLinearRange( segments, chosen, exact.length, ann )
+        }
 
-            target.parentNode.replaceChild( frag, target )
+        // All start offsets of `needle` in `hay` (recursion, no while-loop). Empty when none.
+        function allIndexesOf( hay, needle ) {
+            var out = []
+            var find = function( from ) {
+                var at = hay.indexOf( needle, from )
+                if( at === -1 ) { return }
+                out.push( at )
+                find( at + Math.max( 1, needle.length ) )
+            }
+            find( 0 )
+
+            return out
+        }
+
+        // Pick the candidate offset whose surrounding linearized text best matches prefix (before) and
+        // suffix (after). A single candidate or absent prefix/suffix keeps the first occurrence (fallback).
+        function pickByContext( full, offsets, exact, prefix, suffix ) {
+            if( offsets.length === 1 || ( prefix.length === 0 && suffix.length === 0 ) ) { return offsets[ 0 ] }
+            var scored = offsets.map( function( at ) {
+                var before = full.slice( Math.max( 0, at - Math.max( prefix.length, 1 ) ), at )
+                var after = full.slice( at + exact.length, at + exact.length + Math.max( suffix.length, 1 ) )
+                var pre = prefix.length === 0 ? 0 : ( before.slice( -prefix.length ) === prefix ? 2 : ( before.indexOf( prefix ) !== -1 ? 1 : 0 ) )
+                var suf = suffix.length === 0 ? 0 : ( after.slice( 0, suffix.length ) === suffix ? 2 : ( after.indexOf( suffix ) !== -1 ? 1 : 0 ) )
+
+                return { at: at, score: pre + suf }
+            } )
+            var best = scored.reduce( function( acc, cur ) { return cur.score > acc.score ? cur : acc }, scored[ 0 ] )
+
+            return best.at
+        }
+
+        // Wrap the linearized range [start, start+len) across the overlapping text-node segments: each
+        // overlapping node is split into before/<mark>middle</mark>/after; the badge is appended after the
+        // LAST mark. Reproduces the single-node case (before + mark + badge + after). Returns true.
+        function wrapLinearRange( segments, start, len, ann ) {
+            var end = start + len
+            var overlapping = segments.filter( function( seg ) { return seg.start < end && ( seg.start + seg.text.length ) > start } )
+            if( overlapping.length === 0 ) { return false }
+
+            overlapping.forEach( function( seg, idx ) {
+                var localStart = Math.max( 0, start - seg.start )
+                var localEnd = Math.min( seg.text.length, end - seg.start )
+                var before = seg.text.slice( 0, localStart )
+                var middle = seg.text.slice( localStart, localEnd )
+                var after = seg.text.slice( localEnd )
+
+                var frag = document.createDocumentFragment()
+                if( before.length > 0 ) { frag.appendChild( document.createTextNode( before ) ) }
+                var mark = document.createElement( 'mark' )
+                mark.className = 'anm-mark'
+                mark.setAttribute( 'data-anm', ann.id )
+                mark.textContent = middle
+                frag.appendChild( mark )
+                if( idx === overlapping.length - 1 ) { frag.appendChild( annotationBadge( ann ) ) }
+                if( after.length > 0 ) { frag.appendChild( document.createTextNode( after ) ) }
+
+                if( seg.node.parentNode ) { seg.node.parentNode.replaceChild( frag, seg.node ) }
+            } )
 
             return true
         }
@@ -5056,10 +5111,12 @@
             rows.forEach( function( tr ) {
                 if( match ) { return }
                 var firstCell = tr.querySelector( 'td, th' )
-                var firstText = firstCell ? String( firstCell.textContent || '' ).trim() : ''
+                // PRD-005 WI-115: read the cell/row text WITHOUT the hover gutter "+" so a rowKey like
+                // "WI-012" is not seen as "WI-012+" (which would push the row into the orphan list).
+                var firstText = firstCell ? nodeTextWithoutGutter( firstCell ).trim() : ''
                 if( rowKey.length > 0 && firstText === rowKey ) { match = tr; return }
                 if( rowKey.length === 0 && rowText.length > 0 ) {
-                    var norm = String( tr.textContent || '' ).replace( /\s+/g, ' ' ).trim()
+                    var norm = nodeTextWithoutGutter( tr ).replace( /\s+/g, ' ' ).trim()
                     if( norm.indexOf( rowText ) !== -1 ) { match = tr }
                 }
             } )
@@ -5186,21 +5243,24 @@
             bindAnnotationModal()
         }
 
-        // Open the annotation modal for a prepared anchor (text-quote from selection or table-row from
-        // the gutter button). REUSES the .t-modal overlay (no new CSS).
+        // Open the annotation modal in CREATE mode for a prepared anchor (text-quote from selection or
+        // table-row from the gutter button). REUSES the .t-modal overlay. PRD-004 WI-125/126: symmetric
+        // reset of the write-state (generic title, editable textarea, visible Save) so a prior read-only
+        // DETAIL view never leaks into the create flow.
         function openAnnotationModal( anchor ) {
             var modal = document.getElementById( 'annotation-modal' )
+            var titleEl = document.getElementById( 'anm-modal-title' )
             var quoteEl = document.getElementById( 'anm-modal-quote' )
             var commentEl = document.getElementById( 'anm-modal-comment' )
+            var saveBtn = document.getElementById( 'anm-modal-save' )
             var errEl = document.getElementById( 'anm-modal-error' )
             if( !modal ) { return }
 
             pendingAnnotationAnchor = anchor
-            if( quoteEl ) {
-                var q = anchor.type === 'table-row' ? ( 'Zeile: ' + ( anchor.rowKey || anchor.rowText || '' ) ) : ( '„' + ( anchor.exact || '' ) + '"' )
-                quoteEl.textContent = q
-            }
-            if( commentEl ) { commentEl.value = '' }
+            if( titleEl ) { titleEl.textContent = 'Anmerkung' }
+            if( quoteEl ) { quoteEl.textContent = annotationReference( anchor ) }
+            if( commentEl ) { commentEl.value = ''; commentEl.readOnly = false }
+            if( saveBtn ) { saveBtn.classList.remove( 't-hidden' ) }
             if( errEl ) { errEl.classList.add( 't-hidden' ); errEl.textContent = '' }
             modal.classList.remove( 't-hidden' )
         }
@@ -5222,6 +5282,16 @@
             if( closeBtn ) { closeBtn.addEventListener( 'click', closeAnnotationModal ) }
             if( cancelBtn ) { cancelBtn.addEventListener( 'click', closeAnnotationModal ) }
             if( saveBtn ) { saveBtn.addEventListener( 'click', saveAnnotation ) }
+
+            // PRD-004 WI-132: click on the overlay itself (outside .t-modal-content) closes; a click INTO
+            // the content bubbles up to .t-modal-content, not to #annotation-modal, so it does not close.
+            modal.addEventListener( 'click', function( e ) {
+                if( e.target === modal ) { closeAnnotationModal() }
+            } )
+            // PRD-004 WI-132: Escape closes the modal while it is visible.
+            document.addEventListener( 'keydown', function( e ) {
+                if( e.key === 'Escape' && !modal.classList.contains( 't-hidden' ) ) { closeAnnotationModal() }
+            } )
         }
 
         // POST /api/annotations for the pending anchor + comment. On success the annotationList WS
@@ -5231,6 +5301,15 @@
             var errEl = document.getElementById( 'anm-modal-error' )
             var comment = commentEl ? String( commentEl.value || '' ).trim() : ''
             if( !pendingAnnotationAnchor ) { return }
+
+            // PRD-005 WI-127: catch the missing-revision case BEFORE the POST with a clear German message,
+            // instead of letting the server return a generic 422 (annotations bind to a REV-NN.md file).
+            var rev = currentRevisionId()
+            if( !rev ) {
+                if( errEl ) { errEl.textContent = 'Anmerkungen sind nur auf einer Revisions-Datei (REV-NN.md) möglich.'; errEl.classList.remove( 't-hidden' ) }
+
+                return
+            }
             if( comment.length === 0 ) {
                 if( errEl ) { errEl.textContent = 'Kommentar ist erforderlich.'; errEl.classList.remove( 't-hidden' ) }
 
@@ -5239,7 +5318,7 @@
 
             var body = JSON.stringify( {
                 documentId: currentDocumentId,
-                revisionId: currentRevisionId(),
+                revisionId: rev,
                 anchor: pendingAnnotationAnchor,
                 comment: comment
             } )
@@ -5260,30 +5339,49 @@
                 } )
         }
 
-        // Detail popup for an existing annotation badge (REUSES .t-modal in read mode).
+        // Detail popup for an existing annotation badge — READ-ONLY (PRD-004 WI-125/126). The store is
+        // append-only (no update path), so the Save button is hidden and the textarea is readOnly; the
+        // still-failing "save" from the recycled CREATE modal is made structurally impossible. The title
+        // carries "Anmerkung N" and the quote shows the enriched reference (PRD-005 WI-124: chapter ·
+        // tableLabel · line).
         function showAnnotationDetail( ann ) {
             var modal = document.getElementById( 'annotation-modal' )
+            var titleEl = document.getElementById( 'anm-modal-title' )
             var quoteEl = document.getElementById( 'anm-modal-quote' )
             var commentEl = document.getElementById( 'anm-modal-comment' )
+            var saveBtn = document.getElementById( 'anm-modal-save' )
+            var errEl = document.getElementById( 'anm-modal-error' )
             if( !modal ) { return }
-            if( quoteEl ) {
-                var q = ann.anchor && ann.anchor.type === 'table-row' ? ( 'Zeile: ' + ( ann.anchor.rowKey || ann.anchor.rowText || '' ) ) : ( '„' + ( ann.anchor && ann.anchor.exact ? ann.anchor.exact : '' ) + '"' )
-                quoteEl.textContent = 'Anmerkung ' + annotationNumber( ann.id ) + ' · ' + q
-            }
-            if( commentEl ) { commentEl.value = ann.comment || '' }
             pendingAnnotationAnchor = null
+            if( titleEl ) { titleEl.textContent = 'Anmerkung ' + annotationNumber( ann.id ) }
+            if( quoteEl ) { quoteEl.textContent = annotationReference( ann.anchor ) }
+            if( commentEl ) { commentEl.value = ann.comment || ''; commentEl.readOnly = true }
+            if( saveBtn ) { saveBtn.classList.add( 't-hidden' ) }
+            if( errEl ) { errEl.classList.add( 't-hidden' ); errEl.textContent = '' }
             modal.classList.remove( 't-hidden' )
         }
 
+        // Remove the hover gutter (and its host marker) from a row (PRD-004 WI-114).
+        function removeRowGutter( tr ) {
+            if( !tr ) { return }
+            var gutter = tr.querySelector( '.anm-row-gutter' )
+            if( gutter && gutter.parentNode ) { gutter.parentNode.removeChild( gutter ) }
+            var host = tr.querySelector( '.anm-gutter-host' )
+            if( host && host.classList ) { host.classList.remove( 'anm-gutter-host' ) }
+        }
+
         // PRD-P3-06 (WI-013): table-row gutter "+" button on hover. Delegated so it survives re-renders.
+        // PRD-004 WI-130: only tbody rows whose first cell is a <td> (never thead/th header rows).
+        // PRD-004 WI-114: a mouseout that actually leaves the row removes the gutter again.
         function initTableRowAnnotationGutter() {
             if( !contentEl ) { return }
             contentEl.addEventListener( 'mouseover', function( e ) {
                 if( currentMode !== 'memos' ) { return }
                 var tr = e.target && e.target.closest ? e.target.closest( 'tr' ) : null
                 if( !tr || tr.querySelector( '.anm-row-gutter' ) ) { return }
+                if( tr.closest && tr.closest( 'thead' ) ) { return }
                 var firstCell = tr.querySelector( 'td, th' )
-                if( !firstCell ) { return }
+                if( !firstCell || firstCell.tagName !== 'TD' ) { return }
                 var gutter = document.createElement( 'button' )
                 gutter.type = 'button'
                 gutter.className = 'anm-row-gutter'
@@ -5294,17 +5392,42 @@
                     ev.stopPropagation()
                     openAnnotationModal( buildTableRowAnchor( tr ) )
                 } )
+                // WI-131: the host cell becomes the positioning context so the absolutely-placed gutter
+                // does not stack in-flow with the number badge in the first cell (purely presentational).
+                firstCell.classList.add( 'anm-gutter-host' )
                 firstCell.appendChild( gutter )
             } )
+            contentEl.addEventListener( 'mouseout', function( e ) {
+                if( currentMode !== 'memos' ) { return }
+                var tr = e.target && e.target.closest ? e.target.closest( 'tr' ) : null
+                if( !tr ) { return }
+                // Ignore moves that stay inside the same row (cell->cell, or onto the gutter button).
+                var to = e.relatedTarget
+                if( to && tr.contains && tr.contains( to ) ) { return }
+                removeRowGutter( tr )
+            } )
+        }
+
+        // The text of a cell/row EXCLUDING the hover gutter "+" — a clone with .anm-row-gutter removed
+        // (PRD-005 WI-115/116). Preserves legitimate "+" cell values (C++, A+); no blind .replace('+','').
+        function nodeTextWithoutGutter( node ) {
+            if( !node ) { return '' }
+            if( !node.cloneNode ) { return String( node.textContent || '' ) }
+            var clone = node.cloneNode( true )
+            var gutters = clone.querySelectorAll ? clone.querySelectorAll( '.anm-row-gutter' ) : []
+            if( gutters.forEach ) { gutters.forEach( function( el ) { if( el.parentNode ) { el.parentNode.removeChild( el ) } } ) }
+
+            return String( clone.textContent || '' )
         }
 
         // Build a table-row anchor: rowKey = first cell text when it looks like an ID (Nr-column), else
         // null; rowText = normalized tr textContent fallback; chapterSlug from the nearest preceding H2.
+        // PRD-005 WI-116: the gutter "+" is excluded via nodeTextWithoutGutter, never a blind .replace.
         function buildTableRowAnchor( tr ) {
             var firstCell = tr.querySelector( 'td, th' )
-            var firstText = firstCell ? String( firstCell.textContent || '' ).replace( '+', '' ).trim() : ''
+            var firstText = firstCell ? nodeTextWithoutGutter( firstCell ).trim() : ''
             var looksLikeId = /^([A-Z]{1,4}-)?\d{1,4}[a-z]?$/.test( firstText ) || /^[A-Z]{1,4}-\d{1,4}$/.test( firstText )
-            var rowText = String( tr.textContent || '' ).replace( /\s+/g, ' ' ).replace( '+', '' ).trim()
+            var rowText = nodeTextWithoutGutter( tr ).replace( /\s+/g, ' ' ).trim()
             var tableEl = tr.closest ? tr.closest( 'table' ) : null
             var chapterSlug = nearestPrecedingH2Slug( tableEl || tr )
 
@@ -5315,6 +5438,25 @@
                 tableLabel: tableEl ? tableSummaryLabel( tableEl ) : null,
                 chapterSlug: chapterSlug
             }
+        }
+
+        // Enriched reference line for the modal quote (PRD-005 WI-122/123/124): Kapitel · tableLabel · the
+        // quote/row · the real document line. WI-123: the rowKey is labelled "Tabellenzeile" (a row ID like
+        // WI-012), while the persisted document line is shown separately as "Zeile <sourceLine>".
+        function annotationReference( anchor ) {
+            if( !anchor ) { return '' }
+            var parts = []
+            if( anchor.chapterSlug ) { parts.push( 'Kapitel ' + anchor.chapterSlug ) }
+            if( anchor.type === 'table-row' ) {
+                if( anchor.tableLabel ) { parts.push( anchor.tableLabel ) }
+                var rowRef = anchor.rowKey || anchor.rowText || ''
+                if( rowRef ) { parts.push( 'Tabellenzeile: ' + rowRef ) }
+            } else if( anchor.exact ) {
+                parts.push( '„' + anchor.exact + '"' )
+            }
+            if( Number.isInteger( anchor.sourceLine ) ) { parts.push( 'Zeile ' + anchor.sourceLine ) }
+
+            return parts.join( ' · ' )
         }
 
         initAnnotationUI()

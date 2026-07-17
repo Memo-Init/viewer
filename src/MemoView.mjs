@@ -689,6 +689,55 @@ class MemoView {
     }
 
 
+    // PRD-005 (Memo 076 Phase 3, WI-122): pure line-search over a revision's markdown `content`, mirroring
+    // the client anchor resolution. Public+pure (the MemoView convention for testable statics) — the POST
+    // route does the file read and passes the string in. text-quote: first line containing `exact`, with
+    // prefix/suffix as a tiebreak (W3C TextQuoteSelector). table-row: first line containing `rowKey`, else
+    // a significant fragment of `rowText`. No match / null content -> { sourceLine: null } (no silent guess,
+    // no hard fail). No loops (findIndex/filter/map/reduce), house style.
+    static computeSourceLine( { content, anchor } ) {
+        if( typeof content !== 'string' || content.length === 0 ) { return { 'sourceLine': null } }
+        if( anchor === null || typeof anchor !== 'object' ) { return { 'sourceLine': null } }
+
+        const lines = content.split( '\n' )
+
+        if( anchor[ 'type' ] === 'table-row' ) {
+            const rowKey = typeof anchor[ 'rowKey' ] === 'string' && anchor[ 'rowKey' ].length > 0 ? anchor[ 'rowKey' ] : null
+            const byKey = rowKey !== null ? lines.findIndex( ( line ) => line.includes( rowKey ) ) : -1
+            if( byKey !== -1 ) { return { 'sourceLine': byKey + 1 } }
+
+            const rowText = typeof anchor[ 'rowText' ] === 'string' ? anchor[ 'rowText' ] : ''
+            const fragment = rowText.split( ' ' ).filter( ( token ) => token.length >= 2 )[ 0 ] || null
+            const byText = fragment !== null ? lines.findIndex( ( line ) => line.includes( fragment ) ) : -1
+
+            return { 'sourceLine': byText !== -1 ? byText + 1 : null }
+        }
+
+        const exact = typeof anchor[ 'exact' ] === 'string' && anchor[ 'exact' ].length > 0 ? anchor[ 'exact' ] : null
+        if( exact === null ) { return { 'sourceLine': null } }
+
+        const candidates = lines
+            .map( ( line, index ) => ( { line, index } ) )
+            .filter( ( entry ) => entry[ 'line' ].includes( exact ) )
+        if( candidates.length === 0 ) { return { 'sourceLine': null } }
+
+        const prefix = typeof anchor[ 'prefix' ] === 'string' ? anchor[ 'prefix' ].trim() : ''
+        const suffix = typeof anchor[ 'suffix' ] === 'string' ? anchor[ 'suffix' ].trim() : ''
+        const scored = candidates.map( ( entry ) => {
+            const at = entry[ 'line' ].indexOf( exact )
+            const before = entry[ 'line' ].slice( 0, at )
+            const after = entry[ 'line' ].slice( at + exact.length )
+            const preScore = prefix.length === 0 ? 0 : ( before.endsWith( prefix ) ? 2 : ( before.includes( prefix ) ? 1 : 0 ) )
+            const sufScore = suffix.length === 0 ? 0 : ( after.startsWith( suffix ) ? 2 : ( after.includes( suffix ) ? 1 : 0 ) )
+
+            return { 'index': entry[ 'index' ], 'score': preScore + sufScore }
+        } )
+        const best = scored.reduce( ( acc, cur ) => cur[ 'score' ] > acc[ 'score' ] ? cur : acc, scored[ 0 ] )
+
+        return { 'sourceLine': best[ 'index' ] + 1 }
+    }
+
+
     // PRD-018 (Memo 072 Kap 13, F10=A): read the Topic/Block STORE of one memo — the deterministic
     // chapter<->topic binding the viewer reads to inject the chapter topic-pille and cross-link line.
     // UNLIKE the /blocks route (which reads block-meta FENCES via BlockMeta.parse from the revision
@@ -1214,11 +1263,11 @@ class MemoView {
          the requirement + block popups above. NO new overlay CSS. Opened from a text selection or a
          table-row gutter button; the comment field + Speichern POSTs /api/annotations. -->
     <div id="annotation-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="anm-modal-title">
-        <div class="t-modal-content">
+        <div class="t-modal-content anm-popover">
             <div class="t-modal-header">
                 <span class="t-title" id="anm-modal-title">Anmerkung</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="anm-modal-close" title="Schliessen">&times;</button>
+                <button class="t-close" id="anm-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body">
                 <div class="anm-quote" id="anm-modal-quote"></div>
@@ -2103,10 +2152,26 @@ class MemoView {
                     return
                 }
 
+                // PRD-005 (Memo 076 Phase 3, WI-122): compute the 1-based markdown line of the anchored
+                // quote/row from the discussed revision file and stamp it onto the anchor BEFORE create.
+                // A missing file / no match yields sourceLine=null (never a hard fail — the annotation is
+                // still stored). The anchor is a fresh JSON.parse object, so an in-place set is safe.
+                const anchorInput = parsed[ 'anchor' ]
+
+                if( anchorInput !== null && typeof anchorInput === 'object' ) {
+                    const revPath = resolve( location[ 'memoDir' ], 'revisions', `${ parsed[ 'revisionId' ] }.md` )
+                    const isRevision = typeof parsed[ 'revisionId' ] === 'string' && /^REV-\d+$/.test( parsed[ 'revisionId' ] )
+                    const revContent = isRevision === true
+                        ? await readFile( revPath, 'utf-8' ).catch( () => null )
+                        : null
+                    const computed = MemoView.computeSourceLine( { 'content': revContent, 'anchor': anchorInput } )
+                    anchorInput[ 'sourceLine' ] = computed[ 'sourceLine' ]
+                }
+
                 const result = await AnnotationStore.create( {
                     documentId,
                     'revisionId': parsed[ 'revisionId' ],
-                    'anchor': parsed[ 'anchor' ],
+                    'anchor': anchorInput,
                     'comment': parsed[ 'comment' ],
                     'memoDir': location[ 'memoDir' ]
                 } )

@@ -1630,6 +1630,24 @@
 
         .t-modal-header .t-close:hover { color: var(--text-1); }
 
+        /* WI-119/120: a STANDALONE .t-close (not only .t-modal-header .t-close) so a close button carries
+           an SVG "x" and never falls back to the UA-default 3D box (border:2px outset; background:#efefef)
+           outside the header scope. The annotation close is an inline <svg stroke=currentColor>. */
+        .t-close {
+            appearance: none;
+            -webkit-appearance: none;
+            border: none;
+            background: none;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            cursor: pointer;
+            color: var(--text-muted);
+        }
+
+        .t-close:hover { color: var(--text-1); }
+        .t-close svg { display: block; }
+
         .t-modal-body {
             padding: 18px;
             display: flex;
@@ -3004,10 +3022,13 @@
 
         /* PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): annotations — marks, badges, orphan list. */
         mark.anm-mark { background: rgba(210, 153, 34, .28); color: inherit; border-radius: 2px; padding: 0 1px; }
-        .anm-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; margin: 0 2px; padding: 0 4px; font-size: 10px; line-height: 1; border-radius: 8px; background: #d29922; color: #0d1117; cursor: pointer; vertical-align: super; }
+        .anm-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; margin: 0 2px; padding: 0 4px; font-size: 10px; line-height: 1; border-radius: 8px; background: #d29922; color: #0d1117; cursor: pointer; vertical-align: middle; }
         .anm-badge:hover { background: #e3b341; }
         tr.anm-row { background: rgba(210, 153, 34, .12); }
-        .anm-row-gutter { margin-left: 6px; border: 1px solid var(--border, #30363d); background: var(--bg-2, #21262d); color: var(--text-2, #c9d1d9); border-radius: 6px; font-size: 11px; line-height: 1; padding: 0 5px; cursor: pointer; }
+        /* WI-131: the hover gutter is absolutely positioned inside its host cell (which becomes the
+           positioning context) so it does not stack in-flow with the number badge (purely presentational). */
+        td.anm-gutter-host { position: relative; }
+        .anm-row-gutter { position: absolute; top: 50%; right: 4px; transform: translateY(-50%); display: inline-flex; align-items: center; border: 1px solid var(--border, #30363d); background: var(--bg-2, #21262d); color: var(--text-2, #c9d1d9); border-radius: 6px; font-size: 11px; line-height: 1; padding: 0 5px; cursor: pointer; z-index: 1; }
         .anm-row-gutter:hover { border-color: var(--accent, #2ea043); color: var(--text-1, #f0f6fc); }
         .anm-orphan-list { margin-top: 24px; padding: 10px 12px; border: 1px dashed #d29922; border-radius: 6px; background: rgba(210, 153, 34, .06); }
         .anm-orphan-title { color: #d29922; font-weight: 700; margin-bottom: 6px; font-size: 13px; }
@@ -3015,7 +3036,14 @@
         .annotate-floating { position: absolute; z-index: 60; background: #d29922; color: #0d1117; border: none; border-radius: 6px; font-size: 12px; padding: 3px 10px; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.4); }
         .annotate-floating:hover { background: #e3b341; }
         .anm-quote { font-size: 13px; color: var(--text-2, #c9d1d9); margin-bottom: 10px; padding: 6px 8px; border-left: 3px solid #d29922; background: rgba(210, 153, 34, .06); }
-        .anm-comment { width: 100%; min-height: 80px; box-sizing: border-box; }
+        /* WI-117: the comment textarea sits in the dark theme (was a white UA-default in the dark modal). */
+        .anm-comment { width: 100%; min-height: 80px; box-sizing: border-box; background: var(--bg-1); color: var(--text-1); border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-family: inherit; font-size: 13px; resize: vertical; }
+        .anm-comment:focus { outline: none; border-color: var(--text-muted); }
+        .anm-comment[readonly] { color: var(--text-2); background: var(--bg-2); cursor: default; }
+        /* WI-118: the annotation popup is a narrow near-anchor popover, NOT the shared 720px .t-modal-content
+           (which requirement/block modals reuse and must not shrink). Only the composed class narrows it. */
+        .t-modal-content.anm-popover { width: 360px; }
+        .anm-popover .t-actions .t-btn-secondary, .anm-popover .t-actions .t-btn-primary { padding: 6px 12px; font-size: 12px; }
 
         /* PRD-P3-08 (Memo 075 Phase 3, WI-027): on-demand quality-check checkbox group. */
         .pp-quality-list { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 6px; }

@@ -67,11 +67,12 @@ describe( 'Question widget state — PRD-006 (Memo 018 Kap 9)', () => {
     } )
 
 
-    // AC-05 — "Fertig"-Button.
-    it( 'renders a "Fertig" button gating workflow completion (AC-05)', () => {
-        expect( emittedScript.includes( 'qw-fertig-btn' ) ).toBe( true )
-        expect( emittedScript.includes( 'function markQuestionsFertig' ) ).toBe( true )
-        expect( emittedScript.includes( 'questionNav.fertig' ) ).toBe( true )
+    // AC-05 — "Fertig"-Button. PRD-012 (Memo 076 H8, WI-106): the "Fertig" button lived only in the
+    // dead answers-only bar (buildAnswersOnlyBar / markQuestionsFertig), which is removed. The popup's
+    // "Übernehmen" is the completion path now, so the button + handler no longer exist.
+    it( 'no longer renders the removed "Fertig" button / markQuestionsFertig (WI-106)', () => {
+        expect( emittedScript.includes( 'qw-fertig-btn' ) ).toBe( false )
+        expect( emittedScript.includes( 'function markQuestionsFertig' ) ).toBe( false )
     } )
 
 

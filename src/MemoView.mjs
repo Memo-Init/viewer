@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { readFile, access, readdir, mkdir, writeFile } from 'node:fs/promises'
-import { watch, existsSync, readFileSync } from 'node:fs'
+import { watch, existsSync, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { resolve, basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -43,19 +44,39 @@ const WAKE_DIR = join( tmpdir(), 'memo-view-wake' )
 const SPOKEN_WORDS_PER_MINUTE = 130
 
 // PRD-010 (Memo 016, F1): the ~3000-line app CSS was extracted from the inline <style> block of
-// #buildHtmlPage into src/public/app.css and is served by the /app.css static route. The file is
-// read ONCE at module load (resolved relative to this module, not cwd) and cached — every request
-// serves this in-memory string, never re-reading from disk.
+// #buildHtmlPage into src/public/app.css and is served by the /app.css static route.
 const APP_CSS_PATH = fileURLToPath( new URL( './public/app.css', import.meta.url ) )
-const APP_CSS = readFileSync( APP_CSS_PATH, 'utf8' )
 
 // PRD-011 (Memo 016, F1/F2): the ~5900-line inline client <script> block was extracted from
 // #buildHtmlPage into src/public/app.client.mjs and is served by the /app.client.mjs static route
 // as a CLASSIC script (not type=module) so its top-level functions stay in global scope for the
-// inline on*= handlers. Read ONCE at module load (resolved relative to this module, not cwd) and
-// cached — every request serves this in-memory string, never re-reading from disk.
+// inline on*= handlers.
 const APP_CLIENT_JS_PATH = fileURLToPath( new URL( './public/app.client.mjs', import.meta.url ) )
-const APP_CLIENT_JS = readFileSync( APP_CLIENT_JS_PATH, 'utf8' )
+
+// PRD-009 (Memo 076 H6, WI-079): the bundle used to be read ONCE at module load and served from an
+// in-memory string forever. When the server process outlived a bundle edit (the "3-Tage-STALE-Server"
+// lesson) it kept serving the OLD client — which still polled the removed /api/session + /api/cockpit
+// routes and flooded the console with 404s. Fix the drift structurally: an mtime-invalidated reader
+// re-reads the file when it changes on disk and derives a short build hash from the content, so the
+// served bundle always matches the source and the hash can drive a version handshake (WI-080).
+const makeBundleReader = ( path ) => {
+    let cache = { mtimeMs: -1, source: '', hash: '' }
+
+    return () => {
+        let stat = null
+        try { stat = statSync( path ) } catch { stat = null }
+        if( stat && stat.mtimeMs !== cache.mtimeMs ) {
+            const source = readFileSync( path, 'utf8' )
+            const hash = createHash( 'sha1' ).update( source ).digest( 'hex' ).slice( 0, 12 )
+            cache = { mtimeMs: stat.mtimeMs, source, hash }
+        }
+
+        return cache
+    }
+}
+
+const getCssBundle = makeBundleReader( APP_CSS_PATH )
+const getClientBundle = makeBundleReader( APP_CLIENT_JS_PATH )
 
 const PORT_COLORS = {
     3333: '4493f8',
@@ -1050,7 +1071,7 @@ class MemoView {
         const configFlag = showOnlyFullRevisions ? 'true' : 'false'
 
         const html = `<!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1061,7 +1082,7 @@ class MemoView {
 <body>
     <div id="mermaid-modal" role="dialog" aria-modal="true" aria-label="Diagramm-Vollansicht">
         <div id="mermaid-modal-inner">
-            <button id="mermaid-modal-close" title="Schliessen (Esc)">&times;</button>
+            <button id="mermaid-modal-close" title="Schliessen (Esc)"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             <div id="mermaid-modal-svg"></div>
         </div>
     </div>
@@ -1103,7 +1124,7 @@ class MemoView {
             <div class="t-modal-header">
                 <span class="t-title" id="t-modal-title">Transcript hinzufügen</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="t-cancel-x" title="Schliessen">&times;</button>
+                <button class="t-close" id="t-cancel-x" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body">
                 <div class="t-tabs" id="t-tabs">
@@ -1158,13 +1179,13 @@ class MemoView {
                          are opt-in per feedback round; the selection travels in the transcript payload
                          as a "## Quality-Checks angefragt" section that the next memo-revision-generate
                          reads and runs each chosen check in a separate subagent (design [ANNAHME]). -->
-                    <div class="pp-section pp-quality" data-pp-quality>
+                    <div class="pp-section">
                         <span class="pp-section-label" id="pp-quality-label">3 · QUALITY-CHECKS (optional)</span>
                         <div id="pp-quality-list" class="pp-quality-list">
-                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="evidence" value="evidence"> Evidence</label>
-                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="coherence" value="coherence"> Coherence</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="evidence" value="evidence"> Nachweise</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="coherence" value="coherence"> Kohärenz</label>
                             <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="balance" value="balance"> Balance</label>
-                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="references" value="references"> References</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="references" value="references"> Referenzen</label>
                         </div>
                     </div>
                     <div id="pp-error" class="t-error t-hidden"></div>
@@ -1207,7 +1228,7 @@ class MemoView {
                     <p>Transcript gespeichert:</p>
                     <div class="t-url-row">
                         <code class="t-url" id="t-saved-url"></code>
-                        <button id="t-copy-inline" class="t-copy-inline" title="URL kopieren" aria-label="URL kopieren">⧉</button>
+                        <button id="t-copy-inline" class="t-copy-inline" title="URL kopieren" aria-label="URL kopieren"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect><path d="M3.5 10.5V3.5a1 1 0 0 1 1-1h7"></path></svg></button>
                     </div>
                     <p id="t-autocopy-hint" class="t-autocopy-hint t-hidden"></p>
                     <div class="t-actions">
@@ -1227,7 +1248,7 @@ class MemoView {
             <div class="t-modal-header">
                 <span class="t-title" id="clients-modal-title">Instanzen</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="clients-modal-close" title="Schliessen">&times;</button>
+                <button class="t-close" id="clients-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body" id="clients-modal-body"></div>
         </div>
@@ -1240,7 +1261,7 @@ class MemoView {
             <div class="t-modal-header">
                 <span class="t-title" id="req-modal-title">Requirement</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="req-modal-close" title="Schliessen">&times;</button>
+                <button class="t-close" id="req-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body" id="req-modal-body"></div>
         </div>
@@ -1253,7 +1274,7 @@ class MemoView {
             <div class="t-modal-header">
                 <span class="t-title" id="block-modal-title">Block</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="block-modal-close" title="Schliessen">&times;</button>
+                <button class="t-close" id="block-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body" id="block-modal-body"></div>
         </div>
@@ -1289,7 +1310,7 @@ class MemoView {
         </nav>
         <div id="main" role="main" aria-label="Memo-Inhalt">
             <div id="main-header"></div>
-            <div id="content"><p style="color:#888">Waiting for content...</p></div>
+            <div id="content"><p class="content-placeholder">Warte auf Inhalt…</p></div>
         </div>
         <nav id="toc-sidebar" aria-label="Auf dieser Seite">
             <div id="toc-label">Auf dieser Seite</div>
@@ -1317,6 +1338,10 @@ class MemoView {
     <script src="https://cdn.jsdelivr.net/npm/vega@6.2.0/build/vega.min.js" integrity="sha384-0Wc8+KeboSkAq/fK81pd4uFbWKu4ouB+y4KWCYxlC69hRWol7vnc6zZSruXOtc0F" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.3/build/vega-lite.min.js" integrity="sha384-9/70gNCfOu6G7xXvkdreMfuqAEsoaGJVXV2BN/JLRXkSmcGvnMqtsRx8HZtUWAvI" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-embed@7.1.0/build/vega-embed.min.js" integrity="sha384-giTAWqsEDsWuWzWKi6NCvjgwi160SClnTYYXWPLuy/DnaQTqmk4soinrpxcCS4dx" crossorigin="anonymous"></script>
+    <!-- PRD-009 (Memo 076 H6, WI-080): stamp the build hash the served bundle was rendered with, so
+         the client can compare it against the CURRENT server hash sent on the WS connect and reload
+         itself when a server restart shipped a newer bundle (kills the stale-tab-polls-dead-routes drift). -->
+    <script>window.__MEMO_VIEW_BUILD__ = ${ JSON.stringify( getClientBundle().hash ) }</script>
     <script src="/app.client.mjs"></script>
 </body>
 </html>`
@@ -2547,30 +2572,36 @@ class MemoView {
             }
 
             // PRD-010 (Memo 016, F1): static stylesheet route. The app CSS lives in
-            // src/public/app.css (extracted from the formerly inline <style> block) and is
-            // served from the module-load cache (APP_CSS) — never re-read per request.
+            // src/public/app.css (extracted from the formerly inline <style> block).
+            // PRD-009 (Memo 076 H6, WI-079): mtime-invalidated re-read + build-hash ETag so an edited
+            // bundle is served fresh (no stale-drift) and the hash is observable in the response.
             if( url === '/app.css' && req.method === 'GET' ) {
+                const cssBundle = getCssBundle()
                 res.writeHead( 200, {
                     'Content-Type': 'text/css; charset=utf-8',
-                    'Content-Length': Buffer.byteLength( APP_CSS ),
-                    'Cache-Control': 'no-cache'
+                    'Content-Length': Buffer.byteLength( cssBundle.source ),
+                    'Cache-Control': 'no-cache',
+                    'ETag': '"' + cssBundle.hash + '"'
                 } )
-                res.end( APP_CSS )
+                res.end( cssBundle.source )
 
                 return
             }
 
             // PRD-011 (Memo 016, F1/F2): static client-JS route. The app client code lives in
-            // src/public/app.client.mjs (extracted from the formerly inline <script> block) and is
-            // served from the module-load cache (APP_CLIENT_JS) — never re-read per request. Served
+            // src/public/app.client.mjs (extracted from the formerly inline <script> block). Served
             // as a classic script (text/javascript) so its top-level functions stay global.
+            // PRD-009 (Memo 076 H6, WI-079/WI-080): mtime-invalidated re-read + build-hash ETag —
+            // the served bundle always matches the source; the hash drives the WS version handshake.
             if( url === '/app.client.mjs' && req.method === 'GET' ) {
+                const clientBundle = getClientBundle()
                 res.writeHead( 200, {
                     'Content-Type': 'text/javascript; charset=utf-8',
-                    'Content-Length': Buffer.byteLength( APP_CLIENT_JS ),
-                    'Cache-Control': 'no-cache'
+                    'Content-Length': Buffer.byteLength( clientBundle.source ),
+                    'Cache-Control': 'no-cache',
+                    'ETag': '"' + clientBundle.hash + '"'
                 } )
-                res.end( APP_CLIENT_JS )
+                res.end( clientBundle.source )
 
                 return
             }
@@ -2772,6 +2803,21 @@ class MemoView {
             ws.isAlive = true
             ws.on( 'pong', () => { ws.isAlive = true } )
 
+            // PRD-009 (Memo 076 H6, WI-086): the close handler used to live INSIDE the
+            // `if( MemoView.#registry )` block (and after the `if( !state.absolutePath ) return`
+            // guard), so a socket that connected without a registry AND without a selected revision
+            // never got a close handler and leaked in the `clients` Set. Register it unconditionally
+            // here so every socket is removed on disconnect regardless of registry/state.
+            ws.on( 'close', () => { clients.delete( ws ) } )
+
+            // PRD-009 (Memo 076 H6, WI-080): tell the fresh socket which client bundle the server is
+            // serving right now. The client compares this against the hash its page was rendered with
+            // (window.__MEMO_VIEW_BUILD__) and reloads on mismatch — a restarted server that shipped a
+            // newer bundle auto-refreshes open tabs instead of leaving them on the stale client.
+            if( ws.readyState === 1 ) {
+                ws.send( JSON.stringify( { 'type': 'build', 'id': getClientBundle().hash } ) )
+            }
+
             if( MemoView.#transcriptRegistry ) {
                 const { tree: tTree } = MemoView.#transcriptRegistry.getTranscriptTree()
 
@@ -2896,8 +2942,7 @@ class MemoView {
                         // ignore malformed messages
                     }
                 } )
-
-                ws.on( 'close', () => { clients.delete( ws ) } )
+                // PRD-009 (Memo 076 H6, WI-086): close handler now registered unconditionally above.
             }
 
             if( !state.absolutePath ) {
@@ -2971,10 +3016,7 @@ class MemoView {
                     process.stdout.write( `  Navigated: ${targetPath}\n` )
                 }
             } )
-
-            ws.on( 'close', () => {
-                clients.delete( ws )
-            } )
+            // PRD-009 (Memo 076 H6, WI-086): close handler now registered unconditionally above.
         } )
 
         return { wss, clients }

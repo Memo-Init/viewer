@@ -39,6 +39,15 @@
             --sp-4: 16px;
             --sp-5: 24px;
             --sp-6: 32px;
+            /* PRD-010 (Memo 076 H7a, DUP-H7a-2/DUP-H7a-3): tokens that were USED via var() but never
+               defined in :root, so they rendered on their (off-theme) fallbacks. Defined here on the
+               theme palette so every var() resolves to a real value (no more fallback rendering):
+               --success/--ok -> theme green (= --accent-bright), --bg-elev -> --bg-2 elevation,
+               --text -> --text-2 body text. */
+            --success: #3fb950;
+            --ok: #3fb950;
+            --bg-elev: #161b22;
+            --text: #c9d1d9;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -167,12 +176,14 @@
             flex-shrink: 1;
         }
 
+        /* PRD-011 (Memo 076 H7b, WI-102): the connection dot was a 6px, 0.6-opacity speck — barely
+           perceptible. Enlarge to 9px and make it fully opaque so the connect/offline state reads. */
         #status {
-            width: 6px;
-            height: 6px;
+            width: 9px;
+            height: 9px;
             border-radius: 50%;
             background: var(--danger);
-            opacity: 0.6;
+            opacity: 1;
             transition: background 0.3s;
             flex-shrink: 0;
         }
@@ -183,9 +194,17 @@
            #session-status styles were removed together with the global viewer-head they styled (Kap 18:
            wrong interpretation — the per-client Clients registry .clients-head is the replacement). */
 
-        /* PRD-016 (Memo 016, E9): visible offline banner, shown from the 1st failed attempt. */
+        /* PRD-016 (Memo 016, E9): visible offline banner, shown from the 1st failed attempt.
+           PRD-011 (Memo 076 H7b, WI-095): the banner was the first in-flow element at top:0, so the
+           fixed 52px nav-bar (z-index:1000) painted right over it and it was effectively invisible.
+           Pin it fixed just below the nav-bar (top:52px) at z-index:999 — under the nav-bar but above
+           the content, so an offline state is actually seen. */
         .offline-banner {
             display: block;
+            position: fixed;
+            top: 52px;
+            left: 0;
+            right: 0;
             width: 100%;
             box-sizing: border-box;
             padding: 8px 16px;
@@ -195,6 +214,7 @@
             font-weight: 600;
             text-align: center;
             letter-spacing: 0.2px;
+            z-index: 999;
         }
 
         .offline-banner-hidden { display: none; }
@@ -782,12 +802,21 @@
             color: var(--text-muted);
         }
 
-        .diff-banner a {
+        /* PRD-012 (Memo 076 H8, WI-110): the changed-chapter links are now <button> (keyboard
+           focusable, no inline onclick) styled to read like the former <a>. */
+        .diff-banner a, .diff-banner .diff-chapter-link {
             color: var(--link);
             cursor: pointer;
         }
 
-        .diff-banner a:hover {
+        .diff-banner .diff-chapter-link {
+            background: none;
+            border: none;
+            padding: 0;
+            font: inherit;
+        }
+
+        .diff-banner a:hover, .diff-banner .diff-chapter-link:hover {
             text-decoration: underline;
         }
 
@@ -930,9 +959,14 @@
             flex-wrap: wrap;
             row-gap: 4px;
             min-height: 30px;
-            /* PRD-006 (#37/#61/#62): memo-header as a card — radius 8, own BG #2B313B. */
+            /* PRD-006 (#37/#61/#62): memo-header as a card — radius 8.
+               PRD-010 (Memo 076 H7a, DUP-H7a-1 + WI-087): the base was #2B313B — IDENTICAL to
+               --hover-bg (#2b313b), so hovering did nothing (No-Op), and .selected (--bg-4 #21262d)
+               was DARKER than the base and read as recessed. Dropping the base to --bg-3 (#1c2128)
+               decouples it from the hover token (base < hover now) and makes the selected --bg-4
+               brighter than the base (visibly highlighted). */
             border-radius: 8px;
-            background: #2B313B;
+            background: var(--bg-3);
             padding: 6px 8px;
             /* REV-05 R3: the whole header toggles its revisions — make it feel clickable. */
             cursor: pointer;
@@ -1029,8 +1063,10 @@
             border-radius: 4px;
         }
 
+        /* PRD-010 (Memo 076 H7a, WI-089): was var(--bg-2) — exactly the sidebar background, so the
+           hover was invisible. Use the shared --hover-bg row-hover token instead. */
         #doc-sidebar li[data-doc]:hover {
-            background: var(--bg-2);
+            background: var(--hover-bg);
             color: var(--text-1);
         }
 
@@ -1576,7 +1612,9 @@
         .t-modal {
             position: fixed;
             top: 0; left: 0; right: 0; bottom: 0;
-            background: var(--shadow);
+            /* PRD-010 (Memo 076 H7a, WI-091): use the shared --overlay backdrop token so every modal
+               dims the page equally (was --shadow rgba(0,0,0,0.7); #mermaid-modal already uses --overlay). */
+            background: var(--overlay);
             z-index: 2000;
             display: flex;
             align-items: center;
@@ -2031,7 +2069,9 @@
             cursor: pointer;
         }
 
-        .t-btn-primary:hover { background: var(--accent); }
+        /* PRD-010 (Memo 076 H7a, WI-088): was var(--accent) — identical to the base, so the hover
+           gave no feedback. Brighten on hover like .qw-add-btn does. */
+        .t-btn-primary:hover { background: var(--accent-bright); }
 
         .t-btn-primary:disabled {
             background: var(--bg-4);
@@ -2561,56 +2601,9 @@
             color: var(--text-muted);
         }
 
-        /* PRD-008 (Memo 024 Kap 7): the answers-only bar lives in Sticky-Header Zone 2. It is a
-           horizontal action row consistent with the Zone-2 prompt-statuszeile spacing. The bar
-           sits below the existing two Zone-2 rows, separated by a thin divider so the actions read
-           as a distinct interaction block. The Zone-2 fill (var(--bg-2)) + top-divider already come
-           from .hdr-zone-2; the bar only adds its own internal layout. */
-        .qw-answers-only-bar {
-            display: flex;
-            align-items: center;
-            gap: var(--sp-3);
-            flex-wrap: wrap;
-        }
-
-        .qw-answers-only-bar.qw-answers-only-bar--header {
-            margin-top: 9px;
-            padding-top: 9px;
-            border-top: 1px solid var(--border);
-        }
-
-        /* PRD-008 (AC-05): primary action = "Fertig" (accent), secondary = "ohne Transcript
-           speichern" (outline). Both stay legible against the Zone-2 fill. */
-        .qw-primary-btn {
-            background: var(--accent);
-            color: var(--text-on-accent);
-            border: 1px solid var(--accent);
-            border-radius: 6px;
-            padding: var(--sp-2) var(--sp-3);
-            font-family: var(--font-sans);
-            font-size: 13px;
-            font-weight: 700;
-            cursor: pointer;
-        }
-
-        .qw-primary-btn:hover { background: var(--accent-bright); border-color: var(--accent-bright); }
-
-        /* PRD-006 (Kap 9, AC-05): the reversible "Fertig ✓" done-state reads visibly different. */
-        .qw-answers-only-bar.qw-fertig-done .qw-primary-btn {
-            background: var(--ok, #2e7d32);
-            border-color: var(--ok, #2e7d32);
-        }
-
-        .qw-answers-only-bar .qw-secondary-btn:disabled {
-            opacity: 0.5;
-            cursor: default;
-        }
-
-        .qw-answers-only-status {
-            font-size: 12px;
-            color: var(--text-2);
-            white-space: nowrap;
-        }
+        /* PRD-012 (Memo 076 H8, WI-106): the answers-only bar CSS (bar/header/fertig-done, the primary
+           button and the status span) was removed together with the dead JS path. The shared
+           secondary-button and note rules above stay (used by the live add/reject widgets). */
 
         .qw-topics {
             display: flex;
@@ -2690,7 +2683,7 @@
             align-items: center;
             gap: 8px;
             border: 1px solid var(--border, #333);
-            border-left: 3px solid var(--accent, #7c8cff);
+            border-left: 3px solid var(--accent);
             border-radius: 6px;
             padding: 8px 12px;
             margin: 12px 0;
@@ -2708,7 +2701,7 @@
         .block-meta-card .block-meta-id {
             font-family: var(--font-mono);
             font-weight: 700;
-            color: var(--accent, #7c8cff);
+            color: var(--accent);
         }
 
         .block-meta-card .block-meta-chip {
@@ -2745,7 +2738,7 @@
         #content .table-collapsible > .table-collapsible-summary::before {
             content: '▸';
             display: inline-block;
-            color: var(--accent, #7c8cff);
+            color: var(--accent);
         }
 
         #content .table-collapsible[open] > .table-collapsible-summary::before {
@@ -2775,7 +2768,7 @@
             font-family: var(--font-mono);
             font-size: 11px;
             font-weight: 700;
-            color: var(--accent, #7c8cff);
+            color: var(--accent);
             background: var(--bg-elev, #16161c);
             border: 1px solid var(--border, #333);
             border-radius: 999px;
@@ -2790,9 +2783,9 @@
 
         /* PRD-018 (WI-T013-7): [[wiki-link]] rendered as a navigable link, no longer literal text. */
         #content a.wiki-link {
-            color: var(--accent, #7c8cff);
+            color: var(--accent);
             text-decoration: none;
-            border-bottom: 1px dotted var(--accent, #7c8cff);
+            border-bottom: 1px dotted var(--accent);
             cursor: pointer;
         }
 
@@ -2818,7 +2811,9 @@
 
         th {
             font-weight: 600;
-            background: transparent;
+            /* PRD-010 (Memo 076 H7a, WI-092): was transparent — the header shared the odd-row --bg-1
+               so only font-weight set it apart. A --bg-3 band lifts the header off the body. */
+            background: var(--bg-3);
         }
 
         tr { background: var(--bg-1); border-top: 1px solid var(--bg-4); }
@@ -3012,9 +3007,13 @@
         .spec-sub-caret { font-size: 9px; color: var(--text-muted, #8b949e); width: 10px; text-align: center; flex-shrink: 0; }
         .spec-sub-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .spec-sub-pages { display: flex; flex-direction: column; }
-        .spec-page-link { display: block; padding: 3px 10px; color: var(--text-2, #c9d1d9); text-decoration: none; border-radius: 5px; font-size: 13px; cursor: pointer; border-left: 1px solid transparent; }
+        /* PRD-012 (Memo 076 H8, WI-110): spec-page-link is a <button> now (keyboard-focusable) — reset
+           the native button chrome (background/border/width/align/font) so it still reads like the list row. */
+        .spec-page-link { display: block; width: 100%; text-align: left; background: none; border: none; font-family: inherit; padding: 3px 10px; color: var(--text-2, #c9d1d9); text-decoration: none; border-radius: 5px; font-size: 13px; cursor: pointer; border-left: 1px solid transparent; }
         .spec-page-link:hover { background: var(--bg-2, #21262d); }
-        .spec-page-link.active { background: var(--bg-2, #21262d); color: var(--accent, #2ea043); font-weight: 600; border-left-color: var(--accent, #2ea043); }
+        /* PRD-010 (Memo 076 H7a, WI-094): the active spec page used --accent (#2ea043); the memo tree's
+           active state uses the brighter --accent-bright. Unify on --accent-bright for equal contrast. */
+        .spec-page-link.active { background: var(--bg-2, #21262d); color: var(--accent-bright); font-weight: 600; border-left-color: var(--accent-bright); }
         /* WI-065/068: the previously-DEAD .specs-mode hook now carries the tree's guide-line +
            stepped indentation, so removing the class visibly flattens the spec tree (no dead code). */
         #doc-sidebar.specs-mode .spec-sub { border-left: 1px solid var(--border, #30363d); margin: 2px 0 2px 2px; padding-left: 6px; }
@@ -3036,13 +3035,19 @@
         #spec-breadcrumb .sbc-sep { opacity: .45; }
 
         /* PRD-P3-02 (Memo 075 Phase 3, WI-009): Clients head summary + Clients view. */
-        .clients-head { background: var(--bg-2, #21262d); border: 1px solid var(--border, #30363d); border-radius: 12px; color: var(--text-2, #c9d1d9); font-size: 12px; padding: 2px 10px; cursor: pointer; white-space: nowrap; }
+        /* PRD-011 (Memo 076 H7b, WI-098): match the .nav-btn-secondary geometry (radius 6, font 13,
+           padding 6x14) so the Clients nav button sits flush with its neighbours (was radius 12,
+           font 12, padding 2x10 — rounder, smaller and lower than the rest of the nav row). */
+        .clients-head { background: var(--bg-2, #21262d); border: 1px solid var(--border, #30363d); border-radius: 6px; color: var(--text-2, #c9d1d9); font-size: 13px; padding: 6px 14px; cursor: pointer; white-space: nowrap; }
         .clients-head:hover { color: var(--text-1, #f0f6fc); border-color: var(--accent, #2ea043); }
         .clients-head.has-waiting { border-color: #d29922; color: #d29922; }
         .clients-view h1 { margin-top: 0; }
         .clients-empty { color: var(--text-muted, #8b949e); }
         .clients-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
-        .clients-table th, .clients-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border, #30363d); font-size: 13px; }
+        /* PRD-011 (Memo 076 H7b, WI-099): the global `th,td { border:1px }` painted all four borders;
+           this rule only set border-bottom, leaving the side/top borders as a full grid. Reset border
+           to none first so only the row-separating bottom border remains. */
+        .clients-table th, .clients-table td { text-align: left; padding: 6px 10px; border: none; border-bottom: 1px solid var(--border, #30363d); font-size: 13px; }
         .client-status-pill { border-radius: 10px; padding: 1px 8px; font-size: 11px; white-space: nowrap; border: 1px solid var(--border, #30363d); }
         .client-status-working { color: var(--accent, #2ea043); }
         .client-status-waiting-for-user-answer { color: #d29922; border-color: #d29922; }
@@ -3074,5 +3079,8 @@
         .anm-popover .t-actions .t-btn-secondary, .anm-popover .t-actions .t-btn-primary { padding: 6px 12px; font-size: 12px; }
 
         /* PRD-P3-08 (Memo 075 Phase 3, WI-027): on-demand quality-check checkbox group. */
-        .pp-quality-list { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 6px; }
+        /* PRD-008 (Memo 076 H5): margin-top dropped (WI-073, gap comes from .pp-section flex),
+           dark-panel checkbox styling via accent-color + margin reset (WI-074, WI-075). */
+        .pp-quality-list { display: flex; flex-wrap: wrap; gap: 10px 16px; }
         .pp-quality-item { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-2, #c9d1d9); cursor: pointer; }
+        .pp-quality-check { accent-color: var(--accent); margin: 0; }

@@ -113,28 +113,33 @@ describe( 'Asset extraction — app.client.mjs (PRD-011, Memo 016 F1/F2)', () =>
 
 
     describe( '/app.client.mjs static route in #createHttpHandler', () => {
-        it( 'wires a GET /app.client.mjs route that serves the cached JS with text/javascript and 200', () => {
+        it( 'wires a GET /app.client.mjs route that serves the freshly-read JS with text/javascript, 200 + build-hash ETag', () => {
             // Route guard.
             expect( source.includes( "url === '/app.client.mjs' && req.method === 'GET'" ) ).toBe( true )
             // Content-Type is the JS MIME with charset.
             expect( source.includes( "'Content-Type': 'text/javascript; charset=utf-8'" ) ).toBe( true )
-            // The route writes 200 and ends with the module-load cache (APP_CLIENT_JS), not a per-request read.
+            // PRD-009 (Memo 076 H6, WI-079): the route writes 200 and ends with the mtime-invalidated
+            // reader's fresh source (getClientBundle) plus a build-hash ETag — not a stale module const.
             const routeIdx = source.indexOf( "url === '/app.client.mjs' && req.method === 'GET'" )
-            const routeBlock = source.slice( routeIdx, routeIdx + 400 )
+            const routeBlock = source.slice( routeIdx, routeIdx + 500 )
             expect( /res\.writeHead\(\s*200/.test( routeBlock ) ).toBe( true )
-            expect( routeBlock.includes( 'res.end( APP_CLIENT_JS )' ) ).toBe( true )
+            expect( routeBlock.includes( 'getClientBundle()' ) ).toBe( true )
+            expect( routeBlock.includes( 'res.end( clientBundle.source )' ) ).toBe( true )
+            expect( routeBlock.includes( "'ETag'" ) ).toBe( true )
         } )
 
 
-        it( 'reads the JS ONCE at module load (cached APP_CLIENT_JS), not per request', () => {
-            // The cache constant is read synchronously at module scope, resolved relative to the
-            // module via import.meta.url — never re-read inside the request handler.
+        it( 'PRD-009 (WI-079): re-reads the JS with mtime invalidation + build hash (no stale module-load cache)', () => {
+            // The path is still resolved relative to the module via import.meta.url…
             expect( source.includes( "new URL( './public/app.client.mjs', import.meta.url )" ) ).toBe( true )
-            expect( /const APP_CLIENT_JS = readFileSync\(/.test( source ) ).toBe( true )
-            // The handler must not call readFile/readFileSync for app.client.mjs per request.
-            const routeIdx = source.indexOf( "url === '/app.client.mjs' && req.method === 'GET'" )
-            const routeBlock = source.slice( routeIdx, routeIdx + 400 )
-            expect( routeBlock.includes( 'readFile' ) ).toBe( false )
+            // …but the once-at-load `const APP_CLIENT_JS = readFileSync(...)` cache is GONE — replaced by
+            // an mtime-invalidated reader (statSync + re-read on change) plus a content build hash, so an
+            // edited bundle is served fresh and the "3-day stale server" 404-polling drift is impossible.
+            expect( /const APP_CLIENT_JS = readFileSync\(/.test( source ) ).toBe( false )
+            expect( source.includes( 'makeBundleReader' ) ).toBe( true )
+            expect( source.includes( 'const getClientBundle = makeBundleReader(' ) ).toBe( true )
+            expect( source.includes( 'statSync(' ) ).toBe( true )
+            expect( source.includes( 'createHash(' ) ).toBe( true )
         } )
 
 

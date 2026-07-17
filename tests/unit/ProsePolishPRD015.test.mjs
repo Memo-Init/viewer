@@ -144,13 +144,15 @@ describe( 'MemoView.tocEntries (PRD-015, D11)', () => {
 
 // Source-shape regression: the inline browser pipeline must keep the seven D-fixes wired.
 describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () => {
-    it( 'D4: the diff-banner anchor null-guards the target before scrollIntoView', () => {
-        // the onclick must look up the node and only scroll when it exists (no throw on a null node).
-        // (the source escapes the inner apostrophes as \', so match the literal source text.)
-        expect( clientSource ).toContain( 'var t=document.getElementById(' )
-        expect( clientSource ).toContain( 'if(t){t.scrollIntoView({behavior:\\\'smooth\\\'})}' )
-        // the old unguarded direct-call form (getElementById(...).scrollIntoView, no guard) is gone.
-        expect( clientSource ).not.toContain( '\\\').scrollIntoView({behavior:\\\'smooth\\\'})">' )
+    it( 'D4/WI-110: the diff-banner chapter link is a keyboard-focusable button whose click null-guards the target', () => {
+        // Memo 076 WI-110: the changed-chapter link is a <button> (data-target) wired via
+        // addEventListener — no inline onclick string (CSP-safe, tastaturfokussierbar). The handler
+        // still looks up the heading and only scrolls when it exists (no throw on a null node).
+        expect( clientSource ).toContain( 'class="diff-chapter-link" data-target="' )
+        expect( clientSource ).toContain( "var t = document.getElementById( btn.getAttribute( 'data-target' ) )" )
+        expect( clientSource ).toContain( "if( t ) { t.scrollIntoView( { behavior: 'smooth' } ) }" )
+        // The old inline onclick string form is gone.
+        expect( clientSource ).not.toContain( 'var t=document.getElementById(' )
     } )
 
 

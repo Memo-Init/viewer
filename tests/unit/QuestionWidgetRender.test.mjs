@@ -61,15 +61,21 @@ describe( 'Question widget render — Phase 5 (Memo 016 Kap 11)', () => {
     } )
 
 
-    it( 'emits a valid, matching scrollToTopic RegExp (PRD-025)', () => {
+    it( 'emits a valid, matching scrollToTopic RegExp (PRD-025 / Memo 076 WI-104)', () => {
         expect( emittedScript.includes( 'function findTopicTarget' ) ).toBe( true )
-        // The emitted browser string must be single-escaped, not the broken quad-escape.
-        expect( emittedScript.includes( "'kap(itel)?\\\\.?" ) ).toBe( false )
-        expect( emittedScript.includes( "'kap(itel)?\\.?\\s*'" ) ).toBe( true )
+        // Memo 076 WI-104: the file is served standalone (no template-literal layer). The old form
+        // used single-backslash STRING escapes ('kap(itel)?\.?\s*'), which in a standalone JS string
+        // collapse to /kap(itel)?.?s*/ and match NO heading. The fix builds the source from regex
+        // LITERAL .source fragments (single backslashes in the file, metaclasses preserved).
+        expect( emittedScript.includes( '/kap(itel)?\\.?\\s*/.source' ) ).toBe( true )
+        // The broken single-escaped quoted-string form must be gone.
+        expect( emittedScript.includes( "'kap(itel)?\\.?\\s*'" ) ).toBe( false )
 
-        // Reproduce the exact RegExp the browser builds and prove it matches real headings.
+        // Reproduce the exact RegExp the browser builds (same regex-literal .source approach) and
+        // prove it matches real "Kapitel N.N" headings.
         const pos = '11.7'
-        const re = new RegExp( 'kap(itel)?\\.?\\s*' + String( pos ).replace( '.', '\\.' ) + '\\b', 'i' )
+        const escapedPos = String( pos ).replace( /\./g, /\./.source )
+        const re = new RegExp( /kap(itel)?\.?\s*/.source + escapedPos + /\b/.source, 'i' )
         expect( re.test( 'Kapitel 11.7 Lessons' ) ).toBe( true )
         expect( re.test( 'Kap. 11.7' ) ).toBe( true )
         expect( re.test( 'Kap 11.7' ) ).toBe( true )

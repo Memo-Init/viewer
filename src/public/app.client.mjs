@@ -183,6 +183,13 @@
         let lastTree = {}
         let lastLatest = []
         let lastTranscriptTree = {}
+        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the last client registry snapshot from the clientList
+        // WS broadcast. Drives both the Clients view (renderClientsArea) and the head summary.
+        let lastClients = []
+        // PRD-P3-04/05/06 (Memo 075 Phase 3, WI-012/013): the annotations of the currently viewed memo.
+        // Fetched on content load + refreshed by the annotationList WS broadcast; rendered idempotently
+        // by applyAnnotations() as <mark>/row-badges. Orphans (no anchor match) are surfaced, not dropped.
+        let lastAnnotations = []
         let pendingQuestionsScroll = false
         // PRD-016 (Memo 016, E8): no-op-skip guard. renderSidebar() does a full innerHTML rebuild
         // on every WS broadcast (flicker + CPU). We keep the signature of the data that produced
@@ -220,59 +227,13 @@
             }
         }
 
-        // PRD-012 (Memo 072, Phase 4, F6=A): the SESSION head. Fetch the session-driven snapshot
-        // { namespace, activeMemo, workMode } from /api/session and render Namespace/Memo/Mode plus the
-        // SECOND lamp #session-status (Session-Health), which is SEPARATE from the #status server-connect
-        // lamp (T003 #3). A missing source is rendered as an em dash (—), never a guessed value. The
-        // workMode is the CORE work-mode (SessionMarkStore-derived); the viewer only displays it.
-        var sessionNamespaceEl = document.getElementById( 'session-namespace' )
-        var sessionMemoEl = document.getElementById( 'session-memo' )
-        var sessionModeEl = document.getElementById( 'session-mode' )
-        var sessionStatusEl = document.getElementById( 'session-status' )
-
-        function renderSessionHead( head ) {
-            var safe = ( head && typeof head === 'object' ) ? head : {}
-            var namespace = ( typeof safe.namespace === 'string' && safe.namespace.length > 0 ) ? safe.namespace : '—'
-            var activeMemo = ( typeof safe.activeMemo === 'string' && safe.activeMemo.length > 0 ) ? safe.activeMemo : '—'
-            var workMode = ( typeof safe.workMode === 'string' && safe.workMode.length > 0 ) ? safe.workMode : '—'
-
-            if( sessionNamespaceEl ) { sessionNamespaceEl.textContent = namespace }
-            if( sessionMemoEl ) { sessionMemoEl.textContent = activeMemo }
-            if( sessionModeEl ) { sessionModeEl.textContent = workMode }
-            if( sessionStatusEl ) {
-                var active = workMode !== '—'
-                sessionStatusEl.classList.toggle( 'active', active )
-                sessionStatusEl.title = active ? ( 'Session aktiv — Mode: ' + workMode ) : 'Keine aktive Session'
-            }
-        }
-
-        function refreshSessionHead() {
-            fetch( '/api/session' )
-                .then( function( resp ) { return resp.json() } )
-                .then( function( head ) { renderSessionHead( head ) } )
-                .catch( function() { renderSessionHead( null ) } )
-        }
-
-        // PRD-013 (Memo 072, Phase 4, F6=A): the cockpit line, MERGED into the SAME session head (F6=A)
-        // as Namespace/Memo/Mode — the ONE interface surface, not a second CockpitWatcher.serve() port
-        // (T003 #10/#11). Fetch the rendered `phase • pct • worker • budget • age` line from /api/cockpit
-        // and drop it into #session-cockpit. A missing/corrupt snapshot (or no active memo) renders the
-        // em-dash fallback line the endpoint already returns — never a guessed value.
-        var sessionCockpitEl = document.getElementById( 'session-cockpit' )
-
-        function renderCockpit( view ) {
-            var safe = ( view && typeof view === 'object' ) ? view : {}
-            var line = ( typeof safe.line === 'string' && safe.line.length > 0 ) ? safe.line : '—'
-
-            if( sessionCockpitEl ) { sessionCockpitEl.textContent = line }
-        }
-
-        function refreshCockpit() {
-            fetch( '/api/cockpit' )
-                .then( function( resp ) { return resp.json() } )
-                .then( function( view ) { renderCockpit( view ) } )
-                .catch( function() { renderCockpit( null ) } )
-        }
+        // Memo 075 Phase 3 (PRD-P3-02): the M072 global SESSION head (Namespace/Memo/Mode + the merged
+        // cockpit line) was removed. Per Memo 075 Kap 18 that shared-server viewer-head was the wrong
+        // interpretation — a single global "activeMemo" is wrong when several CC instances run; the
+        // per-terminal "du-bist-hier" belongs in the terminal statusline (lesson
+        // you-are-here-belongs-in-terminal-statusline). The per-client Clients registry below is the
+        // correct viewer surface, so renderSessionHead/refreshSessionHead and renderCockpit/refreshCockpit
+        // (with /api/session and /api/cockpit) no longer exist here.
 
         window.selectRevision = function( documentId, fileName ) {
             // PRD-009 (Memo 016 Kap 7, F4): explicitly picking a memo/revision returns home to
@@ -1081,7 +1042,11 @@
                     // (MemoView.enrichRevisionStatus). Legacy/parseError revisions never queue.
                     // Prepare-Revisionen (revisionType 'prepare') sind Basis-Snapshots (memo-revision-
                     // generate) und nie Queue-Material — sie spiegeln keinen offenen Transcript-Job.
-                    if( rev && rev.revisionStatus !== 'eingeloggt' && rev.isLegacy !== true && rev.parseError !== true && rev.revisionType !== 'prepare' ) {
+                    // PRD-P1-03 (Memo 075, WI-008): mirror DocumentRegistry.isInQueue — a revision
+                    // superseded by a newer non-prepare revision of the same memo (isSuperseded, joined
+                    // server-side in MemoView.#markSupersededRevisions) drops out too, so an old revision
+                    // without a transcript is no longer a perpetually-open dead end.
+                    if( rev && rev.revisionStatus !== 'eingeloggt' && rev.isLegacy !== true && rev.parseError !== true && rev.revisionType !== 'prepare' && rev.isSuperseded !== true ) {
                         pairs.push( { doc: doc, rev: rev } )
                     }
                 } )
@@ -2058,14 +2023,17 @@
         var modeMemosBtn = document.getElementById( 'mode-memos' )
         // PRD-017 (Memo 072, Phase 5): the 4th VIEW mode button (merged Spec-Viewer).
         var modeSpecsBtn = document.getElementById( 'mode-specs' )
+        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients VIEW mode button (live client registry).
+        var modeClientsBtn = document.getElementById( 'mode-clients' )
         var transcriptNavBtn = document.getElementById( 'transcript-new' )
         var docSidebarEl = document.getElementById( 'doc-sidebar' )
 
-        // PRD-017: set the active class on exactly the one mode button (three-way now).
+        // PRD-017: set the active class on exactly the one mode button (four-way now).
         function setActiveModeButton( mode ) {
             if( modeTranscriptsBtn ) { modeTranscriptsBtn.classList.toggle( 'active', mode === 'transcripts' ) }
             if( modeMemosBtn ) { modeMemosBtn.classList.toggle( 'active', mode === 'memos' ) }
             if( modeSpecsBtn ) { modeSpecsBtn.classList.toggle( 'active', mode === 'specs' ) }
+            if( modeClientsBtn ) { modeClientsBtn.classList.toggle( 'active', mode === 'clients' ) }
         }
 
         // NavBar chrome per active view (REV-05 R4/F6): the redundant "+ Neues Memo" primary
@@ -2088,6 +2056,14 @@
                     docSidebarEl.classList.remove( 'transcripts-mode' )
                     docSidebarEl.classList.add( 'specs-mode' )
                 }
+            } else if( currentMode === 'clients' ) {
+                // PRD-P3-02 (Memo 075 Phase 3, WI-009): Clients view — the memo-only "+ Transcript"
+                // button is hidden; the client list owns #content (like the specs view owns it).
+                if( transcriptNavBtn ) { transcriptNavBtn.style.display = 'none' }
+                if( docSidebarEl ) {
+                    docSidebarEl.classList.remove( 'transcripts-mode' )
+                    docSidebarEl.classList.remove( 'specs-mode' )
+                }
             } else {
                 if( transcriptNavBtn ) { transcriptNavBtn.style.display = '' }
                 if( docSidebarEl ) {
@@ -2107,6 +2083,13 @@
                 setActiveModeButton( 'specs' )
                 applyModeChrome()
                 loadSpecs()
+            } else if( mode === 'clients' ) {
+                // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients view — render the live client
+                // registry into #content. The list is kept fresh by the clientList WS broadcast.
+                currentMode = 'clients'
+                setActiveModeButton( 'clients' )
+                applyModeChrome()
+                renderClientsArea()
             } else if( mode === 'transcripts' ) {
                 currentMode = 'transcripts'
                 setActiveModeButton( 'transcripts' )
@@ -2137,12 +2120,14 @@
         function modeForPath( pathname ) {
             if( pathname === '/transcripts' || pathname.indexOf( '/transcripts/' ) === 0 ) { return 'transcripts' }
             if( pathname === '/specs' || pathname.indexOf( '/specs/' ) === 0 ) { return 'specs' }
+            if( pathname === '/clients' || pathname.indexOf( '/clients/' ) === 0 ) { return 'clients' }
             return 'memos'
         }
 
         function pathForMode( mode ) {
             if( mode === 'transcripts' ) { return '/transcripts' }
             if( mode === 'specs' ) { return '/specs' }
+            if( mode === 'clients' ) { return '/clients' }
             return '/memos'
         }
 
@@ -2167,6 +2152,89 @@
 
         if( modeSpecsBtn ) {
             modeSpecsBtn.addEventListener( 'click', function() { setMode( 'specs', { push: true } ) } )
+        }
+
+        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients view button + the compact clients-head
+        // summary both route into the Clients view.
+        if( modeClientsBtn ) {
+            modeClientsBtn.addEventListener( 'click', function() { setMode( 'clients', { push: true } ) } )
+        }
+
+        var clientsHeadEl = document.getElementById( 'clients-head' )
+        if( clientsHeadEl ) {
+            clientsHeadEl.addEventListener( 'click', function() { setMode( 'clients', { push: true } ) } )
+        }
+
+        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the compact head summary "N Clients · M warten". M is
+        // the number of clients in the derived `waiting-for-user-answer` status. Always visible in the
+        // nav; a click routes to the Clients view (wired above). No em-dash guess — 0 renders as "0".
+        function renderClientsSummary( clients ) {
+            if( !clientsHeadEl ) { return }
+            var list = Array.isArray( clients ) ? clients : []
+            var waiting = list.filter( function( c ) { return c && c.status === 'waiting-for-user-answer' } ).length
+            var label = list.length + ' Client' + ( list.length === 1 ? '' : 's' )
+            if( waiting > 0 ) { label = label + ' · ' + waiting + ' warten' }
+            clientsHeadEl.textContent = label
+            clientsHeadEl.classList.toggle( 'has-waiting', waiting > 0 )
+        }
+
+        // PRD-P3-02 (Memo 075 Phase 3, WI-009): render the client registry into #content while the
+        // Clients view is active. One row per registered CC instance: projectId · M{memo} · {mode} ·
+        // {status}. A status pill carries the derived state (working / waiting-for-user-answer / stale).
+        // Read-only surface — the viewer never mutates a client (the SessionStart-Hook owns registration).
+        function renderClientsArea() {
+            if( currentMode !== 'clients' ) { return }
+            if( !contentEl ) { return }
+
+            var list = Array.isArray( lastClients ) ? lastClients : []
+            var wrap = document.createElement( 'div' )
+            wrap.className = 'clients-view'
+
+            var heading = document.createElement( 'h1' )
+            heading.textContent = 'Clients'
+            wrap.appendChild( heading )
+
+            if( list.length === 0 ) {
+                var empty = document.createElement( 'p' )
+                empty.className = 'clients-empty'
+                empty.textContent = 'Keine registrierten CC-Instanzen. Eine Instanz meldet sich beim SessionStart an (POST /api/clients).'
+                wrap.appendChild( empty )
+                contentEl.innerHTML = ''
+                contentEl.appendChild( wrap )
+
+                return
+            }
+
+            var table = document.createElement( 'table' )
+            table.className = 'clients-table'
+            var thead = document.createElement( 'thead' )
+            thead.innerHTML = '<tr><th>Projekt</th><th>Memo</th><th>Mode</th><th>Status</th><th>Session</th></tr>'
+            table.appendChild( thead )
+
+            var tbody = document.createElement( 'tbody' )
+            list.forEach( function( client ) {
+                var tr = document.createElement( 'tr' )
+                tr.className = 'client-row status-' + ( client && client.status ? client.status : 'unknown' )
+
+                var project = ( client && client.projectId ) ? client.projectId : '—'
+                var memo = ( client && client.memoNumber ) ? ( 'M' + client.memoNumber ) : '—'
+                var mode = ( client && client.workMode ) ? client.workMode : '—'
+                var status = ( client && client.status ) ? client.status : '—'
+                var session = ( client && client.sessionId ) ? client.sessionId : '—'
+
+                tr.innerHTML =
+                    '<td>' + escapeHtml( project ) + '</td>' +
+                    '<td>' + escapeHtml( memo ) + '</td>' +
+                    '<td>' + escapeHtml( mode ) + '</td>' +
+                    '<td><span class="client-status-pill client-status-' + escapeAttr( status ) + '">' + escapeHtml( status ) + '</span></td>' +
+                    '<td><code>' + escapeHtml( session ) + '</code></td>'
+                tbody.appendChild( tr )
+            } )
+            table.appendChild( tbody )
+            wrap.appendChild( table )
+
+            contentEl.innerHTML = ''
+            contentEl.appendChild( wrap )
         }
 
         window.addEventListener( 'popstate', function( ev ) {
@@ -4305,6 +4373,43 @@
             var sep = transcript.trim().length > 0 && answerBlocks.length > 0 ? '\n\n' : ''
             var content = transcript.trim() + sep + answerBlocks.join( '\n' )
 
+            // PRD-P3-08 (Memo 075 Phase 3, WI-026/027): append the selected on-demand quality checks as
+            // a "## Quality-Checks angefragt" section so the next memo-revision-generate reads it and runs
+            // each chosen check in a separate subagent (the viewer never spawns agents — skill-triggered).
+            // Inlined (not a helper) so the payload assembly stays self-contained.
+            var chosenQuality = []
+            document.querySelectorAll( '#pp-quality-list .pp-quality-check' ).forEach( function( box ) {
+                if( box.checked ) { chosenQuality.push( box.getAttribute( 'data-quality' ) || box.value ) }
+            } )
+            if( chosenQuality.length > 0 ) {
+                var qualityLines = chosenQuality.map( function( name ) { return '- ' + name } )
+                var qualitySection = '## Quality-Checks angefragt\n\n' + qualityLines.join( '\n' ) + '\n'
+                var qSep = content.trim().length > 0 ? '\n\n' : ''
+                content = content + qSep + qualitySection
+            }
+
+            // PRD-P3-07 (Memo 075 Phase 3, WI-012/013/014): fold the discussed revision's annotations into
+            // the review transcript as a "## Anmerkungen" section, so "bei Anmerkung 4 war…" resolves in
+            // ONE payload (no second fetch, no bare reference — lesson substance-in-revision-not-links).
+            // Idempotent/dedupe like appendAddedAnswers: a block already present in the content is skipped.
+            // typeof-guard so the isolated applyPromptEdit vm-eval (no module scope) treats it as empty.
+            var annSource = ( typeof lastAnnotations !== 'undefined' && Array.isArray( lastAnnotations ) ) ? lastAnnotations : []
+            var annForRev = annSource.filter( function( a ) { return a && ( !revisionId || a.revisionId === revisionId ) } )
+            var annBlocks = annForRev
+                .map( function( a ) {
+                    var num = String( a.id || '' ).replace( /ANM-0*/, '' )
+                    var quote = a.anchor && a.anchor.type === 'table-row'
+                        ? ( 'Zeile: ' + ( a.anchor.rowKey || a.anchor.rowText || '' ) )
+                        : ( 'Zitat: "' + ( a.anchor && a.anchor.exact ? a.anchor.exact : '' ) + '"' + ( a.anchor && a.anchor.chapterSlug ? ( ' (Kap. ' + a.anchor.chapterSlug + ')' ) : '' ) )
+
+                    return '### ' + a.id + ' — Anmerkung ' + num + '\n> ' + quote + '\nKommentar: ' + ( a.comment || '' )
+                } )
+                .filter( function( block ) { return content.indexOf( block ) === -1 } )
+            if( annBlocks.length > 0 ) {
+                var aSep = content.trim().length > 0 ? '\n\n' : ''
+                content = content + aSep + '## Anmerkungen\n\n' + annBlocks.join( '\n\n' ) + '\n'
+            }
+
             if( content.trim().length === 0 ) {
                 if( ppError ) {
                     ppError.textContent = 'Mindestens ein Transcript-Text oder eine Antwort ist erforderlich.'
@@ -4438,7 +4543,10 @@
                             .then( function( data ) {
                                 var sessions = ( data && data.sessions ) ? data.sessions : []
                                 sessions.forEach( function( sessionId ) {
-                                    fetch( '/api/session/' + encodeURIComponent( sessionId ) + '/wake', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' } ).catch( function() {} )
+                                    // PRD-P3-03 (Memo 075 Phase 3, WI-010): carry the transcriptId in the
+                                    // wake payload so the re-invoked agent full-reads THIS transcript
+                                    // without a second lookup (the flag is no longer empty).
+                                    fetch( '/api/session/' + encodeURIComponent( sessionId ) + '/wake', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify( { transcriptId: transcriptId } ) } ).catch( function() {} )
                                 } )
                             } )
                             .catch( function() {} )
@@ -4551,6 +4659,10 @@
             // then the store-driven chapter pill + cross-link line.
             resolveWikiLinks()
             wrapTablesCollapsible()
+            // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): the annotation render pass. Runs on EVERY
+            // render path (this method is the common post-render hook, incl. after renderDiffView), and
+            // is idempotent (skips nodes already inside an .anm-mark / rows already .anm-row).
+            applyAnnotations()
             applyTopicPillsFromStore( currentDocumentId )
         }
 
@@ -4665,6 +4777,436 @@
 
             return a
         }
+
+
+        // ====================================================================
+        // PRD-P3-04/05/06 (Memo 075 Phase 3, WI-012/013): text-passage + table-row annotations.
+        // Anchors are W3C-style TextQuoteSelectors (exact+prefix+suffix+chapterSlug) for prose and a
+        // stable rowKey (Nr-column, Phase-2 WI-036) for table rows — offsets break on a DOM rebuild
+        // (r7-F04), so the anchor is content-addressed, resolved in this idempotent post-render pass.
+        // ====================================================================
+
+        // The discussed revision id from the current filename ("REV-06.md" -> "REV-06"). Annotations are
+        // memo-scoped but rendered/created against the revision being read.
+        function currentRevisionId() {
+            var m = String( currentFileName || '' ).match( /(REV-\d+)/ )
+
+            return m ? m[ 1 ] : null
+        }
+
+        // Fetch the memo's annotations (optionally scoped to the current revision) and re-run the pass.
+        function refreshAnnotations() {
+            if( !currentDocumentId ) { return }
+            var rev = currentRevisionId()
+            var qs = rev ? ( '?revisionId=' + encodeURIComponent( rev ) ) : ''
+            fetch( '/api/documents/' + encodeURIComponent( currentDocumentId ) + '/annotations' + qs )
+                .then( function( r ) { return r.ok ? r.json() : { annotations: [] } } )
+                .then( function( data ) {
+                    lastAnnotations = ( data && data.annotations ) ? data.annotations : []
+                    applyAnnotations()
+                } )
+                .catch( function() {} )
+        }
+
+        // The numeric display label "Anmerkung N" from an ANM-NNN id.
+        function annotationNumber( id ) {
+            var m = String( id || '' ).match( /ANM-0*(\d+)/ )
+
+            return m ? String( parseInt( m[ 1 ], 10 ) ) : '?'
+        }
+
+        // Build a small numbered badge for an annotation. Clicking opens the detail popup (.t-modal).
+        function annotationBadge( ann ) {
+            var badge = document.createElement( 'span' )
+            badge.className = 'anm-badge'
+            badge.setAttribute( 'data-anm', ann.id )
+            badge.textContent = annotationNumber( ann.id )
+            badge.title = 'Anmerkung ' + annotationNumber( ann.id ) + ( ann.comment ? ( ': ' + ann.comment ) : '' )
+            badge.addEventListener( 'click', function( e ) {
+                e.preventDefault()
+                e.stopPropagation()
+                showAnnotationDetail( ann )
+            } )
+
+            return badge
+        }
+
+        // The idempotent render pass. Runs from applyContentStructure on every render path. Each
+        // annotation is anchored; unanchored ones are surfaced fail-loud in an orphan list (r7 — never
+        // silently dropped). Skips content already carrying its mark/row (re-render safety).
+        function applyAnnotations() {
+            if( !contentEl ) { return }
+            var list = Array.isArray( lastAnnotations ) ? lastAnnotations : []
+
+            // Idempotency: drop a stale orphan list before recomputing (marks/rows are re-added below;
+            // a full innerHTML re-render already wiped previous marks, so we only guard within a pass).
+            var staleOrphan = document.getElementById( 'anm-orphan-list' )
+            if( staleOrphan && staleOrphan.parentNode ) { staleOrphan.parentNode.removeChild( staleOrphan ) }
+
+            var orphans = []
+            list.forEach( function( ann ) {
+                if( !ann || !ann.anchor ) { return }
+                var anchored = ann.anchor.type === 'table-row'
+                    ? anchorTableRow( ann )
+                    : anchorTextQuote( ann )
+                if( !anchored ) { orphans.push( ann ) }
+            } )
+
+            if( orphans.length > 0 ) { renderOrphanList( orphans ) }
+        }
+
+        // Collect forward element siblings until the next H2 (recursion, no while-loop).
+        function collectUntilNextH2( node, acc ) {
+            if( !node || node.tagName === 'H2' ) { return acc }
+            acc.push( node )
+
+            return collectUntilNextH2( node.nextElementSibling, acc )
+        }
+
+        // The id of the nearest preceding H2 heading (chapterSlug), scanning previous siblings then up
+        // the ancestor chain (recursion, no while-loop). Null when none is found before #content.
+        function scanPrevForH2( prev ) {
+            if( !prev ) { return null }
+            if( prev.tagName === 'H2' && prev.id ) { return prev.id }
+
+            return scanPrevForH2( prev.previousElementSibling )
+        }
+
+        function nearestPrecedingH2Slug( fromEl ) {
+            if( !fromEl || fromEl === contentEl ) { return null }
+            var found = scanPrevForH2( fromEl.previousElementSibling )
+            if( found ) { return found }
+
+            return nearestPrecedingH2Slug( fromEl.parentNode )
+        }
+
+        // Text-quote anchor: walk text nodes (mirror of resolveWikiLinks), find the `exact` substring in
+        // the chapter scope, wrap the match in <mark class="anm-mark" data-anm="ANM-NNN"> + badge. Returns
+        // true when anchored. Cross-node exact matches are not wrapped (single-node match, note in PRD).
+        function anchorTextQuote( ann ) {
+            // Already anchored in this pass? (idempotent skip.)
+            if( contentEl.querySelector( '.anm-mark[data-anm="' + cssEscapeAttr( ann.id ) + '"]' ) ) { return true }
+
+            var exact = ann.anchor.exact || ''
+            if( exact.length === 0 ) { return false }
+
+            var skip = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true, 'MARK': true }
+            var scope = chapterScopeRoot( ann.anchor.chapterSlug )
+            var target = null
+            var collect = function( node ) {
+                if( target ) { return }
+                node.childNodes.forEach( function( child ) {
+                    if( target ) { return }
+                    if( child.nodeType === 3 ) {
+                        if( String( child.nodeValue || '' ).indexOf( exact ) !== -1 ) { target = child }
+
+                        return
+                    }
+                    if( child.nodeType === 1 && !skip[ child.tagName ] && !( child.classList && child.classList.contains( 'anm-mark' ) ) ) { collect( child ) }
+                } )
+            }
+            collect( scope )
+
+            if( !target ) { return false }
+
+            var value = String( target.nodeValue )
+            var at = value.indexOf( exact )
+            var before = value.slice( 0, at )
+            var after = value.slice( at + exact.length )
+
+            var frag = document.createDocumentFragment()
+            if( before.length > 0 ) { frag.appendChild( document.createTextNode( before ) ) }
+            var mark = document.createElement( 'mark' )
+            mark.className = 'anm-mark'
+            mark.setAttribute( 'data-anm', ann.id )
+            mark.textContent = exact
+            frag.appendChild( mark )
+            frag.appendChild( annotationBadge( ann ) )
+            if( after.length > 0 ) { frag.appendChild( document.createTextNode( after ) ) }
+
+            target.parentNode.replaceChild( frag, target )
+
+            return true
+        }
+
+        // Table-row anchor: find the tr whose first cell (Nr-column, Phase-2 WI-036 rowKey) equals the
+        // stored rowKey; fall back to a normalized rowText contains-match. Marks tr.anm-row + a badge in
+        // the first cell. Returns true when anchored. Idempotent (skips a row already carrying the badge).
+        function anchorTableRow( ann ) {
+            if( contentEl.querySelector( 'tr.anm-row [data-anm="' + cssEscapeAttr( ann.id ) + '"]' ) ) { return true }
+
+            var scope = chapterScopeRoot( ann.anchor.chapterSlug )
+            var rows = scope.querySelectorAll ? scope.querySelectorAll( 'tr' ) : []
+            var rowKey = ann.anchor.rowKey || ''
+            var rowText = ann.anchor.rowText || ''
+            var match = null
+
+            rows.forEach( function( tr ) {
+                if( match ) { return }
+                var firstCell = tr.querySelector( 'td, th' )
+                var firstText = firstCell ? String( firstCell.textContent || '' ).trim() : ''
+                if( rowKey.length > 0 && firstText === rowKey ) { match = tr; return }
+                if( rowKey.length === 0 && rowText.length > 0 ) {
+                    var norm = String( tr.textContent || '' ).replace( /\s+/g, ' ' ).trim()
+                    if( norm.indexOf( rowText ) !== -1 ) { match = tr }
+                }
+            } )
+
+            if( !match ) { return false }
+
+            match.classList.add( 'anm-row' )
+            match.setAttribute( 'data-row-key', rowKey || rowText.slice( 0, 40 ) )
+            var host = match.querySelector( 'td, th' )
+            if( host ) { host.appendChild( annotationBadge( ann ) ) }
+
+            return true
+        }
+
+        // The chapter scope root: the section spanned by the H2 whose id === chapterSlug up to the next
+        // H2. Returns a detached container of the in-scope nodes when found, else the whole #content so an
+        // anchor without a resolvable chapter still gets a chance to match.
+        function chapterScopeRoot( chapterSlug ) {
+            if( !chapterSlug ) { return contentEl }
+            var heading = document.getElementById( chapterSlug )
+            if( !heading || heading.tagName !== 'H2' ) { return contentEl }
+
+            // Collect forward siblings until the next H2 (no while-loop — bounded recursion). We mutate
+            // the live nodes in place, so return a lightweight wrapper over childNodes + querySelectorAll.
+            var nodes = collectUntilNextH2( heading.nextElementSibling, [] )
+
+            return {
+                childNodes: nodes,
+                querySelectorAll: function( sel ) {
+                    var out = []
+                    nodes.forEach( function( n ) {
+                        if( n.matches && n.matches( sel ) ) { out.push( n ) }
+                        if( n.querySelectorAll ) {
+                            n.querySelectorAll( sel ).forEach( function( x ) { out.push( x ) } )
+                        }
+                    } )
+
+                    return out
+                }
+            }
+        }
+
+        // Fail-loud orphan list (r7): annotations whose anchor no longer matches (live-edited quote /
+        // renumbered row) are shown "nicht verankert", never dropped. Appended once at the content end.
+        function renderOrphanList( orphans ) {
+            if( !contentEl || orphans.length === 0 ) { return }
+            var box = document.createElement( 'div' )
+            box.id = 'anm-orphan-list'
+            box.className = 'anm-orphan-list'
+            var title = document.createElement( 'div' )
+            title.className = 'anm-orphan-title'
+            title.textContent = 'Nicht verankerte Anmerkungen (' + orphans.length + ')'
+            box.appendChild( title )
+            orphans.forEach( function( ann ) {
+                var row = document.createElement( 'div' )
+                row.className = 'anm-orphan-item'
+                row.setAttribute( 'data-anm', ann.id )
+                var quote = ann.anchor && ann.anchor.exact ? ann.anchor.exact : ( ann.anchor && ann.anchor.rowKey ? ann.anchor.rowKey : '' )
+                row.textContent = 'Anmerkung ' + annotationNumber( ann.id ) + ' — „' + quote + '" · ' + ( ann.comment || '' )
+                box.appendChild( row )
+            } )
+            contentEl.appendChild( box )
+        }
+
+        // A minimal attribute-safe escaper for the data-anm selector (ANM-NNN is already safe; this
+        // guards against any unexpected value without pulling in CSS.escape, absent in older engines).
+        function cssEscapeAttr( value ) {
+            return String( value == null ? '' : value ).replace( /["\\\]]/g, '\\$&' )
+        }
+
+        // ---- annotation authoring UI (selection -> modal -> POST) ----
+
+        var annotateFloatingBtn = document.getElementById( 'annotate-floating' )
+        var pendingAnnotationAnchor = null
+
+        // Build a TextQuoteSelector from the current window selection inside #content: exact + ~32-char
+        // prefix/suffix from the surrounding block text + chapterSlug from the nearest preceding H2 id.
+        function buildTextQuoteAnchorFromSelection() {
+            var sel = window.getSelection ? window.getSelection() : null
+            if( !sel || sel.rangeCount === 0 || sel.isCollapsed ) { return null }
+            var exact = String( sel.toString() || '' ).trim()
+            if( exact.length === 0 ) { return null }
+
+            var range = sel.getRangeAt( 0 )
+            var container = range.startContainer
+            var blockEl = container.nodeType === 3 ? container.parentNode : container
+            if( !contentEl.contains( blockEl ) ) { return null }
+
+            var blockText = String( blockEl.textContent || '' )
+            var idx = blockText.indexOf( exact )
+            var prefix = idx > 0 ? blockText.slice( Math.max( 0, idx - 32 ), idx ) : ''
+            var suffix = idx >= 0 ? blockText.slice( idx + exact.length, idx + exact.length + 32 ) : ''
+
+            var chapterSlug = nearestPrecedingH2Slug( blockEl )
+
+            return { type: 'text-quote', exact: exact, prefix: prefix, suffix: suffix, chapterSlug: chapterSlug }
+        }
+
+        // Wire the selection -> floating "Anmerken" button -> modal flow. Only active on the memo view.
+        function initAnnotationUI() {
+            if( !contentEl || !annotateFloatingBtn ) { return }
+
+            contentEl.addEventListener( 'mouseup', function() {
+                if( currentMode !== 'memos' ) { return }
+                var anchor = buildTextQuoteAnchorFromSelection()
+                if( !anchor ) {
+                    annotateFloatingBtn.classList.add( 't-hidden' )
+
+                    return
+                }
+                var sel = window.getSelection()
+                var rect = sel.getRangeAt( 0 ).getBoundingClientRect()
+                annotateFloatingBtn.style.top = ( window.scrollY + rect.top - 34 ) + 'px'
+                annotateFloatingBtn.style.left = ( window.scrollX + rect.left ) + 'px'
+                annotateFloatingBtn.classList.remove( 't-hidden' )
+                pendingAnnotationAnchor = anchor
+            } )
+
+            annotateFloatingBtn.addEventListener( 'click', function() {
+                annotateFloatingBtn.classList.add( 't-hidden' )
+                if( pendingAnnotationAnchor ) { openAnnotationModal( pendingAnnotationAnchor ) }
+            } )
+
+            bindAnnotationModal()
+        }
+
+        // Open the annotation modal for a prepared anchor (text-quote from selection or table-row from
+        // the gutter button). REUSES the .t-modal overlay (no new CSS).
+        function openAnnotationModal( anchor ) {
+            var modal = document.getElementById( 'annotation-modal' )
+            var quoteEl = document.getElementById( 'anm-modal-quote' )
+            var commentEl = document.getElementById( 'anm-modal-comment' )
+            var errEl = document.getElementById( 'anm-modal-error' )
+            if( !modal ) { return }
+
+            pendingAnnotationAnchor = anchor
+            if( quoteEl ) {
+                var q = anchor.type === 'table-row' ? ( 'Zeile: ' + ( anchor.rowKey || anchor.rowText || '' ) ) : ( '„' + ( anchor.exact || '' ) + '"' )
+                quoteEl.textContent = q
+            }
+            if( commentEl ) { commentEl.value = '' }
+            if( errEl ) { errEl.classList.add( 't-hidden' ); errEl.textContent = '' }
+            modal.classList.remove( 't-hidden' )
+        }
+
+        function closeAnnotationModal() {
+            var modal = document.getElementById( 'annotation-modal' )
+            if( modal ) { modal.classList.add( 't-hidden' ) }
+            pendingAnnotationAnchor = null
+        }
+
+        function bindAnnotationModal() {
+            var modal = document.getElementById( 'annotation-modal' )
+            if( !modal || modal.dataset.bound === '1' ) { return }
+            modal.dataset.bound = '1'
+
+            var closeBtn = document.getElementById( 'anm-modal-close' )
+            var cancelBtn = document.getElementById( 'anm-modal-cancel' )
+            var saveBtn = document.getElementById( 'anm-modal-save' )
+            if( closeBtn ) { closeBtn.addEventListener( 'click', closeAnnotationModal ) }
+            if( cancelBtn ) { cancelBtn.addEventListener( 'click', closeAnnotationModal ) }
+            if( saveBtn ) { saveBtn.addEventListener( 'click', saveAnnotation ) }
+        }
+
+        // POST /api/annotations for the pending anchor + comment. On success the annotationList WS
+        // broadcast re-runs applyAnnotations (mark + badge appear without a reload).
+        function saveAnnotation() {
+            var commentEl = document.getElementById( 'anm-modal-comment' )
+            var errEl = document.getElementById( 'anm-modal-error' )
+            var comment = commentEl ? String( commentEl.value || '' ).trim() : ''
+            if( !pendingAnnotationAnchor ) { return }
+            if( comment.length === 0 ) {
+                if( errEl ) { errEl.textContent = 'Kommentar ist erforderlich.'; errEl.classList.remove( 't-hidden' ) }
+
+                return
+            }
+
+            var body = JSON.stringify( {
+                documentId: currentDocumentId,
+                revisionId: currentRevisionId(),
+                anchor: pendingAnnotationAnchor,
+                comment: comment
+            } )
+
+            fetch( '/api/annotations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body } )
+                .then( function( r ) { return r.json().then( function( d ) { return { ok: r.ok, data: d } } ) } )
+                .then( function( res ) {
+                    if( !res.ok ) {
+                        if( errEl ) { errEl.textContent = ( res.data && res.data.error ) || 'Server-Fehler'; errEl.classList.remove( 't-hidden' ) }
+
+                        return
+                    }
+                    closeAnnotationModal()
+                    refreshAnnotations()
+                } )
+                .catch( function() {
+                    if( errEl ) { errEl.textContent = 'Netzwerkfehler.'; errEl.classList.remove( 't-hidden' ) }
+                } )
+        }
+
+        // Detail popup for an existing annotation badge (REUSES .t-modal in read mode).
+        function showAnnotationDetail( ann ) {
+            var modal = document.getElementById( 'annotation-modal' )
+            var quoteEl = document.getElementById( 'anm-modal-quote' )
+            var commentEl = document.getElementById( 'anm-modal-comment' )
+            if( !modal ) { return }
+            if( quoteEl ) {
+                var q = ann.anchor && ann.anchor.type === 'table-row' ? ( 'Zeile: ' + ( ann.anchor.rowKey || ann.anchor.rowText || '' ) ) : ( '„' + ( ann.anchor && ann.anchor.exact ? ann.anchor.exact : '' ) + '"' )
+                quoteEl.textContent = 'Anmerkung ' + annotationNumber( ann.id ) + ' · ' + q
+            }
+            if( commentEl ) { commentEl.value = ann.comment || '' }
+            pendingAnnotationAnchor = null
+            modal.classList.remove( 't-hidden' )
+        }
+
+        // PRD-P3-06 (WI-013): table-row gutter "+" button on hover. Delegated so it survives re-renders.
+        function initTableRowAnnotationGutter() {
+            if( !contentEl ) { return }
+            contentEl.addEventListener( 'mouseover', function( e ) {
+                if( currentMode !== 'memos' ) { return }
+                var tr = e.target && e.target.closest ? e.target.closest( 'tr' ) : null
+                if( !tr || tr.querySelector( '.anm-row-gutter' ) ) { return }
+                var firstCell = tr.querySelector( 'td, th' )
+                if( !firstCell ) { return }
+                var gutter = document.createElement( 'button' )
+                gutter.type = 'button'
+                gutter.className = 'anm-row-gutter'
+                gutter.textContent = '+'
+                gutter.title = 'Zeile anmerken'
+                gutter.addEventListener( 'click', function( ev ) {
+                    ev.preventDefault()
+                    ev.stopPropagation()
+                    openAnnotationModal( buildTableRowAnchor( tr ) )
+                } )
+                firstCell.appendChild( gutter )
+            } )
+        }
+
+        // Build a table-row anchor: rowKey = first cell text when it looks like an ID (Nr-column), else
+        // null; rowText = normalized tr textContent fallback; chapterSlug from the nearest preceding H2.
+        function buildTableRowAnchor( tr ) {
+            var firstCell = tr.querySelector( 'td, th' )
+            var firstText = firstCell ? String( firstCell.textContent || '' ).replace( '+', '' ).trim() : ''
+            var looksLikeId = /^([A-Z]{1,4}-)?\d{1,4}[a-z]?$/.test( firstText ) || /^[A-Z]{1,4}-\d{1,4}$/.test( firstText )
+            var rowText = String( tr.textContent || '' ).replace( /\s+/g, ' ' ).replace( '+', '' ).trim()
+            var tableEl = tr.closest ? tr.closest( 'table' ) : null
+            var chapterSlug = nearestPrecedingH2Slug( tableEl || tr )
+
+            return {
+                type: 'table-row',
+                rowKey: looksLikeId ? firstText : null,
+                rowText: rowText.slice( 0, 200 ),
+                tableLabel: tableEl ? tableSummaryLabel( tableEl ) : null,
+                chapterSlug: chapterSlug
+            }
+        }
+
+        initAnnotationUI()
+        initTableRowAnnotationGutter()
 
 
         // PRD-018 (Memo 072 Kap 13, WI-T013-4/5/8, F10=A): inject the chapter topic-pille + cross-link
@@ -6318,14 +6860,6 @@
                 updateConnectionStatus( 'connected' )
                 reconnectAttempts = 0
 
-                // PRD-012 (Memo 072, Phase 4): (re)load the SESSION head on every (re)connect — the
-                // work-mode can advance mid-session (a rollout mark appended -> Create becomes Rollout),
-                // so a reconnect refreshes it without a page reload.
-                refreshSessionHead()
-                // PRD-013 (Memo 072, Phase 4): the cockpit line advances continuously mid-rollout
-                // (phase/pct/worker), so re-pull it on every (re)connect too — one interface, one refresh.
-                refreshCockpit()
-
                 if( reconnectTimer ) {
                     clearTimeout( reconnectTimer )
                     reconnectTimer = null
@@ -6371,6 +6905,26 @@
                     updateSidebarSticky( currentMemoName, currentFileName )
                 }
 
+                // PRD-P3-02 (Memo 075 Phase 3, WI-009): the client-registry broadcast. Refresh the head
+                // summary always; re-render the Clients view only while it is the active mode (no reload).
+                if( data.type === 'clientList' ) {
+                    lastClients = data.clients || []
+                    renderClientsSummary( lastClients )
+                    if( currentMode === 'clients' ) {
+                        renderClientsArea()
+                    }
+                }
+
+                // PRD-P3-04/05/06 (Memo 075 Phase 3, WI-012/013): the annotation-list broadcast. Adopt
+                // the fresh set for the discussed document and re-run the idempotent render pass so new
+                // annotations appear as marks/badges without a reload.
+                if( data.type === 'annotationList' ) {
+                    if( !data.documentId || data.documentId === currentDocumentId ) {
+                        lastAnnotations = data.annotations || []
+                        applyAnnotations()
+                    }
+                }
+
                 if( data.type === 'content' ) {
                     // notification sound disabled in server mode
                     isFirstLoad = false
@@ -6404,7 +6958,9 @@
                         // broadcast must NOT overwrite the open spec page. The snapshots above
                         // (lastContent/diff/vorwort/questions) are already refreshed, so leaving Specs
                         // (applyMode('memos')) restores the fresh memo prose without a page reload.
-                        if( currentMode !== 'specs' ) {
+                        // PRD-P3-02 (Memo 075 Phase 3): the Clients view likewise owns #content, so a
+                        // memo content broadcast must not overwrite the client list either.
+                        if( currentMode !== 'specs' && currentMode !== 'clients' ) {
                             if( showDiff && currentDiff ) {
                                 renderDiffView( data.content, currentDiff )
                             } else {
@@ -6443,6 +6999,9 @@
                         var versionMatch = data.fileName ? data.fileName.match( /v(\d+\.\d+)/ ) : null
                         var revSuffix = versionMatch ? ' #v' + versionMatch[1] : ''
                         document.title = portEmoji + ' ' + port + ' · ' + heading + revSuffix
+                        // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): load this revision's annotations
+                        // and run the render pass now that the document + revision are known.
+                        refreshAnnotations()
                     }
                 }
             }
@@ -6500,11 +7059,6 @@
         })()
 
         connect()
-        // PRD-012 (Memo 072, Phase 4): first paint of the SESSION head at boot (before the WS opens),
-        // so Namespace/Memo/Mode + the session-health lamp are populated immediately.
-        refreshSessionHead()
-        // PRD-013 (Memo 072, Phase 4): first paint of the MERGED cockpit line at boot too.
-        refreshCockpit()
 
         var mermaidModal = document.getElementById( 'mermaid-modal' )
         var mermaidModalSvg = document.getElementById( 'mermaid-modal-svg' )

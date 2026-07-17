@@ -671,8 +671,13 @@ class DocumentRegistry {
         const isLegacy = revision[ 'isLegacy' ] === true
         const parseError = revision[ 'parseError' ] === true
         const isPrepare = revision[ 'revisionType' ] === 'prepare'
+        // PRD-P1-03 (Memo 075, WI-008): a revision superseded by a newer non-prepare revision of the
+        // same memo leaves the queue even when it never got a transcript. Without this an old revision
+        // was a dead end and stayed "offen" forever (live 075: REV-01/REV-02). The flag is joined in
+        // MemoView.#markSupersededRevisions (deterministic from the REV-\d+ filename numbers).
+        const isSuperseded = revision[ 'isSuperseded' ] === true
 
-        return { 'inQueue': status !== 'eingeloggt' && !isLegacy && !parseError && !isPrepare }
+        return { 'inQueue': status !== 'eingeloggt' && !isLegacy && !parseError && !isPrepare && !isSuperseded }
     }
 
 
@@ -690,10 +695,25 @@ class DocumentRegistry {
 
         if( jsonFound === true ) {
             const list = Array.isArray( jsonQuestions ) ? jsonQuestions : []
-            struct[ 'answeredCount' ] = list
+            const jsonAnswered = list
                 .filter( ( q ) => q !== null && typeof q === 'object' && q[ 'answered' ] === true )
+            struct[ 'openCount' ] = list.length - jsonAnswered.length
+
+            // PRD-P1-01 (Memo 075, WI-006): the json path used to be EXCLUSIVE — a revision that moves
+            // its answered questions out of the json block into the `## Beantwortete Fragen` markdown
+            // section (the memo-revision-execute write convention) then reported answeredCount 0 (live:
+            // memo 072 showed {open:0,answered:0} despite 10 answers). Count the markdown-answered
+            // entries ADDITIVELY on top of the json-answered ones, deduped by F-id so a question that
+            // is present in BOTH forms (hybrid memo) is counted once. openCount stays json-driven.
+            const { sectionLines: answeredLines } = DocumentRegistry.#extractSection( { content, 'heading': 'Beantwortete Fragen' } )
+            const mdAnswered = DocumentRegistry.#countEntries( { sectionLines: answeredLines } )
+            const jsonAnsweredIds = DocumentRegistry.#collectJsonFIds( { questions: jsonAnswered } )
+            const mdAnsweredIds = DocumentRegistry.#collectHeadingFIds( { sectionLines: answeredLines } )
+            const overlap = mdAnsweredIds
+                .filter( ( id ) => jsonAnsweredIds.includes( id ) )
                 .length
-            struct[ 'openCount' ] = list.length - struct[ 'answeredCount' ]
+
+            struct[ 'answeredCount' ] = jsonAnswered.length + mdAnswered - overlap
 
             return struct
         }
@@ -1599,6 +1619,32 @@ class DocumentRegistry {
             .length
 
         return count
+    }
+
+
+    static #collectJsonFIds( { questions } ) {
+        // PRD-P1-01 (Memo 075, WI-006): the F-ids of a set of json questions, normalized to the
+        // `F{N}` form and deduped. Used to dedup the additive markdown-answered count against the
+        // json-answered count so a hybrid memo (same question in json AND markdown) counts once.
+        const list = Array.isArray( questions ) ? questions : []
+        const ids = list
+            .map( ( question ) => ( question !== null && typeof question === 'object' && typeof question[ 'id' ] === 'string' ) ? question[ 'id' ].trim().toUpperCase() : '' )
+            .filter( ( id ) => /^F\d+$/.test( id ) )
+
+        return [ ...new Set( ids ) ]
+    }
+
+
+    static #collectHeadingFIds( { sectionLines } ) {
+        // PRD-P1-01 (Memo 075, WI-006): the F-ids of the `### F{N}` headings in a section (case-
+        // insensitive, deduped), matching the same heading rule as #countQuestionHeadings.
+        const lines = Array.isArray( sectionLines ) ? sectionLines : []
+        const ids = lines
+            .map( ( rawLine ) => rawLine.trim().match( /^###\s+(F\d+)\b/i ) )
+            .filter( ( match ) => match !== null )
+            .map( ( match ) => match[ 1 ].toUpperCase() )
+
+        return [ ...new Set( ids ) ]
     }
 
 

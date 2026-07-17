@@ -175,45 +175,9 @@
 
         #status.connected { background: var(--accent-bright); }
 
-        /* PRD-012 (Memo 072, Phase 4, F6=A): the SESSION head — the running session's
-           Namespace/Memo/Mode. A plain label row (no pill group), so it is visually distinct from
-           the #mode-toggle VIEW switcher and the two are never confused (T003 #2). */
-        #session-head {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            padding: 0 6px;
-            font-size: 12px;
-            color: var(--text-muted);
-            white-space: nowrap;
-            flex-shrink: 0;
-        }
-
-        .session-head-item { display: inline-flex; align-items: baseline; gap: 4px; }
-        .session-head-label { color: var(--text-muted); font-weight: 500; }
-        .session-head-value { color: var(--text-1); font-weight: 600; font-family: var(--font-mono); }
-        .session-head-sep { color: var(--border); }
-
-        /* PRD-013 (Memo 072, Phase 4, F6=A): the cockpit line MERGED into the session head (F6=A) — the
-           ONE interface surface, not a second CockpitWatcher.serve() port. Compact + truncating so a long
-           "phase • pct • worker • budget • age" line never blows up the nav width. */
-        #session-cockpit { max-width: 340px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-
-        /* PRD-012 (Memo 072, Phase 4, T003 #3): SECOND lamp = Session-Health, SEPARATE from #status
-           (Server-Verbindung). Grey when no active session / work-mode, green when a session is
-           active — two distinct signals instead of one overloaded lamp. */
-        #session-status {
-            width: 6px;
-            height: 6px;
-            border-radius: 50%;
-            background: var(--text-muted);
-            opacity: 0.6;
-            transition: background 0.3s;
-            flex-shrink: 0;
-            margin-left: 2px;
-        }
-
-        #session-status.active { background: var(--accent-bright); opacity: 1; }
+        /* Memo 075 Phase 3 (PRD-P3-02): the M072 #session-head / .session-head-* / #session-cockpit /
+           #session-status styles were removed together with the global viewer-head they styled (Kap 18:
+           wrong interpretation — the per-client Clients registry .clients-head is the replacement). */
 
         /* PRD-016 (Memo 016, E9): visible offline banner, shown from the 1st failed attempt. */
         .offline-banner {
@@ -2989,3 +2953,35 @@
         #spec-page-meta .spm-path:hover { color: var(--accent, #2ea043); }
         #spec-page-meta .spm-badge { background: var(--bg-2, #21262d); border: 1px solid var(--border, #30363d); border-radius: 10px; padding: 1px 8px; white-space: nowrap; }
         #spec-page-meta .spm-sep { opacity: .45; }
+
+        /* PRD-P3-02 (Memo 075 Phase 3, WI-009): Clients head summary + Clients view. */
+        .clients-head { background: var(--bg-2, #21262d); border: 1px solid var(--border, #30363d); border-radius: 12px; color: var(--text-2, #c9d1d9); font-size: 12px; padding: 2px 10px; cursor: pointer; white-space: nowrap; }
+        .clients-head:hover { color: var(--text-1, #f0f6fc); border-color: var(--accent, #2ea043); }
+        .clients-head.has-waiting { border-color: #d29922; color: #d29922; }
+        .clients-view h1 { margin-top: 0; }
+        .clients-empty { color: var(--text-muted, #8b949e); }
+        .clients-table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+        .clients-table th, .clients-table td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--border, #30363d); font-size: 13px; }
+        .client-status-pill { border-radius: 10px; padding: 1px 8px; font-size: 11px; white-space: nowrap; border: 1px solid var(--border, #30363d); }
+        .client-status-working { color: var(--accent, #2ea043); }
+        .client-status-waiting-for-user-answer { color: #d29922; border-color: #d29922; }
+        .client-status-stale { color: var(--text-muted, #8b949e); opacity: .8; }
+
+        /* PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): annotations — marks, badges, orphan list. */
+        mark.anm-mark { background: rgba(210, 153, 34, .28); color: inherit; border-radius: 2px; padding: 0 1px; }
+        .anm-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 16px; height: 16px; margin: 0 2px; padding: 0 4px; font-size: 10px; line-height: 1; border-radius: 8px; background: #d29922; color: #0d1117; cursor: pointer; vertical-align: super; }
+        .anm-badge:hover { background: #e3b341; }
+        tr.anm-row { background: rgba(210, 153, 34, .12); }
+        .anm-row-gutter { margin-left: 6px; border: 1px solid var(--border, #30363d); background: var(--bg-2, #21262d); color: var(--text-2, #c9d1d9); border-radius: 6px; font-size: 11px; line-height: 1; padding: 0 5px; cursor: pointer; }
+        .anm-row-gutter:hover { border-color: var(--accent, #2ea043); color: var(--text-1, #f0f6fc); }
+        .anm-orphan-list { margin-top: 24px; padding: 10px 12px; border: 1px dashed #d29922; border-radius: 6px; background: rgba(210, 153, 34, .06); }
+        .anm-orphan-title { color: #d29922; font-weight: 700; margin-bottom: 6px; font-size: 13px; }
+        .anm-orphan-item { font-size: 12px; color: var(--text-2, #c9d1d9); padding: 2px 0; }
+        .annotate-floating { position: absolute; z-index: 60; background: #d29922; color: #0d1117; border: none; border-radius: 6px; font-size: 12px; padding: 3px 10px; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.4); }
+        .annotate-floating:hover { background: #e3b341; }
+        .anm-quote { font-size: 13px; color: var(--text-2, #c9d1d9); margin-bottom: 10px; padding: 6px 8px; border-left: 3px solid #d29922; background: rgba(210, 153, 34, .06); }
+        .anm-comment { width: 100%; min-height: 80px; box-sizing: border-box; }
+
+        /* PRD-P3-08 (Memo 075 Phase 3, WI-027): on-demand quality-check checkbox group. */
+        .pp-quality-list { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-top: 6px; }
+        .pp-quality-item { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-2, #c9d1d9); cursor: pointer; }

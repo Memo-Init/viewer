@@ -334,6 +334,11 @@ class TranscriptRegistry {
         const fileStat = await stat( finalPath )
         transcript[ 'mtime' ] = fileStat.mtime.toISOString()
         transcript[ 'mtimeMs' ] = fileStat.mtimeMs
+        // PRD-P1-02 (Memo 075, WI-007): recompute `words` on every PUT from the RAW body (the same
+        // header-free source the POST path counts, line 188), not from wrappedContent. Before this,
+        // updateTranscript only refreshed mtime/mtimeMs, so the persisted word count (and thus the
+        // spoken-minutes estimate) stayed stale until a server restart.
+        transcript[ 'words' ] = TranscriptRegistry.wordCount( { content } ).words
 
         if( this.#onChangeCallback ) {
             this.#onChangeCallback( { transcriptId, 'event': 'transcriptUpdated' } )
@@ -637,8 +642,12 @@ class TranscriptRegistry {
                     'mtime': fileStat.mtime.toISOString(),
                     'mtimeMs': fileStat.mtimeMs,
                     // PRD-001 (Memo 019 Kap 1): persist the spoken word count on re-scan too, so
-                    // the finalized-memo minutes chip aggregates consistently. ~200 Woerter/Min.
-                    'words': TranscriptRegistry.wordCount( { content: fileContent } ).words,
+                    // the finalized-memo minutes chip aggregates consistently. ~130 Woerter/Min.
+                    // PRD-P1-02 (Memo 075, WI-007): count the HEADER-STRIPPED body, not the raw file.
+                    // The file on disk carries the server-injected transcript header (~115 words at the
+                    // real 075 transcript); counting it inflated the spoken-minutes estimate and made the
+                    // scan path disagree with the POST/PUT paths (both count the raw, header-free body).
+                    'words': TranscriptRegistry.wordCount( { content: TranscriptHeader.stripHeader( { content: fileContent } ).body } ).words,
                     schemaVersion,
                     isLegacy,
                     // PRD-027 (Kap 12.2): Re-Scan rekonstruiert das Vollstaendigkeits-Flag als

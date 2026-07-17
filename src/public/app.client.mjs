@@ -1503,6 +1503,18 @@
                 return inner
             }
 
+            // PRD-014 (Memo 076 Phase 7, WI-009): a namespace is ACTIVE when at least one registered
+            // client is logged into it (lastClients[].projectId === projectId, non-stale) — a DERIVED
+            // marker off the live clientList snapshot, NEVER a stored field. It rides the memos render
+            // (unified projects[] source) so a config-rehydrated project with no working CC instance
+            // reads as idle ([data-active="false"]) in the namespace tree/dropdown.
+            function deriveProjectActive( projectId ) {
+                var list = Array.isArray( lastClients ) ? lastClients : []
+                return list.some( function( client ) {
+                    return client && client.projectId === projectId && client.status !== 'stale'
+                } )
+            }
+
             Object.keys( tree ).forEach( function( projectId ) {
                 var projectNode = tree[ projectId ]
                 var memos = []
@@ -1518,8 +1530,9 @@
                 var isCollapsed = collapsedProjects.has( projectId )
                 var bodyDisplay = isCollapsed ? 'none' : 'block'
                 var boxCls = 'ns-box' + ( isCollapsed ? ' ns-box-collapsed' : '' )
+                var isActive = deriveProjectActive( projectId )
 
-                html += '<div class="' + boxCls + '" data-namespace="' + escapeAttr( projectId ) + '">'
+                html += '<div class="' + boxCls + '" data-namespace="' + escapeAttr( projectId ) + '" data-active="' + ( isActive ? 'true' : 'false' ) + '">'
                 html += '<div class="ns-header" data-project="' + escapeAttr( projectId ) + '" title="Namespace ein-/ausklappen">'
                 html += nsHeaderInner( projectId, memos.length, isCollapsed )
                 html += '</div>'

@@ -1374,6 +1374,11 @@
             min-width: 0;
         }
         .ns-spacer { flex: 1 1 auto; }
+        /* PRD-014 (Memo 076 Phase 7, WI-009): a namespace whose project has no logged-in, non-stale
+           client reads as idle — the folder icon + name dim subtly. Derived off lastClients at render
+           time (data-active), never a stored field; the header stays fully clickable. */
+        .ns-box[data-active="false"] .ns-folder,
+        .ns-box[data-active="false"] .ns-name { opacity: 0.55; }
         /* Memo-Count-Chip (xQI4m/bQZG5: radius 8, padding [1,8], 9px/600). */
         .ns-count {
             font-size: 9px;

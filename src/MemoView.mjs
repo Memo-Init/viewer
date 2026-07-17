@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws'
 
 import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { ProjectAutoRegister } from './ProjectAutoRegister.mjs'
+import { SessionConfigStore } from './SessionConfigStore.mjs'
 import { SpecRegistry } from './SpecRegistry.mjs'
 import { SpecAutoRegister } from './SpecAutoRegister.mjs'
 import { SpecPublishStatus } from './SpecPublishStatus.mjs'
@@ -623,6 +624,41 @@ class MemoView {
             process.stdout.write( `  Auto-registration: ${autoRegistered.length} memo(s) of "${autoProjectId}" registered from a valid structure\n` )
         } else if( autoReasons.length > 0 ) {
             process.stdout.write( `  Auto-registration: skipped (${autoReasons[ 0 ]})\n` )
+        }
+
+        // PRD-014 (Memo 076 Phase 7, WI-006/010/133): the Session-Config projects[] are the SINGLE
+        // SOURCE of the project set — not only the server's process.cwd(). Register EVERY config
+        // project's memos through the SAME addDocument door the cwd trigger uses (ProjectAutoRegister),
+        // unioned with the cwd project above (addDocument is idempotent per documentId, so a project
+        // that is both cwd AND listed is not duplicated). Two consequences:
+        //   * WI-133 — the Memos (and Specs) namespace set now matches the globally-scanned Transcripts
+        //     tab; the "1 vs 6 namespaces" divergence (cwd-only memos vs global transcripts) is closed.
+        //   * WI-010 — foreign projects are REHYDRATED from the persistent config on every boot, so they
+        //     survive a server restart instead of living only in the ephemeral In-Memory Map / marker.
+        // Fail-open at every level: an absent/broken config reads empty (SessionConfigStore), and a
+        // single project with no projectRoot or an invalid .memo structure is skipped (logged, never fatal).
+        const { projects: configProjects } = SessionConfigStore.readProjects( {} )
+
+        if( configProjects.length > 0 ) {
+            const configOutcomes = await Promise.all(
+                configProjects.map( async ( project ) => {
+                    const projectRoot = typeof project[ 'projectRoot' ] === 'string' && project[ 'projectRoot' ].length > 0
+                        ? project[ 'projectRoot' ]
+                        : null
+
+                    if( projectRoot === null ) {
+                        return { 'projectId': project[ 'projectId' ], 'status': false }
+                    }
+
+                    const { status: cfgStatus, registered: cfgRegistered } =
+                        await ProjectAutoRegister.autoRegister( { projectRoot, registry } )
+
+                    return { 'projectId': project[ 'projectId' ], 'status': cfgStatus, 'registered': cfgRegistered || [] }
+                } )
+            )
+
+            const rehydrated = configOutcomes.filter( ( outcome ) => outcome[ 'status' ] === true )
+            process.stdout.write( `  Session-Config: ${rehydrated.length}/${configProjects.length} project(s) rehydrated from projects[] (${rehydrated.map( ( o ) => o[ 'projectId' ] ).join( ', ' )})\n` )
         }
 
         // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer's SPEC AUTO-DISCOVERY. Discover the

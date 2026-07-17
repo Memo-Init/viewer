@@ -390,6 +390,26 @@
             color: var(--text-2);
             border-color: var(--text-muted);
         }
+        /* PRD-002 (Memo 076, Phase 1, WI-046/049/050): the instance chip — "N Instanz(en) aktiv ·
+           eingeloggt" for the displayed memo. Small pill next to the status buttons; the
+           data-row-status variant tints it when the viewed revision is logged in. */
+        #main-header .z1-instances {
+            font-size: 10px;
+            font-weight: 700;
+            line-height: 1;
+            border-radius: 7px;
+            padding: 3px 10px;
+            border: 1.5px solid var(--text-muted);
+            color: var(--text-2);
+            background: transparent;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        #main-header .z1-instances.z1-instances--eingeloggt {
+            color: var(--accent-bright);
+            border-color: var(--accent);
+            background: var(--diff-add-bg);
+        }
         /* Zeile 2 (9I8kz): horizontal, alignItems center, gap 8, padding [0,20,12,20]. */
         #main-header .z1-line2 {
             display: flex;

@@ -1026,20 +1026,20 @@ class MemoView {
                  with a local 3-stage publish badge. Replaces the separate cli/spec-view (port 3344)
                  with ONE surface in this viewer, no second port. -->
             <button id="mode-specs" class="mode-toggle">Specs</button>
-            <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients VIEW mode — the live client
-                 registry (registered CC instances + derived status), mounted exactly like the
-                 M072 mode-specs 4th-view button. Loopback-only registry (POST /api/clients). -->
-            <button id="mode-clients" class="mode-toggle">Clients</button>
+            <!-- PRD-002 (Memo 076, Phase 1, F10, WI-045/053): the Clients 4th-tab is REMOVED. Clients
+                 is now an overlay-popup (#clients-modal) opened from #clients-head — it no longer owns
+                 #content or the sidebar, so the clients-side header-bleed + sidebar-mismatch vanish. -->
         </div>
-        <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009, r6-G7): a compact Clients SUMMARY ("N Clients ·
-             M warten"). Click routes to the Clients view. This REPLACES the removed M072 SessionHead
-             (Namespace/Memo/Mode + the merged cockpit line): per Memo 075 Kap 18 that global,
-             shared-server viewer-head was the wrong interpretation — a single global "activeMemo" is
-             wrong when several CC instances run, and the per-terminal "du-bist-hier" belongs in the
-             terminal statusline (lesson you-are-here-belongs-in-terminal-statusline). This per-client
-             registry is the correct viewer surface. Filled from the clientList WS broadcast
-             (renderClientsSummary); empty shows "0 Clients". -->
-        <button id="clients-head" class="clients-head" type="button" title="Registrierte CC-Instanzen anzeigen" aria-label="Registrierte Clients">0 Clients</button>
+        <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009, r6-G7): a compact Clients SUMMARY ("N Instanz(en) ·
+             M warten"). This REPLACES the removed M072 SessionHead (Namespace/Memo/Mode + the merged
+             cockpit line): per Memo 075 Kap 18 that global, shared-server viewer-head was the wrong
+             interpretation — a single global "activeMemo" is wrong when several CC instances run, and
+             the per-terminal "du-bist-hier" belongs in the terminal statusline (lesson
+             you-are-here-belongs-in-terminal-statusline). This per-client registry is the correct viewer
+             surface. Filled from the clientList WS broadcast (renderClientsSummary); empty shows
+             "0 Instanzen". PRD-002 (Memo 076, F10): a click now OPENS the Clients overlay (#clients-modal)
+             instead of routing to a (removed) Clients tab. -->
+        <button id="clients-head" class="clients-head" type="button" title="Registrierte CC-Instanzen anzeigen" aria-label="Registrierte Instanzen">0 Instanzen</button>
         <span id="nav-spacer"></span>
         <button id="transcript-new" class="nav-btn-secondary" title="Transcript hinzufügen oder neues Memo bootstrappen">Transcript</button>
         <button id="nav-unlink" class="nav-btn-secondary" title="Memo entkoppeln">Unlink</button>
@@ -1167,6 +1167,20 @@ class MemoView {
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+    <!-- PRD-002 (Memo 076, Phase 1, F10, WI-045): the Clients overlay-popup. REUSES the shared
+         .t-modal / .t-modal-content / .t-modal-header / .t-modal-body classes (same pattern as
+         #transcript-modal), position:fixed OVER the memo — it owns neither #content nor the sidebar.
+         Opened only via #clients-head; the #mode-clients tab is gone. Body filled by renderClientsModal. -->
+    <div id="clients-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="clients-modal-title">
+        <div class="t-modal-content">
+            <div class="t-modal-header">
+                <span class="t-title" id="clients-modal-title">Instanzen</span>
+                <span class="t-header-spacer"></span>
+                <button class="t-close" id="clients-modal-close" title="Schliessen">&times;</button>
+            </div>
+            <div class="t-modal-body" id="clients-modal-body"></div>
         </div>
     </div>
     <!-- PRD-012 (Memo 011 Kap 4, F16=A): requirement detail popup. REUSES the existing

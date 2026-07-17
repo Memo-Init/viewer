@@ -184,7 +184,8 @@
         let lastLatest = []
         let lastTranscriptTree = {}
         // PRD-P3-02 (Memo 075 Phase 3, WI-009): the last client registry snapshot from the clientList
-        // WS broadcast. Drives both the Clients view (renderClientsArea) and the head summary.
+        // WS broadcast. Drives the Clients overlay (renderClientsModal), the head summary and the
+        // memos-view instance chip (PRD-002, Memo 076).
         let lastClients = []
         // PRD-P3-04/05/06 (Memo 075 Phase 3, WI-012/013): the annotations of the currently viewed memo.
         // Fetched on content load + refreshed by the annotationList WS broadcast; rendered idempotently
@@ -698,6 +699,24 @@
             }
         }
 
+        // PRD-001 (Memo 076, Phase 1, WI-041/042 — the 2 blockers): guard-independent clear of the
+        // memo sticky header. updateSidebarSticky's mode-guard (currentMode !== 'memos' -> return)
+        // would swallow an updateSidebarSticky(null,null) once the mode already switched away, so the
+        // clear runs here directly (innerHTML=''). The CSS rule #main-header:empty { display:none }
+        // then hides the emptied header, ending the bleed into clients/specs/transcripts.
+        function clearMainHeader() {
+            var headerEl = document.getElementById( 'main-header' )
+            if( headerEl ) { headerEl.innerHTML = '' }
+        }
+
+        // PRD-002 (Memo 076, Phase 1, WI-050): zero-pad a memo number to 3 digits so the client-registry
+        // value (server stores it ungepadded, e.g. '76') and the header number (derived as 3-digit '076')
+        // compare equal. Non-numeric input is returned as its trimmed string so it never crashes.
+        function pad3( value ) {
+            var str = String( value === undefined || value === null ? '' : value ).trim()
+            return /^\d+$/.test( str ) ? str.padStart( 3, '0' ) : str
+        }
+
         // PRD-008: two-line content-sticky-header.
         //   Line 1: Titel + Memo-Typ-Badge (F12) + Status-Pill (derived 3-state) + Diff-Toggle.
         //   Line 2: "Transcript kopieren" + URL + Woerter/Minuten.
@@ -706,7 +725,12 @@
             // PRD-017 (Memo 072, Phase 5): the memo sticky header does not belong in the Specs view —
             // its #main-header is left to the spec render. Skip so a transcriptList broadcast cannot
             // inject a memo sticky bar while the user is browsing specs.
-            if( currentMode === 'specs' ) { return }
+            // PRD-001 (Memo 076, Phase 1, WI-042/043/047/048): generalized from 'specs'-only to
+            // "any non-memos mode". The Zone-1 memo header belongs to the memos view alone; a
+            // broadcast (content/transcriptList/transcriptLoggedIn/Out) must never re-inject it while
+            // the user is in specs/clients/transcripts. An explicit clear does NOT flow through here —
+            // clearMainHeader() below is guard-independent, so this early return cannot swallow it.
+            if( currentMode !== 'memos' ) { return }
             var headerEl = document.getElementById( 'main-header' )
             if( !headerEl ) { return }
             if( !memoName && !fileName ) {
@@ -753,6 +777,18 @@
             var rowStatus = revisionStatusForRow( hasTranscript, loggedIn )
             var viewedTranscript = latestTranscriptForRevision( memoName, viewedRevision )
 
+            // PRD-002 (Memo 076, Phase 1, WI-046/050): resolve which registered CC instances belong to
+            // the DISPLAYED memo. The header number is derived as 3-digit; the client stores it ungepadded
+            // (e.g. '76'), so both sides are pad3-normalized before comparison ('76' matches '076').
+            var chipHeaderMatch = String( memoName || '' ).match( /(\d{3})/ )
+            var chipHeaderNum = chipHeaderMatch ? pad3( chipHeaderMatch[ 1 ] ) : ''
+            var activeInstances = chipHeaderNum
+                ? ( Array.isArray( lastClients ) ? lastClients : [] ).filter( function( client ) {
+                    var hasNum = client && client.memoNumber !== undefined && client.memoNumber !== null && client.memoNumber !== ''
+                    return hasNum && pad3( client.memoNumber ) === chipHeaderNum
+                } )
+                : []
+
             // Memo 038 Kap 13: the former rendered-document word/minute estimate that fed the Zone-2
             // "Transcript" line was removed — Zone 2 now uses the revision's TRANSCRIPT word count
             // (psTranscriptWords below), the same source as the sidebar, so the two never diverge.
@@ -783,6 +819,22 @@
             z1Line1 += '<button id="req-view-toggle" title="Requirements anzeigen">Requirements</button>'
             // PRD-010 (Memo 014 Kap 2): Block-Ansicht oeffnen (Block-Overlay, read-only). Muster req-view-toggle.
             z1Line1 += '<button id="block-view-toggle" title="Blöcke anzeigen">Blöcke</button>'
+            // PRD-002 (Memo 076, Phase 1, WI-046/049/050): the instance chip. Rendered when a CC instance
+            // is registered for THIS memo number (activeInstances, zero-padded match) OR the viewed
+            // revision is logged in (loggedIn — the previously computed-but-unrendered flag, WI-049). The
+            // chip carries rowStatus (offen/transcript-eingetragen/eingeloggt) as a data-attribute so the
+            // per-revision login state is genuinely surfaced, not dead code.
+            if( activeInstances.length > 0 || loggedIn ) {
+                var chipParts = []
+                if( activeInstances.length > 0 ) {
+                    chipParts.push( activeInstances.length + ' Instanz' + ( activeInstances.length === 1 ? '' : 'en' ) + ' aktiv' )
+                }
+                if( loggedIn ) { chipParts.push( 'eingeloggt' ) }
+                z1Line1 += '<span class="z1-instances z1-instances--' + escapeAttr( rowStatus ) + '"'
+                    + ' data-zone1-instances data-row-status="' + escapeAttr( rowStatus ) + '"'
+                    + ' title="Für dieses Memo eingeloggt / aktiv">'
+                    + escapeAttr( chipParts.join( ' · ' ) ) + '</span>'
+            }
             z1Line1 += '</div>'
 
             // Zeile 2 (9I8kz): aktuelles Dokument — "ressources · 019 · REV-NN" + Kalender-Icon
@@ -2023,17 +2075,17 @@
         var modeMemosBtn = document.getElementById( 'mode-memos' )
         // PRD-017 (Memo 072, Phase 5): the 4th VIEW mode button (merged Spec-Viewer).
         var modeSpecsBtn = document.getElementById( 'mode-specs' )
-        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients VIEW mode button (live client registry).
-        var modeClientsBtn = document.getElementById( 'mode-clients' )
+        // PRD-002 (Memo 076, Phase 1, F10): the Clients 4th-tab is gone — Clients is an overlay
+        // opened from #clients-head, no longer a VIEW mode. No mode-clients button any more.
         var transcriptNavBtn = document.getElementById( 'transcript-new' )
         var docSidebarEl = document.getElementById( 'doc-sidebar' )
 
-        // PRD-017: set the active class on exactly the one mode button (four-way now).
+        // PRD-017: set the active class on exactly the one mode button.
+        // PRD-002 (Memo 076, Phase 1, F10): three-way now — the Clients tab is gone.
         function setActiveModeButton( mode ) {
             if( modeTranscriptsBtn ) { modeTranscriptsBtn.classList.toggle( 'active', mode === 'transcripts' ) }
             if( modeMemosBtn ) { modeMemosBtn.classList.toggle( 'active', mode === 'memos' ) }
             if( modeSpecsBtn ) { modeSpecsBtn.classList.toggle( 'active', mode === 'specs' ) }
-            if( modeClientsBtn ) { modeClientsBtn.classList.toggle( 'active', mode === 'clients' ) }
         }
 
         // NavBar chrome per active view (REV-05 R4/F6): the redundant "+ Neues Memo" primary
@@ -2056,14 +2108,6 @@
                     docSidebarEl.classList.remove( 'transcripts-mode' )
                     docSidebarEl.classList.add( 'specs-mode' )
                 }
-            } else if( currentMode === 'clients' ) {
-                // PRD-P3-02 (Memo 075 Phase 3, WI-009): Clients view — the memo-only "+ Transcript"
-                // button is hidden; the client list owns #content (like the specs view owns it).
-                if( transcriptNavBtn ) { transcriptNavBtn.style.display = 'none' }
-                if( docSidebarEl ) {
-                    docSidebarEl.classList.remove( 'transcripts-mode' )
-                    docSidebarEl.classList.remove( 'specs-mode' )
-                }
             } else {
                 if( transcriptNavBtn ) { transcriptNavBtn.style.display = '' }
                 if( docSidebarEl ) {
@@ -2079,18 +2123,17 @@
             if( mode === 'specs' ) {
                 // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer. Fetch the spec tree and
                 // render the namespace/version sidebar; the first page auto-selects on cold start.
+                // PRD-001 (Memo 076, Phase 1, WI-042): actively clear the memo sticky header on the
+                // way into Specs so no Memo-Tab-Header bleeds over the spec page.
+                clearMainHeader()
                 currentMode = 'specs'
                 setActiveModeButton( 'specs' )
                 applyModeChrome()
                 loadSpecs()
-            } else if( mode === 'clients' ) {
-                // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients view — render the live client
-                // registry into #content. The list is kept fresh by the clientList WS broadcast.
-                currentMode = 'clients'
-                setActiveModeButton( 'clients' )
-                applyModeChrome()
-                renderClientsArea()
             } else if( mode === 'transcripts' ) {
+                // PRD-001 (Memo 076, Phase 1): clear the memo sticky header on the way into the
+                // Transcripts view — the Zone-1 header belongs to the memos view only.
+                clearMainHeader()
                 currentMode = 'transcripts'
                 setActiveModeButton( 'transcripts' )
                 applyModeChrome()
@@ -2120,14 +2163,12 @@
         function modeForPath( pathname ) {
             if( pathname === '/transcripts' || pathname.indexOf( '/transcripts/' ) === 0 ) { return 'transcripts' }
             if( pathname === '/specs' || pathname.indexOf( '/specs/' ) === 0 ) { return 'specs' }
-            if( pathname === '/clients' || pathname.indexOf( '/clients/' ) === 0 ) { return 'clients' }
             return 'memos'
         }
 
         function pathForMode( mode ) {
             if( mode === 'transcripts' ) { return '/transcripts' }
             if( mode === 'specs' ) { return '/specs' }
-            if( mode === 'clients' ) { return '/clients' }
             return '/memos'
         }
 
@@ -2154,53 +2195,81 @@
             modeSpecsBtn.addEventListener( 'click', function() { setMode( 'specs', { push: true } ) } )
         }
 
-        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients view button + the compact clients-head
-        // summary both route into the Clients view.
-        if( modeClientsBtn ) {
-            modeClientsBtn.addEventListener( 'click', function() { setMode( 'clients', { push: true } ) } )
-        }
-
+        // PRD-002 (Memo 076, Phase 1, F10, WI-053): #clients-head is now the ONLY Clients control —
+        // it opens the overlay-popup instead of routing to a (removed) Clients mode.
         var clientsHeadEl = document.getElementById( 'clients-head' )
         if( clientsHeadEl ) {
-            clientsHeadEl.addEventListener( 'click', function() { setMode( 'clients', { push: true } ) } )
+            clientsHeadEl.addEventListener( 'click', function() { openClientsModal() } )
         }
 
-        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the compact head summary "N Clients · M warten". M is
+        // PRD-002 (Memo 076, Phase 1, WI-045): the Clients overlay open/close helpers. The popup lives
+        // OVER the memo (#content stays intact); it toggles the shared .t-hidden class like #transcript-modal.
+        function isClientsModalOpen() {
+            var modal = document.getElementById( 'clients-modal' )
+            return !!( modal && !modal.classList.contains( 't-hidden' ) )
+        }
+
+        function openClientsModal() {
+            var modal = document.getElementById( 'clients-modal' )
+            if( !modal ) { return }
+            renderClientsModal()
+            modal.classList.remove( 't-hidden' )
+        }
+
+        function closeClientsModal() {
+            var modal = document.getElementById( 'clients-modal' )
+            if( modal ) { modal.classList.add( 't-hidden' ) }
+        }
+
+        var clientsModalCloseEl = document.getElementById( 'clients-modal-close' )
+        if( clientsModalCloseEl ) {
+            clientsModalCloseEl.addEventListener( 'click', closeClientsModal )
+        }
+
+        // Backdrop click (outside the .t-modal-content) closes the popup — matches the .t-modal pattern.
+        var clientsModalEl = document.getElementById( 'clients-modal' )
+        if( clientsModalEl ) {
+            clientsModalEl.addEventListener( 'click', function( ev ) {
+                if( ev.target === clientsModalEl ) { closeClientsModal() }
+            } )
+        }
+
+        document.addEventListener( 'keydown', function( ev ) {
+            if( ev.key === 'Escape' && isClientsModalOpen() ) { closeClientsModal() }
+        } )
+
+        // PRD-002 (Memo 076, Phase 1, WI-055): the compact head summary "N Instanz(en) · M warten". M is
         // the number of clients in the derived `waiting-for-user-answer` status. Always visible in the
-        // nav; a click routes to the Clients view (wired above). No em-dash guess — 0 renders as "0".
+        // nav; a click opens the Clients overlay. One language (DE "Instanz(en)"), no Denglish.
         function renderClientsSummary( clients ) {
             if( !clientsHeadEl ) { return }
             var list = Array.isArray( clients ) ? clients : []
             var waiting = list.filter( function( c ) { return c && c.status === 'waiting-for-user-answer' } ).length
-            var label = list.length + ' Client' + ( list.length === 1 ? '' : 's' )
+            var label = list.length + ' Instanz' + ( list.length === 1 ? '' : 'en' )
             if( waiting > 0 ) { label = label + ' · ' + waiting + ' warten' }
             clientsHeadEl.textContent = label
             clientsHeadEl.classList.toggle( 'has-waiting', waiting > 0 )
         }
 
-        // PRD-P3-02 (Memo 075 Phase 3, WI-009): render the client registry into #content while the
-        // Clients view is active. One row per registered CC instance: projectId · M{memo} · {mode} ·
-        // {status}. A status pill carries the derived state (working / waiting-for-user-answer / stale).
-        // Read-only surface — the viewer never mutates a client (the SessionStart-Hook owns registration).
-        function renderClientsArea() {
-            if( currentMode !== 'clients' ) { return }
-            if( !contentEl ) { return }
+        // PRD-002 (Memo 076, Phase 1, F10, WI-045): render the client registry into the overlay-popup
+        // (#clients-modal-body), NOT into #content — the memo body stays visible behind the popup. One row
+        // per registered CC instance: projectId · M{memo} · {mode} · {status} · {session}. A status pill
+        // carries the derived state. Read-only surface — the viewer never mutates a client.
+        function renderClientsModal() {
+            var body = document.getElementById( 'clients-modal-body' )
+            if( !body ) { return }
 
             var list = Array.isArray( lastClients ) ? lastClients : []
             var wrap = document.createElement( 'div' )
             wrap.className = 'clients-view'
-
-            var heading = document.createElement( 'h1' )
-            heading.textContent = 'Clients'
-            wrap.appendChild( heading )
 
             if( list.length === 0 ) {
                 var empty = document.createElement( 'p' )
                 empty.className = 'clients-empty'
                 empty.textContent = 'Keine registrierten CC-Instanzen. Eine Instanz meldet sich beim SessionStart an (POST /api/clients).'
                 wrap.appendChild( empty )
-                contentEl.innerHTML = ''
-                contentEl.appendChild( wrap )
+                body.innerHTML = ''
+                body.appendChild( wrap )
 
                 return
             }
@@ -2213,28 +2282,32 @@
 
             var tbody = document.createElement( 'tbody' )
             list.forEach( function( client ) {
+                // WI-051: no more tote `.client-row status-*` class — the pill (.client-status-*)
+                // already carries the status colour, so there is no second, dead colouring path.
                 var tr = document.createElement( 'tr' )
-                tr.className = 'client-row status-' + ( client && client.status ? client.status : 'unknown' )
 
                 var project = ( client && client.projectId ) ? client.projectId : '—'
                 var memo = ( client && client.memoNumber ) ? ( 'M' + client.memoNumber ) : '—'
                 var mode = ( client && client.workMode ) ? client.workMode : '—'
                 var status = ( client && client.status ) ? client.status : '—'
                 var session = ( client && client.sessionId ) ? client.sessionId : '—'
+                // WI-052: show only the first 8 chars of the session UUID (full value in title=)
+                // so the table does not overflow. A dash placeholder stays as-is.
+                var sessionShort = session === '—' ? '—' : session.slice( 0, 8 )
 
                 tr.innerHTML =
                     '<td>' + escapeHtml( project ) + '</td>' +
                     '<td>' + escapeHtml( memo ) + '</td>' +
                     '<td>' + escapeHtml( mode ) + '</td>' +
                     '<td><span class="client-status-pill client-status-' + escapeAttr( status ) + '">' + escapeHtml( status ) + '</span></td>' +
-                    '<td><code>' + escapeHtml( session ) + '</code></td>'
+                    '<td><code title="' + escapeAttr( session ) + '">' + escapeHtml( sessionShort ) + '</code></td>'
                 tbody.appendChild( tr )
             } )
             table.appendChild( tbody )
             wrap.appendChild( table )
 
-            contentEl.innerHTML = ''
-            contentEl.appendChild( wrap )
+            body.innerHTML = ''
+            body.appendChild( wrap )
         }
 
         window.addEventListener( 'popstate', function( ev ) {
@@ -3685,6 +3758,10 @@
         // instead of fetching requirements; otherwise the requirements panel replaces #content but
         // the prose stays recoverable (lastContent) and is NOT destroyed.
         async function loadRequirementsView( documentId ) {
+            // PRD-001 (Memo 076, Phase 1, WI-044): the Requirements overlay belongs to the memos
+            // view. After the header-clear the toggle is gone from the DOM, but a stray callback
+            // must never load a memo overlay over the clients/specs surface.
+            if( currentMode !== 'memos' ) { return }
             var contentTarget = document.getElementById( 'content' )
             if( !documentId || !contentTarget ) { return }
 
@@ -4025,6 +4102,9 @@
         // PRD-009 (F4/E6): non-destructive view-mode panel — same nextViewState contract as
         // loadRequirementsView. Toggling Blocks while Blocks is open returns home to prose.
         async function loadBlockView( documentId ) {
+            // PRD-001 (Memo 076, Phase 1, WI-044): the Block overlay belongs to the memos view —
+            // same belt-and-suspenders guard as loadRequirementsView.
+            if( currentMode !== 'memos' ) { return }
             var contentTarget = document.getElementById( 'content' )
             if( !documentId || !contentTarget ) { return }
 
@@ -6894,7 +6974,11 @@
                     // PRD-005 (Kap 8): an einloggen/ausloggen change updates the per-revision
                     // loggedIn flag in the tree — refresh the sticky-header status row so the
                     // status pill + button label reflect the new state without a page reload.
-                    updateSidebarSticky( currentMemoName, currentFileName )
+                    // PRD-001 (Memo 076, Phase 1, WI-047): only in the memos view — a transcriptList
+                    // broadcast must not inject the memo sticky header while browsing clients/specs.
+                    if( currentMode === 'memos' ) {
+                        updateSidebarSticky( currentMemoName, currentFileName )
+                    }
                 }
 
                 // PRD-005 (Memo 018 Kap 8 AC-7): dedicated login/logout broadcast. The status
@@ -6902,7 +6986,12 @@
                 // event observable for the integration/UI tests and future client-side hooks.
                 if( data.type === 'transcriptLoggedIn' || data.type === 'transcriptLoggedOut' ) {
                     // EVENT-HOOK (client): future — surface a toast / drive an agent loop here.
-                    updateSidebarSticky( currentMemoName, currentFileName )
+                    // PRD-001 (Memo 076, Phase 1, WI-048): gate the sticky-header refresh to the
+                    // memos view so a login/logout broadcast cannot inject the memo header in
+                    // clients/specs.
+                    if( currentMode === 'memos' ) {
+                        updateSidebarSticky( currentMemoName, currentFileName )
+                    }
                 }
 
                 // PRD-P3-02 (Memo 075 Phase 3, WI-009): the client-registry broadcast. Refresh the head
@@ -6910,8 +6999,15 @@
                 if( data.type === 'clientList' ) {
                     lastClients = data.clients || []
                     renderClientsSummary( lastClients )
-                    if( currentMode === 'clients' ) {
-                        renderClientsArea()
+                    // PRD-002 (Memo 076, Phase 1): Clients is an overlay now, not a mode — re-render the
+                    // popup only while it is OPEN so a live broadcast keeps it fresh without a reload.
+                    if( isClientsModalOpen() ) {
+                        renderClientsModal()
+                    }
+                    // PRD-002 (Memo 076, Phase 1, WI-046): a client (de)registration can change the
+                    // instance chip for the displayed memo — refresh the memo sticky header in memos mode.
+                    if( currentMode === 'memos' ) {
+                        updateSidebarSticky( currentMemoName, currentFileName )
                     }
                 }
 
@@ -6958,9 +7054,10 @@
                         // broadcast must NOT overwrite the open spec page. The snapshots above
                         // (lastContent/diff/vorwort/questions) are already refreshed, so leaving Specs
                         // (applyMode('memos')) restores the fresh memo prose without a page reload.
-                        // PRD-P3-02 (Memo 075 Phase 3): the Clients view likewise owns #content, so a
-                        // memo content broadcast must not overwrite the client list either.
-                        if( currentMode !== 'specs' && currentMode !== 'clients' ) {
+                        // PRD-002 (Memo 076, Phase 1, F10): Clients is no longer a mode that owns #content
+                        // — it is an overlay-popup floating over the memo, so the memo body SHOULD keep
+                        // re-rendering behind it. Only Specs still owns #content.
+                        if( currentMode !== 'specs' ) {
                             if( showDiff && currentDiff ) {
                                 renderDiffView( data.content, currentDiff )
                             } else {
@@ -6990,15 +7087,24 @@
                         currentFileName = data.fileName
                         currentMemoName = data.memoName || ''
                         currentDocumentId = data.documentId || currentDocumentId
+                        // The sticky-header refresh is already neutralized by the generalized
+                        // updateSidebarSticky mode-guard (returns outside memos); the snapshots
+                        // above stay so a later applyMode('memos') restores the prose without a reload.
                         updateSidebarSticky( data.memoName, data.fileName )
-                        var h1 = contentEl.querySelector( 'h1' )
-                        var heading = h1 ? h1.textContent.trim() : data.fileName
-                        var portEmojis = { '3333': '🔵', '4444': '🟢', '5555': '🟠', '6666': '🔴', '7777': '🟣', '8888': '🩵' }
-                        var portEmoji = portEmojis[ window.location.port ] || '⚪'
-                        var port = window.location.port || '3333'
-                        var versionMatch = data.fileName ? data.fileName.match( /v(\d+\.\d+)/ ) : null
-                        var revSuffix = versionMatch ? ' #v' + versionMatch[1] : ''
-                        document.title = portEmoji + ' ' + port + ' · ' + heading + revSuffix
+                        // PRD-001 (Memo 076, Phase 1, WI-043): the document.title rewrite must not
+                        // stamp a FOREIGN memo name onto the tab while the user is in clients/specs/
+                        // transcripts. Only rewrite the title in the memos view; the reader in a
+                        // non-memos mode keeps its own title (spec page / clients overlay context).
+                        if( currentMode === 'memos' ) {
+                            var h1 = contentEl.querySelector( 'h1' )
+                            var heading = h1 ? h1.textContent.trim() : data.fileName
+                            var portEmojis = { '3333': '🔵', '4444': '🟢', '5555': '🟠', '6666': '🔴', '7777': '🟣', '8888': '🩵' }
+                            var portEmoji = portEmojis[ window.location.port ] || '⚪'
+                            var port = window.location.port || '3333'
+                            var versionMatch = data.fileName ? data.fileName.match( /v(\d+\.\d+)/ ) : null
+                            var revSuffix = versionMatch ? ' #v' + versionMatch[1] : ''
+                            document.title = portEmoji + ' ' + port + ' · ' + heading + revSuffix
+                        }
                         // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): load this revision's annotations
                         // and run the render pass now that the document + revision are known.
                         refreshAnnotations()

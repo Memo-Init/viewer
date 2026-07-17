@@ -3057,6 +3057,12 @@
         .client-status-working { color: var(--accent, #2ea043); }
         .client-status-waiting-for-user-answer { color: #d29922; border-color: #d29922; }
         .client-status-stale { color: var(--text-muted, #8b949e); opacity: .8; }
+        /* Memo 076 F3 (T012): work-mode ampel — four states mirrored to the terminal statusline
+           (green Create / yellow Rollout / cyan Review / grey Idle). idle = free in workbench, no memo. */
+        .client-mode-create  { color: var(--accent, #2ea043); }
+        .client-mode-rollout { color: #d29922; }
+        .client-mode-review  { color: #39c5cf; }
+        .client-mode-idle    { color: var(--text-muted, #8b949e); }
 
         /* PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): annotations — marks, badges, orphan list. */
         mark.anm-mark { background: rgba(210, 153, 34, .28); color: inherit; border-radius: 2px; padding: 0 1px; }

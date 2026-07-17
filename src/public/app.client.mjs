@@ -1343,7 +1343,11 @@
             //   Zeile 3 (Z36pN): folder-Icon + Namespace + · Datum
             // Pro Item klar erkennbar: Namespace · Datum · Anzahl offener Fragen (AC-5).
             // Fehlende Einzelwerte bleiben LEER (kein erfundener Default, AC-12 Phase 1).
-            function renderQueueEntry( pair ) {
+            // WI-028 (Memo 076): sameNsAsPrev de-dups the namespace label across CONSECUTIVE queue items
+            // of the SAME namespace (the queue is flat/FIFO, not grouped). Optional — undefined -> false ->
+            // renders as before (backwards-safe). Only the ns text (Zeile 3) is suppressed; folder-icon +
+            // date stay so each row keeps its shape.
+            function renderQueueEntry( pair, sameNsAsPrev ) {
                 var doc = pair.doc
                 var rev = pair.rev
                 var revLabel = String( rev.fileName || '' ).replace( /\.md$/, '' )
@@ -1376,10 +1380,11 @@
                 html += '</span>'
                 // Zeile 2: REV-NN · offen + Lifecycle-Status des Memos (PRD-004-Modell).
                 html += '<span class="queue-card-row2" data-queue-status data-queue-lifecycle="' + escapeAttr( queueLifecycle ) + '">' + escapeAttr( revStatusLine ) + '<span class="queue-card-lifecycle" data-queue-lifecycle-label>' + escapeAttr( queueLifecycle ) + '</span></span>'
-                // Zeile 3: folder + Namespace + · Datum.
+                // Zeile 3: folder + Namespace + · Datum. WI-028: the ns label is suppressed when this item
+                // repeats the previous item's namespace (no per-item repetition of the same namespace).
                 html += '<span class="queue-card-row3">'
                 html += '<span class="queue-card-folder" aria-hidden="true">\uD83D\uDCC1</span>'
-                html += '<span class="queue-card-ns" data-queue-ns>' + escapeAttr( doc.projectId || '' ) + '</span>'
+                if( !sameNsAsPrev ) { html += '<span class="queue-card-ns" data-queue-ns>' + escapeAttr( doc.projectId || '' ) + '</span>' }
                 if( rev.mtime ) { html += '<span class="queue-card-date" data-queue-date>\u00b7 ' + escapeAttr( rev.mtime ) + '</span>' }
                 html += '</span>'
                 html += '</span></li>'
@@ -1473,8 +1478,13 @@
                 html += '<div class="sb-queue-empty">Nichts in der Warteschlange.</div>'
             } else {
                 html += '<div class="sb-queue"><ul style="list-style:none;padding:0;margin:0">'
+                // WI-028: carry the previous item's namespace so renderQueueEntry can suppress a repeated
+                // ns label on consecutive same-namespace items (the queue is flat/FIFO, not grouped).
+                var prevQueueNs = null
                 queue.forEach( function( pair ) {
-                    html += renderQueueEntry( pair )
+                    var thisNs = ( pair.doc && pair.doc.projectId ) ? pair.doc.projectId : ''
+                    html += renderQueueEntry( pair, thisNs === prevQueueNs )
+                    prevQueueNs = thisNs
                 } )
                 html += '</ul></div>'
             }
@@ -2304,7 +2314,11 @@
 
                 var project = ( client && client.projectId ) ? client.projectId : '—'
                 var memo = ( client && client.memoNumber ) ? ( 'M' + client.memoNumber ) : '—'
-                var mode = ( client && client.workMode ) ? client.workMode : '—'
+                // Memo 076 F3 (T012): the work-mode is a FOUR-state enum idle < create < rollout < review.
+                // A client without a memo/workMode (the normal case right after SessionStart registration)
+                // is the idle floor — presentation maps null/absent to 'Idle' (grey ampel .client-mode-idle),
+                // mirroring the CLI deriveWorkMode Idle floor and the statusline loc grey idle.
+                var mode = ( client && client.workMode ) ? client.workMode : 'Idle'
                 var status = ( client && client.status ) ? client.status : '—'
                 var session = ( client && client.sessionId ) ? client.sessionId : '—'
                 // WI-052: show only the first 8 chars of the session UUID (full value in title=)
@@ -2314,7 +2328,7 @@
                 tr.innerHTML =
                     '<td>' + escapeHtml( project ) + '</td>' +
                     '<td>' + escapeHtml( memo ) + '</td>' +
-                    '<td>' + escapeHtml( mode ) + '</td>' +
+                    '<td><span class="client-mode client-mode-' + escapeAttr( String( mode ).toLowerCase() ) + '">' + escapeHtml( mode ) + '</span></td>' +
                     '<td><span class="client-status-pill client-status-' + escapeAttr( status ) + '">' + escapeHtml( status ) + '</span></td>' +
                     '<td><code title="' + escapeAttr( session ) + '">' + escapeHtml( sessionShort ) + '</code></td>'
                 tbody.appendChild( tr )
@@ -4826,6 +4840,11 @@
         // part of the prompt). The future auto-send to the agent docks onto the existing
         // TranscriptRegistry #onChangeCallback / transcriptLoggedIn event-hook; PRD-008 only
         // wires the manual login trigger here, it does NOT activate the automatic send.
+        // WI-017 (Memo 076, deferred-documented): the automatic injection of question-rounds
+        // (code-driven agent re-invocation on a new round) stays DELIBERATELY inactive — its
+        // activation was NOT among the bound F-decisions and is its own, not-yet-decided decision.
+        // This is a known open point, not a bug; do not wire the auto-send without a separate
+        // user decision (see Memo 076 "Nicht im Scope"). Note-only, no behaviour change here.
         function bindPromptFinish( opts ) {
             opts = opts || {}
             var btn = document.getElementById( 'ps-finish' )
@@ -7392,10 +7411,12 @@
                             var heading = h1 ? h1.textContent.trim() : data.fileName
                             var portEmojis = { '3333': '🔵', '4444': '🟢', '5555': '🟠', '6666': '🔴', '7777': '🟣', '8888': '🩵' }
                             var portEmoji = portEmojis[ window.location.port ] || '⚪'
-                            var port = window.location.port || '3333'
                             var versionMatch = data.fileName ? data.fileName.match( /v(\d+\.\d+)/ ) : null
                             var revSuffix = versionMatch ? ' #v' + versionMatch[1] : ''
-                            document.title = portEmoji + ' ' + port + ' · ' + heading + revSuffix
+                            // WI-027 (Memo 076): the port NUMBER is redundant to the colour-coded portEmoji
+                            // (favicon-style port indicator), so it is dropped from the tab title — the emoji
+                            // alone carries the port. Title = "<emoji> <heading>[ #vX.Y]".
+                            document.title = portEmoji + ' ' + heading + revSuffix
                         }
                         // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): load this revision's annotations
                         // and run the render pass now that the document + revision are known.

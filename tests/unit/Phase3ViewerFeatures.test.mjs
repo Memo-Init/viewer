@@ -42,7 +42,8 @@ describe( 'PRD-P3-01 — client registry (register/list/derive)', () => {
         expect( mine.projectId ).toBe( 'flowmcp' )
         expect( mine.memoNumber ).toBe( '155' )
         expect( mine.workMode ).toBe( 'Create' )
-        expect( [ 'working', 'waiting-for-user-answer', 'stale' ] ).toContain( mine.status )
+        // PRD-015 (M076 P8, WI-023): a freshly registered client has turnCount 0 < 10 -> `idle`.
+        expect( [ 'idle', 'working', 'waiting-for-user-answer', 'stale' ] ).toContain( mine.status )
     } )
 
 
@@ -88,14 +89,16 @@ describe( 'PRD-P3-01 — deriveClientStatus (r6-F11 pure derivation)', () => {
     } )
 
 
-    it( 'working = fresh but not armed on any open transcript', () => {
-        const s = MemoView.deriveClientStatus( { lastSeenAt: 100, now: 200, ttlMs: 1000, armedTranscriptIds: [ 'T-closed' ], openTranscriptIds: open } )
+    it( 'working = fresh, not armed, and past the idle threshold (turnCount >= 10)', () => {
+        // PRD-015 (M076 P8, WI-023): idle now sits below waiting; a fresh client only reaches `working`
+        // once it has seen >= idleThreshold user instructions this session.
+        const s = MemoView.deriveClientStatus( { lastSeenAt: 100, now: 200, ttlMs: 1000, armedTranscriptIds: [ 'T-closed' ], openTranscriptIds: open, turnCount: 10 } )
         expect( s.status ).toBe( 'working' )
     } )
 
 
-    it( 'armed but on a CLOSED (not open) transcript is only working', () => {
-        const s = MemoView.deriveClientStatus( { lastSeenAt: 100, now: 200, ttlMs: 1000, armedTranscriptIds: [], openTranscriptIds: open } )
+    it( 'armed but on a CLOSED (not open) transcript with turns >= threshold is working', () => {
+        const s = MemoView.deriveClientStatus( { lastSeenAt: 100, now: 200, ttlMs: 1000, armedTranscriptIds: [], openTranscriptIds: open, turnCount: 10 } )
         expect( s.status ).toBe( 'working' )
     } )
 } )
@@ -227,14 +230,24 @@ describe( 'route + client wiring (source assertions)', () => {
     } )
 
 
-    it( 'the client wires the Clients view (button, mode, WS branch, render) (P3-02)', () => {
-        expect( server.includes( 'id="mode-clients"' ) ).toBe( true )
+    // PRD-002 (Memo 076, Phase 1, F10): Clients is no longer a 4th VIEW mode/tab — it is an
+    // overlay-popup opened from #clients-head. The #mode-clients tab and the /clients route are
+    // removed; renderClientsArea became renderClientsModal (writes into #clients-modal-body).
+    it( 'the client wires the Clients overlay (opener, modal, WS branch, render) (P3-02 / M076 F10)', () => {
+        // The 4th-tab is gone; #clients-head is the only opener, and the overlay markup exists.
+        expect( server.includes( 'id="mode-clients"' ) ).toBe( false )
         expect( server.includes( 'id="clients-head"' ) ).toBe( true )
+        expect( server.includes( 'id="clients-modal"' ) ).toBe( true )
+        expect( server.includes( 'id="clients-modal-body"' ) ).toBe( true )
         expect( client.includes( "data.type === 'clientList'" ) ).toBe( true )
-        expect( client.includes( 'function renderClientsArea(' ) ).toBe( true )
+        // Render target moved from #content (renderClientsArea) to the overlay body (renderClientsModal).
+        expect( client.includes( 'function renderClientsArea(' ) ).toBe( false )
+        expect( client.includes( 'function renderClientsModal(' ) ).toBe( true )
+        expect( client.includes( 'function openClientsModal(' ) ).toBe( true )
         expect( client.includes( 'function renderClientsSummary(' ) ).toBe( true )
         expect( client.includes( "modeForPath( window.location.pathname )" ) ).toBe( true )
-        expect( client.includes( "if( pathname === '/clients'" ) ).toBe( true )
+        // The /clients mode route is removed with the tab.
+        expect( client.includes( "if( pathname === '/clients'" ) ).toBe( false )
     } )
 
 

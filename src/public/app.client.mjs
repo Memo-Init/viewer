@@ -88,7 +88,12 @@
 
         renderer.code = function( token ) {
             if( diagramRegistry[ token.lang ] ) {
-                return '<div class="' + token.lang + '">' + token.text + '</div>'
+                // PRD-003 (Memo 076 WI-031): the raw diagram source goes ESCAPED into a data-src
+                // attribute with an EMPTY body — never interpolated unescaped into innerHTML. Otherwise
+                // the browser parses <br/>, HTML entities and [[slug]] inside token.text before
+                // renderAllDiagrams ever reads them back. getAttribute('data-src') returns the source
+                // 1:1 (entity roundtrip, NO tag interpretation); the body stays empty until the SVG lands.
+                return '<div class="' + token.lang + '" data-src="' + escapeHtml( token.text ) + '"></div>'
             }
 
             if( token.lang === 'block-meta' ) {
@@ -179,12 +184,23 @@
         const collapsedTranscriptMemos = new Set()
         const seededCollapseTranscriptProjects = new Set()
         const seededCollapseTranscriptMemos = new Set()
+        // PRD-006 (Memo 076, Phase 4, WI-058/059): the Specs tab renders its OWN namespace tree
+        // (renderSidebarSpecs) mirroring the Memos/Transcripts trees. Namespaces default to
+        // COLLAPSED via a seed-once guard so a namespace a user manually expanded is never
+        // re-collapsed on a re-render, and the collapse-state lives OUTSIDE the DOM so it survives
+        // the innerHTML rebuild. collapsedSpecSubs (WI-066) is the second collapse level per
+        // namespace sub-group (key: namespace + '::' + sub.label); sub-groups default EXPANDED, so
+        // expanding a namespace directly reveals its pages.
+        const collapsedSpecNamespaces = new Set()
+        const seededCollapseSpecNamespaces = new Set()
+        const collapsedSpecSubs = new Set()
         let currentMode = 'memos'
         let lastTree = {}
         let lastLatest = []
         let lastTranscriptTree = {}
         // PRD-P3-02 (Memo 075 Phase 3, WI-009): the last client registry snapshot from the clientList
-        // WS broadcast. Drives both the Clients view (renderClientsArea) and the head summary.
+        // WS broadcast. Drives the Clients overlay (renderClientsModal), the head summary and the
+        // memos-view instance chip (PRD-002, Memo 076).
         let lastClients = []
         // PRD-P3-04/05/06 (Memo 075 Phase 3, WI-012/013): the annotations of the currently viewed memo.
         // Fetched on content load + refreshed by the annotationList WS broadcast; rendered idempotently
@@ -330,7 +346,12 @@
                 .replace( /&/g, '&amp;' )
                 .replace( /</g, '&lt;' )
                 .replace( />/g, '&gt;' )
-            var safeOriginal = String( originalText == null ? '' : originalText )
+            // PRD-003 (Memo 076 WI-033): cap the raw source BEFORE escaping (~2000 chars) so a giant
+            // CSS-dump/spec cannot blow the error box up to full-page height. Capping before the escape
+            // avoids slicing a half-written &amp; entity in two.
+            var capped = String( originalText == null ? '' : originalText )
+            if( capped.length > 2000 ) { capped = capped.slice( 0, 2000 ) + '…' }
+            var safeOriginal = capped
                 .replace( /&/g, '&amp;' )
                 .replace( /</g, '&lt;' )
                 .replace( />/g, '&gt;' )
@@ -430,14 +451,30 @@
         }
 
         // Memo 020 Kap 4: the single post-parse render pass. Walks each registry entry's
-        // selector and renders every matching element from its textContent. Replaces the four
+        // selector and renders every matching element from its data-src source. Replaces the four
         // identical querySelectorAll('.mermaid') callsites (prose, diff-new, diff-prev, ws-update).
+        // PRD-003 (Memo 076 WI-030/WI-040): idempotent. The source is read from data-src, NEVER the
+        // element's textContent — after the first render textContent is the SVG's CSS, which is the
+        // root cause of the "No diagram type detected" second-pass error. A per-element renderedSrc
+        // guard skips an element whose source has not changed, so a repeated pass (rapid WS broadcasts)
+        // is a no-op instead of a re-render/flicker. Fallback to textContent guards against legacy DOM.
         function renderAllDiagrams() {
             Object.keys( diagramRegistry ).forEach( function( lang ) {
                 var entry = diagramRegistry[ lang ]
                 document.querySelectorAll( entry.selector ).forEach( function( el ) {
-                    var spec = el.textContent
-                    entry.render( spec, el )
+                    var spec = el.getAttribute( 'data-src' )
+                    if( spec == null ) { spec = el.textContent }
+                    if( el.dataset.renderedSrc === spec ) { return }
+                    el.dataset.renderedSrc = spec
+                    // PRD-009 (Memo 076 H6, WI-083): a synchronous throw in one renderer (e.g.
+                    // vegaEmbed undefined) used to abort the whole pass and leave every remaining
+                    // diagram unrendered. Isolate each element so one failure only marks its own box.
+                    try {
+                        entry.render( spec, el )
+                    } catch ( err ) {
+                        el.dataset.renderedSrc = ''
+                        el.innerHTML = '<div class="diagram-error">Diagramm konnte nicht gerendert werden.</div>'
+                    }
                 } )
             } )
         }
@@ -449,6 +486,16 @@
             return Object.keys( diagramRegistry ).reduce( function( hit, lang ) {
                 return hit || el.closest( diagramRegistry[ lang ].selector )
             }, null )
+        }
+
+        // PRD-003 (Memo 076 WI-039): a node IS a diagram container when its OWN classList carries a
+        // registered diagram key (registry key K === selector '.K' === div class, see registry invariant).
+        // Registry-driven so a new renderer is covered automatically — resolveWikiLinks uses this to
+        // never descend into diagram source/SVG-label text (which would corrupt [[slug]] in a diagram).
+        function isDiagramContainer( el ) {
+            return Object.keys( diagramRegistry ).some( function( lang ) {
+                return !!( el.classList && el.classList.contains( lang ) )
+            } )
         }
 
         // PRD-001 (Memo 018 Kap 4, F7=A): the 3-state ball status is now DERIVED from the
@@ -698,6 +745,24 @@
             }
         }
 
+        // PRD-001 (Memo 076, Phase 1, WI-041/042 — the 2 blockers): guard-independent clear of the
+        // memo sticky header. updateSidebarSticky's mode-guard (currentMode !== 'memos' -> return)
+        // would swallow an updateSidebarSticky(null,null) once the mode already switched away, so the
+        // clear runs here directly (innerHTML=''). The CSS rule #main-header:empty { display:none }
+        // then hides the emptied header, ending the bleed into clients/specs/transcripts.
+        function clearMainHeader() {
+            var headerEl = document.getElementById( 'main-header' )
+            if( headerEl ) { headerEl.innerHTML = '' }
+        }
+
+        // PRD-002 (Memo 076, Phase 1, WI-050): zero-pad a memo number to 3 digits so the client-registry
+        // value (server stores it ungepadded, e.g. '76') and the header number (derived as 3-digit '076')
+        // compare equal. Non-numeric input is returned as its trimmed string so it never crashes.
+        function pad3( value ) {
+            var str = String( value === undefined || value === null ? '' : value ).trim()
+            return /^\d+$/.test( str ) ? str.padStart( 3, '0' ) : str
+        }
+
         // PRD-008: two-line content-sticky-header.
         //   Line 1: Titel + Memo-Typ-Badge (F12) + Status-Pill (derived 3-state) + Diff-Toggle.
         //   Line 2: "Transcript kopieren" + URL + Woerter/Minuten.
@@ -706,7 +771,12 @@
             // PRD-017 (Memo 072, Phase 5): the memo sticky header does not belong in the Specs view —
             // its #main-header is left to the spec render. Skip so a transcriptList broadcast cannot
             // inject a memo sticky bar while the user is browsing specs.
-            if( currentMode === 'specs' ) { return }
+            // PRD-001 (Memo 076, Phase 1, WI-042/043/047/048): generalized from 'specs'-only to
+            // "any non-memos mode". The Zone-1 memo header belongs to the memos view alone; a
+            // broadcast (content/transcriptList/transcriptLoggedIn/Out) must never re-inject it while
+            // the user is in specs/clients/transcripts. An explicit clear does NOT flow through here —
+            // clearMainHeader() below is guard-independent, so this early return cannot swallow it.
+            if( currentMode !== 'memos' ) { return }
             var headerEl = document.getElementById( 'main-header' )
             if( !headerEl ) { return }
             if( !memoName && !fileName ) {
@@ -753,6 +823,18 @@
             var rowStatus = revisionStatusForRow( hasTranscript, loggedIn )
             var viewedTranscript = latestTranscriptForRevision( memoName, viewedRevision )
 
+            // PRD-002 (Memo 076, Phase 1, WI-046/050): resolve which registered CC instances belong to
+            // the DISPLAYED memo. The header number is derived as 3-digit; the client stores it ungepadded
+            // (e.g. '76'), so both sides are pad3-normalized before comparison ('76' matches '076').
+            var chipHeaderMatch = String( memoName || '' ).match( /(\d{3})/ )
+            var chipHeaderNum = chipHeaderMatch ? pad3( chipHeaderMatch[ 1 ] ) : ''
+            var activeInstances = chipHeaderNum
+                ? ( Array.isArray( lastClients ) ? lastClients : [] ).filter( function( client ) {
+                    var hasNum = client && client.memoNumber !== undefined && client.memoNumber !== null && client.memoNumber !== ''
+                    return hasNum && pad3( client.memoNumber ) === chipHeaderNum
+                } )
+                : []
+
             // Memo 038 Kap 13: the former rendered-document word/minute estimate that fed the Zone-2
             // "Transcript" line was removed — Zone 2 now uses the revision's TRANSCRIPT word count
             // (psTranscriptWords below), the same source as the sidebar, so the two never diverge.
@@ -783,6 +865,22 @@
             z1Line1 += '<button id="req-view-toggle" title="Requirements anzeigen">Requirements</button>'
             // PRD-010 (Memo 014 Kap 2): Block-Ansicht oeffnen (Block-Overlay, read-only). Muster req-view-toggle.
             z1Line1 += '<button id="block-view-toggle" title="Blöcke anzeigen">Blöcke</button>'
+            // PRD-002 (Memo 076, Phase 1, WI-046/049/050): the instance chip. Rendered when a CC instance
+            // is registered for THIS memo number (activeInstances, zero-padded match) OR the viewed
+            // revision is logged in (loggedIn — the previously computed-but-unrendered flag, WI-049). The
+            // chip carries rowStatus (offen/transcript-eingetragen/eingeloggt) as a data-attribute so the
+            // per-revision login state is genuinely surfaced, not dead code.
+            if( activeInstances.length > 0 || loggedIn ) {
+                var chipParts = []
+                if( activeInstances.length > 0 ) {
+                    chipParts.push( activeInstances.length + ' Instanz' + ( activeInstances.length === 1 ? '' : 'en' ) + ' aktiv' )
+                }
+                if( loggedIn ) { chipParts.push( 'eingeloggt' ) }
+                z1Line1 += '<span class="z1-instances z1-instances--' + escapeAttr( rowStatus ) + '"'
+                    + ' data-zone1-instances data-row-status="' + escapeAttr( rowStatus ) + '"'
+                    + ' title="Für dieses Memo eingeloggt / aktiv">'
+                    + escapeAttr( chipParts.join( ' · ' ) ) + '</span>'
+            }
             z1Line1 += '</div>'
 
             // Zeile 2 (9I8kz): aktuelles Dokument — "ressources · 019 · REV-NN" + Kalender-Icon
@@ -973,10 +1071,8 @@
                 } )
             }
 
-            // PRD-008 (Memo 024 Kap 7) — REMOVED: the answers-only bar is gone (redundant with
-            // the popup's "Übernehmen"). mountAnswersOnlyBarInHeader() now only strips any stray
-            // bar so neither the Sticky-Header nor the popup show it again.
-            mountAnswersOnlyBarInHeader()
+            // PRD-012 (Memo 076 H8, WI-106): the answers-only bar + mountAnswersOnlyBarInHeader stripper
+            // are gone (dead path; the popup's "Übernehmen" persists transcript + answers).
         }
 
         // PRD-005 (Memo 022 Kap 9): the per-revision Typ-Badge (Full/Update/Prepare) was REMOVED
@@ -1247,7 +1343,11 @@
             //   Zeile 3 (Z36pN): folder-Icon + Namespace + · Datum
             // Pro Item klar erkennbar: Namespace · Datum · Anzahl offener Fragen (AC-5).
             // Fehlende Einzelwerte bleiben LEER (kein erfundener Default, AC-12 Phase 1).
-            function renderQueueEntry( pair ) {
+            // WI-028 (Memo 076): sameNsAsPrev de-dups the namespace label across CONSECUTIVE queue items
+            // of the SAME namespace (the queue is flat/FIFO, not grouped). Optional — undefined -> false ->
+            // renders as before (backwards-safe). Only the ns text (Zeile 3) is suppressed; folder-icon +
+            // date stay so each row keeps its shape.
+            function renderQueueEntry( pair, sameNsAsPrev ) {
                 var doc = pair.doc
                 var rev = pair.rev
                 var revLabel = String( rev.fileName || '' ).replace( /\.md$/, '' )
@@ -1280,10 +1380,11 @@
                 html += '</span>'
                 // Zeile 2: REV-NN · offen + Lifecycle-Status des Memos (PRD-004-Modell).
                 html += '<span class="queue-card-row2" data-queue-status data-queue-lifecycle="' + escapeAttr( queueLifecycle ) + '">' + escapeAttr( revStatusLine ) + '<span class="queue-card-lifecycle" data-queue-lifecycle-label>' + escapeAttr( queueLifecycle ) + '</span></span>'
-                // Zeile 3: folder + Namespace + · Datum.
+                // Zeile 3: folder + Namespace + · Datum. WI-028: the ns label is suppressed when this item
+                // repeats the previous item's namespace (no per-item repetition of the same namespace).
                 html += '<span class="queue-card-row3">'
                 html += '<span class="queue-card-folder" aria-hidden="true">\uD83D\uDCC1</span>'
-                html += '<span class="queue-card-ns" data-queue-ns>' + escapeAttr( doc.projectId || '' ) + '</span>'
+                if( !sameNsAsPrev ) { html += '<span class="queue-card-ns" data-queue-ns>' + escapeAttr( doc.projectId || '' ) + '</span>' }
                 if( rev.mtime ) { html += '<span class="queue-card-date" data-queue-date>\u00b7 ' + escapeAttr( rev.mtime ) + '</span>' }
                 html += '</span>'
                 html += '</span></li>'
@@ -1377,8 +1478,13 @@
                 html += '<div class="sb-queue-empty">Nichts in der Warteschlange.</div>'
             } else {
                 html += '<div class="sb-queue"><ul style="list-style:none;padding:0;margin:0">'
+                // WI-028: carry the previous item's namespace so renderQueueEntry can suppress a repeated
+                // ns label on consecutive same-namespace items (the queue is flat/FIFO, not grouped).
+                var prevQueueNs = null
                 queue.forEach( function( pair ) {
-                    html += renderQueueEntry( pair )
+                    var thisNs = ( pair.doc && pair.doc.projectId ) ? pair.doc.projectId : ''
+                    html += renderQueueEntry( pair, thisNs === prevQueueNs )
+                    prevQueueNs = thisNs
                 } )
                 html += '</ul></div>'
             }
@@ -1407,6 +1513,18 @@
                 return inner
             }
 
+            // PRD-014 (Memo 076 Phase 7, WI-009): a namespace is ACTIVE when at least one registered
+            // client is logged into it (lastClients[].projectId === projectId, non-stale) — a DERIVED
+            // marker off the live clientList snapshot, NEVER a stored field. It rides the memos render
+            // (unified projects[] source) so a config-rehydrated project with no working CC instance
+            // reads as idle ([data-active="false"]) in the namespace tree/dropdown.
+            function deriveProjectActive( projectId ) {
+                var list = Array.isArray( lastClients ) ? lastClients : []
+                return list.some( function( client ) {
+                    return client && client.projectId === projectId && client.status !== 'stale'
+                } )
+            }
+
             Object.keys( tree ).forEach( function( projectId ) {
                 var projectNode = tree[ projectId ]
                 var memos = []
@@ -1422,8 +1540,9 @@
                 var isCollapsed = collapsedProjects.has( projectId )
                 var bodyDisplay = isCollapsed ? 'none' : 'block'
                 var boxCls = 'ns-box' + ( isCollapsed ? ' ns-box-collapsed' : '' )
+                var isActive = deriveProjectActive( projectId )
 
-                html += '<div class="' + boxCls + '" data-namespace="' + escapeAttr( projectId ) + '">'
+                html += '<div class="' + boxCls + '" data-namespace="' + escapeAttr( projectId ) + '" data-active="' + ( isActive ? 'true' : 'false' ) + '">'
                 html += '<div class="ns-header" data-project="' + escapeAttr( projectId ) + '" title="Namespace ein-/ausklappen">'
                 html += nsHeaderInner( projectId, memos.length, isCollapsed )
                 html += '</div>'
@@ -1552,7 +1671,10 @@
                 renderSidebarTranscripts()
             } else {
                 renderSidebarMemos()
-                updateTranscriptIndicators()
+                // PRD-012 (Memo 076 H8, WI-107): updateTranscriptIndicators removed — the memo-head
+                // no longer renders a .transcript-indicator pill, so the per-broadcast DOM scan found
+                // nothing (dead/no-op). This also removes the only .transcript-indicator contextmenu
+                // fetch, which subsumes WI-081 (the leaky-modal path can no longer be reached).
             }
         }
 
@@ -1943,97 +2065,36 @@
             }
         }
 
-        // PRD-011 (#4): the memo-head .transcript-indicator is the AGGREGATE (lose) display —
-        // it shows the memo-weite count + the memo's latest transcript. This is deliberately
-        // distinct from the per-revision indicators rendered inline on each revision entry
-        // (renderRevEntry via hasTranscriptForRevision). Aggregate here, per-revision there.
-        function updateTranscriptIndicators() {
-            var tree = lastTranscriptTree || {}
-            var allIndicators = document.querySelectorAll( '.transcript-indicator' )
-
-            allIndicators.forEach( function( el ) {
-                el.textContent = ''
-                el.setAttribute( 'data-count', '0' )
-                el.setAttribute( 'data-latest-url', '' )
-                el.setAttribute( 'title', '' )
-            } )
-
-            Object.keys( tree ).forEach( function( projectId ) {
-                var memos = tree[ projectId ] || {}
-                Object.keys( memos ).forEach( function( memoId ) {
-                    var transcripts = memos[ memoId ] || []
-                    if( transcripts.length === 0 ) { return }
-                    var docId = projectId + '--' + memoId
-                    // Must be scoped to .transcript-indicator — the memo-head no longer renders
-                    // that pill, and other elements (questions-link) share data-document-id.
-                    var indicator = document.querySelector( '.transcript-indicator[data-document-id="' + docId + '"]' )
-                    if( !indicator ) { return }
-                    var count = transcripts.length
-                    var latest = transcripts[ transcripts.length - 1 ]
-                    // PRD-006 (#38): dezentes Wort/Icon statt "T·N" — Count bleibt im title.
-                    indicator.textContent = '🗒 Transcript'
-                    indicator.setAttribute( 'data-count', String( count ) )
-                    indicator.setAttribute( 'data-latest-url', latest ? latest.url : '' )
-                    indicator.setAttribute( 'title', latest ? count + ' Transcript(s) · Letztes: ' + latest.revisionId : '' )
-                } )
-            } )
-
-            document.querySelectorAll( '.transcript-indicator' ).forEach( function( el ) {
-                if( el.dataset.bound === '1' ) { return }
-                el.dataset.bound = '1'
-                el.addEventListener( 'click', function( ev ) {
-                    ev.stopPropagation()
-                    var url = el.getAttribute( 'data-latest-url' )
-                    if( url ) { window.open( url, '_blank' ) }
-                } )
-                el.addEventListener( 'contextmenu', function( ev ) {
-                    ev.preventDefault()
-                    ev.stopPropagation()
-                    var docId = el.getAttribute( 'data-document-id' )
-                    if( !docId ) { return }
-                    var url = el.getAttribute( 'data-latest-url' )
-                    if( !url ) { return }
-                    var tIdMatch = url.match( /\/transcripts\/(.+)$/ )
-                    if( !tIdMatch ) { return }
-                    var transcriptId = tIdMatch[ 1 ]
-                    fetch( '/api/transcripts/' + transcriptId )
-                        .then( function( r ) { return r.text() } )
-                        .then( function( text ) {
-                            var body = text.split( /## Transcript-Inhalt\s*\n+/ )[ 1 ] || ''
-                            var parsed = transcriptId.split( '--' )
-                            var lastPart = parsed[ parsed.length - 1 ]
-                            var hasSeq = /^\d+$/.test( lastPart )
-                            var revisionId = hasSeq ? parsed[ parsed.length - 2 ] : parsed[ parsed.length - 1 ]
-                            var memoEndIdx = hasSeq ? parsed.length - 2 : parsed.length - 1
-                            var projectId = parsed[ 0 ]
-                            var memoId = parsed.slice( 1, memoEndIdx ).join( '--' )
-                            openTranscriptModal( {
-                                transcriptId: transcriptId,
-                                projectId: projectId,
-                                memoId: memoId,
-                                revisionId: revisionId,
-                                content: body.trim()
-                            } )
-                        } )
-                } )
-            } )
-        }
+        // PRD-012 (Memo 076 H8, WI-107): updateTranscriptIndicators was removed — the memo-head no
+        // longer renders a .transcript-indicator pill (that aggregate display was dropped), so the
+        // function scanned for elements that never exist and its click/contextmenu wiring was dead.
+        // Removing it also deletes the only .transcript-indicator contextmenu fetch chain, subsuming
+        // WI-081 (a right-click can no longer open an empty modal / throw an unhandled rejection).
 
         var modeTranscriptsBtn = document.getElementById( 'mode-transcripts' )
         var modeMemosBtn = document.getElementById( 'mode-memos' )
         // PRD-017 (Memo 072, Phase 5): the 4th VIEW mode button (merged Spec-Viewer).
         var modeSpecsBtn = document.getElementById( 'mode-specs' )
-        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients VIEW mode button (live client registry).
-        var modeClientsBtn = document.getElementById( 'mode-clients' )
+        // PRD-002 (Memo 076, Phase 1, F10): the Clients 4th-tab is gone — Clients is an overlay
+        // opened from #clients-head, no longer a VIEW mode. No mode-clients button any more.
         var transcriptNavBtn = document.getElementById( 'transcript-new' )
         var docSidebarEl = document.getElementById( 'doc-sidebar' )
 
-        // PRD-017: set the active class on exactly the one mode button (four-way now).
+        // PRD-017: set the active class on exactly the one mode button.
+        // PRD-002 (Memo 076, Phase 1, F10): three-way now — the Clients tab is gone.
+        // PRD-012 (Memo 076 H8, WI-111): also expose the active mode to assistive tech — a screen
+        // reader only had the visual .active class before. aria-pressed reflects the toggle state and
+        // aria-current='page' marks the active view. Keep both in lock-step with the class.
         function setActiveModeButton( mode ) {
-            if( modeTranscriptsBtn ) { modeTranscriptsBtn.classList.toggle( 'active', mode === 'transcripts' ) }
-            if( modeMemosBtn ) { modeMemosBtn.classList.toggle( 'active', mode === 'memos' ) }
-            if( modeSpecsBtn ) { modeSpecsBtn.classList.toggle( 'active', mode === 'specs' ) }
-            if( modeClientsBtn ) { modeClientsBtn.classList.toggle( 'active', mode === 'clients' ) }
+            var applyState = function( btn, isActive ) {
+                if( !btn ) { return }
+                btn.classList.toggle( 'active', isActive )
+                btn.setAttribute( 'aria-pressed', isActive ? 'true' : 'false' )
+                if( isActive ) { btn.setAttribute( 'aria-current', 'page' ) } else { btn.removeAttribute( 'aria-current' ) }
+            }
+            applyState( modeTranscriptsBtn, mode === 'transcripts' )
+            applyState( modeMemosBtn, mode === 'memos' )
+            applyState( modeSpecsBtn, mode === 'specs' )
         }
 
         // NavBar chrome per active view (REV-05 R4/F6): the redundant "+ Neues Memo" primary
@@ -2056,14 +2117,6 @@
                     docSidebarEl.classList.remove( 'transcripts-mode' )
                     docSidebarEl.classList.add( 'specs-mode' )
                 }
-            } else if( currentMode === 'clients' ) {
-                // PRD-P3-02 (Memo 075 Phase 3, WI-009): Clients view — the memo-only "+ Transcript"
-                // button is hidden; the client list owns #content (like the specs view owns it).
-                if( transcriptNavBtn ) { transcriptNavBtn.style.display = 'none' }
-                if( docSidebarEl ) {
-                    docSidebarEl.classList.remove( 'transcripts-mode' )
-                    docSidebarEl.classList.remove( 'specs-mode' )
-                }
             } else {
                 if( transcriptNavBtn ) { transcriptNavBtn.style.display = '' }
                 if( docSidebarEl ) {
@@ -2079,18 +2132,19 @@
             if( mode === 'specs' ) {
                 // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer. Fetch the spec tree and
                 // render the namespace/version sidebar; the first page auto-selects on cold start.
+                // PRD-001 (Memo 076, Phase 1, WI-042): actively clear the memo sticky header on the
+                // way into Specs so no Memo-Tab-Header bleeds over the spec page.
+                clearMainHeader()
                 currentMode = 'specs'
                 setActiveModeButton( 'specs' )
                 applyModeChrome()
-                loadSpecs()
-            } else if( mode === 'clients' ) {
-                // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients view — render the live client
-                // registry into #content. The list is kept fresh by the clientList WS broadcast.
-                currentMode = 'clients'
-                setActiveModeButton( 'clients' )
-                applyModeChrome()
-                renderClientsArea()
+                // WI-062 (PRD-007): entering the Specs view re-renders the page that was open before
+                // (reselect), so returning from Memos shows the last spec page, not a stale memo.
+                loadSpecs( { reselect: true } )
             } else if( mode === 'transcripts' ) {
+                // PRD-001 (Memo 076, Phase 1): clear the memo sticky header on the way into the
+                // Transcripts view — the Zone-1 header belongs to the memos view only.
+                clearMainHeader()
                 currentMode = 'transcripts'
                 setActiveModeButton( 'transcripts' )
                 applyModeChrome()
@@ -2100,15 +2154,16 @@
                 setActiveModeButton( 'memos' )
                 applyModeChrome()
                 renderSidebar()
-                // Restore memo content when leaving the transcripts view.
+                // Restore memo content when returning from another view (transcripts/specs/clients).
+                // PRD-003 (Memo 076 WI-029/WI-037): route through the ONE shared renderProseContent(false)
+                // path instead of a hand-rolled subset. That subset rebuilt innerHTML but never called
+                // renderAllDiagrams (mermaid stayed raw source — the user's "Syntaxerror ganz unten") and
+                // had no diff branch (the diff view vanished on the way back). renderProseContent contains
+                // the exact slugCounts/marked/interceptLinks/applyContentStructure/vorwort/questions/TOC
+                // sequence PLUS the diff branch PLUS renderAllDiagrams. updateSidebarSticky stays AFTER —
+                // it is NOT part of renderProseContent and must re-set the sticky header after the return.
                 if( lastContent ) {
-                    slugCounts.clear()
-                    contentEl.innerHTML = marked.parse( lastContent )
-                    interceptLinks()
-                    applyContentStructure()
-                    renderVorwort( lastVorwort )
-                    renderQuestionWidgets( lastQuestionSchema )
-                    buildTOC( currentDiff )
+                    renderProseContent( false )
                     updateSidebarSticky( currentMemoName, currentFileName )
                 }
             }
@@ -2120,14 +2175,12 @@
         function modeForPath( pathname ) {
             if( pathname === '/transcripts' || pathname.indexOf( '/transcripts/' ) === 0 ) { return 'transcripts' }
             if( pathname === '/specs' || pathname.indexOf( '/specs/' ) === 0 ) { return 'specs' }
-            if( pathname === '/clients' || pathname.indexOf( '/clients/' ) === 0 ) { return 'clients' }
             return 'memos'
         }
 
         function pathForMode( mode ) {
             if( mode === 'transcripts' ) { return '/transcripts' }
             if( mode === 'specs' ) { return '/specs' }
-            if( mode === 'clients' ) { return '/clients' }
             return '/memos'
         }
 
@@ -2154,53 +2207,95 @@
             modeSpecsBtn.addEventListener( 'click', function() { setMode( 'specs', { push: true } ) } )
         }
 
-        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients view button + the compact clients-head
-        // summary both route into the Clients view.
-        if( modeClientsBtn ) {
-            modeClientsBtn.addEventListener( 'click', function() { setMode( 'clients', { push: true } ) } )
-        }
-
+        // PRD-002 (Memo 076, Phase 1, F10, WI-053): #clients-head is now the ONLY Clients control —
+        // it opens the overlay-popup instead of routing to a (removed) Clients mode.
         var clientsHeadEl = document.getElementById( 'clients-head' )
         if( clientsHeadEl ) {
-            clientsHeadEl.addEventListener( 'click', function() { setMode( 'clients', { push: true } ) } )
+            clientsHeadEl.addEventListener( 'click', function() { openClientsModal() } )
         }
 
-        // PRD-P3-02 (Memo 075 Phase 3, WI-009): the compact head summary "N Clients · M warten". M is
+        // PRD-012 (Memo 076 H8, WI-103): the "Unlink" nav button ("Memo entkoppeln") existed in the
+        // HTML but had NO handler — a dead button. Wire it to the existing DELETE /api/documents/{id}
+        // route (removeDocument), guarded by a confirm since it is destructive. The server broadcasts a
+        // fresh documentList afterwards, so the sidebar refreshes without a reload.
+        var navUnlinkBtn = document.getElementById( 'nav-unlink' )
+        if( navUnlinkBtn ) {
+            navUnlinkBtn.addEventListener( 'click', function() {
+                if( !currentDocumentId ) { return }
+                if( !window.confirm( 'Dieses Memo aus dem Viewer entkoppeln?' ) ) { return }
+                fetch( '/api/documents/' + currentDocumentId, { method: 'DELETE' } )
+                    .catch( function() {} )
+            } )
+        }
+
+        // PRD-002 (Memo 076, Phase 1, WI-045): the Clients overlay open/close helpers. The popup lives
+        // OVER the memo (#content stays intact); it toggles the shared .t-hidden class like #transcript-modal.
+        function isClientsModalOpen() {
+            var modal = document.getElementById( 'clients-modal' )
+            return !!( modal && !modal.classList.contains( 't-hidden' ) )
+        }
+
+        function openClientsModal() {
+            var modal = document.getElementById( 'clients-modal' )
+            if( !modal ) { return }
+            renderClientsModal()
+            modal.classList.remove( 't-hidden' )
+        }
+
+        function closeClientsModal() {
+            var modal = document.getElementById( 'clients-modal' )
+            if( modal ) { modal.classList.add( 't-hidden' ) }
+        }
+
+        var clientsModalCloseEl = document.getElementById( 'clients-modal-close' )
+        if( clientsModalCloseEl ) {
+            clientsModalCloseEl.addEventListener( 'click', closeClientsModal )
+        }
+
+        // Backdrop click (outside the .t-modal-content) closes the popup — matches the .t-modal pattern.
+        var clientsModalEl = document.getElementById( 'clients-modal' )
+        if( clientsModalEl ) {
+            clientsModalEl.addEventListener( 'click', function( ev ) {
+                if( ev.target === clientsModalEl ) { closeClientsModal() }
+            } )
+        }
+
+        document.addEventListener( 'keydown', function( ev ) {
+            if( ev.key === 'Escape' && isClientsModalOpen() ) { closeClientsModal() }
+        } )
+
+        // PRD-002 (Memo 076, Phase 1, WI-055): the compact head summary "N Instanz(en) · M warten". M is
         // the number of clients in the derived `waiting-for-user-answer` status. Always visible in the
-        // nav; a click routes to the Clients view (wired above). No em-dash guess — 0 renders as "0".
+        // nav; a click opens the Clients overlay. One language (DE "Instanz(en)"), no Denglish.
         function renderClientsSummary( clients ) {
             if( !clientsHeadEl ) { return }
             var list = Array.isArray( clients ) ? clients : []
             var waiting = list.filter( function( c ) { return c && c.status === 'waiting-for-user-answer' } ).length
-            var label = list.length + ' Client' + ( list.length === 1 ? '' : 's' )
+            var label = list.length + ' Instanz' + ( list.length === 1 ? '' : 'en' )
             if( waiting > 0 ) { label = label + ' · ' + waiting + ' warten' }
             clientsHeadEl.textContent = label
             clientsHeadEl.classList.toggle( 'has-waiting', waiting > 0 )
         }
 
-        // PRD-P3-02 (Memo 075 Phase 3, WI-009): render the client registry into #content while the
-        // Clients view is active. One row per registered CC instance: projectId · M{memo} · {mode} ·
-        // {status}. A status pill carries the derived state (working / waiting-for-user-answer / stale).
-        // Read-only surface — the viewer never mutates a client (the SessionStart-Hook owns registration).
-        function renderClientsArea() {
-            if( currentMode !== 'clients' ) { return }
-            if( !contentEl ) { return }
+        // PRD-002 (Memo 076, Phase 1, F10, WI-045): render the client registry into the overlay-popup
+        // (#clients-modal-body), NOT into #content — the memo body stays visible behind the popup. One row
+        // per registered CC instance: projectId · M{memo} · {mode} · {status} · {session}. A status pill
+        // carries the derived state. Read-only surface — the viewer never mutates a client.
+        function renderClientsModal() {
+            var body = document.getElementById( 'clients-modal-body' )
+            if( !body ) { return }
 
             var list = Array.isArray( lastClients ) ? lastClients : []
             var wrap = document.createElement( 'div' )
             wrap.className = 'clients-view'
-
-            var heading = document.createElement( 'h1' )
-            heading.textContent = 'Clients'
-            wrap.appendChild( heading )
 
             if( list.length === 0 ) {
                 var empty = document.createElement( 'p' )
                 empty.className = 'clients-empty'
                 empty.textContent = 'Keine registrierten CC-Instanzen. Eine Instanz meldet sich beim SessionStart an (POST /api/clients).'
                 wrap.appendChild( empty )
-                contentEl.innerHTML = ''
-                contentEl.appendChild( wrap )
+                body.innerHTML = ''
+                body.appendChild( wrap )
 
                 return
             }
@@ -2213,28 +2308,36 @@
 
             var tbody = document.createElement( 'tbody' )
             list.forEach( function( client ) {
+                // WI-051: no more tote `.client-row status-*` class — the pill (.client-status-*)
+                // already carries the status colour, so there is no second, dead colouring path.
                 var tr = document.createElement( 'tr' )
-                tr.className = 'client-row status-' + ( client && client.status ? client.status : 'unknown' )
 
                 var project = ( client && client.projectId ) ? client.projectId : '—'
                 var memo = ( client && client.memoNumber ) ? ( 'M' + client.memoNumber ) : '—'
-                var mode = ( client && client.workMode ) ? client.workMode : '—'
+                // Memo 076 F3 (T012): the work-mode is a FOUR-state enum idle < create < rollout < review.
+                // A client without a memo/workMode (the normal case right after SessionStart registration)
+                // is the idle floor — presentation maps null/absent to 'Idle' (grey ampel .client-mode-idle),
+                // mirroring the CLI deriveWorkMode Idle floor and the statusline loc grey idle.
+                var mode = ( client && client.workMode ) ? client.workMode : 'Idle'
                 var status = ( client && client.status ) ? client.status : '—'
                 var session = ( client && client.sessionId ) ? client.sessionId : '—'
+                // WI-052: show only the first 8 chars of the session UUID (full value in title=)
+                // so the table does not overflow. A dash placeholder stays as-is.
+                var sessionShort = session === '—' ? '—' : session.slice( 0, 8 )
 
                 tr.innerHTML =
                     '<td>' + escapeHtml( project ) + '</td>' +
                     '<td>' + escapeHtml( memo ) + '</td>' +
-                    '<td>' + escapeHtml( mode ) + '</td>' +
+                    '<td><span class="client-mode client-mode-' + escapeAttr( String( mode ).toLowerCase() ) + '">' + escapeHtml( mode ) + '</span></td>' +
                     '<td><span class="client-status-pill client-status-' + escapeAttr( status ) + '">' + escapeHtml( status ) + '</span></td>' +
-                    '<td><code>' + escapeHtml( session ) + '</code></td>'
+                    '<td><code title="' + escapeAttr( session ) + '">' + escapeHtml( sessionShort ) + '</code></td>'
                 tbody.appendChild( tr )
             } )
             table.appendChild( tbody )
             wrap.appendChild( table )
 
-            contentEl.innerHTML = ''
-            contentEl.appendChild( wrap )
+            body.innerHTML = ''
+            body.appendChild( wrap )
         }
 
         window.addEventListener( 'popstate', function( ev ) {
@@ -2262,14 +2365,35 @@
         // ====================================================================
         var specState = { specs: [], current: null, selectedVersion: {} }
 
-        function loadSpecs() {
+        // PRD-007 (Memo 076, Phase 4): loadSpecs is called two ways — on ENTERING the Specs view
+        // (options.reselect = true → re-render the last selected page, WI-062) and on a live WS
+        // refresh (no options → refresh the tree only, keep the open page/scroll, WI-070). res.ok is
+        // checked so an /api/specs failure surfaces a visible error instead of being misread as
+        // "no specs" (WI-069).
+        function loadSpecs( options ) {
+            var reselect = !!( options && options.reselect )
             fetch( '/api/specs' )
-                .then( function( res ) { return res.json() } )
-                .then( function( payload ) { applySpecList( payload ) } )
-                .catch( function() {} )
+                .then( function( res ) {
+                    if( !res.ok ) { throw new Error( 'HTTP ' + res.status ) }
+                    return res.json()
+                } )
+                .then( function( payload ) { applySpecList( payload, reselect ) } )
+                .catch( function( err ) { renderSpecsError( err ) } )
         }
 
-        function applySpecList( payload ) {
+        // WI-069: a visible sidebar error state — a failed /api/specs must not look like an empty
+        // workshop. Mirrors the error-render pattern in selectSpecPage.
+        function renderSpecsError( err ) {
+            var navEl = document.getElementById( 'doc-sidebar-body' )
+            if( !navEl ) { return }
+            navEl.innerHTML = ''
+            var warn = document.createElement( 'div' )
+            warn.className = 'spec-warn spec-warn-error'
+            warn.textContent = 'Spec-Tree konnte nicht geladen werden: ' + String( err && err.message ? err.message : err )
+            navEl.appendChild( warn )
+        }
+
+        function applySpecList( payload, reselect ) {
             specState.specs = ( payload && payload.specs ) || []
             // Preselect the latest version per namespace on first sight; never override a user's
             // explicit version-switcher choice on a later refresh.
@@ -2280,7 +2404,14 @@
             } )
             if( currentMode === 'specs' ) {
                 renderSidebarSpecs()
-                if( !specState.current ) {
+                if( specState.current ) {
+                    // WI-062: re-entering the Specs view re-renders the page that was open before —
+                    // no stale memo, no manual click. A live refresh (reselect=false) keeps the open
+                    // page untouched (only the tree updates), preserving scroll.
+                    if( reselect ) {
+                        selectSpecPage( { namespace: specState.current.namespace, version: specState.current.version, stem: specState.current.stem } )
+                    }
+                } else {
                     autoSelectFirstSpecPage()
                 }
             }
@@ -2302,12 +2433,59 @@
             selectSpecPage( { namespace: firstSpec.namespace, version: version, stem: firstGroup.pages[ 0 ].stem } )
         }
 
+        // WI-060 (PRD-007): a version switch stays inside the SAME namespace — it keeps the current
+        // stem if that page still exists in the new version, otherwise it lands on the first page of
+        // THIS namespace. The old change-handler called autoSelectFirstSpecPage, which always jumped
+        // to the globally first namespace.
+        function selectFirstPageOfNamespace( namespace, version ) {
+            var spec = specState.specs.find( function( s ) { return s.namespace === namespace } )
+            if( !spec ) { return }
+            var useVersion = version || specState.selectedVersion[ namespace ] || spec.latestVersion
+            var entry = specVersionEntry( spec, useVersion )
+            if( !entry ) { return }
+            var groups = entry.groups || []
+            var keepStem = specState.current && specState.current.namespace === namespace ? specState.current.stem : null
+            var stemExists = keepStem && groups.some( function( g ) {
+                return ( g.pages || [] ).some( function( p ) { return p.stem === keepStem } )
+            } )
+            if( stemExists ) {
+                selectSpecPage( { namespace: namespace, version: useVersion, stem: keepStem } )
+
+                return
+            }
+            var firstGroup = groups.find( function( g ) { return g.pages && g.pages.length > 0 } )
+            if( !firstGroup ) { return }
+            selectSpecPage( { namespace: namespace, version: useVersion, stem: firstGroup.pages[ 0 ].stem } )
+        }
+
         function specBadgeClass( badge ) {
             if( badge === 'PUBLISHED' ) { return 'published' }
             if( badge === 'DRIFT' ) { return 'drift' }
             return 'draft-only'
         }
 
+        // WI-063/064: the namespace-header inner markup — a mirror of renderSidebarMemos.nsHeaderInner
+        // (chevron + flipping folder icon + name + spacer + count chip), reusing the shared .ns-*
+        // tokens. The chip counts the pages of the SELECTED version instead of "N Memos".
+        function specNsHeaderInner( namespace, pageCount, collapsed ) {
+            var chevron = collapsed ? '&#9656;' : '&#9662;'
+            var folder = collapsed ? '📁' : '📂'
+            var inner = '<span class="ns-chevron" data-ns-chevron>' + chevron + '</span>'
+            inner += '<span class="ns-folder" aria-hidden="true">' + folder + '</span>'
+            inner += '<span class="ns-name" data-ns-name>' + escapeAttr( namespace ) + '</span>'
+            inner += '<span class="ns-spacer"></span>'
+            inner += '<span class="ns-count" data-ns-count>' + pageCount + ' Seiten</span>'
+            return inner
+        }
+
+        // PRD-006 (Memo 076, Phase 4): the Specs sidebar rendered a flat wall — no section header,
+        // no box per namespace, everything expanded, and the collapse-state died on every innerHTML
+        // rebuild. This lifts it to the Memos-tree structure: a "Specs" section header, an .ns-box
+        // per namespace with a folder-icon + page-count header, seed-once default-collapse backed by
+        // the persistent collapsedSpecNamespaces Set (survives the rebuild), and a collapsible
+        // second level for the sub-groups. It REUSES the Memos-tree tokens (.ns-box/.ns-header/
+        // .ns-chevron/.ns-folder/.ns-name/.ns-count/.sb-group-header) rather than inventing a second
+        // tree language.
         function renderSidebarSpecs() {
             var navEl = document.getElementById( 'doc-sidebar-body' )
             if( !navEl ) { return }
@@ -2321,21 +2499,58 @@
                 return
             }
 
-            specState.specs.forEach( function( spec ) {
-                var group = document.createElement( 'div' )
-                group.className = 'spec-ns-group'
+            // WI-056: the "Specs" section header, mirroring the Memos "Namespaces" header.
+            var groupHeader = document.createElement( 'div' )
+            groupHeader.className = 'sb-group-header'
+            groupHeader.textContent = 'Specs'
+            navEl.appendChild( groupHeader )
 
-                var header = document.createElement( 'div' )
-                header.className = 'spec-ns-header'
-                header.innerHTML = '<span class="spec-ns-caret">▾</span><span>' + escapeHtml( spec.namespace ) + '</span>'
-                header.addEventListener( 'click', function() { group.classList.toggle( 'collapsed' ) } )
-                group.appendChild( header )
+            // WI-058/059: seed every namespace into collapsedSpecNamespaces ONCE (default collapsed).
+            // The seed-once guard leaves a namespace the user manually expanded untouched on re-render.
+            specState.specs.forEach( function( spec ) {
+                if( !seededCollapseSpecNamespaces.has( spec.namespace ) ) {
+                    seededCollapseSpecNamespaces.add( spec.namespace )
+                    collapsedSpecNamespaces.add( spec.namespace )
+                }
+            } )
+
+            specState.specs.forEach( function( spec ) {
+                var isCollapsed = collapsedSpecNamespaces.has( spec.namespace )
+                var selected = specState.selectedVersion[ spec.namespace ] || spec.latestVersion
+                var entry = specVersionEntry( spec, selected )
+                var pageCount = ( ( entry && entry.groups ) || [] ).reduce( function( sum, g ) {
+                    return sum + ( ( g.pages || [] ).length )
+                }, 0 )
+
+                // WI-057: each namespace is an .ns-box (border/radius/bg via the shared token).
+                var group = document.createElement( 'div' )
+                group.className = 'spec-ns-group ns-box' + ( isCollapsed ? ' collapsed ns-box-collapsed' : '' )
+                group.setAttribute( 'data-spec-namespace', spec.namespace )
 
                 var body = document.createElement( 'div' )
                 body.className = 'spec-ns-body'
+                body.style.display = isCollapsed ? 'none' : 'block'
 
-                var selected = specState.selectedVersion[ spec.namespace ] || spec.latestVersion
-                var entry = specVersionEntry( spec, selected )
+                // WI-063/064: the .ns-header with folder icon + page-count chip.
+                var header = document.createElement( 'div' )
+                header.className = 'spec-ns-header ns-header'
+                header.setAttribute( 'title', 'Namespace ein-/ausklappen' )
+                header.innerHTML = specNsHeaderInner( spec.namespace, pageCount, isCollapsed )
+                // WI-059: the toggle mutates the persistent Set (not just a DOM class), so the state
+                // survives the next innerHTML rebuild. Mirrors the Memos namespace toggle.
+                header.addEventListener( 'click', function() {
+                    if( collapsedSpecNamespaces.has( spec.namespace ) ) {
+                        collapsedSpecNamespaces.delete( spec.namespace )
+                    } else {
+                        collapsedSpecNamespaces.add( spec.namespace )
+                    }
+                    var nowCollapsed = collapsedSpecNamespaces.has( spec.namespace )
+                    group.classList.toggle( 'collapsed', nowCollapsed )
+                    group.classList.toggle( 'ns-box-collapsed', nowCollapsed )
+                    body.style.display = nowCollapsed ? 'none' : 'block'
+                    header.innerHTML = specNsHeaderInner( spec.namespace, pageCount, nowCollapsed )
+                } )
+                group.appendChild( header )
 
                 // Version switcher + publish badge row.
                 var vrow = document.createElement( 'div' )
@@ -2351,11 +2566,11 @@
                         if( v.version === selected ) { opt.selected = true }
                         select.appendChild( opt )
                     } )
+                    // WI-060 (PRD-007): stay in THIS namespace after a version switch.
                     select.addEventListener( 'change', function() {
                         specState.selectedVersion[ spec.namespace ] = this.value
-                        specState.current = null
                         renderSidebarSpecs()
-                        autoSelectFirstSpecPage()
+                        selectFirstPageOfNamespace( spec.namespace, this.value )
                     } )
                     vrow.appendChild( select )
                 }
@@ -2377,24 +2592,57 @@
                     body.appendChild( warn )
                 } )
 
-                // Sub-groups + page links.
+                // WI-066: collapsible sub-groups (second collapse level). The label is a toggle,
+                // its pages live in a wrapper whose display follows the collapsedSpecSubs Set (keyed
+                // namespace::label). Sub-groups default expanded so an opened namespace shows pages.
                 var subGroups = ( entry && entry.groups ) || []
                 subGroups.forEach( function( sub ) {
+                    var subKey = spec.namespace + '::' + sub.label
+                    var subCollapsed = collapsedSpecSubs.has( subKey )
+
+                    var subWrap = document.createElement( 'div' )
+                    subWrap.className = 'spec-sub' + ( subCollapsed ? ' collapsed' : '' )
+
                     var label = document.createElement( 'div' )
                     label.className = 'spec-sub-label'
-                    label.textContent = sub.label
-                    body.appendChild( label )
+                    label.innerHTML = '<span class="spec-sub-caret">' + ( subCollapsed ? '&#9656;' : '&#9662;' ) + '</span>'
+                        + '<span class="spec-sub-name">' + escapeHtml( sub.label ) + '</span>'
+
+                    var pagesWrap = document.createElement( 'div' )
+                    pagesWrap.className = 'spec-sub-pages'
+                    pagesWrap.style.display = subCollapsed ? 'none' : 'block'
+
+                    label.addEventListener( 'click', function() {
+                        if( collapsedSpecSubs.has( subKey ) ) {
+                            collapsedSpecSubs.delete( subKey )
+                        } else {
+                            collapsedSpecSubs.add( subKey )
+                        }
+                        var nowCollapsed = collapsedSpecSubs.has( subKey )
+                        subWrap.classList.toggle( 'collapsed', nowCollapsed )
+                        pagesWrap.style.display = nowCollapsed ? 'none' : 'block'
+                        var caret = label.querySelector( '.spec-sub-caret' )
+                        if( caret ) { caret.innerHTML = nowCollapsed ? '&#9656;' : '&#9662;' }
+                    } )
+                    subWrap.appendChild( label )
 
                     var pages = sub.pages || []
                     pages.forEach( function( page ) {
-                        var link = document.createElement( 'a' )
+                        // PRD-012 (Memo 076 H8, WI-110): a <button> instead of an <a> without href, so
+                        // the spec page link is keyboard-focusable/activatable (Enter/Space).
+                        var link = document.createElement( 'button' )
+                        link.type = 'button'
                         link.className = 'spec-page-link'
                         link.textContent = page.title
                         link.setAttribute( 'data-namespace', spec.namespace )
                         link.setAttribute( 'data-stem', page.stem )
+                        // WI-071 (PRD-007): carry the version so markActiveSpec can compare it.
+                        link.setAttribute( 'data-version', selected )
                         link.addEventListener( 'click', function() { selectSpecPage( { namespace: spec.namespace, version: selected, stem: page.stem } ) } )
-                        body.appendChild( link )
+                        pagesWrap.appendChild( link )
                     } )
+                    subWrap.appendChild( pagesWrap )
+                    body.appendChild( subWrap )
                 } )
 
                 group.appendChild( body )
@@ -2426,27 +2674,72 @@
         function markActiveSpec() {
             var navEl = document.getElementById( 'doc-sidebar-body' )
             if( !navEl ) { return }
+            var cur = specState.current
             var links = navEl.querySelectorAll( '.spec-page-link' )
             links.forEach( function( link ) {
-                var isActive = specState.current
-                    && link.getAttribute( 'data-namespace' ) === specState.current.namespace
-                    && link.getAttribute( 'data-stem' ) === specState.current.stem
+                // WI-071 (PRD-007): match namespace + stem + VERSION so that, with several visible
+                // versions, the right page is marked (not just the namespace/stem pair).
+                var isActive = cur
+                    && link.getAttribute( 'data-namespace' ) === cur.namespace
+                    && link.getAttribute( 'data-stem' ) === cur.stem
+                    && link.getAttribute( 'data-version' ) === cur.version
                 link.classList.toggle( 'active', !!isActive )
+            } )
+
+            // WI-067 (PRD-006): mark the active page's namespace header and expand it so the page is
+            // always visible. Done via direct DOM mutation (never a re-render — markActiveSpec is
+            // called FROM renderSidebarSpecs, so re-rendering here would recurse).
+            var groups = navEl.querySelectorAll( '.spec-ns-group' )
+            groups.forEach( function( groupEl ) {
+                var ns = groupEl.getAttribute( 'data-spec-namespace' )
+                var isActiveNs = !!( cur && ns === cur.namespace )
+                groupEl.classList.toggle( 'spec-ns-active', isActiveNs )
+                var headerEl = groupEl.querySelector( '.spec-ns-header' )
+                if( headerEl ) { headerEl.classList.toggle( 'active', isActiveNs ) }
+                if( isActiveNs && collapsedSpecNamespaces.has( ns ) ) {
+                    collapsedSpecNamespaces.delete( ns )
+                    groupEl.classList.remove( 'collapsed', 'ns-box-collapsed' )
+                    var bodyEl = groupEl.querySelector( '.spec-ns-body' )
+                    if( bodyEl ) { bodyEl.style.display = 'block' }
+                    if( headerEl ) {
+                        var pageCount = groupEl.querySelectorAll( '.spec-page-link' ).length
+                        headerEl.innerHTML = specNsHeaderInner( ns, pageCount, false )
+                    }
+                }
             } )
         }
 
         function renderSpecPage( payload ) {
             slugCounts.clear()
-            // Provenance bar (path/version/mtime) prepended, then the RAW markdown rendered through
-            // THIS client's marked core, then diagrams + RFC highlight + intra-spec links + TOC.
+            // WI-061 (PRD-007): a sticky breadcrumb "namespace / version / seite" above the
+            // provenance bar. Provenance bar (path/version/mtime) next, then the RAW markdown
+            // rendered through THIS client's marked core, then diagrams + RFC highlight +
+            // intra-spec links + TOC.
+            var breadcrumb = buildSpecBreadcrumb( payload )
             var meta = buildSpecPageMeta( payload )
-            contentEl.innerHTML = meta + marked.parse( payload.content || '' )
+            contentEl.innerHTML = breadcrumb + meta + marked.parse( payload.content || '' )
             wireSpecPageMeta( payload )
             renderAllDiagrams()
             specHighlightRfc()
             interceptRelativeSpecLinks()
             buildTOC( null )
             window.scrollTo( { top: 0 } )
+        }
+
+        // WI-061 (PRD-007): the sticky context anchor. Sources namespace/version from the page
+        // payload (falling back to specState.current) and the page title from the payload; renders
+        // nothing if all three are empty. position:sticky is applied in CSS (#spec-breadcrumb).
+        function buildSpecBreadcrumb( payload ) {
+            var cur = specState.current || {}
+            var ns = payload.namespace || cur.namespace || ''
+            var version = payload.version || cur.version || ''
+            var title = payload.title || cur.stem || ''
+            var parts = []
+            if( ns ) { parts.push( '<span class="sbc-ns">' + escapeHtml( ns ) + '</span>' ) }
+            if( version ) { parts.push( '<span class="sbc-version">' + escapeHtml( version ) + '</span>' ) }
+            if( title ) { parts.push( '<span class="sbc-page">' + escapeHtml( title ) + '</span>' ) }
+            if( parts.length === 0 ) { return '' }
+            return '<div id="spec-breadcrumb">' + parts.join( '<span class="sbc-sep">/</span>' ) + '</div>'
         }
 
         function buildSpecPageMeta( payload ) {
@@ -3134,6 +3427,12 @@
             }
         }
 
+        // PRD-011 (Memo 076 H7b, WI-097): the copy glyph was U+29C9, which is missing from most
+        // macOS system fonts and rendered as a tofu box. Use an inline SVG copy icon (currentColor)
+        // instead — this string mirrors the one in MemoView #buildHtmlPage's #t-copy-inline button so
+        // the reset path restores the SAME icon, not the tofu glyph.
+        var COPY_ICON_SVG = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect><path d="M3.5 10.5V3.5a1 1 0 0 1 1-1h7"></path></svg>'
+
         // PRD-032: inline-icon copy — same clipboard logic, icon-bound feedback.
         async function copyTranscriptUrlInline() {
             var inlineBtn = document.getElementById( 't-copy-inline' )
@@ -3143,7 +3442,7 @@
                 inlineBtn.textContent = '✓'
                 inlineBtn.title = 'Kopiert!'
                 setTimeout( function() {
-                    inlineBtn.textContent = '⧉'
+                    inlineBtn.innerHTML = COPY_ICON_SVG
                     inlineBtn.title = originalTitle
                 }, 2000 )
             } catch {
@@ -3226,6 +3525,9 @@
         if( ppApplyBtn ) { ppApplyBtn.addEventListener( 'click', applyPromptEdit ) }
         var ppContentEl = document.getElementById( 'pp-content' )
         if( ppContentEl ) { ppContentEl.addEventListener( 'input', updatePromptTranscriptCount ) }
+        // PRD-008 (Memo 076 H5, WI-078): live-update the quality label on any check toggle.
+        var ppQualityList = document.getElementById( 'pp-quality-list' )
+        if( ppQualityList ) { ppQualityList.addEventListener( 'change', updatePromptQualityLabel ) }
 
         // PRD-005 (Memo 016 Kap 4, B1/B2): 1:1 inline mirror of MemoView.requirementsEmptyState.
         // Turns ( count, setPresent, missingCount ) into a ternary empty-state verdict + reason copy
@@ -3685,6 +3987,10 @@
         // instead of fetching requirements; otherwise the requirements panel replaces #content but
         // the prose stays recoverable (lastContent) and is NOT destroyed.
         async function loadRequirementsView( documentId ) {
+            // PRD-001 (Memo 076, Phase 1, WI-044): the Requirements overlay belongs to the memos
+            // view. After the header-clear the toggle is gone from the DOM, but a stray callback
+            // must never load a memo overlay over the clients/specs surface.
+            if( currentMode !== 'memos' ) { return }
             var contentTarget = document.getElementById( 'content' )
             if( !documentId || !contentTarget ) { return }
 
@@ -4025,6 +4331,9 @@
         // PRD-009 (F4/E6): non-destructive view-mode panel — same nextViewState contract as
         // loadRequirementsView. Toggling Blocks while Blocks is open returns home to prose.
         async function loadBlockView( documentId ) {
+            // PRD-001 (Memo 076, Phase 1, WI-044): the Block overlay belongs to the memos view —
+            // same belt-and-suspenders guard as loadRequirementsView.
+            if( currentMode !== 'memos' ) { return }
             var contentTarget = document.getElementById( 'content' )
             if( !documentId || !contentTarget ) { return }
 
@@ -4258,6 +4567,11 @@
             if( ppMemo ) { ppMemo.value = memoId }
             if( ppRevision ) { ppRevision.value = promptEditState.revisionId }
             if( ppContent ) { ppContent.value = '' }
+            // PRD-008 (Memo 076 H5, WI-072): the quality checkboxes are NOT part of the field reset
+            // above, so a check ticked for memo A leaked silently into memo B's payload. Reset them on
+            // every open, then restamp the label (WI-078) so the count starts from zero.
+            document.querySelectorAll( '#pp-quality-list .pp-quality-check' ).forEach( function( box ) { box.checked = false } )
+            updatePromptQualityLabel()
             updatePromptTranscriptCount()
 
             // Load the existing transcript body into the field (no header — body only).
@@ -4291,6 +4605,18 @@
             var w = plain.length === 0 ? 0 : plain.split( /\s+/ ).filter( function( t ) { return t.length > 0 } ).length
             var m = w === 0 ? 0 : Math.ceil( w / SPOKEN_WORDS_PER_MINUTE )
             el.textContent = m + ' Min · ' + w.toLocaleString( 'de-DE' ) + ' Wörter'
+        }
+
+        // PRD-008 (Memo 076 H5, WI-078): the quality-section label was static ("3 · QUALITY-CHECKS
+        // (optional)"), unlike the live Fragen label. Reflect the number of ticked checks live —
+        // "(optional)" while none is chosen, "(n gewählt)" once at least one is.
+        function updatePromptQualityLabel() {
+            var label = document.getElementById( 'pp-quality-label' )
+            if( !label ) { return }
+            var boxes = document.querySelectorAll( '#pp-quality-list .pp-quality-check' )
+            var chosen = Array.prototype.filter.call( boxes, function( box ) { return box.checked } ).length
+            var suffix = chosen > 0 ? ( chosen + ' gewählt' ) : 'optional'
+            label.textContent = '3 · QUALITY-CHECKS (' + suffix + ')'
         }
 
         // PRD-008 (Kap 9.5): build the Fragen-Abschnitt — one answer field per open question.
@@ -4514,6 +4840,11 @@
         // part of the prompt). The future auto-send to the agent docks onto the existing
         // TranscriptRegistry #onChangeCallback / transcriptLoggedIn event-hook; PRD-008 only
         // wires the manual login trigger here, it does NOT activate the automatic send.
+        // WI-017 (Memo 076, deferred-documented): the automatic injection of question-rounds
+        // (code-driven agent re-invocation on a new round) stays DELIBERATELY inactive — its
+        // activation was NOT among the bound F-decisions and is its own, not-yet-decided decision.
+        // This is a known open point, not a bug; do not wire the auto-send without a separate
+        // user decision (see Memo 076 "Nicht im Scope"). Note-only, no behaviour change here.
         function bindPromptFinish( opts ) {
             opts = opts || {}
             var btn = document.getElementById( 'ps-finish' )
@@ -4731,7 +5062,10 @@
 
                         return
                     }
-                    if( child.nodeType === 1 && !skip[ child.tagName ] ) { collect( child ) }
+                    // PRD-003 (Memo 076 WI-039): also skip diagram containers (.mermaid/.vega-lite) —
+                    // they are <div>s (not caught by the tagName skip-set), and their [[slug]] source /
+                    // SVG label text must never be rewritten into wiki-link anchors.
+                    if( child.nodeType === 1 && !skip[ child.tagName ] && !isDiagramContainer( child ) ) { collect( child ) }
                 } )
             }
             collect( contentEl )
@@ -4880,9 +5214,11 @@
             return nearestPrecedingH2Slug( fromEl.parentNode )
         }
 
-        // Text-quote anchor: walk text nodes (mirror of resolveWikiLinks), find the `exact` substring in
-        // the chapter scope, wrap the match in <mark class="anm-mark" data-anm="ANM-NNN"> + badge. Returns
-        // true when anchored. Cross-node exact matches are not wrapped (single-node match, note in PRD).
+        // Text-quote anchor (PRD-005 WI-128/129): linearize the chapter scope's text nodes in document
+        // order, find ALL `exact` candidates in the linearized string, pick the one whose surrounding text
+        // best matches prefix/suffix (W3C TextQuoteSelector — no longer blindly the first occurrence), then
+        // wrap the [start,end) range across possibly MULTIPLE text nodes/inline elements (**bold**, `code`)
+        // in <mark class="anm-mark" data-anm="ANM-NNN"> fragments + badge. Returns true when anchored.
         function anchorTextQuote( ann ) {
             // Already anchored in this pass? (idempotent skip.)
             if( contentEl.querySelector( '.anm-mark[data-anm="' + cssEscapeAttr( ann.id ) + '"]' ) ) { return true }
@@ -4892,13 +5228,18 @@
 
             var skip = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true, 'MARK': true }
             var scope = chapterScopeRoot( ann.anchor.chapterSlug )
-            var target = null
+
+            // Linearize: collect text nodes in document order with their cumulative offset into `full`.
+            var segments = []
+            var full = ''
             var collect = function( node ) {
-                if( target ) { return }
                 node.childNodes.forEach( function( child ) {
-                    if( target ) { return }
                     if( child.nodeType === 3 ) {
-                        if( String( child.nodeValue || '' ).indexOf( exact ) !== -1 ) { target = child }
+                        var value = String( child.nodeValue || '' )
+                        if( value.length > 0 ) {
+                            segments.push( { node: child, start: full.length, text: value } )
+                            full += value
+                        }
 
                         return
                     }
@@ -4907,24 +5248,72 @@
             }
             collect( scope )
 
-            if( !target ) { return false }
+            var offsets = allIndexesOf( full, exact )
+            if( offsets.length === 0 ) { return false }
 
-            var value = String( target.nodeValue )
-            var at = value.indexOf( exact )
-            var before = value.slice( 0, at )
-            var after = value.slice( at + exact.length )
+            var chosen = pickByContext( full, offsets, exact, ann.anchor.prefix || '', ann.anchor.suffix || '' )
 
-            var frag = document.createDocumentFragment()
-            if( before.length > 0 ) { frag.appendChild( document.createTextNode( before ) ) }
-            var mark = document.createElement( 'mark' )
-            mark.className = 'anm-mark'
-            mark.setAttribute( 'data-anm', ann.id )
-            mark.textContent = exact
-            frag.appendChild( mark )
-            frag.appendChild( annotationBadge( ann ) )
-            if( after.length > 0 ) { frag.appendChild( document.createTextNode( after ) ) }
+            return wrapLinearRange( segments, chosen, exact.length, ann )
+        }
 
-            target.parentNode.replaceChild( frag, target )
+        // All start offsets of `needle` in `hay` (recursion, no while-loop). Empty when none.
+        function allIndexesOf( hay, needle ) {
+            var out = []
+            var find = function( from ) {
+                var at = hay.indexOf( needle, from )
+                if( at === -1 ) { return }
+                out.push( at )
+                find( at + Math.max( 1, needle.length ) )
+            }
+            find( 0 )
+
+            return out
+        }
+
+        // Pick the candidate offset whose surrounding linearized text best matches prefix (before) and
+        // suffix (after). A single candidate or absent prefix/suffix keeps the first occurrence (fallback).
+        function pickByContext( full, offsets, exact, prefix, suffix ) {
+            if( offsets.length === 1 || ( prefix.length === 0 && suffix.length === 0 ) ) { return offsets[ 0 ] }
+            var scored = offsets.map( function( at ) {
+                var before = full.slice( Math.max( 0, at - Math.max( prefix.length, 1 ) ), at )
+                var after = full.slice( at + exact.length, at + exact.length + Math.max( suffix.length, 1 ) )
+                var pre = prefix.length === 0 ? 0 : ( before.slice( -prefix.length ) === prefix ? 2 : ( before.indexOf( prefix ) !== -1 ? 1 : 0 ) )
+                var suf = suffix.length === 0 ? 0 : ( after.slice( 0, suffix.length ) === suffix ? 2 : ( after.indexOf( suffix ) !== -1 ? 1 : 0 ) )
+
+                return { at: at, score: pre + suf }
+            } )
+            var best = scored.reduce( function( acc, cur ) { return cur.score > acc.score ? cur : acc }, scored[ 0 ] )
+
+            return best.at
+        }
+
+        // Wrap the linearized range [start, start+len) across the overlapping text-node segments: each
+        // overlapping node is split into before/<mark>middle</mark>/after; the badge is appended after the
+        // LAST mark. Reproduces the single-node case (before + mark + badge + after). Returns true.
+        function wrapLinearRange( segments, start, len, ann ) {
+            var end = start + len
+            var overlapping = segments.filter( function( seg ) { return seg.start < end && ( seg.start + seg.text.length ) > start } )
+            if( overlapping.length === 0 ) { return false }
+
+            overlapping.forEach( function( seg, idx ) {
+                var localStart = Math.max( 0, start - seg.start )
+                var localEnd = Math.min( seg.text.length, end - seg.start )
+                var before = seg.text.slice( 0, localStart )
+                var middle = seg.text.slice( localStart, localEnd )
+                var after = seg.text.slice( localEnd )
+
+                var frag = document.createDocumentFragment()
+                if( before.length > 0 ) { frag.appendChild( document.createTextNode( before ) ) }
+                var mark = document.createElement( 'mark' )
+                mark.className = 'anm-mark'
+                mark.setAttribute( 'data-anm', ann.id )
+                mark.textContent = middle
+                frag.appendChild( mark )
+                if( idx === overlapping.length - 1 ) { frag.appendChild( annotationBadge( ann ) ) }
+                if( after.length > 0 ) { frag.appendChild( document.createTextNode( after ) ) }
+
+                if( seg.node.parentNode ) { seg.node.parentNode.replaceChild( frag, seg.node ) }
+            } )
 
             return true
         }
@@ -4944,10 +5333,12 @@
             rows.forEach( function( tr ) {
                 if( match ) { return }
                 var firstCell = tr.querySelector( 'td, th' )
-                var firstText = firstCell ? String( firstCell.textContent || '' ).trim() : ''
+                // PRD-005 WI-115: read the cell/row text WITHOUT the hover gutter "+" so a rowKey like
+                // "WI-012" is not seen as "WI-012+" (which would push the row into the orphan list).
+                var firstText = firstCell ? nodeTextWithoutGutter( firstCell ).trim() : ''
                 if( rowKey.length > 0 && firstText === rowKey ) { match = tr; return }
                 if( rowKey.length === 0 && rowText.length > 0 ) {
-                    var norm = String( tr.textContent || '' ).replace( /\s+/g, ' ' ).trim()
+                    var norm = nodeTextWithoutGutter( tr ).replace( /\s+/g, ' ' ).trim()
                     if( norm.indexOf( rowText ) !== -1 ) { match = tr }
                 }
             } )
@@ -5060,7 +5451,14 @@
                 }
                 var sel = window.getSelection()
                 var rect = sel.getRangeAt( 0 ).getBoundingClientRect()
-                annotateFloatingBtn.style.top = ( window.scrollY + rect.top - 34 ) + 'px'
+                // PRD-011 (Memo 076 H7b, WI-100): the button (z-index 60) sits below the fixed 52px
+                // nav-bar (z-index 1000). For a selection near the top of the viewport, rect.top-34
+                // placed it under the nav-bar where it is invisible/unclickable. Clamp the document
+                // top so its viewport position never rises above the nav-bar's 52px.
+                var floatTop = window.scrollY + rect.top - 34
+                var minTop = window.scrollY + 52
+                if( floatTop < minTop ) { floatTop = minTop }
+                annotateFloatingBtn.style.top = floatTop + 'px'
                 annotateFloatingBtn.style.left = ( window.scrollX + rect.left ) + 'px'
                 annotateFloatingBtn.classList.remove( 't-hidden' )
                 pendingAnnotationAnchor = anchor
@@ -5074,21 +5472,24 @@
             bindAnnotationModal()
         }
 
-        // Open the annotation modal for a prepared anchor (text-quote from selection or table-row from
-        // the gutter button). REUSES the .t-modal overlay (no new CSS).
+        // Open the annotation modal in CREATE mode for a prepared anchor (text-quote from selection or
+        // table-row from the gutter button). REUSES the .t-modal overlay. PRD-004 WI-125/126: symmetric
+        // reset of the write-state (generic title, editable textarea, visible Save) so a prior read-only
+        // DETAIL view never leaks into the create flow.
         function openAnnotationModal( anchor ) {
             var modal = document.getElementById( 'annotation-modal' )
+            var titleEl = document.getElementById( 'anm-modal-title' )
             var quoteEl = document.getElementById( 'anm-modal-quote' )
             var commentEl = document.getElementById( 'anm-modal-comment' )
+            var saveBtn = document.getElementById( 'anm-modal-save' )
             var errEl = document.getElementById( 'anm-modal-error' )
             if( !modal ) { return }
 
             pendingAnnotationAnchor = anchor
-            if( quoteEl ) {
-                var q = anchor.type === 'table-row' ? ( 'Zeile: ' + ( anchor.rowKey || anchor.rowText || '' ) ) : ( '„' + ( anchor.exact || '' ) + '"' )
-                quoteEl.textContent = q
-            }
-            if( commentEl ) { commentEl.value = '' }
+            if( titleEl ) { titleEl.textContent = 'Anmerkung' }
+            if( quoteEl ) { quoteEl.textContent = annotationReference( anchor ) }
+            if( commentEl ) { commentEl.value = ''; commentEl.readOnly = false }
+            if( saveBtn ) { saveBtn.classList.remove( 't-hidden' ) }
             if( errEl ) { errEl.classList.add( 't-hidden' ); errEl.textContent = '' }
             modal.classList.remove( 't-hidden' )
         }
@@ -5110,6 +5511,16 @@
             if( closeBtn ) { closeBtn.addEventListener( 'click', closeAnnotationModal ) }
             if( cancelBtn ) { cancelBtn.addEventListener( 'click', closeAnnotationModal ) }
             if( saveBtn ) { saveBtn.addEventListener( 'click', saveAnnotation ) }
+
+            // PRD-004 WI-132: click on the overlay itself (outside .t-modal-content) closes; a click INTO
+            // the content bubbles up to .t-modal-content, not to #annotation-modal, so it does not close.
+            modal.addEventListener( 'click', function( e ) {
+                if( e.target === modal ) { closeAnnotationModal() }
+            } )
+            // PRD-004 WI-132: Escape closes the modal while it is visible.
+            document.addEventListener( 'keydown', function( e ) {
+                if( e.key === 'Escape' && !modal.classList.contains( 't-hidden' ) ) { closeAnnotationModal() }
+            } )
         }
 
         // POST /api/annotations for the pending anchor + comment. On success the annotationList WS
@@ -5119,6 +5530,15 @@
             var errEl = document.getElementById( 'anm-modal-error' )
             var comment = commentEl ? String( commentEl.value || '' ).trim() : ''
             if( !pendingAnnotationAnchor ) { return }
+
+            // PRD-005 WI-127: catch the missing-revision case BEFORE the POST with a clear German message,
+            // instead of letting the server return a generic 422 (annotations bind to a REV-NN.md file).
+            var rev = currentRevisionId()
+            if( !rev ) {
+                if( errEl ) { errEl.textContent = 'Anmerkungen sind nur auf einer Revisions-Datei (REV-NN.md) möglich.'; errEl.classList.remove( 't-hidden' ) }
+
+                return
+            }
             if( comment.length === 0 ) {
                 if( errEl ) { errEl.textContent = 'Kommentar ist erforderlich.'; errEl.classList.remove( 't-hidden' ) }
 
@@ -5127,7 +5547,7 @@
 
             var body = JSON.stringify( {
                 documentId: currentDocumentId,
-                revisionId: currentRevisionId(),
+                revisionId: rev,
                 anchor: pendingAnnotationAnchor,
                 comment: comment
             } )
@@ -5148,30 +5568,49 @@
                 } )
         }
 
-        // Detail popup for an existing annotation badge (REUSES .t-modal in read mode).
+        // Detail popup for an existing annotation badge — READ-ONLY (PRD-004 WI-125/126). The store is
+        // append-only (no update path), so the Save button is hidden and the textarea is readOnly; the
+        // still-failing "save" from the recycled CREATE modal is made structurally impossible. The title
+        // carries "Anmerkung N" and the quote shows the enriched reference (PRD-005 WI-124: chapter ·
+        // tableLabel · line).
         function showAnnotationDetail( ann ) {
             var modal = document.getElementById( 'annotation-modal' )
+            var titleEl = document.getElementById( 'anm-modal-title' )
             var quoteEl = document.getElementById( 'anm-modal-quote' )
             var commentEl = document.getElementById( 'anm-modal-comment' )
+            var saveBtn = document.getElementById( 'anm-modal-save' )
+            var errEl = document.getElementById( 'anm-modal-error' )
             if( !modal ) { return }
-            if( quoteEl ) {
-                var q = ann.anchor && ann.anchor.type === 'table-row' ? ( 'Zeile: ' + ( ann.anchor.rowKey || ann.anchor.rowText || '' ) ) : ( '„' + ( ann.anchor && ann.anchor.exact ? ann.anchor.exact : '' ) + '"' )
-                quoteEl.textContent = 'Anmerkung ' + annotationNumber( ann.id ) + ' · ' + q
-            }
-            if( commentEl ) { commentEl.value = ann.comment || '' }
             pendingAnnotationAnchor = null
+            if( titleEl ) { titleEl.textContent = 'Anmerkung ' + annotationNumber( ann.id ) }
+            if( quoteEl ) { quoteEl.textContent = annotationReference( ann.anchor ) }
+            if( commentEl ) { commentEl.value = ann.comment || ''; commentEl.readOnly = true }
+            if( saveBtn ) { saveBtn.classList.add( 't-hidden' ) }
+            if( errEl ) { errEl.classList.add( 't-hidden' ); errEl.textContent = '' }
             modal.classList.remove( 't-hidden' )
         }
 
+        // Remove the hover gutter (and its host marker) from a row (PRD-004 WI-114).
+        function removeRowGutter( tr ) {
+            if( !tr ) { return }
+            var gutter = tr.querySelector( '.anm-row-gutter' )
+            if( gutter && gutter.parentNode ) { gutter.parentNode.removeChild( gutter ) }
+            var host = tr.querySelector( '.anm-gutter-host' )
+            if( host && host.classList ) { host.classList.remove( 'anm-gutter-host' ) }
+        }
+
         // PRD-P3-06 (WI-013): table-row gutter "+" button on hover. Delegated so it survives re-renders.
+        // PRD-004 WI-130: only tbody rows whose first cell is a <td> (never thead/th header rows).
+        // PRD-004 WI-114: a mouseout that actually leaves the row removes the gutter again.
         function initTableRowAnnotationGutter() {
             if( !contentEl ) { return }
             contentEl.addEventListener( 'mouseover', function( e ) {
                 if( currentMode !== 'memos' ) { return }
                 var tr = e.target && e.target.closest ? e.target.closest( 'tr' ) : null
                 if( !tr || tr.querySelector( '.anm-row-gutter' ) ) { return }
+                if( tr.closest && tr.closest( 'thead' ) ) { return }
                 var firstCell = tr.querySelector( 'td, th' )
-                if( !firstCell ) { return }
+                if( !firstCell || firstCell.tagName !== 'TD' ) { return }
                 var gutter = document.createElement( 'button' )
                 gutter.type = 'button'
                 gutter.className = 'anm-row-gutter'
@@ -5182,17 +5621,42 @@
                     ev.stopPropagation()
                     openAnnotationModal( buildTableRowAnchor( tr ) )
                 } )
+                // WI-131: the host cell becomes the positioning context so the absolutely-placed gutter
+                // does not stack in-flow with the number badge in the first cell (purely presentational).
+                firstCell.classList.add( 'anm-gutter-host' )
                 firstCell.appendChild( gutter )
             } )
+            contentEl.addEventListener( 'mouseout', function( e ) {
+                if( currentMode !== 'memos' ) { return }
+                var tr = e.target && e.target.closest ? e.target.closest( 'tr' ) : null
+                if( !tr ) { return }
+                // Ignore moves that stay inside the same row (cell->cell, or onto the gutter button).
+                var to = e.relatedTarget
+                if( to && tr.contains && tr.contains( to ) ) { return }
+                removeRowGutter( tr )
+            } )
+        }
+
+        // The text of a cell/row EXCLUDING the hover gutter "+" — a clone with .anm-row-gutter removed
+        // (PRD-005 WI-115/116). Preserves legitimate "+" cell values (C++, A+); no blind .replace('+','').
+        function nodeTextWithoutGutter( node ) {
+            if( !node ) { return '' }
+            if( !node.cloneNode ) { return String( node.textContent || '' ) }
+            var clone = node.cloneNode( true )
+            var gutters = clone.querySelectorAll ? clone.querySelectorAll( '.anm-row-gutter' ) : []
+            if( gutters.forEach ) { gutters.forEach( function( el ) { if( el.parentNode ) { el.parentNode.removeChild( el ) } } ) }
+
+            return String( clone.textContent || '' )
         }
 
         // Build a table-row anchor: rowKey = first cell text when it looks like an ID (Nr-column), else
         // null; rowText = normalized tr textContent fallback; chapterSlug from the nearest preceding H2.
+        // PRD-005 WI-116: the gutter "+" is excluded via nodeTextWithoutGutter, never a blind .replace.
         function buildTableRowAnchor( tr ) {
             var firstCell = tr.querySelector( 'td, th' )
-            var firstText = firstCell ? String( firstCell.textContent || '' ).replace( '+', '' ).trim() : ''
+            var firstText = firstCell ? nodeTextWithoutGutter( firstCell ).trim() : ''
             var looksLikeId = /^([A-Z]{1,4}-)?\d{1,4}[a-z]?$/.test( firstText ) || /^[A-Z]{1,4}-\d{1,4}$/.test( firstText )
-            var rowText = String( tr.textContent || '' ).replace( /\s+/g, ' ' ).replace( '+', '' ).trim()
+            var rowText = nodeTextWithoutGutter( tr ).replace( /\s+/g, ' ' ).trim()
             var tableEl = tr.closest ? tr.closest( 'table' ) : null
             var chapterSlug = nearestPrecedingH2Slug( tableEl || tr )
 
@@ -5203,6 +5667,25 @@
                 tableLabel: tableEl ? tableSummaryLabel( tableEl ) : null,
                 chapterSlug: chapterSlug
             }
+        }
+
+        // Enriched reference line for the modal quote (PRD-005 WI-122/123/124): Kapitel · tableLabel · the
+        // quote/row · the real document line. WI-123: the rowKey is labelled "Tabellenzeile" (a row ID like
+        // WI-012), while the persisted document line is shown separately as "Zeile <sourceLine>".
+        function annotationReference( anchor ) {
+            if( !anchor ) { return '' }
+            var parts = []
+            if( anchor.chapterSlug ) { parts.push( 'Kapitel ' + anchor.chapterSlug ) }
+            if( anchor.type === 'table-row' ) {
+                if( anchor.tableLabel ) { parts.push( anchor.tableLabel ) }
+                var rowRef = anchor.rowKey || anchor.rowText || ''
+                if( rowRef ) { parts.push( 'Tabellenzeile: ' + rowRef ) }
+            } else if( anchor.exact ) {
+                parts.push( '„' + anchor.exact + '"' )
+            }
+            if( Number.isInteger( anchor.sourceLine ) ) { parts.push( 'Zeile ' + anchor.sourceLine ) }
+
+            return parts.join( ' · ' )
         }
 
         initAnnotationUI()
@@ -5633,13 +6116,8 @@
                 container.insertBefore( banner, container.firstChild )
             }
 
-            // PRD-008 (Memo 024 Kap 7): the answers-only bar ("ohne Transcript speichern" + "Fertig")
-            // no longer lives in the scrolling content flow. It is rendered into the Sticky-Header
-            // Zone 2 (.hdr-zone-2) by updateSidebarSticky so the central actions stay visible while
-            // scrolling. mountAnswersOnlyBarInHeader() places it; this render only refreshes it so a
-            // content update (e.g. fresh schema) keeps the header bar in sync.
-            mountAnswersOnlyBarInHeader()
-
+            // PRD-012 (Memo 076 H8, WI-106): the answers-only bar + mountAnswersOnlyBarInHeader are
+            // removed (dead path; the popup's "Übernehmen" persists transcript + answers).
             updateSaveAnswersOnlyState()
             renderQuestionFocus()
         }
@@ -5674,83 +6152,13 @@
             return base + sep + missing.join( '\n' )
         }
 
-        function buildAnswersOnlyBar() {
-            var bar = document.createElement( 'div' )
-            bar.className = 'qw-answers-only-bar'
-            bar.id = 'qw-answers-only-bar'
-
-            var saveBtn = document.createElement( 'button' )
-            saveBtn.className = 'qw-secondary-btn qw-save-answers-only'
-            saveBtn.id = 'qw-save-answers-only'
-            saveBtn.textContent = 'ohne Transcript speichern'
-            saveBtn.disabled = true
-            saveBtn.addEventListener( 'click', function() { saveAnswersOnly() } )
-            bar.appendChild( saveBtn )
-
-            var status = document.createElement( 'span' )
-            status.className = 'qw-answers-only-status t-hidden'
-            status.id = 'qw-answers-only-status'
-            bar.appendChild( status )
-
-            // PRD-006 (Kap 9, AC-05): the "Fertig"-Button explicitly closes the workflow.
-            // Until it is clicked the widget is in the active editing state (no open thread to
-            // chase). Clicking marks every non-rejected question as done and locks the widget.
-            var fertigBtn = document.createElement( 'button' )
-            fertigBtn.className = 'qw-primary-btn qw-fertig-btn'
-            fertigBtn.id = 'qw-fertig-btn'
-            fertigBtn.textContent = 'Fertig'
-            fertigBtn.title = 'Bearbeitung der Fragen bewusst abschließen'
-            fertigBtn.addEventListener( 'click', function() { markQuestionsFertig() } )
-            bar.appendChild( fertigBtn )
-
-            var note = document.createElement( 'span' )
-            note.className = 'qw-note'
-            note.textContent = 'Speichert nur die Antworten — kein vollständiger Transcript.'
-            bar.appendChild( note )
-
-            return bar
-        }
-
-        // PRD-008 (Memo 024 Kap 7): mount the answers-only bar into Sticky-Header Zone 2
-        // (.hdr-zone-2). The bar is built exactly once (buildAnswersOnlyBar) and re-parented into
-        // the freshly rendered header so the action buttons stay visible while the content scrolls
-        // (AC-01/AC-02). It is shown ONLY while there are open questions (AC-06: no empty header
-        // block); when none exist any stray bar is removed so #main-header:empty can hide itself.
-        // The bar carries a single ID per button (AC-03: no duplicate in the content flow — the
-        // content append was removed in renderQuestionWidgets).
-        function mountAnswersOnlyBarInHeader() {
-            // PRD-008 (Memo 024 Kap 7) — REMOVED: the answers-only bar ("ohne Transcript
-            // speichern" + "Fertig" + note) is gone entirely. It cluttered first the
-            // Sticky-Header, then the popup, and is redundant: the "Prompt bearbeiten" popup's
-            // "Übernehmen" (applyPromptEdit) already persists BOTH the transcript and the
-            // answers from the popup's own answer fields. This function now only strips any
-            // stray bar left over from an earlier render so nothing re-appears.
-            var existing = document.getElementById( 'qw-answers-only-bar' )
-            if( existing && existing.parentNode ) { existing.parentNode.removeChild( existing ) }
-        }
-
-        // PRD-006 (Kap 9, AC-05): the workflow is "offen" until the user clicks "Fertig".
-        // questionNav.fertig is the single source of truth for the done-state; it stays
-        // reversible (clicking again re-opens) so nothing is irrevocably committed.
-        function markQuestionsFertig() {
-            questionNav.fertig = questionNav.fertig !== true
-            var bar = document.getElementById( 'qw-answers-only-bar' )
-            var btn = document.getElementById( 'qw-fertig-btn' )
-
-            if( questionNav.fertig ) {
-                if( bar ) { bar.classList.add( 'qw-fertig-done' ) }
-                if( btn ) {
-                    btn.textContent = 'Fertig ✓ (wieder öffnen)'
-                    btn.title = 'Erneut klicken, um die Bearbeitung wieder zu öffnen'
-                }
-            } else {
-                if( bar ) { bar.classList.remove( 'qw-fertig-done' ) }
-                if( btn ) {
-                    btn.textContent = 'Fertig'
-                    btn.title = 'Bearbeitung der Fragen bewusst abschließen'
-                }
-            }
-        }
+        // PRD-012 (Memo 076 H8, WI-106): the answers-only bar ("ohne Transcript speichern" + "Fertig")
+        // dead path is removed — buildAnswersOnlyBar had no caller, mountAnswersOnlyBarInHeader only
+        // stripped a bar that was never built, and saveAnswersOnly/markQuestionsFertig were only
+        // reachable through buildAnswersOnlyBar. The "Prompt bearbeiten" popup's "Übernehmen"
+        // (applyPromptEdit) already persists both the transcript and the answers, so this whole path
+        // was superseded. updateSaveAnswersOnlyState is retained (still called from live handlers and
+        // self-guards on the now-absent button).
 
         // PRD-028: the button only makes sense when at least one answer was injected and the
         // user has NOT entered real transcript text (then the normal "Speichern" is the path).
@@ -5772,82 +6180,8 @@
             }
         }
 
-        // PRD-028 (Kap 12.3): persist the collected answers via the existing save mechanism,
-        // marked as "nur Antworten" (complete: false). No real transcript text. No popup
-        // (Kap 12.1) — only an inline success quittance.
-        async function saveAnswersOnly() {
-            var btn = document.getElementById( 'qw-save-answers-only' )
-            var statusEl = document.getElementById( 'qw-answers-only-status' )
-            var collected = collectAddedAnswers()
-            if( collected.count === 0 ) { return }
-
-            // PRD-001 (Memo 022): Revisions-Bezug = die BESPROCHENE (betrachtete) Revision. Feedback
-            // ZU REV-N wird an REV-N gebunden, nicht an REV-(N+1). Der Sticky-Header-Button traegt
-            // den Kontext (data-project/-memo/-rev) — die Modal-Hidden-Felder werden im No-Popup-Flow
-            // nicht mehr befuellt. data-rev ist die betrachtete Revision; data-next bleibt nur als
-            // Workflow-Info am Button (Header-Hinweis), ist aber NICHT mehr der Bindungsschluessel.
-            // PRD-008: the single Zone-2 entrypoint (#ps-edit-prompt) carries the Revisions-Kontext;
-            // the old #sticky-add-transcript button was removed with the Prompt-Statuszeile-Umbau.
-            var ctxBtn = document.getElementById( 'ps-edit-prompt' )
-            var projectId = ctxBtn ? ( ctxBtn.getAttribute( 'data-project' ) || '' ) : ''
-            var memoId = ctxBtn ? ( ctxBtn.getAttribute( 'data-memo' ) || '' ) : ''
-            var revisionId = ctxBtn ? ( ctxBtn.getAttribute( 'data-rev' ) || '' ) : ''
-
-            if( projectId.length === 0 ) {
-                var projectEl = document.getElementById( 't-project' )
-                var memoEl = document.getElementById( 't-memo' )
-                var revisionEl = document.getElementById( 't-revision' )
-                projectId = projectEl ? projectEl.value : ''
-                memoId = memoEl ? memoEl.value : ''
-                revisionId = revisionEl ? revisionEl.value : ''
-            }
-
-            if( !/^REV-\d{2,}$/.test( revisionId ) || projectId.length === 0 || memoId.length === 0 ) {
-                if( statusEl ) {
-                    statusEl.textContent = 'Kein gültiger Revisions-Bezug (Projekt/Memo/REV-XX) gefunden.'
-                    statusEl.classList.remove( 't-hidden' )
-                }
-
-                return
-            }
-
-            try {
-                var resp = await fetch( '/api/transcripts', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    // complete: false -> "nur Antworten" / nicht vollstaendig (PRD-027 model).
-                    body: JSON.stringify( {
-                        projectId: projectId,
-                        memoId: memoId,
-                        revisionId: revisionId,
-                        content: collected.content,
-                        complete: false
-                    } )
-                } )
-                var data = await resp.json()
-
-                if( !resp.ok ) {
-                    if( statusEl ) {
-                        statusEl.textContent = data.error || 'Server-Fehler'
-                        statusEl.classList.remove( 't-hidden' )
-                    }
-
-                    return
-                }
-
-                if( statusEl ) {
-                    statusEl.textContent = 'Gespeichert (nur Antworten): ' + ( data.url || data.transcriptId || '' )
-                    statusEl.classList.remove( 't-hidden' )
-                    statusEl.classList.add( 'qw-answers-only-ok' )
-                }
-                if( btn ) { btn.disabled = true }
-            } catch( err ) {
-                if( statusEl ) {
-                    statusEl.textContent = 'Netzwerkfehler: ' + err.message
-                    statusEl.classList.remove( 't-hidden' )
-                }
-            }
-        }
+        // PRD-012 (Memo 076 H8, WI-106): saveAnswersOnly removed with the dead answers-only bar (its
+        // only caller was buildAnswersOnlyBar). The popup's "Übernehmen" (applyPromptEdit) is the path.
 
         // PRD-004 (Memo 019, Kap 4) — the clean-parse criterion (100%-Regel). A question is
         // Widget-faehig ONLY when ALL of these hold. The criterion is deliberately identical
@@ -6031,7 +6365,10 @@
                 if( isSel ) { row.classList.add( 'qw-selected' ) }
                 if( isAi ) { row.classList.add( 'qw-ai' ) }
 
-                var marker = q.typ === 'single' ? ( isSel ? '◉' : '○' ) : ( isSel ? '☑' : '☐' )
+                // PRD-011 (Memo 076 H7b, WI-101): ☑/☐ (U+2611/2610) render as coloured emoji boxes on
+                // macOS next to the plain text ◉/○ glyphs. The U+FE0E variation selector forces the
+                // text presentation so all four choice markers render as consistent mono glyphs.
+                var marker = q.typ === 'single' ? ( isSel ? '◉' : '○' ) : ( isSel ? '☑︎' : '☐︎' )
                 var keyLabel = ( opt.kind === 'option' ) ? ( '<span class="qw-option-key">' + escHtml( opt.key ) + ')</span> ' ) : ''
                 row.innerHTML = '<span class="qw-marker">' + marker + '</span>' + keyLabel
                     + '<span class="qw-option-label">' + escHtml( opt.label ) + ( isAi ? ' <span class="qw-ai-hint">(KI-Empfehlung)</span>' : '' ) + '</span>'
@@ -6200,9 +6537,11 @@
                 row.classList.toggle( 'qw-selected', isSel )
                 var marker = row.querySelector( '.qw-marker' )
                 if( marker ) {
+                    // PRD-011 (Memo 076 H7b, WI-101): U+FE0E forces the text presentation of ☑/☐
+                    // (else macOS renders them as emoji boxes) — mirrors the initial render above.
                     marker.textContent = q.typ === 'single'
                         ? ( isSel ? '◉' : '○' )
-                        : ( isSel ? '☑' : '☐' )
+                        : ( isSel ? '☑︎' : '☐︎' )
                 }
             } )
         }
@@ -6229,16 +6568,22 @@
         }
 
         function findTopicTarget( pos ) {
-            // PRD-025 (Kap 11.6): build a RegExp that is VALID once this template-literal
-            // script reaches the browser. Two backslashes in source => the emitted browser
-            // string carries a single backslash => the runtime RegExp escapes the dot
-            // (literal "."), \s the optional space, \b the closing boundary. The previous
-            // four-backslash form produced "\." in the browser (backslash + any char) and
-            // never matched a real "Kapitel 11.7" heading. Returns null when no heading
-            // matches — callers use that for cursor + scroll decisions.
+            // PRD-012 (Memo 076 H8, WI-104): app.client.mjs is now served as a STANDALONE file (no
+            // template-literal escaping layer any more — that stale assumption is what broke this).
+            // In a plain JS string literal single backslashes collapse: '\s' -> 's', '\b' -> the
+            // backspace char (U+0008), '\.' -> '.', so the old source built the regex
+            // /kap(itel)?.?s*<pos>/ and matched NO real heading. Use DOUBLE backslashes so the
+            // regex source keeps its metaclasses (\. \s \b) and regex-escape the dynamic pos so
+            // "11.7" cannot accidentally match "11x7". Returns null when no heading matches.
             var headings = contentEl.querySelectorAll( 'h1, h2, h3, h4' )
             var target = null
-            var re = new RegExp( 'kap(itel)?\.?\s*' + String( pos ).replace( '.', '\.' ) + '\b', 'i' )
+            // Build the source from regex-literal .source fragments so the metaclasses (dot, whitespace,
+            // word-boundary) stay intact without any backslash-doubled STRING escapes — the extracted
+            // client file must remain free of template-literal escape artifacts (AssetExtractJsPRD011).
+            // escapedPos escapes the dot in the position ("11.7" -> "11.7" with an escaped dot) via a
+            // regex-literal source too, same reasoning.
+            var escapedPos = String( pos ).replace( /\./g, /\./.source )
+            var re = new RegExp( /kap(itel)?\.?\s*/.source + escapedPos + /\b/.source, 'i' )
             headings.forEach( function( h ) {
                 if( target ) { return }
                 if( re.test( h.textContent || '' ) ) { target = h }
@@ -6647,16 +6992,19 @@
             var items = tocListEl.querySelectorAll( 'li' )
             if( items.length === 0 ) { return }
 
-            var scrollTop = window.scrollY + 52
             var activeItem = null
 
             // PRD-019: guarantee exactly one highlight — clear all first.
+            // PRD-012 (Memo 076 H8, WI-112): the old code compared target.offsetTop (offsetParent-
+            // relative) against window.scrollY+52 (document-relative) — a mismatch that highlighted the
+            // wrong entry whenever a heading sat inside a positioned ancestor. Compare the viewport-
+            // relative getBoundingClientRect().top against the 52px nav offset instead.
             items.forEach( function( li ) {
                 li.classList.remove( 'toc-active' )
                 var targetId = li.getAttribute( 'data-target' )
                 var target = document.getElementById( targetId )
 
-                if( target && target.offsetTop <= scrollTop ) {
+                if( target && target.getBoundingClientRect().top <= 52 ) {
                     activeItem = li
                 }
             } )
@@ -6667,7 +7015,12 @@
             }
 
             activeItem.classList.add( 'toc-active' )
-            activeItem.scrollIntoView( { block: 'nearest', behavior: 'smooth' } )
+            // PRD-012 (WI-112): scrollIntoView only when the active entry CHANGES, and WITHOUT smooth —
+            // a smooth scrollIntoView on every scroll tick made the TOC jump/flicker continuously.
+            if( activeItem !== lastActiveTocItem ) {
+                lastActiveTocItem = activeItem
+                activeItem.scrollIntoView( { block: 'nearest' } )
+            }
         }
 
         window.addEventListener( 'scroll', function() {
@@ -6676,6 +7029,7 @@
         } )
 
         var tocScrollTimer = null
+        var lastActiveTocItem = null
 
         // PRD-019 + PRD-006 (#C8): scroll to the canonical "Offene Fragen" anchor. Prefer the
         // id="offene-fragen" node set by applyContentStructure (the exact H2) so deeplinks land on
@@ -6717,10 +7071,13 @@
 
         function renderDiffView( content, diff ) {
             var banner = '<div class="diff-banner">'
+            // PRD-012 (Memo 076 H8, WI-109): the filenames come from the filesystem and were
+            // interpolated raw, unlike the neighbouring skippedUpdates/changedSections which are
+            // escaped. Run them through escapeHtml too so a "<"/">" in a filename cannot inject HTML.
             if( diff.currentFullFile && diff.previousFile ) {
-                banner += 'Vergleich Full &harr; Full: <strong>' + diff.currentFullFile + '</strong> vs <strong>' + diff.previousFile + '</strong>'
+                banner += 'Vergleich Full &harr; Full: <strong>' + escapeHtml( diff.currentFullFile ) + '</strong> vs <strong>' + escapeHtml( diff.previousFile ) + '</strong>'
             } else {
-                banner += 'Vergleich mit: <strong>' + diff.previousFile + '</strong>'
+                banner += 'Vergleich mit: <strong>' + escapeHtml( diff.previousFile ) + '</strong>'
             }
 
             if( diff.skippedUpdates && diff.skippedUpdates.length > 0 ) {
@@ -6735,12 +7092,11 @@
                     // PRD-007 (D3): the SAME slugify that builds heading ids — so the banner anchor
                     // always equals the heading anchor (Umlaut/Em-dash/punctuation safe).
                     var id = slugify( s )
-                    // PRD-015 (D4): null-guard the target before scrollIntoView — a banner link whose
-                    // heading does not exist (renumbered/removed chapter) must NOT throw on a null node.
-                    // PRD-015 (D10): the chapter label is memo content -> escape it (id is slug-safe,
-                    // [a-z0-9-] only). The onclick references the slug id, which contains no quote chars.
-                    var onclick = 'var t=document.getElementById(\'' + id + '\');if(t){t.scrollIntoView({behavior:\'smooth\'})}'
-                    return '<a onclick="' + onclick + '">' + escapeHtml( s ) + '</a>'
+                    // PRD-012 (Memo 076 H8, WI-110): render a <button> (keyboard-focusable, no inline
+                    // onclick — CSP-safe) instead of an <a> with an inline onclick string. The click is
+                    // wired via addEventListener after the banner is inserted (below). The chapter label
+                    // is memo content -> escapeHtml; the slug id -> escapeAttr.
+                    return '<button type="button" class="diff-chapter-link" data-target="' + escapeAttr( id ) + '">' + escapeHtml( s ) + '</button>'
                 } ).join( ', ' )
             }
 
@@ -6801,6 +7157,14 @@
 
             contentEl.innerHTML = banner + html
             interceptLinks()
+            // PRD-012 (Memo 076 H8, WI-110): wire the changed-chapter buttons now that the banner is
+            // in the DOM — null-guard the target (a renumbered/removed chapter has no heading node).
+            contentEl.querySelectorAll( '.diff-banner .diff-chapter-link' ).forEach( function( btn ) {
+                btn.addEventListener( 'click', function() {
+                    var t = document.getElementById( btn.getAttribute( 'data-target' ) )
+                    if( t ) { t.scrollIntoView( { behavior: 'smooth' } ) }
+                } )
+            } )
 
             renderAllDiagrams()
 
@@ -6867,7 +7231,27 @@
             }
 
             ws.onmessage = function( event ) {
-                const data = JSON.parse( event.data )
+                // PRD-009 (Memo 076 H6, WI-082): a malformed (non-JSON) frame must not throw an
+                // unhandled exception that kills the onmessage handler — ignore it and keep the
+                // live updates running.
+                let data
+                try {
+                    data = JSON.parse( event.data )
+                } catch ( err ) {
+                    return
+                }
+
+                // PRD-009 (Memo 076 H6, WI-080): build-ID handshake. The server sends its current
+                // bundle hash on connect. If this page was rendered from an OLDER bundle, reload to
+                // pick up the new client (this is what stops a restarted server's stale tabs from
+                // polling the removed /api/session + /api/cockpit routes).
+                if( data.type === 'build' ) {
+                    if( data.id && window.__MEMO_VIEW_BUILD__ && data.id !== window.__MEMO_VIEW_BUILD__ ) {
+                        location.reload()
+                    }
+
+                    return
+                }
 
                 if( data.type === 'pushHistory' ) {
                     history.push( data.path )
@@ -6878,6 +7262,13 @@
                     lastLatest = data.latest || []
                     if( currentMode === 'memos' ) {
                         renderSidebar()
+                    }
+                    // WI-070 (PRD-076, Phase 4): the server emits no dedicated specList broadcast, so
+                    // the Specs tree rides on the documentList broadcast (a filesystem change). Refresh
+                    // it live while in Specs mode — reselect=false keeps the open page + scroll, and
+                    // the version/collapse choices persist (selectedVersion map + collapsedSpec* Sets).
+                    if( currentMode === 'specs' ) {
+                        loadSpecs()
                     }
                 }
 
@@ -6894,7 +7285,11 @@
                     // PRD-005 (Kap 8): an einloggen/ausloggen change updates the per-revision
                     // loggedIn flag in the tree — refresh the sticky-header status row so the
                     // status pill + button label reflect the new state without a page reload.
-                    updateSidebarSticky( currentMemoName, currentFileName )
+                    // PRD-001 (Memo 076, Phase 1, WI-047): only in the memos view — a transcriptList
+                    // broadcast must not inject the memo sticky header while browsing clients/specs.
+                    if( currentMode === 'memos' ) {
+                        updateSidebarSticky( currentMemoName, currentFileName )
+                    }
                 }
 
                 // PRD-005 (Memo 018 Kap 8 AC-7): dedicated login/logout broadcast. The status
@@ -6902,7 +7297,12 @@
                 // event observable for the integration/UI tests and future client-side hooks.
                 if( data.type === 'transcriptLoggedIn' || data.type === 'transcriptLoggedOut' ) {
                     // EVENT-HOOK (client): future — surface a toast / drive an agent loop here.
-                    updateSidebarSticky( currentMemoName, currentFileName )
+                    // PRD-001 (Memo 076, Phase 1, WI-048): gate the sticky-header refresh to the
+                    // memos view so a login/logout broadcast cannot inject the memo header in
+                    // clients/specs.
+                    if( currentMode === 'memos' ) {
+                        updateSidebarSticky( currentMemoName, currentFileName )
+                    }
                 }
 
                 // PRD-P3-02 (Memo 075 Phase 3, WI-009): the client-registry broadcast. Refresh the head
@@ -6910,8 +7310,15 @@
                 if( data.type === 'clientList' ) {
                     lastClients = data.clients || []
                     renderClientsSummary( lastClients )
-                    if( currentMode === 'clients' ) {
-                        renderClientsArea()
+                    // PRD-002 (Memo 076, Phase 1): Clients is an overlay now, not a mode — re-render the
+                    // popup only while it is OPEN so a live broadcast keeps it fresh without a reload.
+                    if( isClientsModalOpen() ) {
+                        renderClientsModal()
+                    }
+                    // PRD-002 (Memo 076, Phase 1, WI-046): a client (de)registration can change the
+                    // instance chip for the displayed memo — refresh the memo sticky header in memos mode.
+                    if( currentMode === 'memos' ) {
+                        updateSidebarSticky( currentMemoName, currentFileName )
                     }
                 }
 
@@ -6958,9 +7365,10 @@
                         // broadcast must NOT overwrite the open spec page. The snapshots above
                         // (lastContent/diff/vorwort/questions) are already refreshed, so leaving Specs
                         // (applyMode('memos')) restores the fresh memo prose without a page reload.
-                        // PRD-P3-02 (Memo 075 Phase 3): the Clients view likewise owns #content, so a
-                        // memo content broadcast must not overwrite the client list either.
-                        if( currentMode !== 'specs' && currentMode !== 'clients' ) {
+                        // PRD-002 (Memo 076, Phase 1, F10): Clients is no longer a mode that owns #content
+                        // — it is an overlay-popup floating over the memo, so the memo body SHOULD keep
+                        // re-rendering behind it. Only Specs still owns #content.
+                        if( currentMode !== 'specs' ) {
                             if( showDiff && currentDiff ) {
                                 renderDiffView( data.content, currentDiff )
                             } else {
@@ -6990,15 +7398,26 @@
                         currentFileName = data.fileName
                         currentMemoName = data.memoName || ''
                         currentDocumentId = data.documentId || currentDocumentId
+                        // The sticky-header refresh is already neutralized by the generalized
+                        // updateSidebarSticky mode-guard (returns outside memos); the snapshots
+                        // above stay so a later applyMode('memos') restores the prose without a reload.
                         updateSidebarSticky( data.memoName, data.fileName )
-                        var h1 = contentEl.querySelector( 'h1' )
-                        var heading = h1 ? h1.textContent.trim() : data.fileName
-                        var portEmojis = { '3333': '🔵', '4444': '🟢', '5555': '🟠', '6666': '🔴', '7777': '🟣', '8888': '🩵' }
-                        var portEmoji = portEmojis[ window.location.port ] || '⚪'
-                        var port = window.location.port || '3333'
-                        var versionMatch = data.fileName ? data.fileName.match( /v(\d+\.\d+)/ ) : null
-                        var revSuffix = versionMatch ? ' #v' + versionMatch[1] : ''
-                        document.title = portEmoji + ' ' + port + ' · ' + heading + revSuffix
+                        // PRD-001 (Memo 076, Phase 1, WI-043): the document.title rewrite must not
+                        // stamp a FOREIGN memo name onto the tab while the user is in clients/specs/
+                        // transcripts. Only rewrite the title in the memos view; the reader in a
+                        // non-memos mode keeps its own title (spec page / clients overlay context).
+                        if( currentMode === 'memos' ) {
+                            var h1 = contentEl.querySelector( 'h1' )
+                            var heading = h1 ? h1.textContent.trim() : data.fileName
+                            var portEmojis = { '3333': '🔵', '4444': '🟢', '5555': '🟠', '6666': '🔴', '7777': '🟣', '8888': '🩵' }
+                            var portEmoji = portEmojis[ window.location.port ] || '⚪'
+                            var versionMatch = data.fileName ? data.fileName.match( /v(\d+\.\d+)/ ) : null
+                            var revSuffix = versionMatch ? ' #v' + versionMatch[1] : ''
+                            // WI-027 (Memo 076): the port NUMBER is redundant to the colour-coded portEmoji
+                            // (favicon-style port indicator), so it is dropped from the tab title — the emoji
+                            // alone carries the port. Title = "<emoji> <heading>[ #vX.Y]".
+                            document.title = portEmoji + ' ' + heading + revSuffix
+                        }
                         // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): load this revision's annotations
                         // and run the render pass now that the document + revision are known.
                         refreshAnnotations()
@@ -7047,7 +7466,14 @@
             var ctx = canvas.getContext( '2d' )
             ctx.fillStyle = '#0d1117'
             ctx.beginPath()
-            ctx.roundRect( 0, 0, 64, 64, 12 )
+            // PRD-009 (Memo 076 H6, WI-084): ctx.roundRect exists only from Safari 16.4+. Calling it
+            // ungeguarded threw before connect() ran below, killing the whole live-update + modal
+            // wiring on older browsers. Feature-detect and fall back to a square favicon.
+            if( typeof ctx.roundRect === 'function' ) {
+                ctx.roundRect( 0, 0, 64, 64, 12 )
+            } else {
+                ctx.rect( 0, 0, 64, 64 )
+            }
             ctx.fill()
             ctx.fillStyle = color
             ctx.font = 'bold 40px -apple-system, sans-serif'

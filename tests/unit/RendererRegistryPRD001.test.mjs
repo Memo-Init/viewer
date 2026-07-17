@@ -51,7 +51,9 @@ describe( 'PRD-001 — renderer registry replaces the 5 hardcoded mermaid sites'
 
     it( 'renderer.code dispatches via the registry (not a hardcoded lang === mermaid branch)', () => {
         expect( clientSource ).toContain( 'if( diagramRegistry[ token.lang ] ) {' )
-        expect( clientSource ).toContain( "return '<div class=\"' + token.lang + '\">' + token.text + '</div>'" )
+        // PRD-003 (Memo 076 WI-031): the raw source is now ESCAPED into data-src with an EMPTY body,
+        // not interpolated unescaped into innerHTML (which corrupted <br/>/entities/[[slug]]).
+        expect( clientSource ).toContain( "return '<div class=\"' + token.lang + '\" data-src=\"' + escapeHtml( token.text ) + '\"></div>'" )
         // the old hardcoded mermaid branch must be gone
         expect( clientSource ).not.toContain( "if( token.lang === 'mermaid' ) {" )
     } )
@@ -76,9 +78,17 @@ describe( 'PRD-001 — renderer registry replaces the 5 hardcoded mermaid sites'
 
     it( 'renderAllDiagrams iterates EVERY registry entry and renders each matched element', () => {
         const rendered = []
+        // PRD-003 (Memo 076 WI-030/WI-031/WI-040): the source is read from data-src (via getAttribute),
+        // NOT textContent, and a per-element dataset.renderedSrc guard makes the pass idempotent.
+        const makeEl = ( id, src ) => ( {
+            id: id,
+            dataset: {},
+            getAttribute: function( name ) { return name === 'data-src' ? src : null },
+            textContent: src
+        } )
         const elsBySelector = {
-            '.mermaid': [ { id: 'm1', textContent: 'graph TD; A-->B' } ],
-            '.vega-lite': [ { id: 'v1', textContent: '{"mark":"bar"}' }, { id: 'v2', textContent: '{}' } ]
+            '.mermaid': [ makeEl( 'm1', 'graph TD; A-->B' ) ],
+            '.vega-lite': [ makeEl( 'v1', '{"mark":"bar"}' ), makeEl( 'v2', '{}' ) ]
         }
         const fakeDocument = {
             querySelectorAll: function( selector ) { return elsBySelector[ selector ] || [] }
@@ -100,7 +110,12 @@ describe( 'PRD-001 — renderer registry replaces the 5 hardcoded mermaid sites'
         expect( rendered ).toHaveLength( 3 )
         expect( rendered.filter( ( r ) => r.type === 'mermaid' ) ).toHaveLength( 1 )
         expect( rendered.filter( ( r ) => r.type === 'vega-lite' ) ).toHaveLength( 2 )
-        // each element's textContent is passed as the spec
+        // each element's data-src source is passed as the spec
         expect( rendered[ 0 ].spec ).toBe( 'graph TD; A-->B' )
+
+        // PRD-003 (Memo 076 WI-030/WI-040): a second pass over the SAME elements (unchanged data-src)
+        // is a no-op via the renderedSrc guard — no double/duplicate render, no "No diagram type detected".
+        renderAllDiagrams()
+        expect( rendered ).toHaveLength( 3 )
     } )
 } )

@@ -87,28 +87,32 @@ describe( 'Asset extraction — app.css (PRD-010, Memo 016 F1)', () => {
 
 
     describe( '/app.css static route in #createHttpHandler', () => {
-        it( 'wires a GET /app.css route that serves the cached css with text/css and 200', () => {
+        it( 'wires a GET /app.css route that serves the freshly-read css with text/css, 200 + build-hash ETag', () => {
             // Route guard.
             expect( source.includes( "url === '/app.css' && req.method === 'GET'" ) ).toBe( true )
             // Content-Type is the css MIME with charset.
             expect( source.includes( "'Content-Type': 'text/css; charset=utf-8'" ) ).toBe( true )
-            // The route writes 200 and ends with the module-load cache (APP_CSS), not a per-request read.
+            // PRD-009 (Memo 076 H6, WI-079): the route writes 200 and ends with the mtime-invalidated
+            // reader's fresh source (getCssBundle) plus a build-hash ETag — not a stale module const.
             const routeIdx = source.indexOf( "url === '/app.css' && req.method === 'GET'" )
-            const routeBlock = source.slice( routeIdx, routeIdx + 400 )
+            const routeBlock = source.slice( routeIdx, routeIdx + 500 )
             expect( /res\.writeHead\(\s*200/.test( routeBlock ) ).toBe( true )
-            expect( routeBlock.includes( 'res.end( APP_CSS )' ) ).toBe( true )
+            expect( routeBlock.includes( 'getCssBundle()' ) ).toBe( true )
+            expect( routeBlock.includes( 'res.end( cssBundle.source )' ) ).toBe( true )
+            expect( routeBlock.includes( "'ETag'" ) ).toBe( true )
         } )
 
 
-        it( 'reads the css ONCE at module load (cached APP_CSS), not per request', () => {
-            // The cache constant is read synchronously at module scope, resolved relative to the
-            // module via import.meta.url — never re-read inside the request handler.
+        it( 'PRD-009 (WI-079): re-reads the css with mtime invalidation + build hash (no stale module-load cache)', () => {
+            // The path is still resolved relative to the module via import.meta.url…
             expect( source.includes( "new URL( './public/app.css', import.meta.url )" ) ).toBe( true )
-            expect( /const APP_CSS = readFileSync\(/.test( source ) ).toBe( true )
-            // The handler must not call readFile/readFileSync for app.css per request.
-            const routeIdx = source.indexOf( "url === '/app.css' && req.method === 'GET'" )
-            const routeBlock = source.slice( routeIdx, routeIdx + 400 )
-            expect( routeBlock.includes( 'readFile' ) ).toBe( false )
+            // …but the once-at-load `const APP_CSS = readFileSync(...)` cache is GONE — replaced by an
+            // mtime-invalidated reader (statSync + re-read on change) plus a content build hash.
+            expect( /const APP_CSS = readFileSync\(/.test( source ) ).toBe( false )
+            expect( source.includes( 'makeBundleReader' ) ).toBe( true )
+            expect( source.includes( 'const getCssBundle = makeBundleReader(' ) ).toBe( true )
+            expect( source.includes( 'statSync(' ) ).toBe( true )
+            expect( source.includes( 'createHash(' ) ).toBe( true )
         } )
 
 

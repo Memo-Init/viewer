@@ -17,8 +17,10 @@
 //     already exists in a sibling workbench project. If none is found it exits
 //     non-zero with an explanation — never silently passes.
 //
-// Mechanic (mirrors the viewer init): one page, mermaid.initialize with
-//   { startOnLoad: false, securityLevel: 'loose' }, then mermaid.parse per diagram.
+// Mechanic (PRD-003 / Memo 076 WI-038 — mirrors the viewer RENDER path, not just parse):
+//   one page, mermaid.initialize with { startOnLoad: false, securityLevel: 'strict' } (viewer
+//   parity, app.client.mjs), then a real mermaid.render + SVG innerHTML roundtrip per diagram —
+//   so a diagram that PARSES but fails to RENDER turns the gate red (parse success != render success).
 //
 // Usage:
 //   node editor/scripts/mermaid-parse-gate.mjs
@@ -180,17 +182,25 @@ const runParse = async ( { diagrams, version, playwright } ) => {
     }
 
     await page.evaluate( () => {
-        window.mermaid.initialize( { 'startOnLoad': false, 'securityLevel': 'loose' } )
+        // PRD-003 (Memo 076 WI-038): 'strict' mirrors the viewer (app.client.mjs), so the gate
+        // sanitises diagram-embedded HTML exactly like production instead of trusting it ('loose').
+        window.mermaid.initialize( { 'startOnLoad': false, 'securityLevel': 'strict' } )
     } )
 
     const results = await page.evaluate( async ( items ) => {
         const out = []
 
-        await items.reduce( async ( prev, item ) => {
+        await items.reduce( async ( prev, item, idx ) => {
             await prev
 
             try {
-                await window.mermaid.parse( item.code )
+                // PRD-003 (Memo 076 WI-038): parity with the viewer render path — a real
+                // mermaid.render + SVG innerHTML roundtrip (not just mermaid.parse), so a diagram
+                // that parses but fails to render turns the gate red. The id must be a stable,
+                // valid DOM id for mermaid's temporary render node, hence the index-based 'gate-N'.
+                const rendered = await window.mermaid.render( 'gate-' + idx, item.code )
+                const container = document.createElement( 'div' )
+                container.innerHTML = rendered.svg
                 out.push( { 'id': item.id, 'source': item.source, 'line': item.line, 'ok': true, 'error': null } )
             } catch( err ) {
                 const message = ( err && err.message ) ? err.message : String( err )

@@ -1,6 +1,7 @@
 import { createServer } from 'node:http'
 import { readFile, access, readdir, mkdir, writeFile } from 'node:fs/promises'
-import { watch, existsSync, readFileSync } from 'node:fs'
+import { watch, existsSync, readFileSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { resolve, basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
@@ -10,6 +11,7 @@ import { WebSocketServer } from 'ws'
 
 import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { ProjectAutoRegister } from './ProjectAutoRegister.mjs'
+import { SessionConfigStore } from './SessionConfigStore.mjs'
 import { SpecRegistry } from './SpecRegistry.mjs'
 import { SpecAutoRegister } from './SpecAutoRegister.mjs'
 import { SpecPublishStatus } from './SpecPublishStatus.mjs'
@@ -43,19 +45,39 @@ const WAKE_DIR = join( tmpdir(), 'memo-view-wake' )
 const SPOKEN_WORDS_PER_MINUTE = 130
 
 // PRD-010 (Memo 016, F1): the ~3000-line app CSS was extracted from the inline <style> block of
-// #buildHtmlPage into src/public/app.css and is served by the /app.css static route. The file is
-// read ONCE at module load (resolved relative to this module, not cwd) and cached — every request
-// serves this in-memory string, never re-reading from disk.
+// #buildHtmlPage into src/public/app.css and is served by the /app.css static route.
 const APP_CSS_PATH = fileURLToPath( new URL( './public/app.css', import.meta.url ) )
-const APP_CSS = readFileSync( APP_CSS_PATH, 'utf8' )
 
 // PRD-011 (Memo 016, F1/F2): the ~5900-line inline client <script> block was extracted from
 // #buildHtmlPage into src/public/app.client.mjs and is served by the /app.client.mjs static route
 // as a CLASSIC script (not type=module) so its top-level functions stay in global scope for the
-// inline on*= handlers. Read ONCE at module load (resolved relative to this module, not cwd) and
-// cached — every request serves this in-memory string, never re-reading from disk.
+// inline on*= handlers.
 const APP_CLIENT_JS_PATH = fileURLToPath( new URL( './public/app.client.mjs', import.meta.url ) )
-const APP_CLIENT_JS = readFileSync( APP_CLIENT_JS_PATH, 'utf8' )
+
+// PRD-009 (Memo 076 H6, WI-079): the bundle used to be read ONCE at module load and served from an
+// in-memory string forever. When the server process outlived a bundle edit (the "3-Tage-STALE-Server"
+// lesson) it kept serving the OLD client — which still polled the removed /api/session + /api/cockpit
+// routes and flooded the console with 404s. Fix the drift structurally: an mtime-invalidated reader
+// re-reads the file when it changes on disk and derives a short build hash from the content, so the
+// served bundle always matches the source and the hash can drive a version handshake (WI-080).
+const makeBundleReader = ( path ) => {
+    let cache = { mtimeMs: -1, source: '', hash: '' }
+
+    return () => {
+        let stat = null
+        try { stat = statSync( path ) } catch { stat = null }
+        if( stat && stat.mtimeMs !== cache.mtimeMs ) {
+            const source = readFileSync( path, 'utf8' )
+            const hash = createHash( 'sha1' ).update( source ).digest( 'hex' ).slice( 0, 12 )
+            cache = { mtimeMs: stat.mtimeMs, source, hash }
+        }
+
+        return cache
+    }
+}
+
+const getCssBundle = makeBundleReader( APP_CSS_PATH )
+const getClientBundle = makeBundleReader( APP_CLIENT_JS_PATH )
 
 const PORT_COLORS = {
     3333: '4493f8',
@@ -313,7 +335,12 @@ class MemoView {
     // sessionId; a missing field on a heartbeat keeps the previously registered value. sessionId is
     // whitelist-validated (it flows into the clientList broadcast). lastSeenAt is stamped on every call
     // so the derived stale-TTL resets on each heartbeat.
-    static registerClient( { sessionId, projectId, memoNumber, workMode } ) {
+    // PRD-015 (Memo 076 Phase 8, WI-022): the record now carries `turnCount` — a per-session
+    // instruction counter (1 tick = 1 user prompt, fed by the UserPromptSubmit hook sessiontick.sh).
+    // A call with `tick === true` increments it; every other call (a plain heartbeat, e.g. the
+    // PreToolUse sessionheartbeat.sh, WI-012) keeps the previous count. lastSeenAt is ALWAYS restamped
+    // so a heartbeat resets the stale-TTL without touching the turn counter.
+    static registerClient( { sessionId, projectId, memoNumber, workMode, tick } ) {
         const validation = MemoView.validateSessionId( { sessionId } )
 
         if( !validation[ 'status' ] ) {
@@ -321,11 +348,13 @@ class MemoView {
         }
 
         const existing = MemoView.#clients.has( sessionId ) ? MemoView.#clients.get( sessionId ) : {}
+        const previousTurnCount = typeof existing[ 'turnCount' ] === 'number' ? existing[ 'turnCount' ] : 0
         const record = {
             'sessionId': sessionId,
             'projectId': typeof projectId === 'string' ? projectId : ( existing[ 'projectId' ] || null ),
             'memoNumber': memoNumber === undefined || memoNumber === null ? ( existing[ 'memoNumber' ] || null ) : String( memoNumber ),
             'workMode': typeof workMode === 'string' ? workMode : ( existing[ 'workMode' ] || null ),
+            'turnCount': tick === true ? previousTurnCount + 1 : previousTurnCount,
             'lastSeenAt': Date.now()
         }
         MemoView.#clients.set( sessionId, record )
@@ -345,7 +374,12 @@ class MemoView {
     // PRD-P3-01 WI-011: the pure status derivation (r6-F11). A client waits for a user answer when it is
     // armed on at least one OPEN transcript (armed ∧ open revision) — derived, never a maintained field.
     // Stale wins first (no heartbeat within the TTL). Fully injectable so it is unit-testable in isolation.
-    static deriveClientStatus( { lastSeenAt, now, ttlMs, armedTranscriptIds, openTranscriptIds } ) {
+    // PRD-015 (Memo 076 Phase 8, WI-023): a fourth `idle` state represents a freely open, work-less
+    // instance ("liegt frei offen") — one that has seen fewer than `idleThreshold` (default 10) user
+    // instructions this session. The order is preserved and extended: stale (age > TTL) →
+    // waiting-for-user-answer (armed ∧ open) → idle (turnCount < threshold) → working. idle sits BELOW
+    // waiting so an armed-on-open instance still reads as waiting even before its 10th turn.
+    static deriveClientStatus( { lastSeenAt, now, ttlMs, armedTranscriptIds, openTranscriptIds, turnCount, idleThreshold } ) {
         const seen = typeof lastSeenAt === 'number' ? lastSeenAt : 0
         const age = now - seen
 
@@ -359,6 +393,13 @@ class MemoView {
 
         if( armedOnOpen ) {
             return { 'status': 'waiting-for-user-answer' }
+        }
+
+        const turns = typeof turnCount === 'number' ? turnCount : 0
+        const threshold = typeof idleThreshold === 'number' ? idleThreshold : 10
+
+        if( turns < threshold ) {
+            return { 'status': 'idle' }
         }
 
         return { 'status': 'working' }
@@ -401,12 +442,14 @@ class MemoView {
         const clients = Array.from( MemoView.#clients.values() )
             .map( ( record ) => {
                 const { transcriptIds } = MemoView.#armedTranscriptIdsFor( { 'sessionId': record[ 'sessionId' ] } )
+                const turnCount = typeof record[ 'turnCount' ] === 'number' ? record[ 'turnCount' ] : 0
                 const { status } = MemoView.deriveClientStatus( {
                     'lastSeenAt': record[ 'lastSeenAt' ],
                     'now': effectiveNow,
                     'ttlMs': effectiveTtl,
                     'armedTranscriptIds': transcriptIds,
-                    'openTranscriptIds': openSet
+                    'openTranscriptIds': openSet,
+                    'turnCount': turnCount
                 } )
 
                 return {
@@ -415,6 +458,7 @@ class MemoView {
                     'memoNumber': record[ 'memoNumber' ],
                     'workMode': record[ 'workMode' ],
                     'lastSeenAt': record[ 'lastSeenAt' ],
+                    'turnCount': turnCount,
                     'armedTranscriptIds': transcriptIds,
                     'status': status
                 }
@@ -604,6 +648,41 @@ class MemoView {
             process.stdout.write( `  Auto-registration: skipped (${autoReasons[ 0 ]})\n` )
         }
 
+        // PRD-014 (Memo 076 Phase 7, WI-006/010/133): the Session-Config projects[] are the SINGLE
+        // SOURCE of the project set — not only the server's process.cwd(). Register EVERY config
+        // project's memos through the SAME addDocument door the cwd trigger uses (ProjectAutoRegister),
+        // unioned with the cwd project above (addDocument is idempotent per documentId, so a project
+        // that is both cwd AND listed is not duplicated). Two consequences:
+        //   * WI-133 — the Memos (and Specs) namespace set now matches the globally-scanned Transcripts
+        //     tab; the "1 vs 6 namespaces" divergence (cwd-only memos vs global transcripts) is closed.
+        //   * WI-010 — foreign projects are REHYDRATED from the persistent config on every boot, so they
+        //     survive a server restart instead of living only in the ephemeral In-Memory Map / marker.
+        // Fail-open at every level: an absent/broken config reads empty (SessionConfigStore), and a
+        // single project with no projectRoot or an invalid .memo structure is skipped (logged, never fatal).
+        const { projects: configProjects } = SessionConfigStore.readProjects( {} )
+
+        if( configProjects.length > 0 ) {
+            const configOutcomes = await Promise.all(
+                configProjects.map( async ( project ) => {
+                    const projectRoot = typeof project[ 'projectRoot' ] === 'string' && project[ 'projectRoot' ].length > 0
+                        ? project[ 'projectRoot' ]
+                        : null
+
+                    if( projectRoot === null ) {
+                        return { 'projectId': project[ 'projectId' ], 'status': false }
+                    }
+
+                    const { status: cfgStatus, registered: cfgRegistered } =
+                        await ProjectAutoRegister.autoRegister( { projectRoot, registry } )
+
+                    return { 'projectId': project[ 'projectId' ], 'status': cfgStatus, 'registered': cfgRegistered || [] }
+                } )
+            )
+
+            const rehydrated = configOutcomes.filter( ( outcome ) => outcome[ 'status' ] === true )
+            process.stdout.write( `  Session-Config: ${rehydrated.length}/${configProjects.length} project(s) rehydrated from projects[] (${rehydrated.map( ( o ) => o[ 'projectId' ] ).join( ', ' )})\n` )
+        }
+
         // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer's SPEC AUTO-DISCOVERY. Discover the
         // project's spec/ workshop namespaces (each an immediate subfolder with a spec.json family
         // head) and register them into #specRegistry — no user-local ~/.spec-view/registry.json, no
@@ -686,6 +765,55 @@ class MemoView {
         const memoDir = basename( memoPath ) === 'revisions' ? dirname( memoPath ) : memoPath
 
         return { 'status': true, 'memoDir': memoDir }
+    }
+
+
+    // PRD-005 (Memo 076 Phase 3, WI-122): pure line-search over a revision's markdown `content`, mirroring
+    // the client anchor resolution. Public+pure (the MemoView convention for testable statics) — the POST
+    // route does the file read and passes the string in. text-quote: first line containing `exact`, with
+    // prefix/suffix as a tiebreak (W3C TextQuoteSelector). table-row: first line containing `rowKey`, else
+    // a significant fragment of `rowText`. No match / null content -> { sourceLine: null } (no silent guess,
+    // no hard fail). No loops (findIndex/filter/map/reduce), house style.
+    static computeSourceLine( { content, anchor } ) {
+        if( typeof content !== 'string' || content.length === 0 ) { return { 'sourceLine': null } }
+        if( anchor === null || typeof anchor !== 'object' ) { return { 'sourceLine': null } }
+
+        const lines = content.split( '\n' )
+
+        if( anchor[ 'type' ] === 'table-row' ) {
+            const rowKey = typeof anchor[ 'rowKey' ] === 'string' && anchor[ 'rowKey' ].length > 0 ? anchor[ 'rowKey' ] : null
+            const byKey = rowKey !== null ? lines.findIndex( ( line ) => line.includes( rowKey ) ) : -1
+            if( byKey !== -1 ) { return { 'sourceLine': byKey + 1 } }
+
+            const rowText = typeof anchor[ 'rowText' ] === 'string' ? anchor[ 'rowText' ] : ''
+            const fragment = rowText.split( ' ' ).filter( ( token ) => token.length >= 2 )[ 0 ] || null
+            const byText = fragment !== null ? lines.findIndex( ( line ) => line.includes( fragment ) ) : -1
+
+            return { 'sourceLine': byText !== -1 ? byText + 1 : null }
+        }
+
+        const exact = typeof anchor[ 'exact' ] === 'string' && anchor[ 'exact' ].length > 0 ? anchor[ 'exact' ] : null
+        if( exact === null ) { return { 'sourceLine': null } }
+
+        const candidates = lines
+            .map( ( line, index ) => ( { line, index } ) )
+            .filter( ( entry ) => entry[ 'line' ].includes( exact ) )
+        if( candidates.length === 0 ) { return { 'sourceLine': null } }
+
+        const prefix = typeof anchor[ 'prefix' ] === 'string' ? anchor[ 'prefix' ].trim() : ''
+        const suffix = typeof anchor[ 'suffix' ] === 'string' ? anchor[ 'suffix' ].trim() : ''
+        const scored = candidates.map( ( entry ) => {
+            const at = entry[ 'line' ].indexOf( exact )
+            const before = entry[ 'line' ].slice( 0, at )
+            const after = entry[ 'line' ].slice( at + exact.length )
+            const preScore = prefix.length === 0 ? 0 : ( before.endsWith( prefix ) ? 2 : ( before.includes( prefix ) ? 1 : 0 ) )
+            const sufScore = suffix.length === 0 ? 0 : ( after.startsWith( suffix ) ? 2 : ( after.includes( suffix ) ? 1 : 0 ) )
+
+            return { 'index': entry[ 'index' ], 'score': preScore + sufScore }
+        } )
+        const best = scored.reduce( ( acc, cur ) => cur[ 'score' ] > acc[ 'score' ] ? cur : acc, scored[ 0 ] )
+
+        return { 'sourceLine': best[ 'index' ] + 1 }
     }
 
 
@@ -815,6 +943,25 @@ class MemoView {
         struct[ 'source' ] = 'registered-project-root'
 
         return struct
+    }
+
+
+    // PRD-016 (Memo 076 Phase 8, WI-018/020): map an opaque `--`-composite transcriptId to its
+    // canonical hierarchical read path /api/p/{project}/m/{memo}/transcripts/{revision}[/{seq}]. Pure
+    // inverse of TranscriptRegistry.buildUrl via parseTranscriptId. Returns { location: null } for an
+    // id that does not parse (legacy/opaque), so the caller serves it directly (fail-safe, no lost
+    // transcript). The sequence is 2-padded so the canonical route rebuilds the exact same composite.
+    static canonicalTranscriptLocation( { transcriptId } ) {
+        const parsed = TranscriptRegistry.parseTranscriptId( { transcriptId } )
+
+        if( parsed[ 'status' ] !== true ) {
+            return { 'location': null }
+        }
+
+        const seqPart = parsed[ 'sequence' ] ? '/' + String( parsed[ 'sequence' ] ).padStart( 2, '0' ) : ''
+        const location = `/api/p/${ parsed[ 'projectId' ] }/m/${ parsed[ 'memoId' ] }/transcripts/${ parsed[ 'revisionId' ] }${ seqPart }`
+
+        return { 'location': location }
     }
 
 
@@ -1001,7 +1148,7 @@ class MemoView {
         const configFlag = showOnlyFullRevisions ? 'true' : 'false'
 
         const html = `<!DOCTYPE html>
-<html lang="en">
+<html lang="de">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -1012,7 +1159,7 @@ class MemoView {
 <body>
     <div id="mermaid-modal" role="dialog" aria-modal="true" aria-label="Diagramm-Vollansicht">
         <div id="mermaid-modal-inner">
-            <button id="mermaid-modal-close" title="Schliessen (Esc)">&times;</button>
+            <button id="mermaid-modal-close" title="Schliessen (Esc)"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             <div id="mermaid-modal-svg"></div>
         </div>
     </div>
@@ -1026,20 +1173,20 @@ class MemoView {
                  with a local 3-stage publish badge. Replaces the separate cli/spec-view (port 3344)
                  with ONE surface in this viewer, no second port. -->
             <button id="mode-specs" class="mode-toggle">Specs</button>
-            <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009): the Clients VIEW mode — the live client
-                 registry (registered CC instances + derived status), mounted exactly like the
-                 M072 mode-specs 4th-view button. Loopback-only registry (POST /api/clients). -->
-            <button id="mode-clients" class="mode-toggle">Clients</button>
+            <!-- PRD-002 (Memo 076, Phase 1, F10, WI-045/053): the Clients 4th-tab is REMOVED. Clients
+                 is now an overlay-popup (#clients-modal) opened from #clients-head — it no longer owns
+                 #content or the sidebar, so the clients-side header-bleed + sidebar-mismatch vanish. -->
         </div>
-        <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009, r6-G7): a compact Clients SUMMARY ("N Clients ·
-             M warten"). Click routes to the Clients view. This REPLACES the removed M072 SessionHead
-             (Namespace/Memo/Mode + the merged cockpit line): per Memo 075 Kap 18 that global,
-             shared-server viewer-head was the wrong interpretation — a single global "activeMemo" is
-             wrong when several CC instances run, and the per-terminal "du-bist-hier" belongs in the
-             terminal statusline (lesson you-are-here-belongs-in-terminal-statusline). This per-client
-             registry is the correct viewer surface. Filled from the clientList WS broadcast
-             (renderClientsSummary); empty shows "0 Clients". -->
-        <button id="clients-head" class="clients-head" type="button" title="Registrierte CC-Instanzen anzeigen" aria-label="Registrierte Clients">0 Clients</button>
+        <!-- PRD-P3-02 (Memo 075 Phase 3, WI-009, r6-G7): a compact Clients SUMMARY ("N Instanz(en) ·
+             M warten"). This REPLACES the removed M072 SessionHead (Namespace/Memo/Mode + the merged
+             cockpit line): per Memo 075 Kap 18 that global, shared-server viewer-head was the wrong
+             interpretation — a single global "activeMemo" is wrong when several CC instances run, and
+             the per-terminal "du-bist-hier" belongs in the terminal statusline (lesson
+             you-are-here-belongs-in-terminal-statusline). This per-client registry is the correct viewer
+             surface. Filled from the clientList WS broadcast (renderClientsSummary); empty shows
+             "0 Instanzen". PRD-002 (Memo 076, F10): a click now OPENS the Clients overlay (#clients-modal)
+             instead of routing to a (removed) Clients tab. -->
+        <button id="clients-head" class="clients-head" type="button" title="Registrierte CC-Instanzen anzeigen" aria-label="Registrierte Instanzen">0 Instanzen</button>
         <span id="nav-spacer"></span>
         <button id="transcript-new" class="nav-btn-secondary" title="Transcript hinzufügen oder neues Memo bootstrappen">Transcript</button>
         <button id="nav-unlink" class="nav-btn-secondary" title="Memo entkoppeln">Unlink</button>
@@ -1054,7 +1201,7 @@ class MemoView {
             <div class="t-modal-header">
                 <span class="t-title" id="t-modal-title">Transcript hinzufügen</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="t-cancel-x" title="Schliessen">&times;</button>
+                <button class="t-close" id="t-cancel-x" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body">
                 <div class="t-tabs" id="t-tabs">
@@ -1109,13 +1256,13 @@ class MemoView {
                          are opt-in per feedback round; the selection travels in the transcript payload
                          as a "## Quality-Checks angefragt" section that the next memo-revision-generate
                          reads and runs each chosen check in a separate subagent (design [ANNAHME]). -->
-                    <div class="pp-section pp-quality" data-pp-quality>
+                    <div class="pp-section">
                         <span class="pp-section-label" id="pp-quality-label">3 · QUALITY-CHECKS (optional)</span>
                         <div id="pp-quality-list" class="pp-quality-list">
-                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="evidence" value="evidence"> Evidence</label>
-                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="coherence" value="coherence"> Coherence</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="evidence" value="evidence"> Nachweise</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="coherence" value="coherence"> Kohärenz</label>
                             <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="balance" value="balance"> Balance</label>
-                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="references" value="references"> References</label>
+                            <label class="pp-quality-item"><input type="checkbox" class="pp-quality-check" data-quality="references" value="references"> Referenzen</label>
                         </div>
                     </div>
                     <div id="pp-error" class="t-error t-hidden"></div>
@@ -1158,7 +1305,7 @@ class MemoView {
                     <p>Transcript gespeichert:</p>
                     <div class="t-url-row">
                         <code class="t-url" id="t-saved-url"></code>
-                        <button id="t-copy-inline" class="t-copy-inline" title="URL kopieren" aria-label="URL kopieren">⧉</button>
+                        <button id="t-copy-inline" class="t-copy-inline" title="URL kopieren" aria-label="URL kopieren"><svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"></rect><path d="M3.5 10.5V3.5a1 1 0 0 1 1-1h7"></path></svg></button>
                     </div>
                     <p id="t-autocopy-hint" class="t-autocopy-hint t-hidden"></p>
                     <div class="t-actions">
@@ -1169,6 +1316,20 @@ class MemoView {
             </div>
         </div>
     </div>
+    <!-- PRD-002 (Memo 076, Phase 1, F10, WI-045): the Clients overlay-popup. REUSES the shared
+         .t-modal / .t-modal-content / .t-modal-header / .t-modal-body classes (same pattern as
+         #transcript-modal), position:fixed OVER the memo — it owns neither #content nor the sidebar.
+         Opened only via #clients-head; the #mode-clients tab is gone. Body filled by renderClientsModal. -->
+    <div id="clients-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="clients-modal-title">
+        <div class="t-modal-content">
+            <div class="t-modal-header">
+                <span class="t-title" id="clients-modal-title">Instanzen</span>
+                <span class="t-header-spacer"></span>
+                <button class="t-close" id="clients-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
+            </div>
+            <div class="t-modal-body" id="clients-modal-body"></div>
+        </div>
+    </div>
     <!-- PRD-012 (Memo 011 Kap 4, F16=A): requirement detail popup. REUSES the existing
          .t-modal / .t-modal-content / .t-modal-header / .t-modal-body classes (centered via
          .t-modal { display:flex; align-items:center; justify-content:center }). NO new overlay CSS. -->
@@ -1177,7 +1338,7 @@ class MemoView {
             <div class="t-modal-header">
                 <span class="t-title" id="req-modal-title">Requirement</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="req-modal-close" title="Schliessen">&times;</button>
+                <button class="t-close" id="req-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body" id="req-modal-body"></div>
         </div>
@@ -1190,7 +1351,7 @@ class MemoView {
             <div class="t-modal-header">
                 <span class="t-title" id="block-modal-title">Block</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="block-modal-close" title="Schliessen">&times;</button>
+                <button class="t-close" id="block-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body" id="block-modal-body"></div>
         </div>
@@ -1200,11 +1361,11 @@ class MemoView {
          the requirement + block popups above. NO new overlay CSS. Opened from a text selection or a
          table-row gutter button; the comment field + Speichern POSTs /api/annotations. -->
     <div id="annotation-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="anm-modal-title">
-        <div class="t-modal-content">
+        <div class="t-modal-content anm-popover">
             <div class="t-modal-header">
                 <span class="t-title" id="anm-modal-title">Anmerkung</span>
                 <span class="t-header-spacer"></span>
-                <button class="t-close" id="anm-modal-close" title="Schliessen">&times;</button>
+                <button class="t-close" id="anm-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
             </div>
             <div class="t-modal-body">
                 <div class="anm-quote" id="anm-modal-quote"></div>
@@ -1226,7 +1387,7 @@ class MemoView {
         </nav>
         <div id="main" role="main" aria-label="Memo-Inhalt">
             <div id="main-header"></div>
-            <div id="content"><p style="color:#888">Waiting for content...</p></div>
+            <div id="content"><p class="content-placeholder">Warte auf Inhalt…</p></div>
         </div>
         <nav id="toc-sidebar" aria-label="Auf dieser Seite">
             <div id="toc-label">Auf dieser Seite</div>
@@ -1254,6 +1415,10 @@ class MemoView {
     <script src="https://cdn.jsdelivr.net/npm/vega@6.2.0/build/vega.min.js" integrity="sha384-0Wc8+KeboSkAq/fK81pd4uFbWKu4ouB+y4KWCYxlC69hRWol7vnc6zZSruXOtc0F" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.3/build/vega-lite.min.js" integrity="sha384-9/70gNCfOu6G7xXvkdreMfuqAEsoaGJVXV2BN/JLRXkSmcGvnMqtsRx8HZtUWAvI" crossorigin="anonymous"></script>
     <script src="https://cdn.jsdelivr.net/npm/vega-embed@7.1.0/build/vega-embed.min.js" integrity="sha384-giTAWqsEDsWuWzWKi6NCvjgwi160SClnTYYXWPLuy/DnaQTqmk4soinrpxcCS4dx" crossorigin="anonymous"></script>
+    <!-- PRD-009 (Memo 076 H6, WI-080): stamp the build hash the served bundle was rendered with, so
+         the client can compare it against the CURRENT server hash sent on the WS connect and reload
+         itself when a server restart shipped a newer bundle (kills the stale-tab-polls-dead-routes drift). -->
+    <script>window.__MEMO_VIEW_BUILD__ = ${ JSON.stringify( getClientBundle().hash ) }</script>
     <script src="/app.client.mjs"></script>
 </body>
 </html>`
@@ -1707,6 +1872,83 @@ class MemoView {
                 return
             }
 
+            // PRD-016 (Memo 076 Phase 8, WI-019): a GET snapshot of the full tree (documents +
+            // transcripts + latest) — the HTTP mirror of the WebSocket documentList/transcriptList
+            // broadcasts, so a consumer can read the current tree without opening a WebSocket.
+            // Read-only, no state. 503 until the document registry is initialized.
+            if( url === '/api/index' && req.method === 'GET' ) {
+
+                if( !MemoView.#registry ) {
+                    sendJson( res, 503, { 'error': 'Registry not initialized' } )
+
+                    return
+                }
+
+                const { tree: documents, latest } = MemoView.buildDocumentListPayload()
+                const transcripts = MemoView.#transcriptRegistry
+                    ? MemoView.#transcriptRegistry.getTranscriptTree()[ 'tree' ]
+                    : {}
+
+                sendJson( res, 200, { documents, transcripts, latest } )
+
+                return
+            }
+
+            // PRD-016 (Memo 076 Phase 8, WI-018): the canonical hierarchical/RESTful transcript address
+            // space that replaces the opaque `--`-composite as the primary read path:
+            //   GET /api/p/{project}/m/{memo}/transcripts                    -> collection (listTranscripts)
+            //   GET /api/p/{project}/m/{memo}/transcripts/{revision}[/{seq}] -> single (rebuild the
+            //        composite via buildUrl -> getTranscript, the existing pipeline)
+            // Additive: the `--`-composite routes stay live (now 301 aliases to exactly this path).
+            if( url.startsWith( '/api/p/' ) && req.method === 'GET' ) {
+
+                if( !MemoView.#transcriptRegistry ) {
+                    sendJson( res, 503, { 'error': 'Transcript registry not initialized' } )
+
+                    return
+                }
+
+                const segments = url.split( '/' ).filter( ( segment ) => segment.length > 0 )
+                const wellFormed = segments.length >= 6 && segments[ 1 ] === 'p' && segments[ 3 ] === 'm' && segments[ 5 ] === 'transcripts'
+
+                if( !wellFormed ) {
+                    sendJson( res, 404, { 'error': 'Not Found', 'path': url } )
+
+                    return
+                }
+
+                const project = segments[ 2 ]
+                const memo = segments[ 4 ]
+
+                if( segments.length === 6 ) {
+                    const { transcripts } = MemoView.#transcriptRegistry.listTranscripts( { 'memoId': memo } )
+
+                    sendJson( res, 200, { transcripts } )
+
+                    return
+                }
+
+                const revision = segments[ 6 ]
+                const sequence = segments.length >= 8 ? segments[ 7 ] : undefined
+                const { transcriptId } = TranscriptRegistry.buildUrl( { 'projectId': project, 'memoId': memo, 'revisionId': revision, sequence } )
+                const result = await MemoView.#transcriptRegistry.getTranscript( { transcriptId } )
+
+                if( !result[ 'status' ] ) {
+                    res.writeHead( 404, { 'Content-Type': 'text/plain' } )
+                    res.end( result[ 'messages' ].join( '; ' ) )
+
+                    return
+                }
+
+                res.writeHead( 200, {
+                    'Content-Type': 'text/markdown; charset=utf-8',
+                    'Cache-Control': 'no-cache'
+                } )
+                res.end( result[ 'content' ] )
+
+                return
+            }
+
             if( url === '/api/transcripts' && req.method === 'POST' ) {
 
                 if( !MemoView.#transcriptRegistry ) {
@@ -1810,6 +2052,19 @@ class MemoView {
                 }
 
                 const transcriptId = url.slice( '/api/transcripts/'.length )
+
+                // PRD-016 (Memo 076 Phase 8, WI-020): the opaque `--`-composite short form is now an
+                // ALIAS — 301 to the canonical hierarchical path when the id parses; fail-safe direct
+                // serve for legacy/opaque ids that do not parse (no breaking change, no lost transcript).
+                const { location } = MemoView.canonicalTranscriptLocation( { transcriptId } )
+
+                if( location !== null ) {
+                    res.writeHead( 301, { 'Location': location, 'Cache-Control': 'no-cache' } )
+                    res.end()
+
+                    return
+                }
+
                 const result = await MemoView.#transcriptRegistry.getTranscript( { transcriptId } )
 
                 if( !result[ 'status' ] ) {
@@ -2015,7 +2270,8 @@ class MemoView {
                     'sessionId': parsed[ 'sessionId' ],
                     'projectId': parsed[ 'projectId' ],
                     'memoNumber': parsed[ 'memoNumber' ],
-                    'workMode': parsed[ 'workMode' ]
+                    'workMode': parsed[ 'workMode' ],
+                    'tick': parsed[ 'tick' ]
                 } )
 
                 if( !result[ 'status' ] ) {
@@ -2089,10 +2345,26 @@ class MemoView {
                     return
                 }
 
+                // PRD-005 (Memo 076 Phase 3, WI-122): compute the 1-based markdown line of the anchored
+                // quote/row from the discussed revision file and stamp it onto the anchor BEFORE create.
+                // A missing file / no match yields sourceLine=null (never a hard fail — the annotation is
+                // still stored). The anchor is a fresh JSON.parse object, so an in-place set is safe.
+                const anchorInput = parsed[ 'anchor' ]
+
+                if( anchorInput !== null && typeof anchorInput === 'object' ) {
+                    const revPath = resolve( location[ 'memoDir' ], 'revisions', `${ parsed[ 'revisionId' ] }.md` )
+                    const isRevision = typeof parsed[ 'revisionId' ] === 'string' && /^REV-\d+$/.test( parsed[ 'revisionId' ] )
+                    const revContent = isRevision === true
+                        ? await readFile( revPath, 'utf-8' ).catch( () => null )
+                        : null
+                    const computed = MemoView.computeSourceLine( { 'content': revContent, 'anchor': anchorInput } )
+                    anchorInput[ 'sourceLine' ] = computed[ 'sourceLine' ]
+                }
+
                 const result = await AnnotationStore.create( {
                     documentId,
                     'revisionId': parsed[ 'revisionId' ],
-                    'anchor': parsed[ 'anchor' ],
+                    'anchor': anchorInput,
                     'comment': parsed[ 'comment' ],
                     'memoDir': location[ 'memoDir' ]
                 } )
@@ -2449,6 +2721,19 @@ class MemoView {
                 }
 
                 const transcriptId = url.slice( '/transcripts/'.length )
+
+                // PRD-016 (Memo 076 Phase 8, WI-020): the human copy-paste short form (also the wake
+                // payload URL) now 301-redirects to the canonical hierarchical path when the id parses;
+                // opaque/legacy ids fall through to the historical direct serve (fail-safe, no break).
+                const { location } = MemoView.canonicalTranscriptLocation( { transcriptId } )
+
+                if( location !== null ) {
+                    res.writeHead( 301, { 'Location': location, 'Cache-Control': 'no-cache' } )
+                    res.end()
+
+                    return
+                }
+
                 const result = await MemoView.#transcriptRegistry.getTranscript( { transcriptId } )
 
                 if( !result[ 'status' ] ) {
@@ -2468,30 +2753,36 @@ class MemoView {
             }
 
             // PRD-010 (Memo 016, F1): static stylesheet route. The app CSS lives in
-            // src/public/app.css (extracted from the formerly inline <style> block) and is
-            // served from the module-load cache (APP_CSS) — never re-read per request.
+            // src/public/app.css (extracted from the formerly inline <style> block).
+            // PRD-009 (Memo 076 H6, WI-079): mtime-invalidated re-read + build-hash ETag so an edited
+            // bundle is served fresh (no stale-drift) and the hash is observable in the response.
             if( url === '/app.css' && req.method === 'GET' ) {
+                const cssBundle = getCssBundle()
                 res.writeHead( 200, {
                     'Content-Type': 'text/css; charset=utf-8',
-                    'Content-Length': Buffer.byteLength( APP_CSS ),
-                    'Cache-Control': 'no-cache'
+                    'Content-Length': Buffer.byteLength( cssBundle.source ),
+                    'Cache-Control': 'no-cache',
+                    'ETag': '"' + cssBundle.hash + '"'
                 } )
-                res.end( APP_CSS )
+                res.end( cssBundle.source )
 
                 return
             }
 
             // PRD-011 (Memo 016, F1/F2): static client-JS route. The app client code lives in
-            // src/public/app.client.mjs (extracted from the formerly inline <script> block) and is
-            // served from the module-load cache (APP_CLIENT_JS) — never re-read per request. Served
+            // src/public/app.client.mjs (extracted from the formerly inline <script> block). Served
             // as a classic script (text/javascript) so its top-level functions stay global.
+            // PRD-009 (Memo 076 H6, WI-079/WI-080): mtime-invalidated re-read + build-hash ETag —
+            // the served bundle always matches the source; the hash drives the WS version handshake.
             if( url === '/app.client.mjs' && req.method === 'GET' ) {
+                const clientBundle = getClientBundle()
                 res.writeHead( 200, {
                     'Content-Type': 'text/javascript; charset=utf-8',
-                    'Content-Length': Buffer.byteLength( APP_CLIENT_JS ),
-                    'Cache-Control': 'no-cache'
+                    'Content-Length': Buffer.byteLength( clientBundle.source ),
+                    'Cache-Control': 'no-cache',
+                    'ETag': '"' + clientBundle.hash + '"'
                 } )
-                res.end( APP_CLIENT_JS )
+                res.end( clientBundle.source )
 
                 return
             }
@@ -2693,6 +2984,21 @@ class MemoView {
             ws.isAlive = true
             ws.on( 'pong', () => { ws.isAlive = true } )
 
+            // PRD-009 (Memo 076 H6, WI-086): the close handler used to live INSIDE the
+            // `if( MemoView.#registry )` block (and after the `if( !state.absolutePath ) return`
+            // guard), so a socket that connected without a registry AND without a selected revision
+            // never got a close handler and leaked in the `clients` Set. Register it unconditionally
+            // here so every socket is removed on disconnect regardless of registry/state.
+            ws.on( 'close', () => { clients.delete( ws ) } )
+
+            // PRD-009 (Memo 076 H6, WI-080): tell the fresh socket which client bundle the server is
+            // serving right now. The client compares this against the hash its page was rendered with
+            // (window.__MEMO_VIEW_BUILD__) and reloads on mismatch — a restarted server that shipped a
+            // newer bundle auto-refreshes open tabs instead of leaving them on the stale client.
+            if( ws.readyState === 1 ) {
+                ws.send( JSON.stringify( { 'type': 'build', 'id': getClientBundle().hash } ) )
+            }
+
             if( MemoView.#transcriptRegistry ) {
                 const { tree: tTree } = MemoView.#transcriptRegistry.getTranscriptTree()
 
@@ -2817,8 +3123,7 @@ class MemoView {
                         // ignore malformed messages
                     }
                 } )
-
-                ws.on( 'close', () => { clients.delete( ws ) } )
+                // PRD-009 (Memo 076 H6, WI-086): close handler now registered unconditionally above.
             }
 
             if( !state.absolutePath ) {
@@ -2892,10 +3197,7 @@ class MemoView {
                     process.stdout.write( `  Navigated: ${targetPath}\n` )
                 }
             } )
-
-            ws.on( 'close', () => {
-                clients.delete( ws )
-            } )
+            // PRD-009 (Memo 076 H6, WI-086): close handler now registered unconditionally above.
         } )
 
         return { wss, clients }

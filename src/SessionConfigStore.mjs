@@ -7,6 +7,12 @@ import { resolve, dirname, join } from 'node:path'
 // OVERWRITE read-merge-write upsert per project); this store is the READER the viewer boots from so the
 // project set is the SINGLE SOURCE of the Memos namespace tree — not just the server's process.cwd().
 //
+// Memo 077 PRD-01 (Config Single-Source): the config carries ONLY the authoritative SHARED axis —
+// `projects[].{projectId, projectRoot}`. The dead fields (`viewerUrl`, `activeMemo`, `workMode`,
+// `memoPath`, `role`, `activeProject`, `lastSeenAt`, `updatedAt`) were parsed-but-discarded or write-only
+// mirrors and are eliminated. `viewerUrl` in particular was parsed here yet dropped by the only caller
+// (loopback is hardcoded everywhere) — so it is no longer part of the read contract.
+//
 // SECURITY (git-security gate, § Live-System-Sicherheit): the config path is resolved ABLEITEND — an
 // explicit MEMOVIEW_SESSION_CONFIG env override wins, otherwise an ancestor walk from cwd for the first
 // dir carrying .sessions/config.json. No hardcoded absolute user home path is ever baked into committed code.
@@ -49,14 +55,15 @@ class SessionConfigStore {
     }
 
 
-    // Fail-open read → { projects, viewerUrl, configPath }. `projects` is filtered to well-formed
-    // entries (object with a string projectId); `viewerUrl` is a non-empty string or null. A missing/
-    // broken/non-object config degrades to an empty list — never throws.
+    // Fail-open read → { projects, configPath }. `projects` is filtered to well-formed entries (object
+    // with a string projectId). A missing/broken/non-object config degrades to an empty list — never
+    // throws. Memo 077 PRD-01: `viewerUrl` is no longer read (eliminated dead field — was parsed then
+    // discarded by the only caller).
     static readProjects( { cwd, env } = {} ) {
         const { configPath } = SessionConfigStore.resolveConfigPath( { cwd, env } )
 
         if( configPath === null || existsSync( configPath ) !== true ) {
-            return { 'projects': [], 'viewerUrl': null, 'configPath': null }
+            return { 'projects': [], 'configPath': null }
         }
 
         let raw = null
@@ -66,7 +73,7 @@ class SessionConfigStore {
         } catch( e ) {
             process.stderr.write( `[SessionConfigStore] unreadable config ${ configPath } — fail-open empty\n` )
 
-            return { 'projects': [], 'viewerUrl': null, 'configPath': configPath }
+            return { 'projects': [], 'configPath': configPath }
         }
 
         let parsed = null
@@ -76,19 +83,18 @@ class SessionConfigStore {
         } catch( e ) {
             process.stderr.write( `[SessionConfigStore] broken JSON ${ configPath } — fail-open empty\n` )
 
-            return { 'projects': [], 'viewerUrl': null, 'configPath': configPath }
+            return { 'projects': [], 'configPath': configPath }
         }
 
         if( parsed === null || typeof parsed !== 'object' || Array.isArray( parsed ) ) {
-            return { 'projects': [], 'viewerUrl': null, 'configPath': configPath }
+            return { 'projects': [], 'configPath': configPath }
         }
 
         const projects = Array.isArray( parsed[ 'projects' ] )
             ? parsed[ 'projects' ].filter( ( entry ) => entry !== null && typeof entry === 'object' && typeof entry[ 'projectId' ] === 'string' && entry[ 'projectId' ].length > 0 )
             : []
-        const viewerUrl = typeof parsed[ 'viewerUrl' ] === 'string' && parsed[ 'viewerUrl' ].length > 0 ? parsed[ 'viewerUrl' ] : null
 
-        return { 'projects': projects, 'viewerUrl': viewerUrl, 'configPath': configPath }
+        return { 'projects': projects, 'configPath': configPath }
     }
 }
 

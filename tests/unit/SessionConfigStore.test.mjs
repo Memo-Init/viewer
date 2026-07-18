@@ -34,34 +34,48 @@ describe( 'SessionConfigStore — Memo 076 Phase 7 (session-config reader, fail-
     }
 
 
-    it( 'reads a FULL config → both projects + viewerUrl', async () => {
+    // Memo 077 PRD-01: the config carries ONLY the authoritative shared axis projects[].{projectId,
+    // projectRoot}. `viewerUrl` is an eliminated dead field — no longer part of the read contract.
+    it( 'reads a config → projects (projectId + projectRoot), viewerUrl no longer returned', async () => {
+        const configPath = await writeConfig( { 'text': JSON.stringify( {
+            'projects': [
+                { 'projectId': 'memo-init', 'projectRoot': '/abs/projects/memo-init' },
+                { 'projectId': 'flowmcp', 'projectRoot': '/abs/projects/flowmcp' }
+            ]
+        } ) } )
+
+        const result = SessionConfigStore.readProjects( { 'env': { 'MEMOVIEW_SESSION_CONFIG': configPath } } )
+
+        expect( result[ 'projects' ].length ).toBe( 2 )
+        expect( result[ 'projects' ].map( ( p ) => p[ 'projectId' ] ) ).toEqual( [ 'memo-init', 'flowmcp' ] )
+        expect( result[ 'projects' ][ 0 ][ 'projectRoot' ] ).toBe( '/abs/projects/memo-init' )
+        expect( 'viewerUrl' in result ).toBe( false )
+    } )
+
+
+    it( 'IGNORES leftover dead fields from a stale config (viewerUrl/activeProject/role) → only projects[]', async () => {
         const configPath = await writeConfig( { 'text': JSON.stringify( {
             'role': 'root',
             'activeProject': 'memo-init',
             'viewerUrl': 'http://127.0.0.1:3333',
-            'projects': [
-                { 'projectId': 'memo-init', 'projectRoot': '/abs/projects/memo-init', 'memoPath': '/abs/projects/memo-init/.memo/memos' },
-                { 'projectId': 'flowmcp', 'projectRoot': '/abs/projects/flowmcp', 'memoPath': '/abs/projects/flowmcp/.memo/memos' }
-            ]
+            'projects': [ { 'projectId': 'memo-init', 'projectRoot': '/abs/projects/memo-init', 'activeMemo': null, 'workMode': null } ]
         } ) } )
 
-        const { projects, viewerUrl } = SessionConfigStore.readProjects( { 'env': { 'MEMOVIEW_SESSION_CONFIG': configPath } } )
+        const result = SessionConfigStore.readProjects( { 'env': { 'MEMOVIEW_SESSION_CONFIG': configPath } } )
 
-        expect( projects.length ).toBe( 2 )
-        expect( projects.map( ( p ) => p[ 'projectId' ] ) ).toEqual( [ 'memo-init', 'flowmcp' ] )
-        expect( viewerUrl ).toBe( 'http://127.0.0.1:3333' )
+        expect( result[ 'projects' ].length ).toBe( 1 )
+        expect( 'viewerUrl' in result ).toBe( false )
     } )
 
 
-    it( 'reads a SCALAR/empty config (no projects, no viewerUrl) → fail-open empty list, null url', async () => {
+    it( 'reads a SCALAR/empty config (no projects) → fail-open empty list', async () => {
         const configPath = await writeConfig( { 'text': JSON.stringify( {
             'role': 'root', 'activeProject': 'memo-init', 'updatedAt': '2026-07-16T22:04Z'
         } ) } )
 
-        const { projects, viewerUrl } = SessionConfigStore.readProjects( { 'env': { 'MEMOVIEW_SESSION_CONFIG': configPath } } )
+        const { projects } = SessionConfigStore.readProjects( { 'env': { 'MEMOVIEW_SESSION_CONFIG': configPath } } )
 
         expect( projects ).toEqual( [] )
-        expect( viewerUrl ).toBe( null )
     } )
 
 
@@ -71,7 +85,6 @@ describe( 'SessionConfigStore — Memo 076 Phase 7 (session-config reader, fail-
         const result = SessionConfigStore.readProjects( { 'env': { 'MEMOVIEW_SESSION_CONFIG': configPath } } )
 
         expect( result[ 'projects' ] ).toEqual( [] )
-        expect( result[ 'viewerUrl' ] ).toBe( null )
         expect( result[ 'configPath' ] ).toBe( resolve( configPath ) )
     } )
 
@@ -82,7 +95,6 @@ describe( 'SessionConfigStore — Memo 076 Phase 7 (session-config reader, fail-
         const result = SessionConfigStore.readProjects( { 'env': { 'MEMOVIEW_SESSION_CONFIG': missing } } )
 
         expect( result[ 'projects' ] ).toEqual( [] )
-        expect( result[ 'viewerUrl' ] ).toBe( null )
         expect( result[ 'configPath' ] ).toBe( null )
     } )
 

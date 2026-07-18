@@ -632,33 +632,20 @@ class MemoView {
 
         MemoView.#registerShutdown( { server, wss, state } )
 
-        // Memo 070, Phase 4 — AUTO-REGISTRATION trigger. When the server boots in a project that
-        // already has a VALID structure (a .memo/ with at least one numbered memo carrying revisions),
-        // register all of that project's memos automatically instead of requiring a manual POST per
-        // memo. The trigger delegates to the SAME DocumentRegistry.addDocument mechanism the manual
-        // door uses. Fail-open: an invalid structure is simply skipped (logged, never thrown). This is
-        // "auto-registration", deliberately NOT "auto-login" — it never touches the transcript
-        // loggedIn / "eingeloggt" status, which is a separate transcript concern.
-        const { status: autoStatus, registered: autoRegistered, projectId: autoProjectId, reasons: autoReasons } =
-            await ProjectAutoRegister.autoRegister( { projectRoot: process.cwd(), registry } )
-
-        if( autoStatus === true ) {
-            process.stdout.write( `  Auto-registration: ${autoRegistered.length} memo(s) of "${autoProjectId}" registered from a valid structure\n` )
-        } else if( autoReasons.length > 0 ) {
-            process.stdout.write( `  Auto-registration: skipped (${autoReasons[ 0 ]})\n` )
-        }
-
-        // PRD-014 (Memo 076 Phase 7, WI-006/010/133): the Session-Config projects[] are the SINGLE
-        // SOURCE of the project set — not only the server's process.cwd(). Register EVERY config
-        // project's memos through the SAME addDocument door the cwd trigger uses (ProjectAutoRegister),
-        // unioned with the cwd project above (addDocument is idempotent per documentId, so a project
-        // that is both cwd AND listed is not duplicated). Two consequences:
-        //   * WI-133 — the Memos (and Specs) namespace set now matches the globally-scanned Transcripts
-        //     tab; the "1 vs 6 namespaces" divergence (cwd-only memos vs global transcripts) is closed.
-        //   * WI-010 — foreign projects are REHYDRATED from the persistent config on every boot, so they
-        //     survive a server restart instead of living only in the ephemeral In-Memory Map / marker.
-        // Fail-open at every level: an absent/broken config reads empty (SessionConfigStore), and a
-        // single project with no projectRoot or an invalid .memo structure is skipped (logged, never fatal).
+        // Memo 077 PRD-02 (Discovery-Gate) — the Session-Config projects[] is the SINGLE GATE for the
+        // Memos namespace tree. The former parallel process.cwd() auto-registration is no longer an
+        // independent source: that was the crossed-axis divergence (Memo 077 Kap 1/§5 — shared data
+        // resolved per-process instead of from the shared config, the "1 vs 6 namespaces" WI-133).
+        //   * projects[] non-empty → AUTHORITATIVE: register EXACTLY those projects. The SessionStart
+        //     hook upserts the current project into projects[], so cwd is covered WITHOUT a separate scan
+        //     (no union, no duplicate; addDocument stays idempotent per documentId).
+        //   * projects[] empty     → EXPLICIT bootstrap fallback: register only the cwd project (logged),
+        //     so a fresh workbench with no config yet is not a dead tree ("leere Config ⇒ expliziter
+        //     Baum", the user's "ohne Config geht nichts" principle applied to the SHARED axis only).
+        // Fail-open at every level: an absent/broken config reads empty (SessionConfigStore); a project
+        // with no projectRoot or an invalid .memo structure is skipped (logged, never fatal). This is
+        // "auto-registration", deliberately NOT "auto-login" — it never touches the transcript loggedIn
+        // status, a separate transcript concern.
         const { projects: configProjects } = SessionConfigStore.readProjects( {} )
 
         if( configProjects.length > 0 ) {
@@ -680,7 +667,16 @@ class MemoView {
             )
 
             const rehydrated = configOutcomes.filter( ( outcome ) => outcome[ 'status' ] === true )
-            process.stdout.write( `  Session-Config: ${rehydrated.length}/${configProjects.length} project(s) rehydrated from projects[] (${rehydrated.map( ( o ) => o[ 'projectId' ] ).join( ', ' )})\n` )
+            process.stdout.write( `  Session-Config gate: ${rehydrated.length}/${configProjects.length} project(s) registered from projects[] (${rehydrated.map( ( o ) => o[ 'projectId' ] ).join( ', ' )})\n` )
+        } else {
+            const { status: autoStatus, registered: autoRegistered, projectId: autoProjectId, reasons: autoReasons } =
+                await ProjectAutoRegister.autoRegister( { projectRoot: process.cwd(), registry } )
+
+            if( autoStatus === true ) {
+                process.stdout.write( `  Discovery-Gate: config empty → explicit cwd fallback: ${autoRegistered.length} memo(s) of "${autoProjectId}" registered\n` )
+            } else if( autoReasons.length > 0 ) {
+                process.stdout.write( `  Discovery-Gate: config empty → cwd fallback skipped (${autoReasons[ 0 ]})\n` )
+            }
         }
 
         // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer's SPEC AUTO-DISCOVERY. Discover the
@@ -2137,9 +2133,24 @@ class MemoView {
                     return
                 }
 
-                sendJson( res, 200, { 'status': 'ok', 'revisionId': result[ 'revisionId' ] } )
+                // Memo 077 PRD-09 (Pickup härten): the "reviewed" (login) button now DURABLY wakes the
+                // waiting session(s) itself — it reuses the wake channel instead of depending on a
+                // separate client POST /wake that could be missed (the fragile skill-discipline path).
+                // The durable .loggedin sidecar just written IS the answer-ready source of truth (turnOf
+                // derives answer-ready from it, so the STATE survives a viewer restart — the M076 stale
+                // trap); the wake flag is only the 0-token push accelerator (F3). Best-effort: an invalid
+                // armed id is a no-op (writeWakeFlag re-validates, never throws).
+                const { sessions: armedSessions } = MemoView.getArmedSessions( { transcriptId } )
+                const wokenSessions = ( await Promise.all(
+                    armedSessions.map( async ( armedSessionId ) => {
+                        const wake = await MemoView.writeWakeFlag( { 'sessionId': armedSessionId, 'payload': transcriptId } )
+                        return wake[ 'status' ] === true ? armedSessionId : null
+                    } )
+                ) ).filter( ( sid ) => sid !== null )
 
-                process.stdout.write( `  Transcript logged in: ${ transcriptId }\n` )
+                sendJson( res, 200, { 'status': 'ok', 'revisionId': result[ 'revisionId' ], 'woken': wokenSessions } )
+
+                process.stdout.write( `  Transcript logged in: ${ transcriptId }${ wokenSessions.length > 0 ? ` (woke ${ wokenSessions.length } armed session[s])` : '' }\n` )
 
                 return
             }

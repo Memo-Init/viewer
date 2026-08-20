@@ -19,6 +19,7 @@ import { SpecAutoRegister } from './SpecAutoRegister.mjs'
 import { SpecPublishStatus } from './SpecPublishStatus.mjs'
 import { MemoValidator } from './MemoValidator.mjs'
 import { TranscriptRegistry } from './TranscriptRegistry.mjs'
+import { UserInputCapture } from './UserInputCapture.mjs'
 import { RequirementsStore } from './RequirementsStore.mjs'
 import { AnnotationStore } from './AnnotationStore.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
@@ -2068,6 +2069,11 @@ class MemoView {
 
                 process.stdout.write( `  Transcript added: ${ result[ 'transcriptId' ] }\n` )
 
+                // PRD-09/11 (Memo 079): capture the verbatim review input + widget "## Antwort auf F{N}"
+                // blocks into the per-memo DB via the core CLI (single-writer). After res.end — the MD
+                // write above is primary; this best-effort mirror never blocks the client.
+                await MemoView.#captureUserInput( { memoId, 'transcriptType': 'revision', content, 'sessionId': parsed[ 'sessionId' ], 'withAnswers': true } )
+
                 return
             }
 
@@ -2561,6 +2567,10 @@ class MemoView {
 
                 process.stdout.write( `  Transcript added (other): ${ result[ 'transcriptId' ] }\n` )
 
+                // PRD-09 (Memo 079): capture the verbatim input for the UNBOUND pool. No memo number
+                // yet -> the reserve memo id (ungebunden); the type ('memo-init'|'frei') drives the kind.
+                await MemoView.#captureUserInput( { 'memoId': TranscriptRegistry.OTHER_TRANSCRIPTS_MEMO_ID, 'transcriptType': ( type === undefined || type === null ) ? 'frei' : type, content, 'sessionId': parsed[ 'sessionId' ], 'withAnswers': false } )
+
                 return
             }
 
@@ -2614,6 +2624,9 @@ class MemoView {
                 } )
 
                 process.stdout.write( `  Transcript added (free memo): ${ result[ 'transcriptId' ] }\n` )
+
+                // PRD-09 (Memo 079): capture the verbatim free-transcript input bound to this memo.
+                await MemoView.#captureUserInput( { memoId, 'transcriptType': 'frei', content, 'sessionId': parsed[ 'sessionId' ], 'withAnswers': false } )
 
                 return
             }
@@ -2675,6 +2688,9 @@ class MemoView {
                 } )
 
                 process.stdout.write( `  Transcript added (init): ${ result[ 'transcriptId' ] }\n` )
+
+                // PRD-09 (Memo 079): capture the verbatim voice-init input bound to this memo.
+                await MemoView.#captureUserInput( { memoId, 'transcriptType': 'memo-init', content, 'sessionId': parsed[ 'sessionId' ], 'withAnswers': false } )
 
                 return
             }
@@ -3458,6 +3474,40 @@ class MemoView {
         } catch {
             return { 'reject': false, 'messages': [] }
         }
+    }
+
+
+    // PRD-09/11 (Memo 079): best-effort-but-visible user_inputs capture. Runs AFTER the primary
+    // (atomic) transcript MD write and AFTER the HTTP response is sent — the MD file is the primary
+    // record, this only mirrors the verbatim input into the per-memo DB. F4=A single-writer: this
+    // NEVER writes the DB directly; UserInputCapture routes every row through the core CLI leaf
+    // (memo user-input record|answer) via child_process. Any capture failure is surfaced on the
+    // server log (never a silent skip, PRD-19) but does NOT affect the already-sent transcript response.
+    static async #captureUserInput( { memoId, transcriptType, content, sessionId, withAnswers } ) {
+        let outcome
+
+        try {
+            outcome = await UserInputCapture.capture( {
+                memoId,
+                transcriptType,
+                content,
+                'bodySessionId': sessionId,
+                'env': process.env,
+                'source': 'transcript-server',
+                withAnswers
+            } )
+        } catch ( err ) {
+            process.stderr.write( `  WARN USERINPUT-CAPTURE-001: user_inputs capture threw (transcript MD unaffected): ${ err.message }\n` )
+
+            return
+        }
+
+        if( outcome[ 'status' ] === true ) {
+            const answersNote = withAnswers === true ? `, answers ${ outcome[ 'answersRecorded' ] }` : ''
+            process.stdout.write( `  user_inputs recorded: ${ outcome[ 'inputId' ] } (${ outcome[ 'kind' ] }${ answersNote })\n` )
+        }
+
+        outcome[ 'messages' ].forEach( ( message ) => process.stderr.write( `  WARN ${ message }\n` ) )
     }
 
 

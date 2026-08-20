@@ -247,6 +247,13 @@ class MemoView {
     static #specRegistry = null
     static #specRoots = { workshopRoot: null, publicRoot: null }
 
+    // Memo 079 PRD-23 (WI-051, finding e): the PER-NAMESPACE spec roots. When several projects each
+    // carry a spec/ workshop, a single cwd-bound #specRoots pair could not tell the publish-badge
+    // deriver which project a namespace came from. This map ( namespace → { workshopRoot, publicRoot } )
+    // is filled at boot from the resolved projects[] axis so #buildSpecTree compares the RIGHT pair per
+    // namespace. #specRoots stays as the single default (first resolved root) for the cwd fallback.
+    static #specRootsByNamespace = new Map()
+
     // Memo 079 PRD-22 (WI-045/046): the persistent DISMISS ledger path (project-local `.sessions/`,
     // resolved once at boot). The DELETE route records a dismissal here; the boot path reads it back and
     // prunes the dismissed documents from the freshly auto-registered set so a dismissed Karteileiche
@@ -737,18 +744,30 @@ class MemoView {
         // repos/spec/ is recorded alongside so the publish-badge deriver can compare the two locally.
         // Fail-open: a project without a spec/ simply registers zero namespaces (logged, never thrown).
         MemoView.#specRegistry = new SpecRegistry()
-        MemoView.#specRoots = {
-            'workshopRoot': resolve( process.cwd(), 'spec' ),
-            'publicRoot': resolve( process.cwd(), 'repos', 'spec' )
-        }
 
-        const { status: specStatus, registered: specRegistered, reasons: specReasons } =
-            await SpecAutoRegister.autoRegister( { specRoot: MemoView.#specRoots[ 'workshopRoot' ], registry: MemoView.#specRegistry } )
+        // Memo 079 PRD-23 (WI-051, finding e): the spec roots derive PER PROJECT from the resolved
+        // projects[] axis (explicit > discover > cwd), NOT from the server cwd — otherwise the
+        // folder-tab discovery sees only ONE project (the WI-133 crossed axis repeating at the spec
+        // level). Each project's spec/ workshop + repos/spec public target register into the shared
+        // registry; first-wins on a namespace-name collision keeps an explicit pin from being clobbered
+        // by a sibling. #specRoots keeps the FIRST resolved root as the single default (cwd fallback).
+        const { specRoots } = MemoView.resolveSpecRoots( { 'projects': resolvedProjects, 'cwd': process.cwd() } )
+        MemoView.#specRoots = { 'workshopRoot': specRoots[ 0 ][ 'workshopRoot' ], 'publicRoot': specRoots[ 0 ][ 'publicRoot' ] }
 
-        if( specStatus === true ) {
-            process.stdout.write( `  Spec auto-discovery: ${specRegistered.length} namespace(s) registered (${specRegistered.join( ', ' )})\n` )
-        } else if( specReasons.length > 0 ) {
-            process.stdout.write( `  Spec auto-discovery: skipped (${specReasons[ 0 ]})\n` )
+        const { rootsByNamespace, outcomes: specOutcomes } =
+            await MemoView.registerSpecRootsInto( { specRoots, 'specRegistry': MemoView.#specRegistry } )
+        MemoView.#specRootsByNamespace = rootsByNamespace
+
+        const specNamespacesRegistered = specOutcomes.flatMap( ( outcome ) => outcome[ 'registered' ] )
+        const specProjectsWithNs = specOutcomes.filter( ( outcome ) => outcome[ 'registered' ].length > 0 )
+
+        if( specNamespacesRegistered.length > 0 ) {
+            const perProject = specProjectsWithNs
+                .map( ( outcome ) => `${ outcome[ 'projectId' ] || 'cwd' }:${ outcome[ 'registered' ].join( '+' ) }` )
+                .join( ', ' )
+            process.stdout.write( `  Spec auto-discovery (${projectSource}): ${specNamespacesRegistered.length} namespace(s) across ${specProjectsWithNs.length} project(s) (${perProject})\n` )
+        } else {
+            process.stdout.write( `  Spec auto-discovery (${projectSource}): no namespaces found across ${specRoots.length} spec root(s)\n` )
         }
 
         process.stdout.write( `\n  memo-view server started (multi-document mode)\n` )
@@ -766,6 +785,75 @@ class MemoView {
 
     static getRegistry() {
         return MemoView.#registry
+    }
+
+
+    // Memo 079 PRD-23 (WI-051, finding e): resolve the spec roots PER PROJECT from the SAME authoritative
+    // projects[] axis the documents/transcripts use (explicit > discover > cwd) — NOT from the server cwd.
+    // Each resolved project contributes { projectId, workshopRoot: <root>/spec, publicRoot: <root>/repos/spec }.
+    // When no project resolves (source 'cwd'), a SINGLE cwd fallback root keeps today's bare-project
+    // behaviour intact. Pure + fail-open: an entry without a projectRoot string is dropped. Returns
+    // { specRoots }.
+    static resolveSpecRoots( { projects, cwd } = {} ) {
+        const base = typeof cwd === 'string' && cwd.trim().length > 0 ? cwd : process.cwd()
+        const perProject = Array.isArray( projects ) ? projects : []
+
+        const specRoots = perProject
+            .filter( ( project ) => project !== null && typeof project === 'object' && typeof project[ 'projectRoot' ] === 'string' && project[ 'projectRoot' ].length > 0 )
+            .map( ( project ) => ( {
+                'projectId': typeof project[ 'projectId' ] === 'string' && project[ 'projectId' ].length > 0 ? project[ 'projectId' ] : null,
+                'workshopRoot': resolve( project[ 'projectRoot' ], 'spec' ),
+                'publicRoot': resolve( project[ 'projectRoot' ], 'repos', 'spec' )
+            } ) )
+
+        if( specRoots.length > 0 ) {
+            return { specRoots }
+        }
+
+        return { 'specRoots': [ { 'projectId': null, 'workshopRoot': resolve( base, 'spec' ), 'publicRoot': resolve( base, 'repos', 'spec' ) } ] }
+    }
+
+
+    // Memo 079 PRD-23 (WI-051): discover + register every project's spec/ namespaces into ONE shared
+    // SpecRegistry, tracking the { workshopRoot, publicRoot } each namespace came from so the publish
+    // badge stays per-project-correct. FIRST-WINS on a namespace-name collision across projects — the
+    // earlier project in the resolved order keeps the namespace, so an explicit projects[] pin is never
+    // clobbered by a later sibling (NO-AUTO-OVERWRITE, mirrored at the spec level). Discovery runs in
+    // parallel (Promise.all preserves order), registration is applied in resolved order. Fail-open: an
+    // absent spec/ yields zero namespaces for that project (reasons carried). Returns { rootsByNamespace, outcomes }.
+    static async registerSpecRootsInto( { specRoots, specRegistry } ) {
+        const rootsByNamespace = new Map()
+
+        const discovered = await Promise.all(
+            ( Array.isArray( specRoots ) ? specRoots : [] )
+                .map( async ( specRoot ) => {
+                    const { namespaces, reasons } = await SpecAutoRegister.discover( { 'specRoot': specRoot[ 'workshopRoot' ] } )
+
+                    return { specRoot, namespaces, reasons }
+                } )
+        )
+
+        const outcomes = discovered
+            .map( ( { specRoot, namespaces, reasons } ) => {
+                const registered = namespaces
+                    .filter( ( { namespace } ) => specRegistry.has( { namespace } )[ 'status' ] !== true )
+                    .map( ( { namespace, rootDir } ) => {
+                        const result = specRegistry.register( { namespace, rootDir } )
+
+                        if( result && result[ 'status' ] === true ) {
+                            rootsByNamespace.set( namespace, { 'workshopRoot': specRoot[ 'workshopRoot' ], 'publicRoot': specRoot[ 'publicRoot' ] } )
+
+                            return namespace
+                        }
+
+                        return null
+                    } )
+                    .filter( ( namespace ) => namespace !== null )
+
+                return { 'projectId': specRoot[ 'projectId' ], registered, reasons }
+            } )
+
+        return { rootsByNamespace, outcomes }
     }
 
 
@@ -1165,9 +1253,12 @@ class MemoView {
     // the tree never silently drops a namespace.
     static async #buildSpecTree() {
         const { namespaces } = MemoView.#specRegistry.listNamespaces()
-        const { workshopRoot, publicRoot } = MemoView.#specRoots
 
         const specs = await Promise.all( namespaces.map( async ( ns ) => {
+            // Memo 079 PRD-23 (WI-051): resolve the workshop/public pair for THIS namespace's own
+            // project (per-namespace map), falling back to the single default root when unmapped
+            // (cwd source, or a namespace registered outside registerSpecRootsInto).
+            const { workshopRoot, publicRoot } = MemoView.#specRootsByNamespace.get( ns.namespace ) || MemoView.#specRoots
             const latest = await MemoView.#specRegistry.getLatest( { namespace: ns.namespace } )
             const versionNames = latest.found ? [ ...latest.versions ].reverse() : []
 

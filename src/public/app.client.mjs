@@ -2214,6 +2214,119 @@
             modeSpecsBtn.addEventListener( 'click', function() { setMode( 'specs', { push: true } ) } )
         }
 
+        // Memo 079 PRD-23 (WI-052, finding e): the configured folderTabs[] render as extra mode toggles,
+        // generalizing the built-in Specs tab (the folder→tab precedent) to any workbench folder declared
+        // in the root config. buildFolderTabDescriptors is the PURE mapping (config → render descriptors);
+        // renderFolderTabs injects the buttons. A tab whose view maps to a BUILT-IN mode (spec/specs → the
+        // existing Specs tab) is NOT duplicated — the built-in button already shows it, so the tab just
+        // routes there. A non-built-in folder tab renders a working toggle; its per-folder CONTENT surface
+        // (a registry + route, the Specs precedent generalized) is future server work, so it opens an
+        // honest placeholder for now.
+        function buildFolderTabDescriptors( folderTabs ) {
+            var builtinViews = { spec: 'specs', specs: 'specs' }
+            var list = Array.isArray( folderTabs ) ? folderTabs : []
+            var seen = {}
+
+            return list
+                .filter( function( tab ) {
+                    return tab && typeof tab.id === 'string' && tab.id.length > 0 && typeof tab.folder === 'string' && tab.folder.length > 0
+                } )
+                .filter( function( tab ) {
+                    if( seen[ tab.id ] ) { return false }
+                    seen[ tab.id ] = true
+
+                    return true
+                } )
+                .map( function( tab ) {
+                    var view = typeof tab.view === 'string' && tab.view.length > 0 ? tab.view : tab.id
+                    var builtinMode = builtinViews[ view ] || null
+                    var label = tab.id.charAt( 0 ).toUpperCase() + tab.id.slice( 1 )
+
+                    return {
+                        id: tab.id,
+                        folder: tab.folder,
+                        view: view,
+                        label: label,
+                        buttonId: 'mode-folder-' + tab.id,
+                        builtinMode: builtinMode
+                    }
+                } )
+        }
+
+        function renderFolderTabs( folderTabs ) {
+            var container = document.getElementById( 'mode-toggle' )
+            if( !container ) { return }
+
+            // idempotent: drop any folder-tab buttons a prior call rendered (built-ins carry no
+            // data-folder-tab attribute, so they are never touched).
+            var prior = container.querySelectorAll( 'button[data-folder-tab]' )
+            Array.prototype.slice.call( prior ).forEach( function( btn ) {
+                if( btn.parentNode ) { btn.parentNode.removeChild( btn ) }
+            } )
+
+            buildFolderTabDescriptors( folderTabs ).forEach( function( d ) {
+                // A built-in view already has its static button (e.g. #mode-specs) — never duplicate it.
+                if( d.builtinMode && document.getElementById( 'mode-' + d.builtinMode ) ) { return }
+                var btn = document.createElement( 'button' )
+                btn.className = 'mode-toggle'
+                btn.id = d.buttonId
+                btn.setAttribute( 'data-folder-tab', d.id )
+                btn.setAttribute( 'data-folder-view', d.view )
+                btn.setAttribute( 'aria-pressed', 'false' )
+                btn.textContent = d.label
+                btn.addEventListener( 'click', function() { selectFolderTab( d ) } )
+                container.appendChild( btn )
+            } )
+        }
+
+        function selectFolderTab( d ) {
+            if( d.builtinMode ) {
+                // route a built-in-mapped folder tab (e.g. specs) to its existing, fully-wired view.
+                setMode( d.builtinMode, { push: true } )
+
+                return
+            }
+
+            showFolderPlaceholder( d )
+        }
+
+        function showFolderPlaceholder( d ) {
+            // deactivate the three built-in tabs, then mark the clicked folder tab active.
+            setActiveModeButton( '' )
+            var container = document.getElementById( 'mode-toggle' )
+            if( container ) {
+                Array.prototype.slice.call( container.querySelectorAll( 'button[data-folder-tab]' ) ).forEach( function( btn ) {
+                    var isActive = btn.getAttribute( 'data-folder-tab' ) === d.id
+                    btn.classList.toggle( 'active', isActive )
+                    btn.setAttribute( 'aria-pressed', isActive ? 'true' : 'false' )
+                } )
+            }
+
+            var content = document.getElementById( 'content' )
+            if( !content ) { return }
+            content.innerHTML = ''
+            var box = document.createElement( 'div' )
+            box.className = 'folder-tab-placeholder'
+            var heading = document.createElement( 'h2' )
+            heading.textContent = d.label
+            var note = document.createElement( 'p' )
+            note.textContent = 'Ordner-Tab "' + d.folder + '" — die Inhaltsansicht ist noch nicht verdrahtet (per-Folder-Registry + Route folgt). Der Specs-Tab ist die Vorlage.'
+            box.appendChild( heading )
+            box.appendChild( note )
+            content.appendChild( box )
+        }
+
+        // Memo 079 PRD-23 (WI-052): fetch the resolved folderTabs from /api/index and render them. The
+        // config carries none live today, so this is a no-op unless a workbench declares folderTabs[].
+        // Fail-open: a fetch/parse error leaves the built-in tabs untouched (never throws into boot).
+        function loadFolderTabs() {
+            fetch( '/api/index' )
+                .then( function( resp ) { return resp.json() } )
+                .then( function( payload ) { renderFolderTabs( payload && payload.folderTabs ) } )
+                .catch( function() {} )
+        }
+        loadFolderTabs()
+
         // PRD-002 (Memo 076, Phase 1, F10, WI-053): #clients-head is now the ONLY Clients control —
         // it opens the overlay-popup instead of routing to a (removed) Clients mode.
         var clientsHeadEl = document.getElementById( 'clients-head' )

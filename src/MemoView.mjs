@@ -2,7 +2,7 @@ import { createServer } from 'node:http'
 import { readFile, access, readdir, mkdir, writeFile } from 'node:fs/promises'
 import { watch, existsSync, readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { resolve, basename, dirname, join } from 'node:path'
+import { resolve, basename, dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { exec } from 'node:child_process'
@@ -13,6 +13,7 @@ import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { DoltDbAssembler } from './DoltDbAssembler.mjs'
 import { ProjectAutoRegister } from './ProjectAutoRegister.mjs'
 import { SessionConfigStore } from './SessionConfigStore.mjs'
+import { DismissStore } from './DismissStore.mjs'
 import { SpecRegistry } from './SpecRegistry.mjs'
 import { SpecAutoRegister } from './SpecAutoRegister.mjs'
 import { SpecPublishStatus } from './SpecPublishStatus.mjs'
@@ -243,6 +244,16 @@ class MemoView {
     // routes.
     static #specRegistry = null
     static #specRoots = { workshopRoot: null, publicRoot: null }
+
+    // Memo 079 PRD-22 (WI-045/046): the persistent DISMISS ledger path (project-local `.sessions/`,
+    // resolved once at boot). The DELETE route records a dismissal here; the boot path reads it back and
+    // prunes the dismissed documents from the freshly auto-registered set so a dismissed Karteileiche
+    // stays gone across restarts. Null until startServer resolves it.
+    static #dismissStorePath = null
+    // Memo 079 PRD-23 (WI-052): the resolved per-folder tab set (SessionConfigStore.folderTabs), surfaced
+    // to the client HTML so folder-scoped tabs render on the projects[] axis. Empty when the config
+    // declares none.
+    static #folderTabs = []
 
     // PRD-031 (Memo 067 Phase 9, WI-8-05): session-flüchtige Arm-Map transcriptId → Set<sessionId>.
     // No persistence — arming lives only as long as the server runs; a reboot clears it with the
@@ -647,17 +658,28 @@ class MemoView {
         // with no projectRoot or an invalid .memo structure is skipped (logged, never fatal). This is
         // "auto-registration", deliberately NOT "auto-login" — it never touches the transcript loggedIn
         // status, a separate transcript concern.
-        const { projects: configProjects } = SessionConfigStore.readProjects( {} )
+        // Memo 079 PRD-22 (WI-045): resolve the persistent dismiss ledger path ONCE (project-local
+        // .sessions/, never user-home). The DELETE route records into it; the prune below reads it back.
+        const { storePath: dismissStorePath } = DismissStore.resolveStorePath( {} )
+        MemoView.#dismissStorePath = dismissStorePath
 
-        if( configProjects.length > 0 ) {
+        // Memo 079 PRD-23 (WI-050/052): resolve the AUTHORITATIVE project set with the declared priority
+        // explicit projects[] > discover scan > cwd fallback, plus the per-folder tabs. The former
+        // readProjects() call only saw the explicit list — a fresh workbench with no upserted projects[]
+        // was a dead tree ("Viewer startet leer"). resolveProjects derives sibling projects from a
+        // `discover` block when the explicit list is empty. folderTabs is surfaced to the client HTML.
+        const { projects: resolvedProjects, source: projectSource, folderTabs } = SessionConfigStore.resolveProjects( {} )
+        MemoView.#folderTabs = folderTabs
+
+        if( resolvedProjects.length > 0 ) {
             const configOutcomes = await Promise.all(
-                configProjects.map( async ( project ) => {
+                resolvedProjects.map( async ( project ) => {
                     const projectRoot = typeof project[ 'projectRoot' ] === 'string' && project[ 'projectRoot' ].length > 0
                         ? project[ 'projectRoot' ]
                         : null
 
                     if( projectRoot === null ) {
-                        return { 'projectId': project[ 'projectId' ], 'status': false }
+                        return { 'projectId': project[ 'projectId' ], 'status': false, 'registered': [] }
                     }
 
                     const { status: cfgStatus, registered: cfgRegistered } =
@@ -668,16 +690,33 @@ class MemoView {
             )
 
             const rehydrated = configOutcomes.filter( ( outcome ) => outcome[ 'status' ] === true )
-            process.stdout.write( `  Session-Config gate: ${rehydrated.length}/${configProjects.length} project(s) registered from projects[] (${rehydrated.map( ( o ) => o[ 'projectId' ] ).join( ', ' )})\n` )
+            process.stdout.write( `  Session-Config gate (${projectSource}): ${rehydrated.length}/${resolvedProjects.length} project(s) registered (${rehydrated.map( ( o ) => o[ 'projectId' ] ).join( ', ' )})\n` )
+
+            // Memo 079 PRD-22 (WI-046): BOOT transcript rehydration — both axes at the same gate (Snag
+            // 076-wi133 Restpunkt). Load each registered memo's transcript facts (incl. .loggedin) so a
+            // previously completed revision does not reappear in the queue after a restart.
+            const registeredIds = configOutcomes.flatMap( ( outcome ) => outcome[ 'registered' ] )
+            await Promise.all( registeredIds.map( ( documentId ) => MemoView.#hydrateMemoTranscripts( { documentId } ) ) )
         } else {
             const { status: autoStatus, registered: autoRegistered, projectId: autoProjectId, reasons: autoReasons } =
                 await ProjectAutoRegister.autoRegister( { projectRoot: process.cwd(), registry } )
 
             if( autoStatus === true ) {
                 process.stdout.write( `  Discovery-Gate: config empty → explicit cwd fallback: ${autoRegistered.length} memo(s) of "${autoProjectId}" registered\n` )
+                await Promise.all( autoRegistered.map( ( documentId ) => MemoView.#hydrateMemoTranscripts( { documentId } ) ) )
             } else if( autoReasons.length > 0 ) {
                 process.stdout.write( `  Discovery-Gate: config empty → cwd fallback skipped (${autoReasons[ 0 ]})\n` )
             }
+        }
+
+        // Memo 079 PRD-22 (WI-045): prune persistently-dismissed documents from the freshly-registered
+        // set so a dismissed Karteileiche stays gone across restarts (DELETE is no longer in-memory only).
+        const { dismissed } = DismissStore.readDismissed( { 'storePath': dismissStorePath } )
+        const pruned = dismissed
+            .filter( ( documentId ) => MemoView.#registry.removeDocument( { documentId } )[ 'status' ] === true )
+
+        if( pruned.length > 0 ) {
+            process.stdout.write( `  Dismiss ledger: pruned ${pruned.length} dismissed document(s) (${pruned.join( ', ' )})\n` )
         }
 
         // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer's SPEC AUTO-DISCOVERY. Discover the
@@ -771,6 +810,33 @@ class MemoView {
     // prefix/suffix as a tiebreak (W3C TextQuoteSelector). table-row: first line containing `rowKey`, else
     // a significant fragment of `rowText`. No match / null content -> { sourceLine: null } (no silent guess,
     // no hard fail). No loops (findIndex/filter/map/reduce), house style.
+    // Memo 079 T059: read the markdown the annotation anchors into — a discussed revision file
+    // (REV-NN.md under revisions/) or a served research MD (targetKind 'research'). The research path is
+    // resolved STRICTLY within memoDir (path-traversal guard: the resolved abs path must stay under
+    // memoDir). Any miss / escape / non-REV id yields null, so computeSourceLine degrades to
+    // sourceLine:null — never a hard fail, never an out-of-tree read.
+    static async #readAnnotationTargetContent( { memoDir, targetKind, researchFile, revisionId } ) {
+        const baseDir = resolve( memoDir )
+
+        if( targetKind === 'research' ) {
+            if( typeof researchFile !== 'string' || researchFile.length === 0 ) { return null }
+
+            const abs = resolve( baseDir, researchFile )
+            const withinMemo = abs === baseDir || abs.startsWith( baseDir + sep )
+
+            if( withinMemo !== true ) { return null }
+
+            return readFile( abs, 'utf-8' ).catch( () => null )
+        }
+
+        const isRevision = typeof revisionId === 'string' && /^REV-\d+$/.test( revisionId )
+
+        if( isRevision !== true ) { return null }
+
+        return readFile( resolve( baseDir, 'revisions', `${ revisionId }.md` ), 'utf-8' ).catch( () => null )
+    }
+
+
     static computeSourceLine( { content, anchor } ) {
         if( typeof content !== 'string' || content.length === 0 ) { return { 'sourceLine': null } }
         if( anchor === null || typeof anchor !== 'object' ) { return { 'sourceLine': null } }
@@ -1516,39 +1582,11 @@ class MemoView {
                 }
 
                 if( MemoView.#transcriptRegistry ) {
-                    const documentId = result[ 'documentId' ]
-                    const docDetail = MemoView.#registry.getDocument( { documentId } )
-
-                    if( docDetail[ 'status' ] ) {
-                        const memoName = docDetail[ 'document' ][ 'memoName' ]
-                        const absMemoPath = docDetail[ 'document' ][ 'memoPath' ]
-                        const memoDir = basename( absMemoPath ) === 'revisions' ? dirname( absMemoPath ) : absMemoPath
-
-                        await MemoView.#transcriptRegistry.scanMemo( {
-                            'memoPath': memoDir,
-                            projectId,
-                            'memoId': memoName
-                        } )
-
-                        // PRD-022 (Memo 067 WI-6-01): (re-)scan the project's CANONICAL other-store
-                        // ({projektRoot}/.memo/transcripts/) so the auto-bind below sees it regardless
-                        // of the server's start cwd. The root is resolved deterministically from the
-                        // just-registered memoPath (not process.cwd()).
-                        const { status: otherRootStatus, otherRoot: projectOtherRoot } = MemoView.resolveOtherRootForProject( { projectId } )
-
-                        if( otherRootStatus === true ) {
-                            await MemoView.#transcriptRegistry.scanOther( { 'otherRoot': projectOtherRoot } )
-                        }
-
-                        // PRD-004 (Memo 054 Kap 2): auto-bind a memo-init other-transcript as the
-                        // memo's init file, if one exists and none is bound yet (NO-OVERWRITE).
-                        // PRD-022 (Memo 067 WI-6-03): the bind is now mtime-nearest + ambiguity-guarded.
-                        await MemoView.#transcriptRegistry.autoBindInitTranscript( {
-                            projectId,
-                            'memoId': memoName,
-                            'memoPath': memoDir
-                        } )
-                    }
+                    // Memo 079 PRD-22 (WI-046): the per-memo transcript hydration (scanMemo incl. the
+                    // .loggedin sidecars + canonical other-store re-scan + init auto-bind) is factored
+                    // into #hydrateMemoTranscripts so the BOOT path reuses the exact same rehydration and
+                    // closes the "scanMemo only at POST" gap (forensics b6).
+                    await MemoView.#hydrateMemoTranscripts( { 'documentId': result[ 'documentId' ], projectId } )
                 }
 
                 if( MemoView.#wssInstance ) {
@@ -1850,6 +1888,17 @@ class MemoView {
                     return
                 }
 
+                // Memo 079 PRD-22 (WI-045): persist the dismissal so it survives a server restart — the
+                // boot prune reads this ledger and drops the document before it re-enters the queue.
+                // Fail-open: a store write error is logged but never blocks the live removal.
+                if( MemoView.#dismissStorePath !== null ) {
+                    const recorded = DismissStore.record( { 'storePath': MemoView.#dismissStorePath, documentId, 'reason': 'delete' } )
+
+                    if( recorded[ 'status' ] !== true ) {
+                        process.stderr.write( `  Dismiss ledger write failed for ${documentId}: ${recorded[ 'messages' ].join( '; ' )}\n` )
+                    }
+                }
+
                 if( MemoView.#wssInstance ) {
                     const { tree, latest } = MemoView.buildDocumentListPayload()
                     const message = JSON.stringify( { 'type': 'documentList', tree, latest } )
@@ -1886,7 +1935,9 @@ class MemoView {
                     ? MemoView.#transcriptRegistry.getTranscriptTree()[ 'tree' ]
                     : {}
 
-                sendJson( res, 200, { documents, transcripts, latest } )
+                // Memo 079 PRD-23 (WI-052): surface the resolved per-folder tabs on the snapshot so the
+                // client can render folder-scoped tabs on the projects[] axis (empty when none declared).
+                sendJson( res, 200, { documents, transcripts, latest, 'folderTabs': MemoView.#folderTabs } )
 
                 return
             }
@@ -2362,14 +2413,20 @@ class MemoView {
                 // A missing file / no match yields sourceLine=null (never a hard fail — the annotation is
                 // still stored). The anchor is a fresh JSON.parse object, so an in-place set is safe.
                 const anchorInput = parsed[ 'anchor' ]
+                // Memo 079 T059: an annotation anchors into EITHER the discussed revision or a served
+                // research MD (targetKind 'research'). The sourceLine is computed against the matching
+                // file; the research path is resolved strictly inside the memo dir (traversal-guarded).
+                const targetKind = parsed[ 'targetKind' ] === 'research' ? 'research' : 'revision'
+                const researchFile = typeof parsed[ 'researchFile' ] === 'string' ? parsed[ 'researchFile' ] : null
 
                 if( anchorInput !== null && typeof anchorInput === 'object' ) {
-                    const revPath = resolve( location[ 'memoDir' ], 'revisions', `${ parsed[ 'revisionId' ] }.md` )
-                    const isRevision = typeof parsed[ 'revisionId' ] === 'string' && /^REV-\d+$/.test( parsed[ 'revisionId' ] )
-                    const revContent = isRevision === true
-                        ? await readFile( revPath, 'utf-8' ).catch( () => null )
-                        : null
-                    const computed = MemoView.computeSourceLine( { 'content': revContent, 'anchor': anchorInput } )
+                    const anchorContent = await MemoView.#readAnnotationTargetContent( {
+                        'memoDir': location[ 'memoDir' ],
+                        targetKind,
+                        researchFile,
+                        'revisionId': parsed[ 'revisionId' ]
+                    } )
+                    const computed = MemoView.computeSourceLine( { 'content': anchorContent, 'anchor': anchorInput } )
                     anchorInput[ 'sourceLine' ] = computed[ 'sourceLine' ]
                 }
 
@@ -2378,7 +2435,9 @@ class MemoView {
                     'revisionId': parsed[ 'revisionId' ],
                     'anchor': anchorInput,
                     'comment': parsed[ 'comment' ],
-                    'memoDir': location[ 'memoDir' ]
+                    'memoDir': location[ 'memoDir' ],
+                    targetKind,
+                    researchFile
                 } )
 
                 if( !result[ 'status' ] ) {
@@ -3924,6 +3983,49 @@ class MemoView {
     }
 
 
+    // Memo 079 PRD-22 (WI-046): (re)hydrate a registered memo's transcript facts — the per-memo
+    // transcripts/ store (incl. the `.loggedin` sidecars that decide queue membership), the project's
+    // canonical other-store, and the init-transcript auto-bind. Factored out of the POST /api/documents
+    // handler so the BOOT path can close the "scanMemo only at POST" gap (forensics b6): a completed
+    // (eingeloggt) revision no longer reappears as `offen` after a restart. `projectId` is optional — it
+    // is recovered from the document when omitted (the boot loop has only the documentId). Fail-open: a
+    // doc without a resolvable memoDir is skipped. Returns { hydrated }.
+    static async #hydrateMemoTranscripts( { documentId, projectId } = {} ) {
+        const struct = { 'hydrated': false }
+
+        if( !MemoView.#transcriptRegistry || !MemoView.#registry ) { return struct }
+
+        const docDetail = MemoView.#registry.getDocument( { documentId } )
+
+        if( !docDetail[ 'status' ] ) { return struct }
+
+        const memoName = docDetail[ 'document' ][ 'memoName' ]
+        const absMemoPath = docDetail[ 'document' ][ 'memoPath' ]
+        const resolvedProjectId = typeof projectId === 'string' && projectId.length > 0
+            ? projectId
+            : docDetail[ 'document' ][ 'projectId' ]
+        const memoDir = basename( absMemoPath ) === 'revisions' ? dirname( absMemoPath ) : absMemoPath
+
+        await MemoView.#transcriptRegistry.scanMemo( { 'memoPath': memoDir, 'projectId': resolvedProjectId, 'memoId': memoName } )
+
+        // (Re-)scan the project's CANONICAL other-store ({projektRoot}/.memo/transcripts/) so the
+        // auto-bind sees it regardless of the server's start cwd (PRD-022, Memo 067 WI-6-01).
+        const { status: otherRootStatus, otherRoot: projectOtherRoot } = MemoView.resolveOtherRootForProject( { 'projectId': resolvedProjectId } )
+
+        if( otherRootStatus === true ) {
+            await MemoView.#transcriptRegistry.scanOther( { 'otherRoot': projectOtherRoot } )
+        }
+
+        // Auto-bind a memo-init other-transcript as the memo's init file when one exists and none is
+        // bound yet (NO-OVERWRITE, mtime-nearest + ambiguity-guarded — PRD-004/022).
+        await MemoView.#transcriptRegistry.autoBindInitTranscript( { 'projectId': resolvedProjectId, 'memoId': memoName, 'memoPath': memoDir } )
+
+        struct[ 'hydrated' ] = true
+
+        return struct
+    }
+
+
     // PRD-002 (Memo 018 Kap 5): the NEW sidebar Queue (Warteschlange). Data source changed from
     // "unfinished finalized memos" to "open revisions across ALL namespaces". A revision belongs
     // to the queue exactly when DocumentRegistry.isInQueue says so.
@@ -4650,6 +4752,10 @@ class MemoView {
 
 
     static #openBrowser( { url } ) {
+        // MEMOVIEW_NO_BROWSER=1 suppresses the auto-open — set by serve-E2E harnesses so a headless
+        // boot does not spawn a real browser tab (no behaviour change when the flag is unset).
+        if( process.env[ 'MEMOVIEW_NO_BROWSER' ] === '1' ) { return }
+
         exec( `open "${url}"` )
     }
 

@@ -20,19 +20,27 @@ const ANNOTATIONS_DIRNAME = '_annotations'
 const ANM_ID_PATTERN = /^ANM-\d{3}$/
 const ANCHOR_TYPES = [ 'text-quote', 'table-row' ]
 const ANM_STATUS_VALUES = [ 'offen', 'eingearbeitet' ]
+// Memo 079 PRD-24 (T059): an annotation now targets EITHER a discussed revision (the existing default)
+// OR a served research MD (`<memoDir>/context/research/*.md`). The research target reuses the identical
+// line-based anchor (text-quote/table-row + sourceLine) and the same ANM-NNN store — it only swaps the
+// scope key from revisionId to a repo-relative researchFile path.
+const ANM_TARGET_KINDS = [ 'revision', 'research' ]
 
 
 class AnnotationStore {
-    // Create an annotation. documentId + revisionId + anchor + comment are REQUIRED. The id is assigned
-    // deterministically (max+1 over existing ANM-NNN.json). anmStatus defaults to 'offen'. NO-OVERWRITE:
-    // the id is fresh, but the write still goes through #archiveThenWrite for parity with WorkItemStore.
-    static async create( { documentId, revisionId, anchor, comment, memoDir } ) {
+    // Create an annotation. documentId + anchor + comment are always REQUIRED. The scope key depends on
+    // targetKind: 'revision' (default) requires revisionId (REV-NN); 'research' requires a researchFile
+    // path instead (Memo 079 T059). The id is assigned deterministically (max+1 over existing
+    // ANM-NNN.json). anmStatus defaults to 'offen'. NO-OVERWRITE: the id is fresh, but the write still
+    // goes through #archiveThenWrite for parity with WorkItemStore.
+    static async create( { documentId, revisionId, anchor, comment, memoDir, targetKind, researchFile } ) {
         const scope = AnnotationStore.#requireMemoDir( { memoDir } )
         if( scope.status !== true ) {
             return { status: false, messages: scope.messages }
         }
 
-        const validation = AnnotationStore.#validateCreate( { documentId, revisionId, anchor, comment } )
+        const kind = targetKind === 'research' ? 'research' : 'revision'
+        const validation = AnnotationStore.#validateCreate( { documentId, revisionId, anchor, comment, targetKind: kind, researchFile } )
         if( validation.status !== true ) {
             return { status: false, messages: validation.messages }
         }
@@ -44,7 +52,9 @@ class AnnotationStore {
         const record = {
             id,
             documentId,
-            revisionId,
+            targetKind: kind,
+            revisionId: kind === 'research' ? ( typeof revisionId === 'string' && revisionId.length > 0 ? revisionId : null ) : revisionId,
+            researchFile: kind === 'research' ? researchFile : null,
             anchor: AnnotationStore.#normalizeAnchor( { anchor } ),
             comment,
             anmStatus: 'offen',
@@ -58,8 +68,9 @@ class AnnotationStore {
 
 
     // Read-only list. Drops a broken/unreadable file rather than crashing the whole read (mirror of the
-    // viewer's #readTopicFiles resilience). Optional revisionId filter.
-    static async list( { memoDir, revisionId } ) {
+    // viewer's #readTopicFiles resilience). Optional revisionId AND researchFile filters (Memo 079 T059):
+    // a research view lists only its own file's annotations, a revision view only that revision's.
+    static async list( { memoDir, revisionId, researchFile } ) {
         const scope = AnnotationStore.#requireMemoDir( { memoDir } )
         if( scope.status !== true ) {
             return { status: false, messages: scope.messages, annotations: [] }
@@ -86,9 +97,12 @@ class AnnotationStore {
         } ) )
 
         const present = loaded.filter( ( entry ) => entry !== null )
-        const filtered = typeof revisionId === 'string' && revisionId.length > 0
+        const byRevision = typeof revisionId === 'string' && revisionId.length > 0
             ? present.filter( ( entry ) => entry.revisionId === revisionId )
             : present
+        const filtered = typeof researchFile === 'string' && researchFile.length > 0
+            ? byRevision.filter( ( entry ) => entry.researchFile === researchFile )
+            : byRevision
 
         const annotations = filtered.sort( ( a, b ) => String( a.id ).localeCompare( String( b.id ) ) )
 
@@ -171,13 +185,18 @@ class AnnotationStore {
     }
 
 
-    static #validateCreate( { documentId, revisionId, anchor, comment } ) {
+    static #validateCreate( { documentId, revisionId, anchor, comment, targetKind, researchFile } ) {
         const messages = []
 
         if( typeof documentId !== 'string' || documentId.length === 0 ) {
             messages.push( 'documentId: required non-empty string' )
         }
-        if( typeof revisionId !== 'string' || revisionId.length === 0 ) {
+        if( targetKind === 'research' ) {
+            // Memo 079 T059: a research annotation is scoped by its file path, not a revision id.
+            if( typeof researchFile !== 'string' || researchFile.trim().length === 0 ) {
+                messages.push( 'researchFile: required for a research annotation' )
+            }
+        } else if( typeof revisionId !== 'string' || revisionId.length === 0 ) {
             // PRD-005 (WI-127): precise cause — the open file is not a revision (REV-NN), not a generic
             // "non-empty string". The user-facing German message is delivered client-side (app.client.mjs).
             messages.push( 'revisionId: required — the open file is not a revision (REV-NN)' )
@@ -235,5 +254,6 @@ export {
     AnnotationStore,
     ANM_ID_PATTERN,
     ANCHOR_TYPES,
-    ANM_STATUS_VALUES
+    ANM_STATUS_VALUES,
+    ANM_TARGET_KINDS
 }

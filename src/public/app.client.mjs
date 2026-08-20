@@ -4658,11 +4658,11 @@
                 input.className = 'pp-question-input'
                 input.setAttribute( 'data-pp-answer', String( qIdx ) )
                 input.placeholder = 'Antwort...'
-                // Prefill from a previously confirmed answer if present.
+                // Memo 079 PRD-24: prefill from the LIVE widget state, not only confirmed answers — a
+                // selection/custom entry WITHOUT an explicit "Hinzufügen" click no longer shows empty.
                 var st = questionNav.state[ qIdx ]
-                if( st && st.added && st.addedText ) {
-                    var lines = st.addedText.split( '\n' ).filter( function( s ) { return s.trim().length > 0 } )
-                    input.value = lines.length > 0 ? lines[ lines.length - 1 ] : ''
+                if( st && ( st.selected.length > 0 || st.custom.length > 0 ) ) {
+                    input.value = buildAnswerText( q, st ).answerLine
                 }
                 row.appendChild( input )
 
@@ -6066,11 +6066,20 @@
                 contentEl.appendChild( container )
             }
 
+            // Memo 079 PRD-24: merge prior answer state by question id instead of a hard reset, so a WS
+            // content-broadcast (parallel REV write) no longer wipes unsaved selections/custom entries.
+            var prevById = {}
+            ;( questionNav.questions || [] ).forEach( function( pq, pIdx ) {
+                if( pq && pq.id ) { prevById[ pq.id ] = questionNav.state[ pIdx ] }
+            } )
             questionNav.questions = open
             questionNav.state = open.map( function( q ) {
                 // single = first preselected index; multi = full preselected set.
                 var pre = Array.isArray( q.preselected ) ? q.preselected.slice() : []
                 var selected = q.typ === 'single' ? ( pre.length > 0 ? [ pre[ 0 ] ] : [] ) : pre
+                var prev = q.id ? prevById[ q.id ] : null
+                var optCount = ( q.options || [] ).length
+                if( prev && prev.selected.every( function( i ) { return i < optCount } ) ) { return prev }
                 // PRD-026 (Kap 12.1): added/addedText hold the machine-injected, confirmed
                 // answer for this question (no popup, no extra storage). The button state is
                 // bound to st.added so the visible "hinzugefügt" quittance stays consistent.

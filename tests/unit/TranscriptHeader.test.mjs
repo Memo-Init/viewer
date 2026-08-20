@@ -135,13 +135,13 @@ describe( 'TranscriptHeader — Nummern-Logik next=max+1 (PRD-002)', () => {
 } )
 
 
-describe( 'TranscriptHeader — Versions-Marker + Legacy-Detection (PRD-003)', () => {
-    it( 'SCHEMA_VERSION is 2', () => {
-        expect( SCHEMA_VERSION ).toBe( 2 )
+describe( 'TranscriptHeader — Versions-Marker + Legacy-Detection (PRD-003, Header-V3 Memo 079)', () => {
+    it( 'SCHEMA_VERSION is 3 (Header-V3, Memo 079 WI-047)', () => {
+        expect( SCHEMA_VERSION ).toBe( 3 )
     } )
 
 
-    it( 'every type-header carries the Schema-Version marker', () => {
+    it( 'every type-header carries the Schema-Version: 3 marker', () => {
         const types = [
             TranscriptHeader.build( { type: 'frei' } ),
             TranscriptHeader.build( { type: 'memo-init' } ),
@@ -150,16 +150,24 @@ describe( 'TranscriptHeader — Versions-Marker + Legacy-Detection (PRD-003)', (
         ]
 
         types.forEach( ( result ) => {
-            expect( result[ 'header' ] ).toContain( 'Schema-Version: 2' )
+            expect( result[ 'header' ] ).toContain( 'Schema-Version: 3' )
         } )
     } )
 
 
-    it( 'detectSchema: marker 2 → isLegacy false', () => {
+    it( 'detectSchema: marker 3 → isLegacy false (current version)', () => {
+        const { schemaVersion, isLegacy } = TranscriptHeader.detectSchema( { content: '# X\n\nSchema-Version: 3\n\nbody' } )
+
+        expect( schemaVersion ).toBe( 3 )
+        expect( isLegacy ).toBe( false )
+    } )
+
+
+    it( 'detectSchema: marker 2 → isLegacy true (legacy-but-readable under V3, not rejected)', () => {
         const { schemaVersion, isLegacy } = TranscriptHeader.detectSchema( { content: '# X\n\nSchema-Version: 2\n\nbody' } )
 
         expect( schemaVersion ).toBe( 2 )
-        expect( isLegacy ).toBe( false )
+        expect( isLegacy ).toBe( true )
     } )
 
 
@@ -495,7 +503,7 @@ describe( 'TranscriptHeader — Header-Modernisierung (Memo 067 WI-6-05, F5=C)',
 
         expect( status ).toBe( true )
         expect( header ).toContain( '# Transcript fuer Rollout (rollout)' )
-        expect( header ).toContain( 'Schema-Version: 2' )
+        expect( header ).toContain( 'Schema-Version: 3' )
         expect( header ).toContain( 'memo-sop' )
         expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-plan`' )
         expect( contextMode ).toBe( 'leerer-kontext' )

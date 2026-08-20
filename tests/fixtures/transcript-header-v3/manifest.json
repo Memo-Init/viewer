@@ -1,0 +1,34 @@
+{
+    "note": "Composed by: memo prompt compose --config templates/transcript-header-prompt.config.mjs --out <dir> (repos/core). Regenerate after any header-body change; the viewer parity-gate compares TYPE_TEMPLATES against the .md snapshots and their prompt hashes here.",
+    "configPath": "templates/transcript-header-prompt.config.mjs",
+    "generator": {
+        "name": "memo-init-prompt-generator",
+        "version": "0.1.0"
+    },
+    "units": [
+        {
+            "id": "memo-init",
+            "file": "memo-init.md",
+            "promptHash": "56eb31281c03d6b571d17329b383512863726121296949c5ded0b17405357db1",
+            "promptLength": 1433
+        },
+        {
+            "id": "revision",
+            "file": "revision.md",
+            "promptHash": "2d1eaa13709b1b30281c9d78a3b5b9ae47cc46969b46ef88686799d1b4ad103d",
+            "promptLength": 2069
+        },
+        {
+            "id": "frei",
+            "file": "frei.md",
+            "promptHash": "3f06dd3e850f445829ec2513ab477b12a8139749cd405c83159b8c31fa43c566",
+            "promptLength": 759
+        },
+        {
+            "id": "plan-start",
+            "file": "plan-start.md",
+            "promptHash": "8067bb1c1506d81d952aaf80f7f716041f88ceadc6fa83e7497dd2d12faa57a5",
+            "promptLength": 759
+        }
+    ]
+}

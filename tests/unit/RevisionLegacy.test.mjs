@@ -99,10 +99,12 @@ describe( 'detectSchema — TranscriptHeader (transcript-scope only, unchanged)'
     } )
 
 
-    it( 'Schema-Version: 2 returns isLegacy: false, schemaVersion: 2', () => {
+    it( 'Schema-Version: 2 returns isLegacy: true (legacy under Header-V3), schemaVersion: 2', () => {
+        // Memo 079: SCHEMA_VERSION bumped to 3, so a V2 transcript marker is now legacy-but-readable.
+        // MEMO revision legacy (detectRevisionLegacy below) is F-structure based and stays decoupled.
         const { isLegacy, schemaVersion } = TranscriptHeader.detectSchema( { content: fixtureWithMarkerAndFStructure } )
 
-        expect( isLegacy ).toBe( false )
+        expect( isLegacy ).toBe( true )
         expect( schemaVersion ).toBe( 2 )
     } )
 } )

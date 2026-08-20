@@ -41,7 +41,7 @@ describe( 'TranscriptRegistry Phase 2 (Memo 019 PRD-002/003)', () => {
             const raw = await readFile( absolutePath, 'utf-8' )
 
             expect( raw.startsWith( '# Transcript fuer neues Memo (memo-init)' ) ).toBe( true )
-            expect( raw ).toContain( 'Schema-Version: 2' )
+            expect( raw ).toContain( 'Schema-Version: 3' )
             expect( raw ).not.toMatch( /REV-\d+/ )
             expect( raw ).not.toContain( 'Memo-Pfad:' )
         } )

@@ -1130,6 +1130,10 @@
                 // PRD-001 (Memo 019 Kap 1): a finalized memo is done — none of its revisions
                 // enter the queue, even when a single revision still reads 'offen'.
                 if( memoFinalizedFrom( doc.memoStatus ) ) { return }
+                // PRD-22 #5 (Memo 079): a memo the boot Altbestand-Sweep marked 'done' (all revisions
+                // carry an on-disk completion fact — StaleQueueSweep) is out of the queue but stays in
+                // the sidebar tree. Mirrors MemoView.computeOpenRevisionQueue's status guard.
+                if( doc.status === 'done' ) { return }
                 ;( doc.revisions || [] ).forEach( function( rev ) {
                     // BUGFIX (fix/transcript-abschliessen-queue): mirror DocumentRegistry.isInQueue —
                     // a revision stays in the queue while NOT logged in. Both 'offen' and
@@ -1142,7 +1146,10 @@
                     // superseded by a newer non-prepare revision of the same memo (isSuperseded, joined
                     // server-side in MemoView.#markSupersededRevisions) drops out too, so an old revision
                     // without a transcript is no longer a perpetually-open dead end.
-                    if( rev && rev.revisionStatus !== 'eingeloggt' && rev.isLegacy !== true && rev.parseError !== true && rev.revisionType !== 'prepare' && rev.isSuperseded !== true ) {
+                    // PRD-22 #4 (Memo 079): a revision whose memo's open questions are ALL covered by an
+                    // answer record (widget OR terminal, joined server-side in MemoView.#markAnswered-
+                    // Revisions) drops out too — closing the terminal-answer Karteileiche (forensics b5).
+                    if( rev && rev.revisionStatus !== 'eingeloggt' && rev.isLegacy !== true && rev.parseError !== true && rev.revisionType !== 'prepare' && rev.isSuperseded !== true && rev.answeredComplete !== true ) {
                         pairs.push( { doc: doc, rev: rev } )
                     }
                 } )

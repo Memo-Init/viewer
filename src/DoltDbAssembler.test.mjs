@@ -238,6 +238,120 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
     } )
 
 
+    // Memo 079 PRD-22 #4: the answer-record source. A widget OR terminal answer writes the SAME
+    // `user_input_answers` row (question_id "F<N>") via the single-writer; the viewer reads it back to
+    // clear the terminal-answer Karteileiche (forensics b5). These seed the question + user_input_answers
+    // tables ad-hoc (the DoltSchema always creates all tables; seedDb here omits them for the base case).
+    const seedQuestions = ( { path, questions } ) => {
+        const db = new DatabaseSync( path )
+        db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT )' )
+        questions
+            .forEach( ( q ) => {
+                db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status ) VALUES ( ?, ?, ?, ?, ? )' )
+                    .run( q.id, 'M079', q.text || q.id, q.kind || 'info', q.status )
+            } )
+        db.close()
+    }
+
+
+    const seedAnswers = ( { path, answers } ) => {
+        const db = new DatabaseSync( path )
+        db.exec( 'CREATE TABLE IF NOT EXISTS user_input_answers ( input_id TEXT, question_id TEXT, option_key TEXT, answer_verbatim TEXT, preselected INTEGER )' )
+        answers
+            .forEach( ( a ) => {
+                db.prepare( 'INSERT INTO user_input_answers ( input_id, question_id, option_key, answer_verbatim, preselected ) VALUES ( ?, ?, ?, ?, ? )' )
+                    .run( a.inputId || 'UI-0001', a.questionId, a.optionKey || null, a.answer || 'geantwortet', 0 )
+            } )
+        db.close()
+    }
+
+
+    describe( 'readAnswerRecords (Memo 079 PRD-22 #4)', () => {
+        it( 'returns an empty set when the db has no user_input_answers table', () => {
+            seedDb( { path: dbPath } )
+
+            expect( DoltDbAssembler.readAnswerRecords( { dbPath } ) ).toEqual( { answeredQuestionIds: [] } )
+        } )
+
+        it( 'returns the DISTINCT normalized answered question ids (dedup + upper-case)', () => {
+            seedDb( { path: dbPath } )
+            seedAnswers( { path: dbPath, answers: [
+                { questionId: 'F1' },
+                { questionId: 'f1', inputId: 'UI-0002' },
+                { questionId: ' F2 ' },
+                { questionId: '' }
+            ] } )
+
+            const { answeredQuestionIds } = DoltDbAssembler.readAnswerRecords( { dbPath } )
+
+            expect( answeredQuestionIds.sort() ).toEqual( [ 'F1', 'F2' ] )
+        } )
+
+        it( 'fails loud on a missing db path and a missing argument', () => {
+            expect( () => DoltDbAssembler.readAnswerRecords( { dbPath: resolve( memoDir, 'nope.db' ) } ) )
+                .toThrow( /does not exist/ )
+            expect( () => DoltDbAssembler.readAnswerRecords( {} ) )
+                .toThrow( /"dbPath" is required/ )
+        } )
+    } )
+
+
+    describe( 'readQuestionAnswerState (Memo 079 PRD-22 #4 — additive-dedup)', () => {
+        it( 'returns all-zero / allAnswered:false when the db has no question table', () => {
+            seedDb( { path: dbPath } )
+
+            expect( DoltDbAssembler.readQuestionAnswerState( { dbPath } ) )
+                .toEqual( { open: 0, answered: 0, total: 0, allAnswered: false } )
+        } )
+
+        it( 'without any answer record it mirrors the status-based counts (no behavior change)', () => {
+            seedDb( { path: dbPath } )
+            seedQuestions( { path: dbPath, questions: [
+                { id: 'F1', status: 'open' },
+                { id: 'F2', status: 'open' },
+                { id: 'F3', status: 'answered' }
+            ] } )
+
+            expect( DoltDbAssembler.readQuestionAnswerState( { dbPath } ) )
+                .toEqual( { open: 2, answered: 1, total: 3, allAnswered: false } )
+        } )
+
+        it( 'folds answer records onto OPEN questions — all open questions covered => allAnswered', () => {
+            seedDb( { path: dbPath } )
+            seedQuestions( { path: dbPath, questions: [
+                { id: 'F1', status: 'open' },
+                { id: 'F2', status: 'open' }
+            ] } )
+            seedAnswers( { path: dbPath, answers: [ { questionId: 'F1' }, { questionId: 'F2' } ] } )
+
+            expect( DoltDbAssembler.readQuestionAnswerState( { dbPath } ) )
+                .toEqual( { open: 0, answered: 2, total: 2, allAnswered: true } )
+        } )
+
+        it( 'is additive+deduped: a record for an already-answered question does NOT double-count, a record for an open question clears it', () => {
+            seedDb( { path: dbPath } )
+            seedQuestions( { path: dbPath, questions: [
+                { id: 'F1', status: 'open' },
+                { id: 'F2', status: 'open' },
+                { id: 'F3', status: 'answered' }
+            ] } )
+            // F1 (open) gets a record -> cleared; F3 (already answered) gets a record -> no double-count;
+            // F2 stays honestly open (no record).
+            seedAnswers( { path: dbPath, answers: [ { questionId: 'F1' }, { questionId: 'F3' } ] } )
+
+            expect( DoltDbAssembler.readQuestionAnswerState( { dbPath } ) )
+                .toEqual( { open: 1, answered: 2, total: 3, allAnswered: false } )
+        } )
+
+        it( 'fails loud on a missing db path and a missing argument', () => {
+            expect( () => DoltDbAssembler.readQuestionAnswerState( { dbPath: resolve( memoDir, 'nope.db' ) } ) )
+                .toThrow( /does not exist/ )
+            expect( () => DoltDbAssembler.readQuestionAnswerState( {} ) )
+                .toThrow( /"dbPath" is required/ )
+        } )
+    } )
+
+
     // Memo 079 FIX B: the assembled body carries an `## Offene Fragen` section from the question table.
     describe( 'Offene Fragen section (Memo 079 FIX B)', () => {
         it( 'renders "keine" when the db has no question table', () => {

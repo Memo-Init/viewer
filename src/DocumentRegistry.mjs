@@ -192,6 +192,10 @@ class DocumentRegistry {
                     'status': doc['status'],
                     'memoStatus': doc['memoStatus'] || MEMO_STATUS_DEFAULT,
                     'questions': doc['questions'] || { 'open': 0, 'answered': 0 },
+                    // PRD-22 #4 (Memo 079): surface the answer-record completion flag so the queue join
+                    // (MemoView.enrichDocumentsList -> #markAnsweredRevisions) can drop a fully-answered
+                    // revision from the queue.
+                    'answerRecordsComplete': doc['answerRecordsComplete'] === true,
                     'revisionCount': revisions.length,
                     'selectedRevision': doc['selectedRevision'],
                     'revisions': revisions
@@ -271,6 +275,10 @@ class DocumentRegistry {
                     'status': doc['status'],
                     'memoStatus': doc['memoStatus'] || MEMO_STATUS_DEFAULT,
                     'questions': doc['questions'] || { 'open': 0, 'answered': 0 },
+                    // PRD-22 #4 (Memo 079): surface the answer-record completion flag so the queue join
+                    // (MemoView.enrichRevisionStatus -> #markAnsweredRevisions) can drop a fully-answered
+                    // revision from the queue (widget OR terminal answers, same single-writer record).
+                    'answerRecordsComplete': doc['answerRecordsComplete'] === true,
                     'revisionCount': doc['revisions'].length,
                     'selectedRevision': doc['selectedRevision'],
                     // PRD-016/017: memo-level activity timestamp = the newest revision mtime.
@@ -689,12 +697,20 @@ class DocumentRegistry {
 
 
     // FIX B (Memo 079): for a DB-first memo the open/answered question counts come from the db
-    // `question` table (DoltDbAssembler.readOpenQuestionCounts) instead of parsing the .md Offene-Fragen
-    // markdown — one source, no Doppelpfad (the DB body has no `### F{N}` blocks to parse). Mirrors
-    // #deriveDbMemoStatus: the returned { isDb } gates the caller, and any db error degrades to
-    // isDb:false so the caller keeps the file parse, with a logged warning (graceful, no silent mask).
+    // `question` table (DoltDbAssembler) instead of parsing the .md Offene-Fragen markdown — one source,
+    // no Doppelpfad (the DB body has no `### F{N}` blocks to parse). Mirrors #deriveDbMemoStatus: the
+    // returned { isDb } gates the caller, and any db error degrades to isDb:false so the caller keeps
+    // the file parse, with a logged warning (graceful, no silent mask).
+    //
+    // PRD-22 #4 (Memo 079): the counts additionally fold in the `user_input_answers` answer records
+    // (DoltDbAssembler.readQuestionAnswerState) — an open question that carries an answer record (given
+    // via the widget OR typed in the terminal, same single-writer row, WI-044) counts as answered,
+    // deduped by F-id. `allAnswered` reports whether the memo's open questions are ALL covered by a
+    // record — the caller (queue join) uses it so a terminal-answered revision leaves the queue instead
+    // of staying 'offen' forever (forensics b5). Keeps parseQuestions' json+markdown counting intact:
+    // that is the file-parse path for the 383 legacy memos, untouched here.
     static #deriveDbQuestionCounts( { memoPath } ) {
-        const struct = { 'isDb': false, 'questions': { 'open': 0, 'answered': 0 } }
+        const struct = { 'isDb': false, 'questions': { 'open': 0, 'answered': 0 }, 'allAnswered': false }
 
         if( typeof memoPath !== 'string' || memoPath.length === 0 ) {
             return struct
@@ -712,14 +728,15 @@ class DocumentRegistry {
             struct[ 'isDb' ] = true
 
             const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
-            const { open, answered } = DoltDbAssembler.readOpenQuestionCounts( { dbPath } )
+            const { open, answered, allAnswered } = DoltDbAssembler.readQuestionAnswerState( { dbPath } )
             struct[ 'questions' ] = { 'open': open, 'answered': answered }
+            struct[ 'allAnswered' ] = allAnswered
 
             return struct
         } catch( error ) {
             console.warn( `DocumentRegistry.#deriveDbQuestionCounts: db question read failed for "${ memoDir }" — file parse fallback (${ error.message })` )
 
-            return { 'isDb': false, 'questions': { 'open': 0, 'answered': 0 } }
+            return { 'isDb': false, 'questions': { 'open': 0, 'answered': 0 }, 'allAnswered': false }
         }
     }
 
@@ -798,8 +815,15 @@ class DocumentRegistry {
         // was a dead end and stayed "offen" forever (live 075: REV-01/REV-02). The flag is joined in
         // MemoView.#markSupersededRevisions (deterministic from the REV-\d+ filename numbers).
         const isSuperseded = revision[ 'isSuperseded' ] === true
+        // PRD-22 #4 (Memo 079): a revision whose memo's open questions are ALL covered by an answer
+        // record (widget OR terminal, the SAME user_input_answers row per WI-044) leaves the queue.
+        // Before this a terminal answer created no transcript file / `.loggedin` marker, so the
+        // revision stayed 'offen' forever (forensics b5 — the Karteileichen root). The flag is joined
+        // server-side in MemoView.#markAnsweredRevisions from the doc-level answerRecordsComplete
+        // (DocumentRegistry.#deriveDbQuestionCounts), the same shape as the isSuperseded join.
+        const answeredComplete = revision[ 'answeredComplete' ] === true
 
-        return { 'inQueue': status !== 'eingeloggt' && !isLegacy && !parseError && !isPrepare && !isSuperseded }
+        return { 'inQueue': status !== 'eingeloggt' && !isLegacy && !parseError && !isPrepare && !isSuperseded && !answeredComplete }
     }
 
 
@@ -1948,7 +1972,10 @@ class DocumentRegistry {
         // FIX B (Memo 079): DB-first memos take their question counts from the db `question` table,
         // NOT the .md parseQuestions (the DB body carries no `### F{N}` blocks). The 383 legacy memos
         // (isDb:false) keep the unchanged file parse below — no Doppelpfad.
-        const { isDb: isDbQuestions, questions: dbQuestions } = DocumentRegistry.#deriveDbQuestionCounts( { memoPath: doc[ 'memoPath' ] } )
+        // PRD-22 #4 (Memo 079): the DB path also folds in the answer records; allAnswered marks a memo
+        // whose open questions are ALL covered by a record (widget or terminal). It is stored on the doc
+        // so the queue join (MemoView.#markAnsweredRevisions) can drop the revision from the queue.
+        const { isDb: isDbQuestions, questions: dbQuestions, allAnswered: dbAllAnswered } = DocumentRegistry.#deriveDbQuestionCounts( { memoPath: doc[ 'memoPath' ] } )
 
         let questions = { 'open': 0, 'answered': 0 }
 
@@ -1968,6 +1995,10 @@ class DocumentRegistry {
 
         doc[ 'memoStatus' ] = memoStatus
         doc[ 'questions' ] = questions
+        // PRD-22 #4 (Memo 079): only a DB-first memo can carry answer records; a file-parsed memo is
+        // never answer-record-complete (it has no user_input_answers table) so the flag stays false and
+        // its queue behavior is unchanged.
+        doc[ 'answerRecordsComplete' ] = isDbQuestions === true && dbAllAnswered === true
 
         struct[ 'status' ] = true
         struct[ 'memoStatus' ] = memoStatus

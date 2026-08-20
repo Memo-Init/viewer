@@ -60,6 +60,16 @@ const raw = ( value ) => {
 const DIAGRAM_KINDS = [ 'mermaid', 'vega-lite' ]
 
 
+// Memo 079 PRD-22 (#4): normalize a question identifier for cross-source dedup. The `question` table
+// `id` and the `user_input_answers` `question_id` are both the `F<N>` token (DoltSchema); trimming +
+// upper-casing lets the answer-record source dedup against the open-question ids case/whitespace-safe.
+// A null/undefined id collapses to '' (an unidentifiable question can never be matched by a record —
+// it stays honestly open, never silently cleared).
+const normalizeQuestionId = ( value ) => {
+    return value === null || value === undefined ? '' : String( value ).trim().toUpperCase()
+}
+
+
 class DoltDbAssembler {
     static assembleFromDb( { dbPath } ) {
         if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
@@ -180,11 +190,12 @@ class DoltDbAssembler {
     }
 
 
-    // Read the open/answered question counts of a per-memo database (Memo 079 FIX B). DocumentRegistry
-    // reads this for a DB-first memo instead of parsing the .md file's Offene-Fragen markdown — one
-    // source, no Doppelpfad. open = rows WHERE status='open'; answered = every other row. A MISSING
-    // `question` table (hand-seeded / early db) reads as { open:0, answered:0 } via the sqlite_master
-    // guard, never a throw. Read-only open. Same fail-loud arg/existence contract as the sibling leaves.
+    // Read the open/answered question counts of a per-memo database (Memo 079 FIX B). The pure
+    // `question`-table counter (open = rows WHERE status='open'; answered = every other row). Since
+    // PRD-22 #4 the DocumentRegistry badge path reads the richer readQuestionAnswerState (which folds in
+    // the user_input_answers records); this leaf is the status-only baseline it builds on and remains a
+    // tested public API. A MISSING `question` table (hand-seeded / early db) reads as { open:0,
+    // answered:0 } via the sqlite_master guard, never a throw. Read-only open; same fail-loud contract.
     static readOpenQuestionCounts( { dbPath } ) {
         if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
             throw new Error( 'DoltDbAssembler.readOpenQuestionCounts: "dbPath" is required (non-empty string)' )
@@ -205,6 +216,95 @@ class DoltDbAssembler {
             const total = totalRow === null ? 0 : Number( totalRow[ 'n' ] )
 
             return { open, answered: total - open }
+        } finally {
+            db.close()
+        }
+    }
+
+
+    // Read the DISTINCT answered question ids from the per-memo `user_input_answers` table (Memo 079
+    // PRD-22 #4). Every answer — given via the memo-view widget OR typed in the terminal — is written
+    // as the SAME `user_input_answers` row by the `memo user-input answer` single-writer (WI-044), so
+    // this is the ONE durable answer-record source that closes the terminal-answer Karteileiche
+    // (forensics b5: a terminal answer left no transcript file and the revision stayed 'offen' forever).
+    // question_id is the `F<N>` token, normalized for cross-source dedup. A MISSING `user_input_answers`
+    // table (a memo whose review widget was never used) reads as an empty set via the sqlite_master
+    // guard, never a throw. Read-only open; same fail-loud arg/existence contract as the sibling leaves.
+    static readAnswerRecords( { dbPath } ) {
+        if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.readAnswerRecords: "dbPath" is required (non-empty string)' )
+        }
+        if( existsSync( dbPath ) !== true ) {
+            throw new Error( `DoltDbAssembler.readAnswerRecords: "${ dbPath }" does not exist — cannot read the user_input_answers table` )
+        }
+
+        const db = DoltDbAssembler.#open( { dbPath } )
+        try {
+            if( DoltDbAssembler.#tableExists( { db, table: 'user_input_answers' } ) !== true ) {
+                return { answeredQuestionIds: [] }
+            }
+
+            const rows = DoltDbAssembler.#all( { db, sql: 'SELECT DISTINCT question_id FROM user_input_answers' } )
+            const answeredQuestionIds = [ ...new Set(
+                rows
+                    .map( ( row ) => normalizeQuestionId( row[ 'question_id' ] ) )
+                    .filter( ( id ) => id.length > 0 )
+            ) ]
+
+            return { answeredQuestionIds }
+        } finally {
+            db.close()
+        }
+    }
+
+
+    // Fold the answer records (readAnswerRecords) additively onto the `question`-table counts (Memo 079
+    // PRD-22 #4). The `question` table alone counts a row answered only once its `status` column flips;
+    // a terminal/widget answer, however, lands in `user_input_answers` WITHOUT necessarily flipping that
+    // status. This leaf reclassifies every OPEN question that carries an answer record as answered —
+    // deduped by the normalized F-id so a record for an already-answered question never double-counts.
+    // Returns:
+    //   * open        — open questions that have NO answer record (the honest remaining work)
+    //   * answered    — status-answered rows PLUS open rows cleared by a record
+    //   * total       — count( question )
+    //   * allAnswered — total > 0 && open === 0 (the memo's open questions are ALL covered by records)
+    // A missing `question` table reads as all-zero / allAnswered:false (no invented completion). Same
+    // fail-loud arg/existence contract; a single read-only open for every sub-query.
+    static readQuestionAnswerState( { dbPath } ) {
+        if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.readQuestionAnswerState: "dbPath" is required (non-empty string)' )
+        }
+        if( existsSync( dbPath ) !== true ) {
+            throw new Error( `DoltDbAssembler.readQuestionAnswerState: "${ dbPath }" does not exist — cannot read the question table` )
+        }
+
+        const db = DoltDbAssembler.#open( { dbPath } )
+        try {
+            if( DoltDbAssembler.#tableExists( { db, table: 'question' } ) !== true ) {
+                return { open: 0, answered: 0, total: 0, allAnswered: false }
+            }
+
+            const openRows = DoltDbAssembler.#all( { db, sql: "SELECT id FROM question WHERE status = 'open'" } )
+            const totalRow = DoltDbAssembler.#get( { db, sql: 'SELECT count( * ) AS n FROM question' } )
+            const total = totalRow === null ? 0 : Number( totalRow[ 'n' ] )
+
+            const openIds = openRows
+                .map( ( row ) => normalizeQuestionId( row[ 'id' ] ) )
+
+            const answeredRecordIds = DoltDbAssembler.#tableExists( { db, table: 'user_input_answers' } ) === true
+                ? DoltDbAssembler.#all( { db, sql: 'SELECT DISTINCT question_id FROM user_input_answers' } )
+                    .map( ( row ) => normalizeQuestionId( row[ 'question_id' ] ) )
+                : []
+            const answeredSet = new Set( answeredRecordIds )
+
+            const openWithoutRecord = openIds
+                .filter( ( id ) => id.length === 0 || answeredSet.has( id ) !== true )
+            const open = openWithoutRecord.length
+            const cleared = openIds.length - open
+            const answered = ( total - openIds.length ) + cleared
+            const allAnswered = total > 0 && open === 0
+
+            return { open, answered, total, allAnswered }
         } finally {
             db.close()
         }

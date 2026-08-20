@@ -14,6 +14,7 @@ import { DoltDbAssembler } from './DoltDbAssembler.mjs'
 import { ProjectAutoRegister } from './ProjectAutoRegister.mjs'
 import { SessionConfigStore } from './SessionConfigStore.mjs'
 import { DismissStore } from './DismissStore.mjs'
+import { StaleQueueSweep } from './StaleQueueSweep.mjs'
 import { SpecRegistry } from './SpecRegistry.mjs'
 import { SpecAutoRegister } from './SpecAutoRegister.mjs'
 import { SpecPublishStatus } from './SpecPublishStatus.mjs'
@@ -718,6 +719,15 @@ class MemoView {
 
         if( pruned.length > 0 ) {
             process.stdout.write( `  Dismiss ledger: pruned ${pruned.length} dismissed document(s) (${pruned.join( ', ' )})\n` )
+        }
+
+        // Memo 079 PRD-22 (WI-045/046): the Altbestand-Sweep. Mark every fully-resolved memo (all
+        // revisions superseded / logged-in / finalized on disk — StaleQueueSweep) 'done' so its stale
+        // queue entries leave the queue after a restart. Queue-only: the document stays in the sidebar.
+        const { swept } = MemoView.sweepStaleQueueEntries( { registry } )
+
+        if( swept.length > 0 ) {
+            process.stdout.write( `  Altbestand-Sweep: ${swept.length} fully-resolved memo(s) marked done — stale queue entries swept (${swept.join( ', ' )})\n` )
         }
 
         // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer's SPEC AUTO-DISCOVERY. Discover the
@@ -3924,6 +3934,31 @@ class MemoView {
     }
 
 
+    // PRD-22 #4 (Memo 079): join the doc-level answer-record completion onto its revisions. A DB-first
+    // memo whose open questions are ALL covered by a `user_input_answers` record (widget OR terminal,
+    // the same single-writer row per WI-044) carries answerRecordsComplete:true (DocumentRegistry.
+    // #deriveDbQuestionCounts). Stamp answeredComplete on every non-prepare revision so isInQueue /
+    // the browser computeQueue drop it — closing the terminal-answer Karteileiche (forensics b5: a
+    // terminal answer left no transcript file, so the revision stayed 'offen' forever). Prepare
+    // revisions never queue anyway and are left untouched. The 383 file-parsed memos always carry
+    // answerRecordsComplete:false (no db), so their queue behavior is unchanged. Mutates in place —
+    // the same shape as #markSupersededRevisions, joined once per documentList build.
+    static #markAnsweredRevisions( { doc } ) {
+        if( !doc || typeof doc !== 'object' ) { return { revisions: [] } }
+
+        const list = Array.isArray( doc[ 'revisions' ] ) ? doc[ 'revisions' ] : []
+        const complete = doc[ 'answerRecordsComplete' ] === true
+
+        list
+            .filter( ( rev ) => rev && typeof rev === 'object' && rev[ 'revisionType' ] !== 'prepare' )
+            .forEach( ( rev ) => {
+                rev[ 'answeredComplete' ] = complete
+            } )
+
+        return { revisions: list }
+    }
+
+
     // BUGFIX (fix/transcript-abschliessen-queue): the JOIN-Punkt. The DocumentRegistry tree carries
     // a stub revisionStatus (always REVISION_STATUS_DEFAULT) because it has no knowledge of the
     // transcript registry. Here both trees are available, so we derive the authoritative
@@ -3951,6 +3986,7 @@ class MemoView {
                         const memoTranscripts = transcriptsForProject[ doc[ 'memoName' ] ] || []
 
                         MemoView.#markSupersededRevisions( { revisions: doc[ 'revisions' ] || [] } )
+                        MemoView.#markAnsweredRevisions( { doc } )
 
                         ;( doc[ 'revisions' ] || [] )
                             .filter( ( rev ) => rev && typeof rev === 'object' )
@@ -3990,6 +4026,7 @@ class MemoView {
                 const memoTranscripts = transcriptsForProject[ doc[ 'memoName' ] ] || []
 
                 MemoView.#markSupersededRevisions( { revisions: doc[ 'revisions' ] || [] } )
+                MemoView.#markAnsweredRevisions( { doc } )
 
                 ;( doc[ 'revisions' ] || [] )
                     .filter( ( rev ) => rev && typeof rev === 'object' )
@@ -4105,6 +4142,11 @@ class MemoView {
                 const fromNamespace = memos
                     .filter( ( doc ) => doc && typeof doc === 'object' )
                     .filter( ( doc ) => !MemoView.#isFinalizedMemoStatus( { memoStatus: doc[ 'memoStatus' ] } ) )
+                    // PRD-22 #5 (Memo 079): a memo the boot Altbestand-Sweep marked 'done' (all its
+                    // revisions carry an on-disk completion fact — superseded / logged-in / finalized;
+                    // StaleQueueSweep) leaves the queue. The document stays in the sidebar tree; only its
+                    // stale queue entries are swept. Mirrors the browser computeQueue guard.
+                    .filter( ( doc ) => doc[ 'status' ] !== 'done' )
                     .reduce( ( memoAcc, doc ) => {
                         const openRevs = ( doc[ 'revisions' ] || [] )
                             .filter( ( rev ) => DocumentRegistry.isInQueue( { revision: rev } ).inQueue )
@@ -4129,6 +4171,42 @@ class MemoView {
             } )
 
         return { queue }
+    }
+
+
+    // PRD-22 #5 (Memo 079, WI-045/046): the boot Altbestand-Sweep. StaleQueueSweep derives per-revision
+    // completion facts from DISK ALONE (a newer non-prepare revision = superseded, a `.loggedin` sidecar
+    // = logged-in, a Finalisiert status = finalized; else honestly open). A memo whose revisions carry
+    // NO honestly-open one is a Karteileiche — every queue entry it produces is stale. This pass marks
+    // such a memo 'done' via registry.setDocumentStatus (reviving the previously-dead API, forensics b4)
+    // so its stale entries leave the queue while the document stays visible in the sidebar tree (a
+    // queue-only sweep, NOT a sidebar removal — the DismissStore prune above owns hard removal). Re-run
+    // every boot after registration, it is idempotent (a re-registered doc defaults to 'open' and is
+    // re-swept from the current disk truth). Fail-open per memo: an unresolvable memoDir or a sweep that
+    // could not read revisions is skipped (never marked done, never crashes boot). Returns { swept } —
+    // the ids marked done. NOTE: this only WIRES the sweep; running it against the real Karteileichen
+    // stock is a separate, observed operation.
+    static sweepStaleQueueEntries( { registry } = {} ) {
+        const struct = { 'swept': [] }
+
+        if( !registry || typeof registry.getDocuments !== 'function' ) { return struct }
+
+        const { documents } = registry.getDocuments()
+        const candidates = Array.isArray( documents ) ? documents : []
+
+        struct[ 'swept' ] = candidates
+            .filter( ( doc ) => doc && typeof doc === 'object' && typeof doc[ 'memoPath' ] === 'string' && doc[ 'memoPath' ].length > 0 )
+            .filter( ( doc ) => {
+                const memoDir = basename( doc[ 'memoPath' ] ) === 'revisions' ? dirname( doc[ 'memoPath' ] ) : doc[ 'memoPath' ]
+                const { status, summary } = StaleQueueSweep.sweepMemo( { memoDir, 'readStatus': DocumentRegistry.parseStatus } )
+                // Fully stale = the sweep ran, found at least one revision, and NONE is honestly open.
+                const fullyStale = status === true && summary[ 'total' ] > 0 && summary[ 'open' ] === 0
+
+                return fullyStale && registry.setDocumentStatus( { 'documentId': doc[ 'documentId' ], 'newStatus': 'done' } )[ 'status' ] === true
+            } )
+            .map( ( doc ) => doc[ 'documentId' ] )
+
+        return struct
     }
 
 

@@ -10,6 +10,7 @@ import { exec } from 'node:child_process'
 import { WebSocketServer } from 'ws'
 
 import { DocumentRegistry } from './DocumentRegistry.mjs'
+import { DoltDbAssembler } from './DoltDbAssembler.mjs'
 import { ProjectAutoRegister } from './ProjectAutoRegister.mjs'
 import { SessionConfigStore } from './SessionConfigStore.mjs'
 import { SpecRegistry } from './SpecRegistry.mjs'
@@ -3402,8 +3403,8 @@ class MemoView {
 
 
     static async #readFileContent( { absolutePath } ) {
-        const raw = await readFile( absolutePath, 'utf-8' )
         const dir = dirname( absolutePath )
+        const { raw } = await MemoView.#loadRevisionSource( { absolutePath, dir } )
 
         const content = raw.replace(
             /!\[([^\]]*)\]\(([^)]+)\)/g,
@@ -3420,6 +3421,71 @@ class MemoView {
         )
 
         return { content }
+    }
+
+
+    // Zwei-Regime Serve-Weiche (Memo 079, PRD-20 + FIX A/C): pick the markdown SOURCE for a file.
+    // Both branches return ONE markdown string, so the content-send contract and the whole client stay
+    // untouched. Rules, in order:
+    //
+    //   (1) NO over-reach — the DB weiche fires ONLY for a revisions/REV-NN.md path. Every OTHER file
+    //       in a memo-with-db folder (HANDOVER.md, research MDs, arbitrary files) is served UNCHANGED
+    //       from disk: the db carries only revision bodies, never these ancillary files.
+    //   (2) Revisions-Identität + read-only Tag-Grenze (doltlite 0.11.46: NO `AS OF`, NO branch-from-tag
+    //       without a WRITE) — a historical tag stand can NOT be rendered read-only. So ONLY the newest
+    //       (== HEAD) revision is DB-assembled here; every OLDER revision is served from its frozen
+    //       REV-NN.md file, which is the byte-identical tag render the core froze at assemble time
+    //       (read-only-safe, no mislabeling of an old REV with the HEAD body). A db with NO revision
+    //       rows yet (early live stand before the first assemble) serves the frozen file when it exists,
+    //       else falls back to the HEAD assemble.
+    //   (3) FIX C — a broken/empty/corrupt db must NEVER make a memo unopenable: any db error degrades
+    //       to the frozen file (the safe source) with a logged warning (no silent mask).
+    static async #loadRevisionSource( { absolutePath, dir } ) {
+        const fileName = basename( absolutePath )
+        const isRevisionFile = basename( dir ) === 'revisions' && /^REV-\d+\.md$/.test( fileName )
+
+        // (1) Non-revision files (or a non-revisions/ folder) are ALWAYS served verbatim from disk.
+        if( isRevisionFile !== true ) {
+            const raw = await readFile( absolutePath, 'utf-8' )
+
+            return { raw }
+        }
+
+        const memoDir = dirname( dir )
+        const { hasDb } = DoltDbAssembler.hasDb( { memoDir } )
+
+        if( hasDb !== true ) {
+            const raw = await readFile( absolutePath, 'utf-8' )
+
+            return { raw }
+        }
+
+        // (2) DB-first, but only the HEAD revision is assembled (read-only Tag-Grenze).
+        try {
+            const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
+            const requestedRevNo = Number( fileName.match( /^REV-(\d+)\.md$/ )[ 1 ] )
+            const { latestRevNo, hasRevisionRows } = DoltDbAssembler.readLatestRevisionNo( { dbPath } )
+
+            const serveHead = hasRevisionRows === true
+                ? requestedRevNo === latestRevNo
+                : existsSync( absolutePath ) !== true
+
+            if( serveHead === true ) {
+                const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+                return { raw: markdown }
+            }
+
+            const raw = await readFile( absolutePath, 'utf-8' )
+
+            return { raw }
+        } catch( error ) {
+            // (3) FIX C: degrade to the frozen file, log the degrade.
+            console.warn( `MemoView.#loadRevisionSource: DB assemble failed for "${ memoDir }" — falling back to file (${ error.message })` )
+            const raw = await readFile( absolutePath, 'utf-8' )
+
+            return { raw }
+        }
     }
 
 

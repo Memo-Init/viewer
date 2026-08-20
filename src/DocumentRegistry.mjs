@@ -2,6 +2,7 @@ import { readdir, readFile, access, stat } from 'node:fs/promises'
 import { watch } from 'node:fs'
 import { resolve, basename, dirname } from 'node:path'
 import { VALID_OPTION_KINDS } from './QuestionContract.mjs'
+import { DoltDbAssembler } from './DoltDbAssembler.mjs'
 
 
 const LATEST_LIMIT = 5
@@ -599,6 +600,127 @@ class DocumentRegistry {
 
         // 4. Default.
         return struct
+    }
+
+
+    // PRD-21 (Memo 079): map the 10-state DB lifecycle (core LifecycleStore) onto the memo-status
+    // BADGE axis (MEMO_STATUS_VALUES) — one consistent stage, NOT a third contradictory status model.
+    // The rollout-progression states (rollout/pausiert/gelandet/gemerged) sit PAST finalization but
+    // BEFORE the Stage-4 push: the memo content is frozen (finalized), so 'Finalisiert' is the honest
+    // coarse badge — exactly mirroring deriveLifecycleStatus, where only planCompleted (= pushed/done)
+    // reads as 'Abgeschlossen'. The two terminal end states 'abgeschlossen' (pushed) and 'abgebrochen'
+    // (abandoned) both map onto the badge axis's terminal 'Abgeschlossen' — the badge axis has no
+    // "aborted" rung, so the terminal value is the least-lossy target (a deliberate compression, not a
+    // silent default). Fail-loud on an UNKNOWN state: a newly introduced lifecycle value must be mapped
+    // here on purpose (NO SILENT DEFAULTS), never guessed onto a badge.
+    static mapLifecycleStateToMemoStatus( { state } ) {
+        const mapping = {
+            'angelegt': 'Entwurf',
+            'in-revision': 'In Bearbeitung',
+            'finalisiert-research': 'Finalisiert',
+            'finalisiert-implementation': 'Finalisiert',
+            'rollout': 'Finalisiert',
+            'pausiert': 'Finalisiert',
+            'gelandet': 'Finalisiert',
+            'gemerged': 'Finalisiert',
+            'abgeschlossen': 'Abgeschlossen',
+            'abgebrochen': 'Abgeschlossen'
+        }
+
+        const memoStatus = mapping[ state ]
+
+        if( memoStatus === undefined ) {
+            throw new Error( `DocumentRegistry.mapLifecycleStateToMemoStatus: unknown lifecycle state "${ state }" — add an explicit mapping (no silent default)` )
+        }
+
+        return { memoStatus }
+    }
+
+
+    // PRD-21 (Memo 079): the DB-first badge source. A memo folder that carries a per-memo memo-NNN.db
+    // takes its stage from the DB `lifecycle` table (last appended state) instead of parsing the .md
+    // frontmatter — the Zwei-Regime weiche on the STATUS axis. `memoPath` is the `<memoDir>/revisions`
+    // folder; the db lives in the memo dir above it. Returns { isDb:false } for the 383 legacy memos so
+    // the caller keeps the unchanged file-parse path. A db present but with an EMPTY lifecycle table is
+    // still db-first (isDb:true) but has no determined stage yet -> the default draft badge (no invented
+    // advanced state). Synchronous: doltlite DatabaseSync reads are sync.
+    static #deriveDbMemoStatus( { memoPath } ) {
+        const struct = { 'isDb': false, 'memoStatus': MEMO_STATUS_DEFAULT }
+
+        if( typeof memoPath !== 'string' || memoPath.length === 0 ) {
+            return struct
+        }
+
+        const memoDir = basename( memoPath ) === 'revisions' ? dirname( memoPath ) : memoPath
+
+        // FIX C (Memo 079): a corrupt/empty db OR an unmapped lifecycle state must NEVER make the memo
+        // fail to load — the badge derivation degrades to the default draft badge with a logged warning
+        // (bewusster graceful degrade, kein silent mask). isDb keeps whatever we determined before the
+        // throw: once hasDb passed, the memo stays db-first but shows the safe default stage instead of
+        // crashing getDocuments; if hasDb itself failed it stays isDb:false and the caller keeps the
+        // file parse.
+        try {
+            const { hasDb } = DoltDbAssembler.hasDb( { memoDir } )
+
+            if( hasDb !== true ) {
+                return struct
+            }
+
+            struct[ 'isDb' ] = true
+
+            const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
+            const { state } = DoltDbAssembler.readLifecycleState( { dbPath } )
+
+            if( state === null ) {
+                return struct
+            }
+
+            const { memoStatus } = DocumentRegistry.mapLifecycleStateToMemoStatus( { state } )
+            struct[ 'memoStatus' ] = memoStatus
+
+            return struct
+        } catch( error ) {
+            console.warn( `DocumentRegistry.#deriveDbMemoStatus: badge derivation failed for "${ memoDir }" — default badge (${ error.message })` )
+            struct[ 'memoStatus' ] = MEMO_STATUS_DEFAULT
+
+            return struct
+        }
+    }
+
+
+    // FIX B (Memo 079): for a DB-first memo the open/answered question counts come from the db
+    // `question` table (DoltDbAssembler.readOpenQuestionCounts) instead of parsing the .md Offene-Fragen
+    // markdown — one source, no Doppelpfad (the DB body has no `### F{N}` blocks to parse). Mirrors
+    // #deriveDbMemoStatus: the returned { isDb } gates the caller, and any db error degrades to
+    // isDb:false so the caller keeps the file parse, with a logged warning (graceful, no silent mask).
+    static #deriveDbQuestionCounts( { memoPath } ) {
+        const struct = { 'isDb': false, 'questions': { 'open': 0, 'answered': 0 } }
+
+        if( typeof memoPath !== 'string' || memoPath.length === 0 ) {
+            return struct
+        }
+
+        const memoDir = basename( memoPath ) === 'revisions' ? dirname( memoPath ) : memoPath
+
+        try {
+            const { hasDb } = DoltDbAssembler.hasDb( { memoDir } )
+
+            if( hasDb !== true ) {
+                return struct
+            }
+
+            struct[ 'isDb' ] = true
+
+            const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
+            const { open, answered } = DoltDbAssembler.readOpenQuestionCounts( { dbPath } )
+            struct[ 'questions' ] = { 'open': open, 'answered': answered }
+
+            return struct
+        } catch( error ) {
+            console.warn( `DocumentRegistry.#deriveDbQuestionCounts: db question read failed for "${ memoDir }" — file parse fallback (${ error.message })` )
+
+            return { 'isDb': false, 'questions': { 'open': 0, 'answered': 0 } }
+        }
     }
 
 
@@ -1801,9 +1923,17 @@ class DocumentRegistry {
         const fullRevision = revisions
             .find( ( r ) => r[ 'revisionType' ] === 'full' )
 
+        // PRD-21 (Memo 079): DB-first badge. When the memo folder carries a per-memo memo-NNN.db, the
+        // stage comes from the DB lifecycle table (last appended state, mapped onto the badge axis),
+        // NOT the .md frontmatter parse — one status source, no third contradictory model. The 383
+        // legacy memos (isDb:false) keep the unchanged frontmatter parse below.
+        const { isDb, memoStatus: dbMemoStatus } = DocumentRegistry.#deriveDbMemoStatus( { memoPath: doc[ 'memoPath' ] } )
+
         let memoStatus = MEMO_STATUS_DEFAULT
 
-        if( statusRevision !== undefined ) {
+        if( isDb === true ) {
+            memoStatus = dbMemoStatus
+        } else if( statusRevision !== undefined ) {
             const statusPath = statusRevision[ 'absolutePath' ] || resolve( doc[ 'memoPath' ], statusRevision[ 'fileName' ] )
 
             try {
@@ -1815,9 +1945,16 @@ class DocumentRegistry {
             }
         }
 
+        // FIX B (Memo 079): DB-first memos take their question counts from the db `question` table,
+        // NOT the .md parseQuestions (the DB body carries no `### F{N}` blocks). The 383 legacy memos
+        // (isDb:false) keep the unchanged file parse below — no Doppelpfad.
+        const { isDb: isDbQuestions, questions: dbQuestions } = DocumentRegistry.#deriveDbQuestionCounts( { memoPath: doc[ 'memoPath' ] } )
+
         let questions = { 'open': 0, 'answered': 0 }
 
-        if( fullRevision !== undefined ) {
+        if( isDbQuestions === true ) {
+            questions = dbQuestions
+        } else if( fullRevision !== undefined ) {
             const fullPath = fullRevision[ 'absolutePath' ] || resolve( doc[ 'memoPath' ], fullRevision[ 'fileName' ] )
 
             try {

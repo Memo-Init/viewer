@@ -1685,13 +1685,16 @@
             }
         }
 
-        // PRD-008: human-readable label + context-mode per transcript type (Phase-1
-        // 4-Typen-Modell). Used to tag sidebar entries and label the injection block.
+        // PRD-008: human-readable label + context-mode per transcript type. Memo 079 PRD-31 #3
+        // adds the fifth type 'rollout' — the rollout is triggered in a FRESH/empty context (user
+        // trigger in frischem Kontext), so its context mode is 'leerer Kontext'. Used to tag sidebar
+        // entries and label the injection block (no more "Unbekannt" fallback for a rollout leaf).
         var transcriptTypeMeta = {
             'frei': { label: 'Frei', context: 'im Thread' },
             'memo-init': { label: 'Memo-Init', context: 'leerer Kontext' },
             'revision': { label: 'Revision', context: 'im Thread' },
-            'plan-start': { label: 'Plan-Start', context: 'leerer Kontext' }
+            'plan-start': { label: 'Plan-Start', context: 'leerer Kontext' },
+            'rollout': { label: 'Rollout', context: 'leerer Kontext' }
         }
 
         function transcriptTypeLabel( type ) {
@@ -1982,6 +1985,7 @@
             if( /^# Transcript zu Memo /.test( firstLine ) ) { type = 'revision' }
             else if( /^# Transcript fuer neues Memo /.test( firstLine ) ) { type = 'memo-init' }
             else if( /^# Transcript fuer Plan-Start /.test( firstLine ) ) { type = 'plan-start' }
+            else if( /^# Transcript fuer Rollout /.test( firstLine ) ) { type = 'rollout' }
             else if( /^# Transcript \(frei/.test( firstLine ) ) { type = 'frei' }
 
             var meta = transcriptTypeMeta[ type ] || { label: type, context: '' }
@@ -6541,14 +6545,25 @@
                 }
             }
 
-            // Custom-entry input (multi only — F: eigene Eintraege moeglich).
-            if( q.allowCustomEntries ) {
+            // Custom-entry input. Multi-select gets it as "+ eigener Eintrag" (allowCustomEntries).
+            // Memo 079 PRD-24: a single-select ALSO gets a free-text row when the injected "Frage neu
+            // formulieren" (reframe) option is present — hidden until reframe is actually selected — so
+            // the user can type HOW the question should read. buildAnswerText folds that reformulation
+            // in; refreshOptionMarkers reveals/hides the row as reframe is (de)selected.
+            var reframeIdx = optionList.findIndex( function( o ) { return o && o.kind === 'reframe' } )
+            var reframeOnly = !q.allowCustomEntries && reframeIdx !== -1
+            if( q.allowCustomEntries || reframeOnly ) {
                 var customRow = document.createElement( 'div' )
                 customRow.className = 'qw-custom-row'
+                if( reframeOnly ) {
+                    customRow.setAttribute( 'data-reframe-row', '1' )
+                    // Only visible while the reframe option is selected (no free-text clutter otherwise).
+                    if( questionNav.state[ qIdx ].selected.indexOf( reframeIdx ) === -1 ) { customRow.style.display = 'none' }
+                }
                 var input = document.createElement( 'input' )
                 input.type = 'text'
                 input.className = 'qw-custom-input'
-                input.placeholder = '+ eigener Eintrag'
+                input.placeholder = reframeOnly ? 'Wie sollte die Frage richtig lauten?' : '+ eigener Eintrag'
                 input.addEventListener( 'keydown', function( ev ) {
                     // Let text input flow normally — never hijack typing here.
                     ev.stopPropagation()
@@ -6673,6 +6688,14 @@
                         : ( isSel ? '☑︎' : '☐︎' )
                 }
             } )
+            // Memo 079 PRD-24: reveal the reframe reformulation free-text row only while the
+            // "Frage neu formulieren" option is selected (single-select has no free-text otherwise).
+            var reframeRow = card.querySelector( '.qw-custom-row[data-reframe-row="1"]' )
+            if( reframeRow ) {
+                var reframeIdx = ( q.options || [] ).findIndex( function( o ) { return o && o.kind === 'reframe' } )
+                var reframeOn = reframeIdx !== -1 && st.selected.indexOf( reframeIdx ) !== -1
+                reframeRow.style.display = reframeOn ? '' : 'none'
+            }
         }
 
         function renderQuestionFocus() {
@@ -6743,7 +6766,14 @@
 
             st.custom.forEach( function( c ) { parts.push( c ) } )
 
-            var answerLine = q.typ === 'multi' ? parts.join( '; ' ) : ( parts[ 0 ] || '' )
+            // Memo 079 PRD-24: a single-select reframe answer carries the reformulation as a custom
+            // entry — join "Frage neu formulieren" + the reformulation so the single-select "first
+            // part only" rule does not silently drop the typed reformulation.
+            var isReframeAnswer = q.typ === 'single' && st.selected.some( function( optIdx ) {
+                var opt = q.options[ optIdx ]
+                return opt && opt.kind === 'reframe'
+            } )
+            var answerLine = ( q.typ === 'multi' || isReframeAnswer ) ? parts.join( '; ' ) : ( parts[ 0 ] || '' )
             // Markdown form unchanged from the previous modal flow: "## Antwort auf {id} — {title}"
             // + answer line, multi joined by "; ".
             var text = '## Antwort auf ' + q.id + ' — ' + q.title + '\n\n' + answerLine + '\n'

@@ -505,7 +505,9 @@ describe( 'TranscriptHeader — Header-Modernisierung (Memo 067 WI-6-05, F5=C)',
         expect( header ).toContain( '# Transcript fuer Rollout (rollout)' )
         expect( header ).toContain( 'Schema-Version: 3' )
         expect( header ).toContain( 'memo-sop' )
-        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-plan`' )
+        // Memo 079 PRD-31 #2: the lived rollout einstieg is memo-rollout (memo-plan was rejected).
+        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-rollout`' )
+        expect( header ).not.toContain( 'memo-plan' )
         expect( contextMode ).toBe( 'leerer-kontext' )
     } )
 

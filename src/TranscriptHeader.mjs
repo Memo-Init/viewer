@@ -204,25 +204,28 @@ Pflicht-Workflow (Skill-Aufrufe):
 
 `
 
-// Type "rollout" — leerer Kontext. Memo 067 WI-6-05 (F5=C): the FOURTH verb ("arbeite Memo N ab").
-// A finalized memo is executed. No revision field; the memo is selected on entry. Public entry
-// point = memo-plan (the memo-rollout entry is reached through it) + memo-sop precondition.
+// Type "rollout" — leerer Kontext. A finalized memo is executed. No revision field; the memo is
+// selected on entry. Memo 079 PRD-31 #2: the entry point is the LIVED rollout einstieg `memo-rollout`
+// (triggered in a fresh context via "starte den Rollout fuer Memo N" / `/memo-rollout <memo-id>`).
+// The earlier `memo-plan` einstieg is dropped — the user explicitly rejected memo-plan as "zu
+// kompliziert" (interaktionsformen research). memo-sop stays the precondition.
 const ROLLOUT_TEMPLATE = `# Transcript fuer Rollout (rollout)
 
 ${ SCHEMA_LINE }
 
 ${ ACHTUNG_BLOCK }
 
-Kontext-Modus: leerer Kontext. Trigger "arbeite Memo N ab": ein finalisiertes Memo wird
-ausgefuehrt. KEIN Revisions-Feld; die Memo-Auswahl geschieht beim Eintritt.
+Kontext-Modus: leerer Kontext. Trigger "starte den Rollout fuer Memo N" (bzw. \`/memo-rollout <memo-id>\`):
+ein finalisiertes Memo wird in frischem Kontext ausgefuehrt. KEIN Revisions-Feld; die Memo-Auswahl
+geschieht beim Eintritt.
 
 **Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
 
-Oeffentlicher Eintrittspunkt: \`memo-plan\` (Rollout-Einstieg ueber \`memo-rollout\`)
+Oeffentlicher Eintrittspunkt: \`memo-rollout\`
 
 Pflicht-Workflow (Skill-Aufrufe):
 
-1. \`memo-plan\` (Rollout-Einstieg mit Memo-Auswahl; fuehrt das finalisierte Memo aus)
+1. \`memo-rollout\` (Rollout-Einstieg mit Memo-Auswahl; fuehrt das finalisierte Memo aus)
 
 ---
 

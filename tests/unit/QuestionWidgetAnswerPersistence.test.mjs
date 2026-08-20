@@ -35,6 +35,17 @@ describe( 'Question widget answer persistence — Memo 079 PRD-24', () => {
     } )
 
 
+    it( 'buildAnswerText folds the reformulation into a single-select reframe answer (PRD-24)', async () => {
+        const { buildAnswerText } = await extractFunctions( [ 'buildAnswerText' ] )
+        const q = { id: 'F3', title: 'Frage', typ: 'single', options: [ { kind: 'option', key: 'A', label: 'Alpha' }, { kind: 'option', key: 'B', label: 'Beta' }, { kind: 'reframe', key: 'reframe', label: 'Frage neu formulieren' } ] }
+        const st = { selected: [ 2 ], custom: [ 'Soll auch Option C erlaubt sein?' ] }
+
+        // Without the fold the single-select "first part only" rule would silently drop the typed
+        // reformulation and return just 'Frage neu formulieren'.
+        expect( buildAnswerText( q, st ).answerLine ).toBe( 'Frage neu formulieren; Soll auch Option C erlaubt sein?' )
+    } )
+
+
     it( 'the popup prefills from the LIVE state (selected/custom), not only confirmed answers', async () => {
         const src = await readFile( clientPath(), 'utf8' )
 

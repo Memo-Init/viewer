@@ -5,17 +5,18 @@
 // memo that carries a per-memo database is rendered DB-first here; the 383 file-parsed legacy memos
 // keep their existing registry/parse path untouched.
 //
-// The memo/work-item/block render is a PURE function of the database rows and stays byte-identical to
-// wt-core-079/cli/src/RevisionAssembler.mjs #renderBody/#renderBlocks/#renderDiagram/#interpolate,
-// so the DB view and the assembled REV never diverge. Same SQL, same ORDER BY, same escaping, same
-// fence formatting. The header (`<!-- assembled-revision ... -->`) is deliberately NOT emitted here —
-// it is the assemble-time wrapper; this class returns the hashed BODY only.
+// The FULL render is a PURE function of the database rows and stays byte-identical to
+// wt-core-079/cli/src/RevisionAssembler.mjs #renderBody and its section renderers, so the DB view and the
+// assembled REV never diverge. Same SQL, same ORDER BY, same escaping, same fence formatting. The sections
+// — Kontext, Work Items, Blocks (+diagrams), Topics, Phasen, Fragen (questions-json fence), Offene Fragen —
+// match the core assembler one-for-one. The header (`<!-- assembled-revision ... -->`) is deliberately NOT
+// emitted here — it is the assemble-time wrapper; this class returns the hashed BODY only.
 //
-// Memo 079 P6a (FIX B): the DB render ADDITIONALLY appends an `## Offene Fragen` section derived from
-// the `question` table (WHERE status='open') — a deliberate viewer-side enrichment beyond the core
-// #renderBody (the core assembler does not yet render questions). This is only ever shown for the
-// CURRENT/HEAD revision (see the serve weiche in MemoView.#loadRevisionSource): historical revisions
-// are served from their frozen REV-NN.md file, so the enrichment never has to match a frozen file.
+// Memo 079 broad build-out (PRD-16): the questions sections are now emitted by the CORE assembler too, so
+// a frozen REV file carries the same `## Fragen` + `## Offene Fragen` this class renders for HEAD — the
+// viewer is no longer an enrichment ahead of the core. The read-only Tag-Grenze below still routes older
+// revisions to their frozen file, so a historical stand is served from disk, byte-identical to what this
+// render produced when it was frozen.
 //
 // Read-only Tag-Grenze (doltlite 0.11.46): this schaufenster opens the db READ-ONLY. doltlite at that
 // version has NO `AS OF` and cannot branch-from-tag without a WRITE, so a historical tag stand can NOT
@@ -347,10 +348,28 @@ class DoltDbAssembler {
 
     static #renderBody( { db } ) {
         const memo = DoltDbAssembler.#memoRow( { db } )
+        const context = DoltDbAssembler.#readContext( { db } )
         const workItems = DoltDbAssembler.#all( { db, sql: 'SELECT id, topic, title, status, grp FROM work_item ORDER BY id' } )
         const blocks = DoltDbAssembler.#all( { db, sql: 'SELECT id, title, sort FROM block ORDER BY sort, id' } )
         const blockTables = DoltDbAssembler.#all( { db, sql: 'SELECT id, block_id, title, tsv FROM block_tables ORDER BY block_id, id' } )
         const blockDiagrams = DoltDbAssembler.#all( { db, sql: 'SELECT id, block_id, title, kind, `source`, feed FROM block_diagrams ORDER BY block_id, id' } )
+        // topic / rollout_phase / rollout_work_item / question mirror the core RevisionAssembler read. The
+        // viewer, however, may open an EARLY hand-seeded db that predates these tables, so each read is
+        // guarded by #tableExists and degrades to an empty array — which renders byte-identically to the
+        // core render of an empty (but present) table. The reserved rollout_phase sentinel `__state__` is
+        // metadata, excluded here exactly as in core.
+        const topics = DoltDbAssembler.#tableExists( { db, table: 'topic' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, title, phase, block, origin FROM topic ORDER BY id' } )
+            : []
+        const phases = DoltDbAssembler.#tableExists( { db, table: 'rollout_phase' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: "SELECT id, name, status FROM rollout_phase WHERE id != '__state__' ORDER BY id" } )
+            : []
+        const phaseWorkItems = DoltDbAssembler.#tableExists( { db, table: 'rollout_work_item' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, phase_id, title, status, target, wi_type FROM rollout_work_item ORDER BY phase_id, id' } )
+            : []
+        const questions = DoltDbAssembler.#tableExists( { db, table: 'question' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, text, kind, status FROM question ORDER BY id' } )
+            : []
 
         const head = [
             `# ${ cell( memo[ 'name' ] ) }`,
@@ -361,37 +380,137 @@ class DoltDbAssembler {
             ''
         ]
 
-        const workItemSection = DoltDbAssembler.#renderWorkItems( { workItems } )
-        const blockSection = DoltDbAssembler.#renderBlocks( { blocks, blockTables, blockDiagrams } )
-        // Memo 079 FIX B: viewer-side enrichment — append the open questions from the `question` table.
-        const questionSection = DoltDbAssembler.#renderOpenQuestions( { db } )
-
         return head
-            .concat( workItemSection )
-            .concat( blockSection )
-            .concat( questionSection )
+            .concat( DoltDbAssembler.#renderKontext( { context } ) )
+            .concat( DoltDbAssembler.#renderWorkItems( { workItems } ) )
+            .concat( DoltDbAssembler.#renderBlocks( { blocks, blockTables, blockDiagrams } ) )
+            .concat( DoltDbAssembler.#renderTopics( { topics } ) )
+            .concat( DoltDbAssembler.#renderPhases( { phases, phaseWorkItems } ) )
+            .concat( DoltDbAssembler.#renderQuestionsJson( { questions } ) )
+            .concat( DoltDbAssembler.#renderOpenQuestions( { questions } ) )
             .join( '\n' )
     }
 
 
-    // Memo 079 FIX B: render the `## Offene Fragen` section from the `question` table (WHERE
-    // status='open', ORDER BY id) — one line per open question, or a single 'keine' line when none
-    // (the memo convention). This is a viewer-side enrichment: the DB body carries no such section
-    // otherwise, so the served HEAD render surfaces the live open questions. A MISSING `question`
-    // table reads as "keine" (sqlite_master guard), never a throw.
-    static #renderOpenQuestions( { db } ) {
+    // Read the memo context prose. The `context` column was added to the memo schema in Memo 079 (PRD-16
+    // broad build-out); an EARLY hand-seeded memo table may lack it, so the column presence is probed via
+    // PRAGMA table_info before the read — a missing column reads as null (renders `_kein Kontext_`), never
+    // a "no such column" throw. Byte-identical to the core render of a null context.
+    static #readContext( { db } ) {
+        const columns = DoltDbAssembler.#all( { db, sql: 'PRAGMA table_info(memo)' } )
+        const hasContext = columns
+            .some( ( column ) => column[ 'name' ] === 'context' )
+        if( hasContext !== true ) {
+            return null
+        }
+
+        const row = DoltDbAssembler.#get( { db, sql: 'SELECT context FROM memo ORDER BY id LIMIT 1' } )
+
+        return row === null ? null : row[ 'context' ]
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderKontext.
+    static #renderKontext( { context } ) {
+        const heading = [ '## Kontext', '' ]
+        const isEmpty = context === null || context === undefined || String( context ).length === 0
+        const lines = isEmpty === true
+            ? [ '_kein Kontext_' ]
+            : raw( context ).split( '\n' )
+
+        return heading
+            .concat( lines )
+            .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderTopics.
+    static #renderTopics( { topics } ) {
+        const heading = [ '## Topics', '' ]
+        if( topics.length === 0 ) {
+            return heading.concat( [ '_no topics_', '' ] )
+        }
+
+        const table = [
+            '| ID | Title | Phase | Block | Origin |',
+            '| --- | --- | --- | --- | --- |'
+        ]
+        const bodyRows = topics
+            .map( ( row ) => `| ${ cell( row[ 'id' ] ) } | ${ cell( row[ 'title' ] ) } | ${ cell( row[ 'phase' ] ) } | ${ cell( row[ 'block' ] ) } | ${ cell( row[ 'origin' ] ) } |` )
+
+        return heading
+            .concat( table )
+            .concat( bodyRows )
+            .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderPhases.
+    static #renderPhases( { phases, phaseWorkItems } ) {
+        const heading = [ '## Phasen', '' ]
+        if( phases.length === 0 ) {
+            return heading.concat( [ '_no phases_', '' ] )
+        }
+
+        const sections = phases
+            .map( ( phase ) => {
+                const items = phaseWorkItems
+                    .filter( ( entry ) => entry[ 'phase_id' ] === phase[ 'id' ] )
+                const itemLines = items.length === 0
+                    ? [ '_no work items_', '' ]
+                    : [ '| ID | Title | Status | Target | Type |', '| --- | --- | --- | --- | --- |' ]
+                        .concat( items.map( ( entry ) => `| ${ cell( entry[ 'id' ] ) } | ${ cell( entry[ 'title' ] ) } | ${ cell( entry[ 'status' ] ) } | ${ cell( entry[ 'target' ] ) } | ${ cell( entry[ 'wi_type' ] ) } |` ) )
+                        .concat( [ '' ] )
+
+                return [ `### ${ cell( phase[ 'name' ] ) } (${ cell( phase[ 'id' ] ) })`, '', `- Status: ${ cell( phase[ 'status' ] ) }`, '' ]
+                    .concat( itemLines )
+            } )
+            .reduce( ( acc, part ) => acc.concat( part ), [] )
+
+        return heading.concat( sections )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderQuestionsJson — the machine-readable `questions-json`
+    // fence the memo-view questions widget parses (DocumentRegistry.parseQuestionJsonBlock). Every question
+    // (open AND answered) is emitted; identical rows -> identical JSON bytes (same key order, 2-space
+    // indent) across both renderers.
+    static #renderQuestionsJson( { questions } ) {
+        const heading = [ '## Fragen', '' ]
+        const entries = questions
+            .map( ( row ) => ( {
+                id: raw( row[ 'id' ] ),
+                frage: DoltDbAssembler.#jsonVal( { value: row[ 'text' ] } ),
+                kind: DoltDbAssembler.#jsonVal( { value: row[ 'kind' ] } ),
+                answered: row[ 'status' ] === 'answered'
+            } ) )
+        const jsonLines = JSON.stringify( entries, null, 2 ).split( '\n' )
+
+        return heading
+            .concat( [ '```questions-json' ] )
+            .concat( jsonLines )
+            .concat( [ '```', '' ] )
+    }
+
+
+    static #jsonVal( { value } ) {
+        return value === undefined ? null : value
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderOpenQuestions — the human-readable `## Offene Fragen`
+    // list (status='open'), filtered from the SAME ORDER BY id question read so fence and list agree on
+    // order. A missing `question` table already degraded the read to [] in #renderBody, so this renders
+    // 'keine' without a further guard.
+    static #renderOpenQuestions( { questions } ) {
         const heading = [ '## Offene Fragen', '' ]
-
-        if( DoltDbAssembler.#tableExists( { db, table: 'question' } ) !== true ) {
+        const open = questions
+            .filter( ( row ) => row[ 'status' ] === 'open' )
+        if( open.length === 0 ) {
             return heading.concat( [ 'keine', '' ] )
         }
 
-        const openQuestions = DoltDbAssembler.#all( { db, sql: "SELECT id, text, kind, status FROM question WHERE status = 'open' ORDER BY id" } )
-        if( openQuestions.length === 0 ) {
-            return heading.concat( [ 'keine', '' ] )
-        }
-
-        const rows = openQuestions
+        const rows = open
             .map( ( row ) => `- **${ cell( row[ 'id' ] ) }** (${ cell( row[ 'kind' ] ) }): ${ cell( row[ 'text' ] ) }` )
 
         return heading

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals'
-import { mkdtempSync, mkdirSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
+import { createHash } from 'node:crypto'
 
 import { DatabaseSync } from '@dolthub/doltlite'
 
@@ -377,7 +378,98 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             expect( markdown ).toContain( '## Offene Fragen' )
             expect( markdown ).toContain( '- **F1** (info): Soll X passieren?' )
             expect( markdown ).toContain( '- **F2** (blocker): Wie geht Y?' )
-            expect( markdown ).not.toContain( 'Schon geklaert' )
+            // the answered F3 is excluded from the OPEN list — scoped to the `## Offene Fragen` section, since
+            // the broad build-out now ALSO emits every question (open + answered) in the `## Fragen` json fence.
+            const openSection = markdown.split( '## Offene Fragen' )[ 1 ]
+            expect( openSection ).not.toContain( 'Schon geklaert' )
+        } )
+    } )
+
+
+    // Broad build-out (Memo 079, PRD-16) + NIEDRIG-1 cross-repo parity gate: the viewer render emits the
+    // FULL section set (Kontext, Topics, Phasen, Fragen json fence, Offene Fragen), byte-identical to the
+    // core RevisionAssembler. The golden is NO LONGER a hand-copied literal (which let a one-sided renderer
+    // edit drift silently) — it is the SAME hash-manifested fixture the core repo owns, VENDORED byte-identically
+    // into tests/fixtures/revision-body-v1/ (PRD-30 mechanism: single-source enforced by a hash-gated fixture,
+    // not a cross-repo import the worktree boundary forbids). This test asserts (a) viewer render === fixture
+    // AND (b) sha256(fixture) === manifest.sha256, so a one-sided edit of EITHER the viewer renderer OR the
+    // fixture fails HERE. Regenerate both repo copies together after any intentional render change.
+    describe( 'full render + cross-repo byte-parity (Memo 079 PRD-16)', () => {
+        const FIXTURE_DIR = resolve( process.cwd(), 'tests', 'fixtures', 'revision-body-v1' )
+        const GOLDEN_FULL_BODY = readFileSync( resolve( FIXTURE_DIR, 'full-body.md' ), 'utf8' )
+        const GOLDEN_MANIFEST = JSON.parse( readFileSync( resolve( FIXTURE_DIR, 'manifest.json' ), 'utf8' ) )
+
+
+        // Seed a memo-079.db whose rows are IDENTICAL to the core seedCanonical fixture (memo+context, work
+        // items, one block with a table + fed mermaid diagram, a topic register, a normalized rollout phase
+        // incl. the excluded `__state__` sentinel, and a mixed open/answered question set).
+        const seedFullCanonical = ( { path } ) => {
+            const db = new DatabaseSync( path )
+            db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT, context TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_diagrams ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, depends_on TEXT, can_parallel_with TEXT, commit_hash TEXT, spillover TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, commit_hash TEXT, depends_on TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT )' )
+
+            db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+                .run( 'M079', 'DB Traceability', 'strategy', 'finalized', '2026-08-20T00:00:00.000Z', 'Kontext Zeile eins.\nKontext Zeile zwei.' )
+            db.prepare( 'INSERT INTO work_item ( id, topic, title, status, grp ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'WI-02', 'assemble', 'render from DB', 'open', 'B' )
+            db.prepare( 'INSERT INTO work_item ( id, topic, title, status, grp ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'WI-01', 'store', 'adapter', 'done', 'A' )
+            db.prepare( 'INSERT INTO block ( id, title, sort ) VALUES ( ?, ?, ? )' ).run( 'B001', 'Backbone', 1 )
+            db.prepare( 'INSERT INTO block_tables ( id, block_id, title, tsv ) VALUES ( ?, ?, ?, ? )' ).run( 'BT001', 'B001', 'Primitives', 'name\tstatus\ncommit\tok' )
+            db.prepare( 'INSERT INTO block_diagrams ( id, block_id, title, kind, `source`, feed ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+                .run( 'M1', 'B001', 'Flow', 'mermaid', 'graph TD{{#rows}}\n  {{name}} --> {{status}}{{/rows}}', 'BT001' )
+            db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block, origin ) VALUES ( ?, ?, ?, ?, ?, ? )' ).run( 'T01', 'M079', 'DB als SoT', 'P1', 'B001', 'init' )
+            db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block, origin ) VALUES ( ?, ?, ?, ?, ?, ? )' ).run( 'T02', 'M079', 'Traceability', 'P2', null, null )
+            db.prepare( 'INSERT INTO rollout_phase ( id, memo_id, name, status, depends_on, can_parallel_with, commit_hash, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+                .run( '__state__', 'M079', null, null, null, null, null, '{"memo":"M079","branch":"MEMO-079"}' )
+            db.prepare( 'INSERT INTO rollout_phase ( id, memo_id, name, status, depends_on, can_parallel_with, commit_hash, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+                .run( 'P1', 'M079', 'Backbone', 'done', null, null, null, '{"__ord":0}' )
+            db.prepare( 'INSERT INTO rollout_work_item ( id, phase_id, title, status, commit_hash, depends_on, target, wi_type, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
+                .run( 'PRD-01', 'P1', 'adapter', 'done', null, null, 'core', 'code', '{"__ord":0}' )
+            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'F1', 'M079', 'Soll die DB die SoT sein?', 'info', 'open' )
+            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'F2', 'M079', 'Wie werden Phasen normalisiert?', 'info', 'answered' )
+            db.close()
+        }
+
+
+        it( 'renders the full section set byte-identical to the core assembler golden', () => {
+            seedFullCanonical( { path: dbPath } )
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+            expect( markdown ).toBe( GOLDEN_FULL_BODY )
+
+            // hand-edit guard: the vendored fixture must hash to the recorded manifest sha256 (same value the
+            // core repo records), so a doctored golden that would silently satisfy the equality is caught.
+            const fixtureSha = createHash( 'sha256' ).update( GOLDEN_FULL_BODY, 'utf8' ).digest( 'hex' )
+            expect( fixtureSha ).toBe( GOLDEN_MANIFEST[ 'sha256' ] )
+            expect( Buffer.byteLength( GOLDEN_FULL_BODY, 'utf8' ) ).toBe( GOLDEN_MANIFEST[ 'byteLength' ] )
+        } )
+
+        it( 'reads the memo context via PRAGMA — a memo table WITHOUT a context column degrades to _kein Kontext_', () => {
+            // the base seedDb() creates the memo table WITHOUT the context column (an early hand-seeded db).
+            seedDb( { path: dbPath } )
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+            expect( markdown ).toContain( '## Kontext\n\n_kein Kontext_' )
+        } )
+
+        it( 'a db missing the topic/phase/question tables renders the same empty sentinels as an empty table', () => {
+            // seedDb() omits topic/rollout_phase/question entirely — the #tableExists guards degrade each to [].
+            seedDb( { path: dbPath } )
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+            expect( markdown ).toContain( '## Topics\n\n_no topics_' )
+            expect( markdown ).toContain( '## Phasen\n\n_no phases_' )
+            expect( markdown ).toContain( '## Fragen\n\n```questions-json\n[]\n```' )
+            expect( markdown ).toContain( '## Offene Fragen\n\nkeine' )
         } )
     } )
 } )

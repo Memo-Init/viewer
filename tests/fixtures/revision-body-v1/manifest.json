@@ -1,0 +1,6 @@
+{
+    "note": "Canonical assembled-revision BODY (Memo 079, PRD-16). SINGLE SOURCE for the cross-repo byte-parity gate: RevisionAssembler (core) freezes it and DoltDbAssembler (viewer) must reproduce it byte-for-byte. Regenerate via cli/tests-tmp gen (see RevisionAssembler.test.mjs). sha256 is over full-body.md; a one-sided renderer edit fails its repo parity test (render !== fixture / hash).",
+    "fixture": "full-body.md",
+    "sha256": "eda6515b82b84468ec3f5cb95ab15a99f239c176f9133934727303fb10208e70",
+    "byteLength": 1072
+}

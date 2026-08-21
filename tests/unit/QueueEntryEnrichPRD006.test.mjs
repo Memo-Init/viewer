@@ -98,7 +98,11 @@ describe( 'MemoView.queueEntryModel (PRD-006)', () => {
             memoName: '024-feature',
             // Memo 038 Kap 13: 400 words / 130 = 3.08 -> ceil 4 (was 2 at the old 200 wpm).
             minutes: 4,
-            lifecycleStatus: 'Bedingt finalisiert'
+            lifecycleStatus: 'Bedingt finalisiert',
+            // Memo 079 M4: a memo without a raw db lifecycle state keeps the coarse label (no sub-label).
+            lifecycleState: null,
+            rolloutSubLabel: null,
+            lifecycleDisplay: 'Bedingt finalisiert'
         } )
     } )
 
@@ -109,5 +113,56 @@ describe( 'MemoView.queueEntryModel (PRD-006)', () => {
         expect( model.memoName ).toBe( '' )
         expect( model.minutes ).toBe( 0 )
         expect( model.lifecycleStatus ).toBe( 'Entwurf' )
+    } )
+
+
+    // Memo 079 M4 (T013): un-collapse the rollout lifecycle. A db-backed memo carrying a raw progression
+    // state shows a DISTINCT sub-label instead of the collapsed 'Finalisiert'/'Abgeschlossen'.
+    describe( 'Memo 079 M4 — rollout lifecycle sub-label (T013)', () => {
+        it( 'rolloutSubLabel maps the four progression states + abgebrochen distinctly, else null', () => {
+            expect( MemoView.rolloutSubLabel( { lifecycleState: 'rollout' } ).subLabel ).toBe( 'Rollout läuft' )
+            expect( MemoView.rolloutSubLabel( { lifecycleState: 'pausiert' } ).subLabel ).toBe( 'Pausiert' )
+            expect( MemoView.rolloutSubLabel( { lifecycleState: 'gelandet' } ).subLabel ).toBe( 'Gelandet' )
+            expect( MemoView.rolloutSubLabel( { lifecycleState: 'gemerged' } ).subLabel ).toBe( 'Gemerged' )
+            expect( MemoView.rolloutSubLabel( { lifecycleState: 'abgebrochen' } ).subLabel ).toBe( 'Abgebrochen' )
+            expect( MemoView.rolloutSubLabel( { lifecycleState: 'finalisiert-research' } ).subLabel ).toBeNull()
+            expect( MemoView.rolloutSubLabel( { lifecycleState: null } ).subLabel ).toBeNull()
+            expect( MemoView.rolloutSubLabel( {} ).subLabel ).toBeNull()
+        } )
+
+
+        it( 'a memo mid-rollout DISPLAYS "Rollout läuft" instead of the collapsed "Finalisiert"', () => {
+            const model = MemoView.queueEntryModel( {
+                memoName: '079-mid-rollout',
+                frontmatterStatus: 'Finalisiert',
+                revisionCount: 3,
+                transcripts: [],
+                lifecycleState: 'rollout'
+            } )
+
+            // The coarse badge axis still reads Finalisiert, but the DISPLAY un-collapses it.
+            expect( model.lifecycleStatus ).toBe( 'Finalisiert' )
+            expect( model.rolloutSubLabel ).toBe( 'Rollout läuft' )
+            expect( model.lifecycleDisplay ).toBe( 'Rollout läuft' )
+            expect( model.lifecycleState ).toBe( 'rollout' )
+        } )
+
+
+        it( 'a paused memo and a landed memo read distinctly (no longer identical to finalized)', () => {
+            const paused = MemoView.queueEntryModel( { memoName: 'a', frontmatterStatus: 'Finalisiert', revisionCount: 2, transcripts: [], lifecycleState: 'pausiert' } )
+            const landed = MemoView.queueEntryModel( { memoName: 'b', frontmatterStatus: 'Finalisiert', revisionCount: 2, transcripts: [], lifecycleState: 'gelandet' } )
+
+            expect( paused.lifecycleDisplay ).toBe( 'Pausiert' )
+            expect( landed.lifecycleDisplay ).toBe( 'Gelandet' )
+            expect( paused.lifecycleDisplay ).not.toBe( landed.lifecycleDisplay )
+        } )
+
+
+        it( 'a legacy (no db state) memo keeps the coarse lifecycle label unchanged', () => {
+            const model = MemoView.queueEntryModel( { memoName: 'legacy', frontmatterStatus: 'Finalisiert', revisionCount: 1, transcripts: [] } )
+
+            expect( model.rolloutSubLabel ).toBeNull()
+            expect( model.lifecycleDisplay ).toBe( 'Finalisiert' )
+        } )
     } )
 } )

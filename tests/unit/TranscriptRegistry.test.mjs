@@ -409,7 +409,7 @@ describe( 'TranscriptRegistry', () => {
             expect( raw ).toContain( 'Feedback zu REV-05 → erzeugt REV-06' )
             expect( raw ).not.toContain( 'REV-07' )
             expect( raw ).not.toContain( 'REV-03' )
-            expect( raw ).toContain( 'Schema-Version: 2' )
+            expect( raw ).toContain( 'Schema-Version: 3' )
         } )
 
 
@@ -457,7 +457,7 @@ describe( 'TranscriptRegistry', () => {
         } )
 
 
-        it( 'a freshly written Schema-2 transcript scans as non-legacy', async () => {
+        it( 'a freshly written Schema-3 transcript scans as non-legacy', async () => {
             const memoDir = join( tempDir, '.memo', 'memos', '017-fresh' )
             await mkdir( memoDir, { recursive: true } )
 
@@ -470,7 +470,7 @@ describe( 'TranscriptRegistry', () => {
             const detail = await fresh.getTranscript( { transcriptId: transcripts[ 0 ]['transcriptId'] } )
 
             expect( detail['meta']['isLegacy'] ).toBe( false )
-            expect( detail['meta']['schemaVersion'] ).toBe( 2 )
+            expect( detail['meta']['schemaVersion'] ).toBe( 3 )
             fresh.shutdown()
         } )
     } )

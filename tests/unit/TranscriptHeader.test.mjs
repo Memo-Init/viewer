@@ -3,9 +3,18 @@ import { describe, it, expect } from '@jest/globals'
 import { TranscriptHeader, TYPE_VALUES, CONTEXT_MODES, SCHEMA_VERSION, TYPE_TEMPLATES } from '../../src/TranscriptHeader.mjs'
 
 
-describe( 'TranscriptHeader — 5-Typen-Datenmodell (PRD-001, Memo 067 WI-6-05)', () => {
-    it( 'exposes exactly the five type values (incl. rollout)', () => {
-        expect( TYPE_VALUES ).toEqual( [ 'frei', 'memo-init', 'revision', 'plan-start', 'rollout' ] )
+describe( 'TranscriptHeader — 4-Typen-Datenmodell (PRD-001, Memo 067 WI-6-05, Memo 079 M1)', () => {
+    it( 'exposes exactly the four type values (plan-start removed, rollout kept)', () => {
+        expect( TYPE_VALUES ).toEqual( [ 'frei', 'memo-init', 'revision', 'rollout' ] )
+    } )
+
+
+    it( 'plan-start is no longer a known type — build rejects it (Memo 079 M1)', () => {
+        const { status, header, messages } = TranscriptHeader.build( { type: 'plan-start' } )
+
+        expect( status ).toBe( false )
+        expect( header ).toBe( null )
+        expect( messages[ 0 ] ).toContain( 'TRANSCRIPT-HEADER-001' )
     } )
 
 
@@ -31,12 +40,12 @@ describe( 'TranscriptHeader — 5-Typen-Datenmodell (PRD-001, Memo 067 WI-6-05)'
     } )
 
 
-    it( 'plan-start: no number/revision/path, plan-creation workflow', () => {
-        const { status, header } = TranscriptHeader.build( { type: 'plan-start' } )
+    it( 'rollout: no number/revision/path, rollout-einstieg workflow', () => {
+        const { status, header } = TranscriptHeader.build( { type: 'rollout' } )
 
         expect( status ).toBe( true )
-        expect( header ).toContain( '# Transcript fuer Plan-Start (plan-start)' )
-        expect( header ).toContain( 'memo-plan-init' )
+        expect( header ).toContain( '# Transcript fuer Rollout (rollout)' )
+        expect( header ).toContain( 'memo-rollout' )
         expect( header ).not.toMatch( /REV-\d+/ )
         expect( header ).not.toContain( 'Memo-Pfad:' )
     } )
@@ -85,15 +94,15 @@ describe( 'TranscriptHeader — Kontext-Modus pro Typ (PRD-001)', () => {
     } )
 
 
-    it( 'memo-init and plan-start are leerer-kontext', () => {
+    it( 'memo-init and rollout are leerer-kontext', () => {
         expect( CONTEXT_MODES[ 'memo-init' ] ).toBe( 'leerer-kontext' )
-        expect( CONTEXT_MODES[ 'plan-start' ] ).toBe( 'leerer-kontext' )
+        expect( CONTEXT_MODES[ 'rollout' ] ).toBe( 'leerer-kontext' )
 
         const memoInit = TranscriptHeader.build( { type: 'memo-init' } )
-        const planStart = TranscriptHeader.build( { type: 'plan-start' } )
+        const rollout = TranscriptHeader.build( { type: 'rollout' } )
 
         expect( memoInit[ 'contextMode' ] ).toBe( 'leerer-kontext' )
-        expect( planStart[ 'contextMode' ] ).toBe( 'leerer-kontext' )
+        expect( rollout[ 'contextMode' ] ).toBe( 'leerer-kontext' )
     } )
 } )
 
@@ -135,31 +144,39 @@ describe( 'TranscriptHeader — Nummern-Logik next=max+1 (PRD-002)', () => {
 } )
 
 
-describe( 'TranscriptHeader — Versions-Marker + Legacy-Detection (PRD-003)', () => {
-    it( 'SCHEMA_VERSION is 2', () => {
-        expect( SCHEMA_VERSION ).toBe( 2 )
+describe( 'TranscriptHeader — Versions-Marker + Legacy-Detection (PRD-003, Header-V3 Memo 079)', () => {
+    it( 'SCHEMA_VERSION is 3 (Header-V3, Memo 079 WI-047)', () => {
+        expect( SCHEMA_VERSION ).toBe( 3 )
     } )
 
 
-    it( 'every type-header carries the Schema-Version marker', () => {
+    it( 'every type-header carries the Schema-Version: 3 marker', () => {
         const types = [
             TranscriptHeader.build( { type: 'frei' } ),
             TranscriptHeader.build( { type: 'memo-init' } ),
-            TranscriptHeader.build( { type: 'plan-start' } ),
+            TranscriptHeader.build( { type: 'rollout' } ),
             TranscriptHeader.build( { type: 'revision', memoId: '016-x', maxRevNumber: 1 } )
         ]
 
         types.forEach( ( result ) => {
-            expect( result[ 'header' ] ).toContain( 'Schema-Version: 2' )
+            expect( result[ 'header' ] ).toContain( 'Schema-Version: 3' )
         } )
     } )
 
 
-    it( 'detectSchema: marker 2 → isLegacy false', () => {
+    it( 'detectSchema: marker 3 → isLegacy false (current version)', () => {
+        const { schemaVersion, isLegacy } = TranscriptHeader.detectSchema( { content: '# X\n\nSchema-Version: 3\n\nbody' } )
+
+        expect( schemaVersion ).toBe( 3 )
+        expect( isLegacy ).toBe( false )
+    } )
+
+
+    it( 'detectSchema: marker 2 → isLegacy true (legacy-but-readable under V3, not rejected)', () => {
         const { schemaVersion, isLegacy } = TranscriptHeader.detectSchema( { content: '# X\n\nSchema-Version: 2\n\nbody' } )
 
         expect( schemaVersion ).toBe( 2 )
-        expect( isLegacy ).toBe( false )
+        expect( isLegacy ).toBe( true )
     } )
 
 
@@ -226,11 +243,18 @@ describe( 'TranscriptHeader — detectType (PRD-007)', () => {
     } )
 
 
-    it( 'detects the plan-start type from its header first line', () => {
-        const { header } = TranscriptHeader.build( { type: 'plan-start' } )
+    it( 'detects the rollout type from its header first line', () => {
+        const { header } = TranscriptHeader.build( { type: 'rollout' } )
         const { type } = TranscriptHeader.detectType( { content: header } )
 
-        expect( type ).toBe( 'plan-start' )
+        expect( type ).toBe( 'rollout' )
+    } )
+
+
+    it( 'does NOT detect a removed plan-start header line (Memo 079 M1)', () => {
+        const { type } = TranscriptHeader.detectType( { content: '# Transcript fuer Plan-Start (plan-start)\n\nbody' } )
+
+        expect( type ).toBe( null )
     } )
 
 
@@ -257,67 +281,9 @@ describe( 'TranscriptHeader — detectType (PRD-007)', () => {
 } )
 
 
-describe( 'TranscriptHeader.buildPlanStartPrompt — Plan-Start Anbindung (PRD-042)', () => {
-    it( 'names both skills memo-plan-init and memo-plan-add', () => {
-        const { status, prompt } = TranscriptHeader.buildPlanStartPrompt( { memoPaths: [ '/abs/.memo/memos/016-x/revisions' ] } )
-
-        expect( status ).toBe( true )
-        expect( prompt ).toContain( 'memo-plan-init' )
-        expect( prompt ).toContain( 'memo-plan-add' )
-    } )
-
-
-    it( 'includes every selected absolute memo path (multi-select)', () => {
-        const a = '/Users/x/WORKBENCH/ressources/.memo/memos/016-x/revisions'
-        const b = '/Users/x/WORKBENCH/ressources/.memo/memos/017-y/revisions'
-        const { status, prompt, memoPaths } = TranscriptHeader.buildPlanStartPrompt( { memoPaths: [ a, b ] } )
-
-        expect( status ).toBe( true )
-        expect( prompt ).toContain( a )
-        expect( prompt ).toContain( b )
-        expect( memoPaths ).toEqual( [ a, b ] )
-    } )
-
-
-    it( 'distinguishes new plan vs existing plan triggers', () => {
-        const { prompt } = TranscriptHeader.buildPlanStartPrompt( { memoPaths: [ '/abs/m' ] } )
-
-        expect( prompt ).toContain( 'memo-plan-init {slug}' )
-        expect( prompt ).toContain( 'memo-plan-add {plan-id} {memo-path}' )
-    } )
-
-
-    it( 'contains no plan number, no .memo/plans/ target, no revision field', () => {
-        const { prompt } = TranscriptHeader.buildPlanStartPrompt( { memoPaths: [ '/abs/.memo/memos/016-x/revisions' ] } )
-
-        expect( prompt ).not.toMatch( /PLAN-\d+/ )
-        expect( prompt ).not.toContain( '.memo/plans/' )
-        expect( prompt ).not.toMatch( /REV-\d+/ )
-        expect( prompt ).not.toContain( 'Memo-Pfad:' )
-    } )
-
-
-    it( 'keeps the leerer-kontext context mode', () => {
-        const { contextMode } = TranscriptHeader.buildPlanStartPrompt( { memoPaths: [ '/abs/m' ] } )
-
-        expect( contextMode ).toBe( 'leerer-kontext' )
-    } )
-
-
-    it( 'returns status false with error code when no path is given', () => {
-        const { status, messages, prompt } = TranscriptHeader.buildPlanStartPrompt( { memoPaths: [] } )
-
-        expect( status ).toBe( false )
-        expect( prompt ).toBe( null )
-        expect( messages[ 0 ] ).toContain( 'TRANSCRIPT-HEADER-004' )
-    } )
-
-
-    it( 'filters out empty/non-string path entries', () => {
-        const { status, memoPaths } = TranscriptHeader.buildPlanStartPrompt( { memoPaths: [ '/abs/a', '', null, '/abs/b' ] } )
-
-        expect( status ).toBe( true )
-        expect( memoPaths ).toEqual( [ '/abs/a', '/abs/b' ] )
+describe( 'TranscriptHeader.buildPlanStartPrompt — removed with the plan-start type (Memo 079 M1)', () => {
+    it( 'buildPlanStartPrompt no longer exists on TranscriptHeader', () => {
+        expect( TranscriptHeader.buildPlanStartPrompt ).toBeUndefined()
     } )
 } )
 
@@ -452,7 +418,7 @@ describe( 'TranscriptHeader PRD-013 (Memo 054 Kap 7) — memo-sop precondition i
     } )
 
     it( 'ALL templates carry the memo-sop precondition (Memo 067 WI-6-05, F5=C)', () => {
-        const types = [ 'frei', 'memo-init', 'plan-start', 'rollout' ]
+        const types = [ 'frei', 'memo-init', 'rollout' ]
             .map( ( type ) => TranscriptHeader.build( { type } ) )
             .concat( [ TranscriptHeader.build( { type: 'revision', memoId: '067-x', maxRevNumber: 3 } ) ] )
 
@@ -482,11 +448,11 @@ describe( 'TranscriptHeader — Header-Modernisierung (Memo 067 WI-6-05, F5=C)',
     } )
 
 
-    it( 'plan-start step 1 addresses the public entry point memo-plan', () => {
-        const { header } = TranscriptHeader.build( { type: 'plan-start' } )
+    it( 'rollout step 1 addresses the public entry point memo-rollout', () => {
+        const { header } = TranscriptHeader.build( { type: 'rollout' } )
 
-        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-plan`' )
-        expect( header ).toMatch( /1\.\s*`memo-plan`/ )
+        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-rollout`' )
+        expect( header ).toMatch( /1\.\s*`memo-rollout`/ )
     } )
 
 
@@ -495,9 +461,11 @@ describe( 'TranscriptHeader — Header-Modernisierung (Memo 067 WI-6-05, F5=C)',
 
         expect( status ).toBe( true )
         expect( header ).toContain( '# Transcript fuer Rollout (rollout)' )
-        expect( header ).toContain( 'Schema-Version: 2' )
+        expect( header ).toContain( 'Schema-Version: 3' )
         expect( header ).toContain( 'memo-sop' )
-        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-plan`' )
+        // Memo 079 PRD-31 #2: the lived rollout einstieg is memo-rollout (memo-plan was rejected).
+        expect( header ).toContain( 'Oeffentlicher Eintrittspunkt: `memo-rollout`' )
+        expect( header ).not.toContain( 'memo-plan' )
         expect( contextMode ).toBe( 'leerer-kontext' )
     } )
 

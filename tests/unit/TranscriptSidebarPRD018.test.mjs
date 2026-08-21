@@ -27,10 +27,10 @@ describe( 'PRD-018 Transcript sidebar focus', () => {
         } )
 
 
-        it( 'treats frei / revision / plan-start as nachrangig', () => {
+        it( 'treats frei / revision / rollout as nachrangig', () => {
             expect( fns.isPrimaryTranscriptType( 'frei' ) ).toBe( false )
             expect( fns.isPrimaryTranscriptType( 'revision' ) ).toBe( false )
-            expect( fns.isPrimaryTranscriptType( 'plan-start' ) ).toBe( false )
+            expect( fns.isPrimaryTranscriptType( 'rollout' ) ).toBe( false )
         } )
     } )
 

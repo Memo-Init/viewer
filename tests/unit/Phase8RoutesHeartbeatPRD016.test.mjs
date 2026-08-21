@@ -80,9 +80,9 @@ describe( 'PRD-016 — route wiring (source assertions)', () => {
     } )
 
 
-    it( 'wires GET /api/index returning { documents, transcripts, latest } (WI-019)', () => {
+    it( 'wires GET /api/index returning { documents, transcripts, latest, folderTabs } (WI-019; Memo 079 PRD-23 adds folderTabs)', () => {
         expect( server.includes( "url === '/api/index' && req.method === 'GET'" ) ).toBe( true )
-        expect( server.includes( "sendJson( res, 200, { documents, transcripts, latest } )" ) ).toBe( true )
+        expect( server.includes( "sendJson( res, 200, { documents, transcripts, latest, 'folderTabs': MemoView.#folderTabs } )" ) ).toBe( true )
     } )
 
 

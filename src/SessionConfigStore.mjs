@@ -1,5 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
-import { resolve, dirname, join } from 'node:path'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
+import { resolve, dirname, join, basename } from 'node:path'
 
 
 // PRD-014 (Memo 076 Phase 7, WI-006/007/010/011/133): the read side of the persistent Session-Config
@@ -95,6 +95,158 @@ class SessionConfigStore {
             : []
 
         return { 'projects': projects, 'configPath': configPath }
+    }
+
+
+    // Memo 079 PRD-23 (WI-050): read the FULL declarative config → { projects, discover, folderTabs,
+    // configPath }. Adds two declarative blocks over readProjects's explicit list:
+    //   * `discover` = { projectsDir, includeRoot } — an ableitungs-regel so a fresh workbench with no
+    //     upserted projects[] yet is NOT a dead tree ("Viewer startet heute leer", forensics d). Instead
+    //     of a hand-maintained list, sibling projects are DERIVED by scanning <root>/<projectsDir>/*/.
+    //   * `folderTabs` = [ { id, folder, view } ] — the per-folder tab carrier (WI-052), surfaced on the
+    //     projects[] axis so each resolved project can bring its own folder tabs.
+    // Fail-open at every level: an absent/broken config yields the empty shape; a malformed block is
+    // dropped, never thrown. `projects` keeps the exact readProjects filter (parity, single source).
+    static readConfig( { cwd, env } = {} ) {
+        const { projects, configPath } = SessionConfigStore.readProjects( { cwd, env } )
+        const empty = { projects, 'discover': null, 'folderTabs': [], configPath }
+
+        if( configPath === null || existsSync( configPath ) !== true ) {
+            return empty
+        }
+
+        let parsed = null
+
+        try {
+            parsed = JSON.parse( readFileSync( configPath, 'utf8' ) )
+        } catch {
+            return empty
+        }
+
+        if( parsed === null || typeof parsed !== 'object' || Array.isArray( parsed ) ) {
+            return empty
+        }
+
+        const discover = SessionConfigStore.#normalizeDiscover( { 'raw': parsed[ 'discover' ] } )
+        const folderTabs = SessionConfigStore.#normalizeFolderTabs( { 'raw': parsed[ 'folderTabs' ] } )
+
+        return { projects, discover, folderTabs, configPath }
+    }
+
+
+    // Memo 079 PRD-23 (WI-050): resolve the AUTHORITATIVE project set with a single, declared priority —
+    // explicit `projects[]` > `discover` scan > cwd fallback. Returns { projects, source, folderTabs }:
+    //   * `explicit`  — projects[] is non-empty: exactly those win (the SessionStart hook keeps it fresh).
+    //   * `discover`  — projects[] empty but a discover block resolves: scan <root>/<projectsDir>/*/ for
+    //     dirs carrying `.memo/`, plus the workbench root itself when includeRoot is true.
+    //   * `cwd`       — neither yields anything: empty list here, the caller (MemoView) keeps its explicit
+    //     cwd bootstrap fallback (unchanged Gate-Semantik, only a declarative middle inserted).
+    // Every resolved project carries { projectId, projectRoot }. Fail-open: an unreadable projectsDir
+    // yields zero discovered projects (logged by the caller), never a throw.
+    static resolveProjects( { cwd, env } = {} ) {
+        const { projects, discover, folderTabs, configPath } = SessionConfigStore.readConfig( { cwd, env } )
+
+        if( projects.length > 0 ) {
+            return { 'projects': projects, 'source': 'explicit', folderTabs, configPath }
+        }
+
+        if( discover !== null && configPath !== null ) {
+            const workbenchRoot = dirname( dirname( configPath ) )
+            const { discovered } = SessionConfigStore.#scanDiscover( { workbenchRoot, discover } )
+
+            if( discovered.length > 0 ) {
+                return { 'projects': discovered, 'source': 'discover', folderTabs, configPath }
+            }
+        }
+
+        return { 'projects': [], 'source': 'cwd', folderTabs, configPath }
+    }
+
+
+    // ---- private (declarative blocks) ----
+
+    static #normalizeDiscover( { raw } ) {
+        if( raw === null || typeof raw !== 'object' || Array.isArray( raw ) ) {
+            return null
+        }
+
+        const projectsDir = typeof raw[ 'projectsDir' ] === 'string' && raw[ 'projectsDir' ].trim().length > 0
+            ? raw[ 'projectsDir' ].trim()
+            : 'projects'
+        const includeRoot = raw[ 'includeRoot' ] === true
+
+        return { 'projectsDir': projectsDir, 'includeRoot': includeRoot }
+    }
+
+
+    static #normalizeFolderTabs( { raw } ) {
+        if( Array.isArray( raw ) !== true ) {
+            return []
+        }
+
+        return raw
+            .filter( ( tab ) => tab !== null && typeof tab === 'object' && typeof tab[ 'id' ] === 'string' && tab[ 'id' ].length > 0 && typeof tab[ 'folder' ] === 'string' && tab[ 'folder' ].length > 0 )
+            .map( ( tab ) => ( {
+                'id': tab[ 'id' ],
+                'folder': tab[ 'folder' ],
+                'view': typeof tab[ 'view' ] === 'string' && tab[ 'view' ].length > 0 ? tab[ 'view' ] : tab[ 'id' ]
+            } ) )
+    }
+
+
+    static #scanDiscover( { workbenchRoot, discover } ) {
+        const projectsDir = resolve( workbenchRoot, discover[ 'projectsDir' ] )
+        const siblings = SessionConfigStore.#hasMemo( { 'dir': projectsDir } ) === false
+            ? SessionConfigStore.#listMemoProjects( { 'dir': projectsDir } )
+            : []
+
+        const rootEntry = discover[ 'includeRoot' ] === true && SessionConfigStore.#hasMemo( { 'dir': workbenchRoot } ) === true
+            ? [ { 'projectId': SessionConfigStore.#deriveProjectId( { 'dir': workbenchRoot } ), 'projectRoot': workbenchRoot } ]
+            : []
+
+        // Dedup by projectRoot so the root is never listed twice if it also sits under projectsDir.
+        const merged = new Map()
+        rootEntry.concat( siblings )
+            .forEach( ( entry ) => {
+                if( merged.has( entry[ 'projectRoot' ] ) !== true ) {
+                    merged.set( entry[ 'projectRoot' ], entry )
+                }
+            } )
+
+        return { 'discovered': [ ...merged.values() ] }
+    }
+
+
+    static #listMemoProjects( { dir } ) {
+        let names = []
+
+        try {
+            names = readdirSync( dir, { 'withFileTypes': true } )
+                .filter( ( entry ) => entry.isDirectory() === true )
+                .map( ( entry ) => entry.name )
+        } catch {
+            return []
+        }
+
+        return names
+            .map( ( name ) => resolve( dir, name ) )
+            .filter( ( projectRoot ) => SessionConfigStore.#hasMemo( { 'dir': projectRoot } ) === true )
+            .sort()
+            .map( ( projectRoot ) => ( { 'projectId': SessionConfigStore.#deriveProjectId( { 'dir': projectRoot } ), 'projectRoot': projectRoot } ) )
+    }
+
+
+    static #hasMemo( { dir } ) {
+        try {
+            return statSync( join( dir, '.memo' ) ).isDirectory()
+        } catch {
+            return false
+        }
+    }
+
+
+    static #deriveProjectId( { dir } ) {
+        return basename( resolve( dir ) ).replace( /[^a-zA-Z0-9_-]/g, '-' )
     }
 }
 

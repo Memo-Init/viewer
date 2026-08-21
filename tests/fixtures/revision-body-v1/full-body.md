@@ -57,14 +57,44 @@ graph TD
 [
   {
     "id": "F1",
+    "title": "DB als Source of Truth",
+    "hintergrund": "Kap 5: die Datenbank traegt die Wahrheit.",
     "frage": "Soll die DB die SoT sein?",
-    "kind": "info",
+    "aiRecommendation": "A",
+    "typ": "single",
+    "options": [
+      {
+        "key": "A",
+        "label": "Ja — die DB ist die SoT",
+        "kind": "option"
+      },
+      {
+        "key": "B",
+        "label": "Nein — die Files bleiben SoT",
+        "kind": "option"
+      }
+    ],
     "answered": false
   },
   {
     "id": "F2",
+    "title": "Phasen-Normalisierung",
+    "hintergrund": "Rollout-State liegt normalisiert in der DB.",
     "frage": "Wie werden Phasen normalisiert?",
-    "kind": "info",
+    "aiRecommendation": "A",
+    "typ": "single",
+    "options": [
+      {
+        "key": "A",
+        "label": "Aus rollout/state.json projizieren",
+        "kind": "option"
+      },
+      {
+        "key": "B",
+        "label": "Manuell in der DB pflegen",
+        "kind": "option"
+      }
+    ],
     "answered": true
   }
 ]

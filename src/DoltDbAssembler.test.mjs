@@ -6,6 +6,8 @@ import { createHash } from 'node:crypto'
 import { DatabaseSync } from '@dolthub/doltlite'
 
 import { DoltDbAssembler } from './DoltDbAssembler.mjs'
+import { DocumentRegistry } from './DocumentRegistry.mjs'
+import { isRenderable } from './QuestionContract.mjs'
 
 
 // P6a (Memo 079): the viewer's DB-schaufenster renders a per-memo `memo-NNN.db` into the SAME
@@ -413,7 +415,8 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, depends_on TEXT, can_parallel_with TEXT, commit_hash TEXT, spillover TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, commit_hash TEXT, depends_on TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
-            db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS question_option ( question_id TEXT, opt_key TEXT, label TEXT, kind TEXT, sort INTEGER )' )
 
             db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
                 .run( 'M079', 'DB Traceability', 'strategy', 'finalized', '2026-08-20T00:00:00.000Z', 'Kontext Zeile eins.\nKontext Zeile zwei.' )
@@ -431,8 +434,15 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
                 .run( 'P1', 'M079', 'Backbone', 'done', null, null, null, '{"__ord":0}' )
             db.prepare( 'INSERT INTO rollout_work_item ( id, phase_id, title, status, commit_hash, depends_on, target, wi_type, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
                 .run( 'PRD-01', 'P1', 'adapter', 'done', null, null, 'core', 'code', '{"__ord":0}' )
-            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'F1', 'M079', 'Soll die DB die SoT sein?', 'info', 'open' )
-            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'F2', 'M079', 'Wie werden Phasen normalisiert?', 'info', 'answered' )
+            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status, title, background, typ, ai_recommendation ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
+                .run( 'F1', 'M079', 'Soll die DB die SoT sein?', 'info', 'open', 'DB als Source of Truth', 'Kap 5: die Datenbank traegt die Wahrheit.', 'single', 'A' )
+            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status, title, background, typ, ai_recommendation ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
+                .run( 'F2', 'M079', 'Wie werden Phasen normalisiert?', 'info', 'answered', 'Phasen-Normalisierung', 'Rollout-State liegt normalisiert in der DB.', 'single', 'A' )
+            const insertOption = db.prepare( 'INSERT INTO question_option ( question_id, opt_key, label, kind, sort ) VALUES ( ?, ?, ?, ?, ? )' )
+            insertOption.run( 'F1', 'A', 'Ja — die DB ist die SoT', 'option', 0 )
+            insertOption.run( 'F1', 'B', 'Nein — die Files bleiben SoT', 'option', 1 )
+            insertOption.run( 'F2', 'A', 'Aus rollout/state.json projizieren', 'option', 0 )
+            insertOption.run( 'F2', 'B', 'Manuell in der DB pflegen', 'option', 1 )
             db.close()
         }
 
@@ -470,6 +480,152 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             expect( markdown ).toContain( '## Phasen\n\n_no phases_' )
             expect( markdown ).toContain( '## Fragen\n\n```questions-json\n[]\n```' )
             expect( markdown ).toContain( '## Offene Fragen\n\nkeine' )
+        } )
+    } )
+
+
+    // Slice-2a (Memo 079, Kap 9): the WHOLE POINT of re-emitting the full canonical fence is that the
+    // DB-served questions widget is ANSWERABLE — the assembled `## Fragen` fence, fed through the SAME parse
+    // path the file regime uses (DocumentRegistry.parseQuestionJsonBlock → #normalizeJsonQuestion), yields a
+    // question the render contract accepts as an interactive card (QuestionContract.isRenderable === true).
+    // Before this slice the fence carried only id/frage/kind so isRenderable was FALSE (< 2 real options) and
+    // the widget fell back to raw text. These tests seed a per-memo db, assemble the body from the DB rows,
+    // and prove renderability off the DB-first fence exactly as the file regime would off the same source.
+    describe( 'answerable DB-first widget (Slice-2a, QuestionContract.isRenderable)', () => {
+        // Seed one memo-079.db with a single answerable question (F1: 2 real options + aiRecommendation),
+        // mirroring the widened schema `memo new` applies.
+        const seedAnswerable = ( { path } ) => {
+            const db = new DatabaseSync( path )
+            db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT, context TEXT )' )
+            // the tracer tables #renderBody reads unconditionally (empty here — this test targets the fence only).
+            db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_diagrams ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS question_option ( question_id TEXT, opt_key TEXT, label TEXT, kind TEXT, sort INTEGER )' )
+
+            db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+                .run( 'M079', 'DB Traceability', 'strategy', 'draft', '2026-08-20T00:00:00.000Z', null )
+            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status, title, background, typ, ai_recommendation ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
+                .run( 'F1', 'M079', 'Soll die DB die SoT sein?', 'blocker', 'open', 'DB als Source of Truth', 'Kap 5.', 'single', 'A' )
+            const insertOption = db.prepare( 'INSERT INTO question_option ( question_id, opt_key, label, kind, sort ) VALUES ( ?, ?, ?, ?, ? )' )
+            insertOption.run( 'F1', 'A', 'Ja — die DB ist die SoT', 'option', 0 )
+            insertOption.run( 'F1', 'B', 'Nein — die Files bleiben SoT', 'option', 1 )
+            db.close()
+        }
+
+
+        it( 'the assembled DB-first fence is answerable — isRenderable === true, matching the file regime', () => {
+            seedAnswerable( { path: dbPath } )
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+            // parse the assembled body exactly as the viewer parses a REV FILE (the file regime) — same
+            // authoritative path, so a DB-first memo and a file-parsed memo of the same fence are identical.
+            const { found, questions } = DocumentRegistry.parseQuestionJsonBlock( { content: markdown } )
+            expect( found ).toBe( true )
+            expect( questions.length ).toBe( 1 )
+
+            const question = questions[ 0 ]
+            // the render contract accepts it as an interactive card — the answerability proof.
+            expect( isRenderable( { question } ) ).toBe( true )
+
+            // the answerable payload survived the DB round-trip: id, two REAL options, the recommendation.
+            expect( question[ 'id' ] ).toBe( 'F1' )
+            expect( question[ 'aiRecommendation' ] ).toBe( 'A' )
+            const realOptions = question[ 'options' ]
+                .filter( ( option ) => option[ 'kind' ] === 'option' )
+            expect( realOptions.map( ( option ) => option[ 'key' ] ) ).toEqual( [ 'A', 'B' ] )
+            expect( realOptions.map( ( option ) => option[ 'label' ] ) ).toEqual( [ 'Ja — die DB ist die SoT', 'Nein — die Files bleiben SoT' ] )
+        } )
+
+
+        it( 'a pre-Slice-2a db (no options / no widened columns) degrades to a NON-answerable fence, never a throw', () => {
+            // the base seedDb() creates a memo table WITHOUT the widened columns and NO question_option child.
+            seedDb( { path: dbPath } )
+            const db = new DatabaseSync( dbPath )
+            db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT )' )
+            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'F1', 'M079', 'Alt?', 'info', 'open' )
+            db.close()
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+            const { found, questions } = DocumentRegistry.parseQuestionJsonBlock( { content: markdown } )
+
+            expect( found ).toBe( true )
+            // the widened scalars degraded to null, options to [] — honestly NOT answerable (no options).
+            expect( isRenderable( { question: questions[ 0 ] } ) ).toBe( false )
+        } )
+    } )
+
+
+    // AUTHORED-ORDER (Memo 079, REV-03 Kap 9 = viewer 1:1 Schaufenster; Kap 3/F16 = no silent DB-first
+    // downgrade). `question.id` is a TEXT primary key, so a naive `ORDER BY id` sorts LEXICALLY
+    // (F1 < F10 < F11 < F12 < F13 < F2), NOT the authored order the fence carries. The viewer widget must
+    // therefore ORDER BY the authored-order `sort` ordinal so the DB-first render matches the authored fence
+    // (and stays byte-identical to the core RevisionAssembler). This mirrors the real >=10-question fence of
+    // memo 036 REV-02: 13 questions, authored order F1,F3,…,F13,F2 with F2 authored LAST.
+    describe( 'authored question order (Slice-2a ordering, REV-03 Kap 9)', () => {
+        const AUTHORED_ORDER = [ 'F1', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'F13', 'F2' ]
+
+        const fenceIdsInOrder = ( { markdown } ) => {
+            const fence = markdown.split( '## Fragen' )[ 1 ].split( '## Offene Fragen' )[ 0 ]
+
+            return [ ...fence.matchAll( /"id":\s*"(F\d+)"/g ) ]
+                .map( ( match ) => match[ 1 ] )
+        }
+
+        const openIdsInOrder = ( { markdown } ) => {
+            const list = markdown.split( '## Offene Fragen' )[ 1 ]
+
+            return [ ...list.matchAll( /-\s+\*\*(F\d+)\*\*/g ) ]
+                .map( ( match ) => match[ 1 ] )
+        }
+
+        // Seed a widened `question` table (WITH the `sort` column, as `memo new` now applies) whose 13 rows
+        // carry sort = the AUTHORED-order index. The rows are INSERTED in a lexically-sorted order on purpose,
+        // so a passing test can only come from ORDER BY sort, never from insertion or id order.
+        const seedThirteen = ( { path } ) => {
+            const db = new DatabaseSync( path )
+            db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT, context TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_diagrams ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT, sort INTEGER )' )
+
+            db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+                .run( 'M079', 'DB Traceability', 'strategy', 'draft', '2026-08-20T00:00:00.000Z', null )
+
+            const insert = db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status, sort ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+            // INSERT in LEXICAL id order — the exact order a broken ORDER BY id would emit.
+            const lexical = [ ...AUTHORED_ORDER ].sort( ( a, b ) => a.localeCompare( b ) )
+            lexical
+                .forEach( ( id ) => {
+                    const status = id === 'F2' ? 'answered' : 'open'
+                    insert.run( id, 'M079', `Frage ${ id }`, 'info', status, AUTHORED_ORDER.indexOf( id ) )
+                } )
+
+            db.close()
+        }
+
+
+        it( 'renders the questions-json fence + Offene-Fragen in authored order, not the lexical id sort', () => {
+            seedThirteen( { path: dbPath } )
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+            // (a) the fence follows the authored order (NOT F1,F10,F11,F12,F13,F2,F3,…).
+            expect( fenceIdsInOrder( { markdown } ) ).toEqual( AUTHORED_ORDER )
+
+            // (b) the ## Offene Fragen list follows the authored order minus the answered F2.
+            const expectedOpen = AUTHORED_ORDER.filter( ( id ) => id !== 'F2' )
+            expect( openIdsInOrder( { markdown } ) ).toEqual( expectedOpen )
+
+            // (c) explicit anti-lexical discriminators: F3 precedes F10, and F2 is LAST.
+            const ids = fenceIdsInOrder( { markdown } )
+            expect( ids.indexOf( 'F3' ) ).toBeLessThan( ids.indexOf( 'F10' ) )
+            expect( ids[ ids.length - 1 ] ).toBe( 'F2' )
         } )
     } )
 } )

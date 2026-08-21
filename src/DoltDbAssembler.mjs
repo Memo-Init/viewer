@@ -336,6 +336,20 @@ class DoltDbAssembler {
     }
 
 
+    // The ORDER BY clause for the question read: the authored-order `sort` ordinal with `id` as a stable
+    // tie-break when the column exists (a widened / production db), degrading to plain `id` on a pre-this-fix
+    // or early hand-seeded db that lacks the column. Probed via PRAGMA table_info so a missing column never
+    // throws — byte-identical to RevisionAssembler.#questionOrderBy (core) so both renderers pick the same
+    // clause and never diverge.
+    static #questionOrderBy( { db } ) {
+        const rows = DoltDbAssembler.#all( { db, sql: 'PRAGMA table_info(question)' } )
+        const hasSort = rows
+            .some( ( row ) => row[ 'name' ] === 'sort' )
+
+        return hasSort === true ? 'sort, id' : 'id'
+    }
+
+
     // Does a table exist in this database? doltlite is node:sqlite-compatible and exposes sqlite_master,
     // so a MISSING table (early/hand-seeded db) can be detected WITHOUT a "no such table" throw. `table`
     // is an internal literal ('revision' / 'question'), never user input — no injection surface.
@@ -367,8 +381,25 @@ class DoltDbAssembler {
         const phaseWorkItems = DoltDbAssembler.#tableExists( { db, table: 'rollout_work_item' } ) === true
             ? DoltDbAssembler.#all( { db, sql: 'SELECT id, phase_id, title, status, target, wi_type FROM rollout_work_item ORDER BY phase_id, id' } )
             : []
+        // SELECT * so a pre-Slice-2a `question` table (only id/text/kind/status) and a widened one (+ title/
+        // background/typ/ai_recommendation) both read without a "no such column" throw — the emit reads each
+        // widened field defensively and degrades a missing/null one to a JSON null (byte-identical to the core
+        // RevisionAssembler render of the same db). ORDER BY the AUTHORED-order `sort` ordinal (id as a stable
+        // tie-break) so the fence + Offene-Fragen keep the authored order (F1,F3,…,F13,F2), never the lexical
+        // TEXT-id sort (F1,F10,F11,…). A db WITHOUT the `sort` column (pre-this-fix / early hand-seeded)
+        // degrades to ORDER BY id — the exact old behaviour, no throw — via the SAME probe the core renderer
+        // runs, so the two stay byte-identical on ANY db state. `question_option` is the answerable child
+        // (options[]); a pre-Slice-2a db lacks it, so it is #tableExists-guarded and degrades to [] (a text-
+        // only, non-answerable fence — the honest old behaviour), read ORDER BY question_id, sort for a stable
+        // order.
+        const questionOrder = DoltDbAssembler.#tableExists( { db, table: 'question' } ) === true
+            ? DoltDbAssembler.#questionOrderBy( { db } )
+            : 'id'
         const questions = DoltDbAssembler.#tableExists( { db, table: 'question' } ) === true
-            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, text, kind, status FROM question ORDER BY id' } )
+            ? DoltDbAssembler.#all( { db, sql: `SELECT * FROM question ORDER BY ${ questionOrder }` } )
+            : []
+        const questionOptions = DoltDbAssembler.#tableExists( { db, table: 'question_option' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT question_id, opt_key, label, kind, sort FROM question_option ORDER BY question_id, sort' } )
             : []
 
         const head = [
@@ -386,7 +417,7 @@ class DoltDbAssembler {
             .concat( DoltDbAssembler.#renderBlocks( { blocks, blockTables, blockDiagrams } ) )
             .concat( DoltDbAssembler.#renderTopics( { topics } ) )
             .concat( DoltDbAssembler.#renderPhases( { phases, phaseWorkItems } ) )
-            .concat( DoltDbAssembler.#renderQuestionsJson( { questions } ) )
+            .concat( DoltDbAssembler.#renderQuestionsJson( { questions, questionOptions } ) )
             .concat( DoltDbAssembler.#renderOpenQuestions( { questions } ) )
             .join( '\n' )
     }
@@ -471,19 +502,17 @@ class DoltDbAssembler {
     }
 
 
-    // Byte-identical to RevisionAssembler.#renderQuestionsJson — the machine-readable `questions-json`
-    // fence the memo-view questions widget parses (DocumentRegistry.parseQuestionJsonBlock). Every question
-    // (open AND answered) is emitted; identical rows -> identical JSON bytes (same key order, 2-space
-    // indent) across both renderers.
-    static #renderQuestionsJson( { questions } ) {
+    // Byte-identical to RevisionAssembler.#renderQuestionsJson — the machine-readable `questions-json` fence
+    // the memo-view questions widget parses (DocumentRegistry.parseQuestionJsonBlock / #normalizeJsonQuestion).
+    // Re-emitting the canonical fields (id, title, hintergrund, frage, aiRecommendation, typ, options[]) makes
+    // a DB-served memo render a REAL, ANSWERABLE card (QuestionContract.isRenderable === true) instead of raw
+    // text. There is deliberately NO top-level `kind` (zero real memos carry one; the DB `kind` is the blocker/
+    // info gate axis, surfaced only in `## Offene Fragen`). Every question (open AND answered) is emitted;
+    // identical rows -> identical JSON bytes (same key order, 2-space indent) across both renderers.
+    static #renderQuestionsJson( { questions, questionOptions } ) {
         const heading = [ '## Fragen', '' ]
         const entries = questions
-            .map( ( row ) => ( {
-                id: raw( row[ 'id' ] ),
-                frage: DoltDbAssembler.#jsonVal( { value: row[ 'text' ] } ),
-                kind: DoltDbAssembler.#jsonVal( { value: row[ 'kind' ] } ),
-                answered: row[ 'status' ] === 'answered'
-            } ) )
+            .map( ( row ) => DoltDbAssembler.#questionEntry( { row, questionOptions } ) )
         const jsonLines = JSON.stringify( entries, null, 2 ).split( '\n' )
 
         return heading
@@ -493,15 +522,55 @@ class DoltDbAssembler {
     }
 
 
+    // Build ONE canonical questions-json entry from a `question` row + its `question_option` children. Field
+    // order is fixed (id, title, hintergrund, frage, aiRecommendation, typ, options, answered). MUST stay
+    // byte-identical to RevisionAssembler.#questionEntry (core).
+    static #questionEntry( { row, questionOptions } ) {
+        const options = questionOptions
+            .filter( ( option ) => option[ 'question_id' ] === row[ 'id' ] )
+            .map( ( option ) => ( {
+                key: raw( option[ 'opt_key' ] ),
+                label: raw( option[ 'label' ] ),
+                kind: DoltDbAssembler.#optionKind( { value: option[ 'kind' ] } )
+            } ) )
+
+        return {
+            id: raw( row[ 'id' ] ),
+            title: DoltDbAssembler.#strOrNull( { value: row[ 'title' ] } ),
+            hintergrund: DoltDbAssembler.#strOrNull( { value: row[ 'background' ] } ),
+            frage: DoltDbAssembler.#jsonVal( { value: row[ 'text' ] } ),
+            aiRecommendation: DoltDbAssembler.#strOrNull( { value: row[ 'ai_recommendation' ] } ),
+            typ: DoltDbAssembler.#strOrNull( { value: row[ 'typ' ] } ),
+            options,
+            answered: row[ 'status' ] === 'answered'
+        }
+    }
+
+
+    // A missing option kind defaults to 'option' — the same default the viewer normalizer applies, so the
+    // option renders as a real answer choice. Byte-identical to RevisionAssembler.#optionKind.
+    static #optionKind( { value } ) {
+        return typeof value === 'string' && value.length > 0 ? value : 'option'
+    }
+
+
+    // An optional questions-json scalar: a non-empty string passes through, anything else (undefined column on
+    // a pre-Slice-2a db, SQL NULL, or empty string) collapses to an explicit JSON null. Byte-identical to
+    // RevisionAssembler.#strOrNull.
+    static #strOrNull( { value } ) {
+        return typeof value === 'string' && value.length > 0 ? value : null
+    }
+
+
     static #jsonVal( { value } ) {
         return value === undefined ? null : value
     }
 
 
     // Byte-identical to RevisionAssembler.#renderOpenQuestions — the human-readable `## Offene Fragen`
-    // list (status='open'), filtered from the SAME ORDER BY id question read so fence and list agree on
-    // order. A missing `question` table already degraded the read to [] in #renderBody, so this renders
-    // 'keine' without a further guard.
+    // list (status='open'), filtered from the SAME authored-order (sort, id) question read so fence and list
+    // agree on order and both follow the authored order rather than the lexical id sort. A missing `question`
+    // table already degraded the read to [] in #renderBody, so this renders 'keine' without a further guard.
     static #renderOpenQuestions( { questions } ) {
         const heading = [ '## Offene Fragen', '' ]
         const open = questions

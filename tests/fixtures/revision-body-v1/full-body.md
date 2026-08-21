@@ -110,3 +110,12 @@ graph TD
 ## Offene Fragen
 
 - **F1** (info): Soll die DB die SoT sein?
+
+## Beantwortete Fragen
+
+### F2 — Phasen-Normalisierung
+
+- **Frage (Original):** Wie werden Phasen normalisiert?
+- **AI-Empfehlung war:** A
+- **User-Entscheidung:** A — Aus rollout/state.json projizieren
+- **Wortlaut:** A — Normalisierung laeuft aus rollout/state.json.

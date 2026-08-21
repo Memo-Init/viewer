@@ -380,9 +380,10 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             expect( markdown ).toContain( '## Offene Fragen' )
             expect( markdown ).toContain( '- **F1** (info): Soll X passieren?' )
             expect( markdown ).toContain( '- **F2** (blocker): Wie geht Y?' )
-            // the answered F3 is excluded from the OPEN list — scoped to the `## Offene Fragen` section, since
-            // the broad build-out now ALSO emits every question (open + answered) in the `## Fragen` json fence.
-            const openSection = markdown.split( '## Offene Fragen' )[ 1 ]
+            // the answered F3 is excluded from the OPEN list — scoped to the `## Offene Fragen` section body
+            // (up to the next `## `), since the broad build-out now ALSO emits every question in the `## Fragen`
+            // json fence AND the answered F3 legitimately appears in the sibling `## Beantwortete Fragen` section.
+            const openSection = markdown.split( '## Offene Fragen' )[ 1 ].split( '\n## ' )[ 0 ]
             expect( openSection ).not.toContain( 'Schon geklaert' )
         } )
     } )
@@ -420,6 +421,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.exec( 'CREATE TABLE IF NOT EXISTS research ( r_no INTEGER PRIMARY KEY, memo_id TEXT, title TEXT, kind TEXT, path TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS research_topics ( r_no INTEGER, topic_id TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS research_files ( r_no INTEGER, path TEXT, sha256 TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS user_input_answers ( input_id TEXT, question_id TEXT, option_key TEXT, answer_verbatim TEXT, preselected INTEGER )' )
 
             db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
                 .run( 'M079', 'DB Traceability', 'strategy', 'finalized', '2026-08-20T00:00:00.000Z', 'Kontext Zeile eins.\nKontext Zeile zwei.' )
@@ -457,6 +459,11 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             insertResearchTopic.run( 2, 'T02' )
             db.prepare( 'INSERT INTO research_files ( r_no, path, sha256 ) VALUES ( ?, ?, ? )' )
                 .run( 1, 'context/research/2026-08-19--doltlite-machbarkeit.md', null )
+            // the durable user decision for the answered F2 — IDENTICAL to what the core UserInputStore writer
+            // produces from seedCanonical (input_id UI-0001, chosen option A + verbatim), so the
+            // ## Beantwortete Fragen render is byte-identical across both repos (Memo 079 audit T2-M1).
+            db.prepare( 'INSERT INTO user_input_answers ( input_id, question_id, option_key, answer_verbatim, preselected ) VALUES ( ?, ?, ?, ?, ? )' )
+                .run( 'UI-0001', 'F2', 'A', 'A — Normalisierung laeuft aus rollout/state.json.', 0 )
             db.close()
         }
 
@@ -481,6 +488,35 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             expect( Buffer.byteLength( GOLDEN_FULL_BODY, 'utf8' ) ).toBe( GOLDEN_MANIFEST[ 'byteLength' ] )
         } )
 
+        it( 'renders `## Beantwortete Fragen` with the AI-vs-user decision pair from the DB (T2-M1)', () => {
+            seedFullCanonical( { path: dbPath } )
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+            // the answered F2 surfaces the decision PAIR — AI recommendation vs the durable user_input_answers
+            // decision (chosen option + verbatim) — the datum the user called "das aller aller wichtigste".
+            expect( markdown ).toContain( '## Beantwortete Fragen' )
+            expect( markdown ).toContain( '### F2 — Phasen-Normalisierung' )
+            expect( markdown ).toContain( '- **AI-Empfehlung war:** A' )
+            expect( markdown ).toContain( '- **User-Entscheidung:** A — Aus rollout/state.json projizieren' )
+            expect( markdown ).toContain( '- **Wortlaut:** A — Normalisierung laeuft aus rollout/state.json.' )
+        } )
+
+        it( 'the DB-generated Beantwortete-Fragen section is parsed back by the DocumentRegistry consumer', () => {
+            seedFullCanonical( { path: dbPath } )
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+            // the whole point: the SAME parser the file regime uses extracts the AI-vs-user pair from the
+            // DB-first render — alles aus der DB generierbar, inkl. der User-Entscheidungen (Memo 038 Kap 6).
+            const { questions } = DocumentRegistry.parseQuestionSchema( { content: markdown } )
+            const f2 = questions.find( ( q ) => q[ 'id' ] === 'F2' )
+
+            expect( f2[ 'answered' ] ).toBe( true )
+            expect( f2[ 'aiRecommendationWas' ] ).toBe( 'A' )
+            expect( f2[ 'userDecision' ] ).toBe( 'A — Aus rollout/state.json projizieren' )
+        } )
+
         it( 'reads the memo context via PRAGMA — a memo table WITHOUT a context column degrades to _kein Kontext_', () => {
             // the base seedDb() creates the memo table WITHOUT the context column (an early hand-seeded db).
             seedDb( { path: dbPath } )
@@ -501,6 +537,8 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             expect( markdown ).toContain( '## Research\n\n_no research_' )
             expect( markdown ).toContain( '## Fragen\n\n```questions-json\n[]\n```' )
             expect( markdown ).toContain( '## Offene Fragen\n\nkeine' )
+            // no question / user_input_answers table → the answered section degrades to the empty sentinel.
+            expect( markdown ).toContain( '## Beantwortete Fragen\n\n_keine beantworteten Fragen_' )
         } )
     } )
 

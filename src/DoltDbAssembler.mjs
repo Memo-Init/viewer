@@ -401,6 +401,15 @@ class DoltDbAssembler {
         const questionOptions = DoltDbAssembler.#tableExists( { db, table: 'question_option' } ) === true
             ? DoltDbAssembler.#all( { db, sql: 'SELECT question_id, opt_key, label, kind, sort FROM question_option ORDER BY question_id, sort' } )
             : []
+        // The durable user-decision records (`user_input_answers`, PRD-11) — the answer VERBATIM + chosen option
+        // a widget/terminal answer wrote for a question. The `## Beantwortete Fragen` render joins these onto the
+        // answered questions so the DB-served memo re-surfaces the AI-Empfehlung-war vs User-Entscheidung pair the
+        // User Mental Model reads (Memo 038 Kap 6). #tableExists-guarded and degraded to [] on a pre-PRD-11 db —
+        // byte-identical to the core RevisionAssembler read. ORDER BY question_id, input_id so the latest record
+        // per question (max input_id, "opinions can change") is deterministic across both renderers.
+        const answers = DoltDbAssembler.#tableExists( { db, table: 'user_input_answers' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT input_id, question_id, option_key, answer_verbatim FROM user_input_answers ORDER BY question_id, input_id' } )
+            : []
         // research (+ research_topics / research_files edges) — the memo-local R-circle REV-03 Kap 3 Punkt 1
         // enumerates as DB-resident memo-body data ("Research-Kanten leben in der DB"). Mirrors the core
         // RevisionAssembler read: #tableExists-guarded, degraded to [] on an early hand-seeded db that predates
@@ -434,6 +443,7 @@ class DoltDbAssembler {
             .concat( DoltDbAssembler.#renderResearch( { research, researchTopics, researchFiles } ) )
             .concat( DoltDbAssembler.#renderQuestionsJson( { questions, questionOptions } ) )
             .concat( DoltDbAssembler.#renderOpenQuestions( { questions } ) )
+            .concat( DoltDbAssembler.#renderAnsweredQuestions( { questions, questionOptions, answers } ) )
             .join( '\n' )
     }
 
@@ -635,6 +645,115 @@ class DoltDbAssembler {
         return heading
             .concat( rows )
             .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderAnsweredQuestions (core) — the `## Beantwortete Fragen`
+    // section, the User-Mental-Model source (Memo 038 Kap 6; Memo 079 audit T2-M1). For every ANSWERED
+    // question it re-surfaces the decision PAIR the mental-model derive walk reads: `**AI-Empfehlung war:** X`
+    // (the question's `ai_recommendation`) vs `**User-Entscheidung:** Y` (the durable `user_input_answers`
+    // record — chosen option + verbatim). Answered questions are filtered from the SAME authored-order read as
+    // `## Offene Fragen`. Empty degrades to `_keine beantworteten Fragen_`.
+    static #renderAnsweredQuestions( { questions, questionOptions, answers } ) {
+        const heading = [ '## Beantwortete Fragen', '' ]
+        const answered = questions
+            .filter( ( row ) => row[ 'status' ] === 'answered' )
+        if( answered.length === 0 ) {
+            return heading.concat( [ '_keine beantworteten Fragen_', '' ] )
+        }
+
+        const sections = answered
+            .map( ( row ) => DoltDbAssembler.#answeredEntry( { row, questionOptions, answers } ) )
+            .reduce( ( acc, part ) => acc.concat( part ), [] )
+
+        return heading.concat( sections )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#answeredEntry (core). Field order fixed (heading, Frage,
+    // AI-Empfehlung war, User-Entscheidung, optional Wortlaut).
+    static #answeredEntry( { row, questionOptions, answers } ) {
+        const id = row[ 'id' ]
+        const record = DoltDbAssembler.#latestAnswer( { answers, questionId: id } )
+        const base = [
+            `### ${ cell( id ) } — ${ DoltDbAssembler.#answeredTitle( { row } ) }`,
+            '',
+            `- **Frage (Original):** ${ cell( row[ 'text' ] ) }`,
+            `- **AI-Empfehlung war:** ${ DoltDbAssembler.#answeredAi( { row } ) }`,
+            `- **User-Entscheidung:** ${ DoltDbAssembler.#answeredDecision( { record, questionOptions, questionId: id } ) }`
+        ]
+
+        return base
+            .concat( DoltDbAssembler.#answeredWortlaut( { record } ) )
+            .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#answeredTitle.
+    static #answeredTitle( { row } ) {
+        const title = row[ 'title' ]
+
+        return cell( typeof title === 'string' && title.length > 0 ? title : row[ 'text' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#answeredAi.
+    static #answeredAi( { row } ) {
+        const value = row[ 'ai_recommendation' ]
+
+        return typeof value === 'string' && value.length > 0 ? cell( value ) : '—'
+    }
+
+
+    // Byte-identical to RevisionAssembler.#latestAnswer — the newest record per question (max input_id).
+    static #latestAnswer( { answers, questionId } ) {
+        const forQuestion = answers
+            .filter( ( row ) => row[ 'question_id' ] === questionId )
+        if( forQuestion.length === 0 ) {
+            return null
+        }
+
+        return forQuestion
+            .reduce( ( acc, row ) => String( row[ 'input_id' ] ) > String( acc[ 'input_id' ] ) ? row : acc, forQuestion[ 0 ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#answeredDecision.
+    static #answeredDecision( { record, questionOptions, questionId } ) {
+        if( record === null ) {
+            return '—'
+        }
+
+        const optionKey = record[ 'option_key' ]
+        if( typeof optionKey === 'string' && optionKey.length > 0 ) {
+            const option = questionOptions
+                .find( ( entry ) => entry[ 'question_id' ] === questionId && entry[ 'opt_key' ] === optionKey )
+            const label = option !== undefined ? option[ 'label' ] : null
+
+            return typeof label === 'string' && label.length > 0 ? `${ cell( optionKey ) } — ${ cell( label ) }` : cell( optionKey )
+        }
+
+        const verbatim = record[ 'answer_verbatim' ]
+
+        return typeof verbatim === 'string' && verbatim.length > 0 ? cell( verbatim ) : '—'
+    }
+
+
+    // Byte-identical to RevisionAssembler.#answeredWortlaut.
+    static #answeredWortlaut( { record } ) {
+        if( record === null ) {
+            return []
+        }
+
+        const optionKey = record[ 'option_key' ]
+        const verbatim = record[ 'answer_verbatim' ]
+        const hasOption = typeof optionKey === 'string' && optionKey.length > 0
+        const hasVerbatim = typeof verbatim === 'string' && verbatim.length > 0
+        if( hasOption !== true || hasVerbatim !== true ) {
+            return []
+        }
+
+        return [ `- **Wortlaut:** ${ cell( verbatim ) }` ]
     }
 
 

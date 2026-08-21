@@ -401,6 +401,20 @@ class DoltDbAssembler {
         const questionOptions = DoltDbAssembler.#tableExists( { db, table: 'question_option' } ) === true
             ? DoltDbAssembler.#all( { db, sql: 'SELECT question_id, opt_key, label, kind, sort FROM question_option ORDER BY question_id, sort' } )
             : []
+        // research (+ research_topics / research_files edges) — the memo-local R-circle REV-03 Kap 3 Punkt 1
+        // enumerates as DB-resident memo-body data ("Research-Kanten leben in der DB"). Mirrors the core
+        // RevisionAssembler read: #tableExists-guarded, degraded to [] on an early hand-seeded db that predates
+        // the tables, ORDER BY r_no with each edge read ORDER BY r_no then its own stable second key, so the
+        // viewer render stays byte-identical to the frozen REV.
+        const research = DoltDbAssembler.#tableExists( { db, table: 'research' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT r_no, title, kind, path FROM research ORDER BY r_no' } )
+            : []
+        const researchTopics = DoltDbAssembler.#tableExists( { db, table: 'research_topics' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT r_no, topic_id FROM research_topics ORDER BY r_no, topic_id' } )
+            : []
+        const researchFiles = DoltDbAssembler.#tableExists( { db, table: 'research_files' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT r_no, path, sha256 FROM research_files ORDER BY r_no, path' } )
+            : []
 
         const head = [
             `# ${ cell( memo[ 'name' ] ) }`,
@@ -417,6 +431,7 @@ class DoltDbAssembler {
             .concat( DoltDbAssembler.#renderBlocks( { blocks, blockTables, blockDiagrams } ) )
             .concat( DoltDbAssembler.#renderTopics( { topics } ) )
             .concat( DoltDbAssembler.#renderPhases( { phases, phaseWorkItems } ) )
+            .concat( DoltDbAssembler.#renderResearch( { research, researchTopics, researchFiles } ) )
             .concat( DoltDbAssembler.#renderQuestionsJson( { questions, questionOptions } ) )
             .concat( DoltDbAssembler.#renderOpenQuestions( { questions } ) )
             .join( '\n' )
@@ -499,6 +514,41 @@ class DoltDbAssembler {
             .reduce( ( acc, part ) => acc.concat( part ), [] )
 
         return heading.concat( sections )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderResearch — the memo-local Research register (Kap 3 Punkt 1
+    // "Research-Kanten leben in der DB") from the `research` table + its `research_topics` / `research_files`
+    // edges, ORDER BY r_no, with the bound topic ids and produced file paths as joined cells. The always-null
+    // `research.path` scalar is omitted (superseded by the research_files edges). Empty renders `_no research_`.
+    static #renderResearch( { research, researchTopics, researchFiles } ) {
+        const heading = [ '## Research', '' ]
+        if( research.length === 0 ) {
+            return heading.concat( [ '_no research_', '' ] )
+        }
+
+        const table = [
+            '| R | Title | Kind | Topics | Files |',
+            '| --- | --- | --- | --- | --- |'
+        ]
+        const bodyRows = research
+            .map( ( entry ) => {
+                const topics = researchTopics
+                    .filter( ( edge ) => edge[ 'r_no' ] === entry[ 'r_no' ] )
+                    .map( ( edge ) => edge[ 'topic_id' ] )
+                    .join( ', ' )
+                const files = researchFiles
+                    .filter( ( edge ) => edge[ 'r_no' ] === entry[ 'r_no' ] )
+                    .map( ( edge ) => edge[ 'path' ] )
+                    .join( ', ' )
+
+                return `| R${ cell( entry[ 'r_no' ] ) } | ${ cell( entry[ 'title' ] ) } | ${ cell( entry[ 'kind' ] ) } | ${ cell( topics ) } | ${ cell( files ) } |`
+            } )
+
+        return heading
+            .concat( table )
+            .concat( bodyRows )
+            .concat( [ '' ] )
     }
 
 

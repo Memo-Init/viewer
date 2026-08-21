@@ -417,6 +417,9 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, commit_hash TEXT, depends_on TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS question_option ( question_id TEXT, opt_key TEXT, label TEXT, kind TEXT, sort INTEGER )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS research ( r_no INTEGER PRIMARY KEY, memo_id TEXT, title TEXT, kind TEXT, path TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS research_topics ( r_no INTEGER, topic_id TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS research_files ( r_no INTEGER, path TEXT, sha256 TEXT )' )
 
             db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
                 .run( 'M079', 'DB Traceability', 'strategy', 'finalized', '2026-08-20T00:00:00.000Z', 'Kontext Zeile eins.\nKontext Zeile zwei.' )
@@ -443,6 +446,17 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             insertOption.run( 'F1', 'B', 'Nein — die Files bleiben SoT', 'option', 1 )
             insertOption.run( 'F2', 'A', 'Aus rollout/state.json projizieren', 'option', 0 )
             insertOption.run( 'F2', 'B', 'Manuell in der DB pflegen', 'option', 1 )
+            // the memo-local Research register — rows IDENTICAL to what the core MemoContentStore.setResearch
+            // writer produces from seedCanonical, so the ## Research render is byte-identical across both repos.
+            const insertResearch = db.prepare( 'INSERT INTO research ( r_no, memo_id, title, kind, path ) VALUES ( ?, ?, ?, ?, ? )' )
+            insertResearch.run( 1, 'M079', 'doltlite Machbarkeit', 'wave-2', null )
+            insertResearch.run( 2, 'M079', 'Memo-Korpus', 'wave-2', null )
+            const insertResearchTopic = db.prepare( 'INSERT INTO research_topics ( r_no, topic_id ) VALUES ( ?, ? )' )
+            insertResearchTopic.run( 1, 'T01' )
+            insertResearchTopic.run( 2, 'T01' )
+            insertResearchTopic.run( 2, 'T02' )
+            db.prepare( 'INSERT INTO research_files ( r_no, path, sha256 ) VALUES ( ?, ?, ? )' )
+                .run( 1, 'context/research/2026-08-19--doltlite-machbarkeit.md', null )
             db.close()
         }
 
@@ -453,6 +467,12 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
 
             expect( markdown ).toBe( GOLDEN_FULL_BODY )
+
+            // Slice-2b: the memo-local Research register + its topic/file edges RENDER from the DB, byte-identical
+            // to the core assembler (REV-03 Kap 3 Punkt 1 "Research-Kanten leben in der DB").
+            expect( markdown ).toContain( '## Research\n\n| R | Title | Kind | Topics | Files |' )
+            expect( markdown ).toContain( '| R1 | doltlite Machbarkeit | wave-2 | T01 | context/research/2026-08-19--doltlite-machbarkeit.md |' )
+            expect( markdown ).toContain( '| R2 | Memo-Korpus | wave-2 | T01, T02 |  |' )
 
             // hand-edit guard: the vendored fixture must hash to the recorded manifest sha256 (same value the
             // core repo records), so a doctored golden that would silently satisfy the equality is caught.
@@ -478,6 +498,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
 
             expect( markdown ).toContain( '## Topics\n\n_no topics_' )
             expect( markdown ).toContain( '## Phasen\n\n_no phases_' )
+            expect( markdown ).toContain( '## Research\n\n_no research_' )
             expect( markdown ).toContain( '## Fragen\n\n```questions-json\n[]\n```' )
             expect( markdown ).toContain( '## Offene Fragen\n\nkeine' )
         } )

@@ -51,6 +51,13 @@ graph TD
 | --- | --- | --- | --- | --- |
 | PRD-01 | adapter | done | core | code |
 
+## Research
+
+| R | Title | Kind | Topics | Files |
+| --- | --- | --- | --- | --- |
+| R1 | doltlite Machbarkeit | wave-2 | T01 | context/research/2026-08-19--doltlite-machbarkeit.md |
+| R2 | Memo-Korpus | wave-2 | T01, T02 |  |
+
 ## Fragen
 
 ```questions-json

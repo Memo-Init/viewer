@@ -1,6 +1,6 @@
 {
-    "note": "Canonical assembled-revision BODY (Memo 079, PRD-16 + Slice-2a answerable questions). SINGLE SOURCE for the cross-repo byte-parity gate: RevisionAssembler (core) freezes it and DoltDbAssembler (viewer) must reproduce it byte-for-byte. The questions-json fence now carries the FULL answerable canonical shape (title/hintergrund/frage/aiRecommendation/typ/options[]) so a DB-first widget renders an interactive card (QuestionContract.isRenderable). Regenerate via the Slice-2a gen script. sha256 is over full-body.md; a one-sided renderer edit fails its repo parity test (render !== fixture / hash).",
+    "note": "Canonical assembled-revision BODY (Memo 079, PRD-16 answerable questions + Slice-2b Research register). SINGLE SOURCE for the cross-repo byte-parity gate: RevisionAssembler (core) freezes it and DoltDbAssembler (viewer) must reproduce it byte-for-byte. The questions-json fence carries the FULL answerable canonical shape (title/hintergrund/frage/aiRecommendation/typ/options[]); the ## Research section renders the memo-local research + research_topics + research_files edges. Regenerate by re-seeding the canonical rows through the production writers (RevisionAssembler.test seedCanonical / DoltDbAssembler.test seedFullCanonical) and re-hashing full-body.md into both repo copies. sha256 is over full-body.md; a one-sided renderer edit fails its repo parity test (render !== fixture / hash).",
     "fixture": "full-body.md",
-    "sha256": "2801a1ac0cd87b46f3a59b06ccab2185dd55a1efdae64e67e32200cf80ac4a5c",
-    "byteLength": 1831
+    "sha256": "1f319f0b29eac4dc6548a72f35795eec14c6ebc832e3386672d441a24f448abd",
+    "byteLength": 2059
 }

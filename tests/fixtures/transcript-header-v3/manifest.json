@@ -23,12 +23,6 @@
             "file": "frei.md",
             "promptHash": "3f06dd3e850f445829ec2513ab477b12a8139749cd405c83159b8c31fa43c566",
             "promptLength": 759
-        },
-        {
-            "id": "plan-start",
-            "file": "plan-start.md",
-            "promptHash": "8067bb1c1506d81d952aaf80f7f716041f88ceadc6fa83e7497dd2d12faa57a5",
-            "promptLength": 759
         }
     ]
 }

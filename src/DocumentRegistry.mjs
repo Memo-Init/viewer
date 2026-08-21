@@ -191,6 +191,9 @@ class DocumentRegistry {
                     'documentKind': doc['documentKind'] || 'memo',
                     'status': doc['status'],
                     'memoStatus': doc['memoStatus'] || MEMO_STATUS_DEFAULT,
+                    // Memo 079 M4 (T013): the RAW DB lifecycle state (null for legacy memos) so the client can
+                    // un-collapse the four rollout-progression states past the coarse 'Finalisiert' badge.
+                    'lifecycleState': doc['lifecycleState'] || null,
                     'questions': doc['questions'] || { 'open': 0, 'answered': 0 },
                     // PRD-22 #4 (Memo 079): surface the answer-record completion flag so the queue join
                     // (MemoView.enrichDocumentsList -> #markAnsweredRevisions) can drop a fully-answered
@@ -267,13 +270,17 @@ class DocumentRegistry {
                     // leaving doc.projectId undefined in computeQueue/renderQueueEntry.
                     'projectId': doc['projectId'],
                     'memoName': doc['memoName'],
-                    // PRD-042 (Memo 016 Kap 3): absolute memo path surfaced to the frontend so the
-                    // Plan-Start step can resolve selected documentIds to absolute paths for the
-                    // injected memo-plan-init/memo-plan-add prompt (no invented/relative paths).
+                    // Absolute memo path surfaced to the frontend so selected documentIds resolve to
+                    // absolute paths (no invented/relative paths). Originally PRD-042 for the Plan-Start
+                    // step; that step was removed with the memo-plan concept (Memo 079 M1), the path
+                    // surface stays for generic document resolution.
                     'memoPath': doc['memoPath'],
                     'documentKind': doc['documentKind'] || 'memo',
                     'status': doc['status'],
                     'memoStatus': doc['memoStatus'] || MEMO_STATUS_DEFAULT,
+                    // Memo 079 M4 (T013): the RAW DB lifecycle state (null for legacy memos) drives the
+                    // queue card's distinct rollout/pausiert/gelandet/gemerged sub-label past 'Finalisiert'.
+                    'lifecycleState': doc['lifecycleState'] || null,
                     'questions': doc['questions'] || { 'open': 0, 'answered': 0 },
                     // PRD-22 #4 (Memo 079): surface the answer-record completion flag so the queue join
                     // (MemoView.enrichRevisionStatus -> #markAnsweredRevisions) can drop a fully-answered
@@ -652,8 +659,13 @@ class DocumentRegistry {
     // the caller keeps the unchanged file-parse path. A db present but with an EMPTY lifecycle table is
     // still db-first (isDb:true) but has no determined stage yet -> the default draft badge (no invented
     // advanced state). Synchronous: doltlite DatabaseSync reads are sync.
+    // Memo 079 M4 (T013 / WI-021+025): the struct now ALSO carries the RAW `lifecycleState` (the last DB
+    // state string, or null for legacy / empty-lifecycle / degrade). The badge axis (memoStatus) stays the
+    // coarse compression, but the client mirror renders a distinct sub-label for the four rollout-progression
+    // states (rollout/pausiert/gelandet/gemerged) from this raw value — so a memo mid-rollout no longer looks
+    // identical to one merely finalized-not-started (the exact "nur finalisiert" picture T013 replaced).
     static #deriveDbMemoStatus( { memoPath } ) {
-        const struct = { 'isDb': false, 'memoStatus': MEMO_STATUS_DEFAULT }
+        const struct = { 'isDb': false, 'memoStatus': MEMO_STATUS_DEFAULT, 'lifecycleState': null }
 
         if( typeof memoPath !== 'string' || memoPath.length === 0 ) {
             return struct
@@ -685,6 +697,9 @@ class DocumentRegistry {
 
             const { memoStatus } = DocumentRegistry.mapLifecycleStateToMemoStatus( { state } )
             struct[ 'memoStatus' ] = memoStatus
+            // Memo 079 M4: keep the RAW state for the client's distinct rollout sub-label (the mapping above
+            // stays the coarse badge; the raw value is what un-collapses rollout/pausiert/gelandet/gemerged).
+            struct[ 'lifecycleState' ] = state
 
             return struct
         } catch( error ) {
@@ -819,8 +834,10 @@ class DocumentRegistry {
         // record (widget OR terminal, the SAME user_input_answers row per WI-044) leaves the queue.
         // Before this a terminal answer created no transcript file / `.loggedin` marker, so the
         // revision stayed 'offen' forever (forensics b5 — the Karteileichen root). The flag is joined
-        // server-side in MemoView.#markAnsweredRevisions from the doc-level answerRecordsComplete
-        // (DocumentRegistry.#deriveDbQuestionCounts), the same shape as the isSuperseded join.
+        // server-side in MemoView.#markAnsweredRevisions from the doc-level answerRecordsComplete.
+        // Memo 079 queue-drop-ungate: answerRecordsComplete is now derived for BOTH regimes — the db
+        // answer records (#deriveDbQuestionCounts) AND the legacy FILE question parse (openCount 0 with
+        // answered > 0) — so the 383 legacy Karteileichen drop on a terminal answer too, not only db memos.
         const answeredComplete = revision[ 'answeredComplete' ] === true
 
         return { 'inQueue': status !== 'eingeloggt' && !isLegacy && !parseError && !isPrepare && !isSuperseded && !answeredComplete }
@@ -1951,7 +1968,7 @@ class DocumentRegistry {
         // stage comes from the DB lifecycle table (last appended state, mapped onto the badge axis),
         // NOT the .md frontmatter parse — one status source, no third contradictory model. The 383
         // legacy memos (isDb:false) keep the unchanged frontmatter parse below.
-        const { isDb, memoStatus: dbMemoStatus } = DocumentRegistry.#deriveDbMemoStatus( { memoPath: doc[ 'memoPath' ] } )
+        const { isDb, memoStatus: dbMemoStatus, lifecycleState: dbLifecycleState } = DocumentRegistry.#deriveDbMemoStatus( { memoPath: doc[ 'memoPath' ] } )
 
         let memoStatus = MEMO_STATUS_DEFAULT
 
@@ -1994,11 +2011,19 @@ class DocumentRegistry {
         }
 
         doc[ 'memoStatus' ] = memoStatus
+        // Memo 079 M4 (T013): surface the RAW lifecycle state (null for legacy/file-parsed memos) so the
+        // queue card can render a distinct rollout/pausiert/gelandet/gemerged sub-label past 'Finalisiert'.
+        doc[ 'lifecycleState' ] = isDb === true ? dbLifecycleState : null
         doc[ 'questions' ] = questions
-        // PRD-22 #4 (Memo 079): only a DB-first memo can carry answer records; a file-parsed memo is
-        // never answer-record-complete (it has no user_input_answers table) so the flag stays false and
-        // its queue behavior is unchanged.
-        doc[ 'answerRecordsComplete' ] = isDbQuestions === true && dbAllAnswered === true
+        // Memo 079 queue-drop-ungate: a db-first memo drops from the queue when ALL its open questions are
+        // covered by user_input_answers records (widget OR terminal, WI-044). The 383 legacy (file) memos
+        // have no db, so a terminal-answered Karteileiche stayed 'offen' forever — exactly the 107 live
+        // Karteileichen the fix targets. Mirror the db answer-completeness from the FILE question parse:
+        // when the full revision shows ZERO open questions and at least one answered (the terminal answers
+        // were folded into `## Beantwortete Fragen` / the json answered set), the legacy memo is answer-
+        // complete and leaves the queue too. A memo with NO questions (answered 0) is NOT "all answered".
+        const fileAllAnswered = isDbQuestions !== true && questions[ 'open' ] === 0 && questions[ 'answered' ] > 0
+        doc[ 'answerRecordsComplete' ] = ( isDbQuestions === true && dbAllAnswered === true ) || fileAllAnswered
 
         struct[ 'status' ] = true
         struct[ 'memoStatus' ] = memoStatus

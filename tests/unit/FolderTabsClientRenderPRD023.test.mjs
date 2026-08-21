@@ -101,4 +101,27 @@ describe( 'folderTabs client rendering — Memo 079 PRD-23 (WI-052)', () => {
             expect( client.includes( "getElementById( 'mode-' + d.builtinMode )" ) ).toBe( true )
         } )
     } )
+
+
+    // Memo 079 M2 (T052): a non-built-in folder tab now renders REAL content — the former
+    // showFolderPlaceholder dead-end is replaced by renderFolderView (doc list + marked-rendered doc).
+    describe( 'M2 folder content wiring (source-level; DOM behaviour = Playwright)', () => {
+        it( 'selectFolderTab routes a non-built-in tab to renderFolderView, not a placeholder', () => {
+            expect( client.includes( 'renderFolderView( d )' ) ).toBe( true )
+            expect( client.includes( 'showFolderPlaceholder' ) ).toBe( false )
+            expect( client.includes( 'noch nicht verdrahtet' ) ).toBe( false )
+        } )
+
+        it( 'defines renderFolderView + renderFolderDocList + selectFolderDoc', () => {
+            expect( client.includes( 'function renderFolderView( d )' ) ).toBe( true )
+            expect( client.includes( 'function renderFolderDocList( d, payload )' ) ).toBe( true )
+            expect( client.includes( 'function selectFolderDoc( d, stem )' ) ).toBe( true )
+        } )
+
+        it( 'fetches the per-folder content routes /api/folder and /api/folder-page', () => {
+            expect( /fetch\(\s*'\/api\/folder\?id='/.test( client ) ).toBe( true )
+            expect( /fetch\(\s*'\/api\/folder-page\?id='/.test( client ) ).toBe( true )
+            expect( client.includes( 'marked.parse(' ) ).toBe( true )
+        } )
+    } )
 } )

@@ -19,7 +19,7 @@ import { TranscriptHeader, TYPE_TEMPLATES, REVISION_TEMPLATE, SCHEMA_VERSION } f
 // Regenerate the fixtures after any header-body change:
 //   (repos/core)  node cli/bin/memo.mjs prompt compose \
 //                     --config templates/transcript-header-prompt.config.mjs --out <tmp>
-//   then copy <tmp>/{memo-init,revision,frei,plan-start}.md into this fixture dir and refresh
+//   then copy <tmp>/{memo-init,revision,frei}.md into this fixture dir and refresh
 //   manifest.json's promptHash/promptLength (relative configPath, no timestamp).
 
 const here = dirname( fileURLToPath( import.meta.url ) )
@@ -30,12 +30,13 @@ const sha256 = ( { text } ) => createHash( 'sha256' ).update( text, 'utf8' ).dig
 
 const manifest = JSON.parse( readFixture( { name: 'manifest.json' } ) )
 
-// The four governed transcript types PRD-30 composes (rollout is out of scope — WI-048).
-const COMPOSED_TYPES = [ 'memo-init', 'revision', 'frei', 'plan-start' ]
+// The three governed transcript types PRD-30 composes (rollout is out of scope — WI-048; plan-start
+// was removed end to end in Memo 079 M1 because REV-03 Kap 1 abolished the memo-plan concept).
+const COMPOSED_TYPES = [ 'memo-init', 'revision', 'frei' ]
 
 
 describe( 'Header-V3 parity gate — TranscriptHeader.mjs vs composed artifacts (WI-047)', () => {
-    it( 'composes exactly the four governed types (no missing/extra, rollout excluded)', () => {
+    it( 'composes exactly the three governed types (no missing/extra, rollout+plan-start excluded)', () => {
         const manifestIds = manifest.units.map( ( unit ) => unit.id )
 
         expect( manifestIds ).toEqual( COMPOSED_TYPES )
@@ -123,7 +124,7 @@ describe( 'Header-V3 — SCHEMA_VERSION 3 round-trips (parse → 3, isLegacy fal
         const headers = [
             TranscriptHeader.build( { type: 'memo-init' } ),
             TranscriptHeader.build( { type: 'frei' } ),
-            TranscriptHeader.build( { type: 'plan-start' } ),
+            TranscriptHeader.build( { type: 'rollout' } ),
             TranscriptHeader.build( { type: 'revision', memoId: '079-x', maxRevNumber: 1 } )
         ]
 

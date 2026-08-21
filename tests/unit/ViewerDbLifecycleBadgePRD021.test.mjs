@@ -163,6 +163,56 @@ describe( 'Viewer DB-first lifecycle badge (Memo 079, PRD-21)', () => {
     } )
 
 
+    // Memo 079 M4 (T013): the badge axis collapses the four rollout-progression states onto 'Finalisiert';
+    // to un-collapse them the client needs the RAW lifecycle state. getDocuments now surfaces doc.lifecycleState
+    // (the last DB state) alongside the coarse memoStatus; a legacy file memo carries null.
+    describe( 'M4 — raw lifecycleState surfaced alongside the coarse badge (T013)', () => {
+        const lifecycleStateOf = ( { registry, memoName } ) => {
+            const { documents } = registry.getDocuments()
+            const doc = documents
+                .find( ( entry ) => entry[ 'memoName' ] === memoName )
+
+            return doc === undefined ? undefined : doc[ 'lifecycleState' ]
+        }
+
+        it( 'surfaces the raw rollout state while the coarse badge stays Finalisiert', async () => {
+            seedMemo( { slug: '079-raw-rollout', lifecycleStates: [ 'angelegt', 'in-revision', 'rollout' ], frontmatterStatus: 'Entwurf', withDb: true } )
+
+            const { registry } = DocumentRegistry.create( {} )
+            await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-raw-rollout', 'revisions' ) } )
+
+            expect( memoStatusOf( { registry, memoName: '079-raw-rollout' } ) ).toBe( 'Finalisiert' )
+            expect( lifecycleStateOf( { registry, memoName: '079-raw-rollout' } ) ).toBe( 'rollout' )
+            registry.shutdown()
+        } )
+
+        it( 'distinguishes pausiert from gemerged in the raw state (both collapse to Finalisiert)', async () => {
+            seedMemo( { slug: '079-raw-paused', lifecycleStates: [ 'rollout', 'pausiert' ], frontmatterStatus: 'Finalisiert', withDb: true } )
+            seedMemo( { slug: '079-raw-merged', lifecycleStates: [ 'gelandet', 'gemerged' ], frontmatterStatus: 'Finalisiert', withDb: true } )
+
+            const { registry } = DocumentRegistry.create( {} )
+            await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-raw-paused', 'revisions' ) } )
+            await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-raw-merged', 'revisions' ) } )
+
+            expect( lifecycleStateOf( { registry, memoName: '079-raw-paused' } ) ).toBe( 'pausiert' )
+            expect( lifecycleStateOf( { registry, memoName: '079-raw-merged' } ) ).toBe( 'gemerged' )
+            expect( memoStatusOf( { registry, memoName: '079-raw-paused' } ) ).toBe( 'Finalisiert' )
+            expect( memoStatusOf( { registry, memoName: '079-raw-merged' } ) ).toBe( 'Finalisiert' )
+            registry.shutdown()
+        } )
+
+        it( 'a legacy file memo carries lifecycleState null (no db)', async () => {
+            seedMemo( { slug: '079-raw-legacy', lifecycleStates: [], frontmatterStatus: 'Finalisiert', withDb: false } )
+
+            const { registry } = DocumentRegistry.create( {} )
+            await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-raw-legacy', 'revisions' ) } )
+
+            expect( lifecycleStateOf( { registry, memoName: '079-raw-legacy' } ) ).toBeNull()
+            registry.shutdown()
+        } )
+    } )
+
+
     describe( 'legacy (file) memo keeps the frontmatter parse (Zwei-Regime, 383 Bestand)', () => {
         it( 'reads memoStatus from the .md frontmatter when NO per-memo db is present', async () => {
             seedMemo( { slug: '079-file-only', lifecycleStates: [], frontmatterStatus: 'Finalisiert', withDb: false } )

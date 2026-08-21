@@ -247,7 +247,7 @@ describe( 'UserInputCapture — PRD-09/11 user_inputs capture via CLI (Memo 079)
             const { fn, calls } = makeExec( {} )
 
             const result = await UserInputCapture.capture( {
-                'memoId': '079', 'transcriptType': 'plan-start', 'content': 'x', 'bodySessionId': 'sess-1', 'env': {}, 'exec': fn, 'withAnswers': false
+                'memoId': '079', 'transcriptType': 'unknown-kind', 'content': 'x', 'bodySessionId': 'sess-1', 'env': {}, 'exec': fn, 'withAnswers': false
             } )
 
             expect( result[ 'status' ] ).toBe( false )

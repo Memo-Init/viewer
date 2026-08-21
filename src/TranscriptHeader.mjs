@@ -16,21 +16,22 @@
 
 const SCHEMA_VERSION = 3
 
+// Memo 079 M1 (REV-03 Kap 1 / F20 / WI-048) — the `plan-start` type is removed end to end: REV-03
+// abolished the memo-plan concept ("zu kompliziert"), so a plan-start transcript would point the user
+// at the deleted memo-plan-init / memo-plan-add skills. Only four types survive.
 const TRANSCRIPT_TYPES = {
     'FREI': 'frei',
     'MEMO_INIT': 'memo-init',
     'REVISION': 'revision',
-    'PLAN_START': 'plan-start',
     'ROLLOUT': 'rollout'
 }
 
-const TYPE_VALUES = [ 'frei', 'memo-init', 'revision', 'plan-start', 'rollout' ]
+const TYPE_VALUES = [ 'frei', 'memo-init', 'revision', 'rollout' ]
 
 const CONTEXT_MODES = {
     'frei': 'im-thread',
     'memo-init': 'leerer-kontext',
     'revision': 'im-thread',
-    'plan-start': 'leerer-kontext',
     'rollout': 'leerer-kontext'
 }
 
@@ -49,7 +50,7 @@ Input-Processing-Pipeline (delegiert, kein Eintrittspunkt) erkennt und korrigier
 // block is a shared constant so the CORE compose config can mirror it byte-for-byte; the parity-gate
 // test fails on drift.
 
-// Block 1 — Voll-Read (memo-init/frei/plan-start scope). The header must be read whole; controlled
+// Block 1 — Voll-Read (memo-init/frei scope). The header must be read whole; controlled
 // entry points are never abbreviated (the user's REV-01 complaint: "mit curl nur die ersten 20 Zeilen").
 const VOLL_READ_BLOCK = `**Voll-Read-Pflicht:** Diese Datei wird IMMER komplett gelesen (ganzer Body,
 nie head/grep/Teil-Fetch). Kontrollierte Eintrittspunkte werden nicht abgekuerzt.`
@@ -178,32 +179,6 @@ ${ FERTIG_KRITERIEN_BLOCK }
 
 `
 
-// Type "plan-start" — leerer Kontext. Plan creation + memo selection, no number/revision/path.
-// Memo 067 WI-6-05 (F5=C): step 1 is the PUBLIC entry point memo-plan; the private
-// memo-plan-init / memo-plan-add skills run as internal delegates + memo-sop precondition added.
-const PLAN_START_TEMPLATE = `# Transcript fuer Plan-Start (plan-start)
-
-${ SCHEMA_LINE }
-
-${ ACHTUNG_BLOCK }
-
-Kontext-Modus: leerer Kontext. KEINE Memo-Nummer, KEIN Ablageort, KEIN Revisions-Feld.
-Zweck: einen Plan erstellen und mehrere Memos auswaehlen.
-
-**Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
-
-Oeffentlicher Eintrittspunkt: \`memo-plan\`
-
-Pflicht-Workflow (Skill-Aufrufe):
-
-1. \`memo-plan\` (Plan erstellen, Memos auswaehlen; delegiert intern an memo-plan-init / memo-plan-add)
-
----
-
-## Transcript-Inhalt
-
-`
-
 // Type "rollout" — leerer Kontext. A finalized memo is executed. No revision field; the memo is
 // selected on entry. Memo 079 PRD-31 #2: the entry point is the LIVED rollout einstieg `memo-rollout`
 // (triggered in a fresh context via "starte den Rollout fuer Memo N" / `/memo-rollout <memo-id>`).
@@ -260,61 +235,23 @@ const TYPE_TEMPLATES = {
     'frei': FREI_TEMPLATE,
     'memo-init': MEMO_INIT_TEMPLATE,
     'revision': REVISION_TEMPLATE,
-    'plan-start': PLAN_START_TEMPLATE,
     'rollout': ROLLOUT_TEMPLATE
 }
 
 // Matches the first line of every type-template above.
-const HEADER_DETECT_REGEX = /^# Transcript (zu Memo |fuer neues Memo|fuer Plan-Start|fuer Rollout|\(frei)/
+const HEADER_DETECT_REGEX = /^# Transcript (zu Memo |fuer neues Memo|fuer Rollout|\(frei)/
 
 // PRD-007: reconstruct the transcript type from the first header line. The first line
 // of each TYPE_TEMPLATE is unique per type, so the type is recoverable on scan.
 const TYPE_FIRST_LINE_REGEX = {
     'revision': /^# Transcript zu Memo /,
     'memo-init': /^# Transcript fuer neues Memo /,
-    'plan-start': /^# Transcript fuer Plan-Start /,
     'rollout': /^# Transcript fuer Rollout /,
     'frei': /^# Transcript \(frei/
 }
 
 
 class TranscriptHeader {
-    // PRD-042 (Memo 016 Kap 3): build the injected Plan-Start prompt. Starts from the
-    // ortfreie plan-start template (no plan number, no .memo/plans/ target, no revision field)
-    // and appends an explicit skill-binding block plus the absolute paths of the selected
-    // finalized memos. The editor only produces this prompt — creating/mutating .memo/plans/
-    // is left to the bound skills (memo-plan-init / memo-plan-add).
-    static buildPlanStartPrompt( { memoPaths } ) {
-        const base = TranscriptHeader.build( { 'type': TRANSCRIPT_TYPES[ 'PLAN_START' ] } )
-
-        if( !base[ 'status' ] ) {
-            return base
-        }
-
-        const paths = Array.isArray( memoPaths ) ? memoPaths.filter( ( p ) => typeof p === 'string' && p.length > 0 ) : []
-
-        if( paths.length === 0 ) {
-            return { 'status': false, 'messages': [ 'TRANSCRIPT-HEADER-004: plan-start prompt requires at least one absolute memo path' ], 'prompt': null }
-        }
-
-        const pathLines = paths
-            .map( ( p ) => `- ${ p }` )
-            .join( '\n' )
-
-        const promptBody = `${ base[ 'header' ] }Plan-Erstellung + Memo-Auswahl.
-
-Skill-Bindung:
-- Neuer Plan: memo-plan-init {slug} (legt einen neuen Plan an; die Plan-Nummer wird vom Skill selbst vergeben — KEINE Nummer und KEIN Ablageort hier vordefinieren).
-- Bestehender Plan: memo-plan-add {plan-id} {memo-path} (fuegt je Memo eines zu einem bestehenden Plan hinzu).
-
-Ausgewaehlte finalisierte Memos (absolute Pfade):
-${ pathLines }
-`
-
-        return { 'status': true, 'messages': [], 'prompt': promptBody, 'contextMode': CONTEXT_MODES[ TRANSCRIPT_TYPES[ 'PLAN_START' ] ], 'memoPaths': paths }
-    }
-
-
     static build( { type, memoId, revisionId, maxRevNumber } ) {
         const resolvedType = ( type === undefined || type === null ) ? TRANSCRIPT_TYPES[ 'FREI' ] : type
 
@@ -396,7 +333,7 @@ ${ pathLines }
 
 
     // PRD-007: reconstruct the transcript type from the header's first line on scan.
-    // Returns the type value (frei/memo-init/revision/plan-start) or null when no known
+    // Returns the type value (frei/memo-init/revision/rollout) or null when no known
     // header line is present (legacy files without a type-specific header).
     static detectType( { content } ) {
         if( typeof content !== 'string' || content.length === 0 ) {

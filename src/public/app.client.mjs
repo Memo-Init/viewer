@@ -153,6 +153,10 @@
         let audioGestureSeen = false
         let currentFileName = ''
         let currentMemoName = ''
+        // Memo 079 M3=A (T059): when a served research MD is open as an annotatable view, this holds its
+        // memoDir-relative path (else null). saveAnnotation reads it to POST targetKind:'research' +
+        // researchFile instead of the revision default; it is cleared whenever a normal revision renders.
+        let currentResearchFile = null
         // PRD-012 (Memo 011 Kap 4, F16=A): track the active documentId so the requirements view
         // can fetch /api/documents/<id>/requirements for the currently selected memo.
         let currentDocumentId = ''
@@ -616,6 +620,22 @@
             var count = ( typeof revisionCount === 'number' && revisionCount > 0 ) ? revisionCount : 0
             if( count > 1 ) { return 'In Bearbeitung' }
             return 'Entwurf'
+        }
+
+        // Memo 079 M4 (T013 / WI-021+025): un-collapse the rollout lifecycle. The coarse badge axis maps
+        // rollout/pausiert/gelandet/gemerged ALL onto 'Finalisiert' and abgeschlossen/abgebrochen both onto
+        // 'Abgeschlossen', so a memo mid-rollout looked identical to one merely finalized-not-started. Given
+        // the RAW DB lifecycle state (DocumentRegistry surfaces it now), this returns a DISTINCT German
+        // sub-label for the progression + aborted states, else null (the coarse label stands unchanged).
+        function rolloutSubLabelFor( lifecycleState ) {
+            var map = {
+                'rollout': 'Rollout läuft',
+                'pausiert': 'Pausiert',
+                'gelandet': 'Gelandet',
+                'gemerged': 'Gemerged',
+                'abgebrochen': 'Abgebrochen'
+            }
+            return ( typeof lifecycleState === 'string' && map[ lifecycleState ] ) ? map[ lifecycleState ] : null
         }
 
         // PRD-001 (Memo 018 Kap 4): derive the viewed revision's revisionStatus from transcript
@@ -1374,6 +1394,12 @@
                 // the raw revision enum. deriveLifecycleStatusFor mirrors DocumentRegistry.
                 // deriveLifecycleStatus (planCompleted has no frontend source yet, additiver Hook).
                 var queueLifecycle = deriveLifecycleStatusFor( doc.memoStatus, ( doc.revisions || [] ).length )
+                // Memo 079 M4 (T013): a db-backed memo mid-rollout carries a RAW lifecycleState. When it is
+                // one of the four progression states (or abgebrochen) show that DISTINCT sub-label instead of
+                // the collapsed 'Finalisiert'/'Abgeschlossen' — the exact "nur finalisiert" picture T013 set
+                // out to replace. Legacy memos (lifecycleState null) keep the coarse label unchanged.
+                var rolloutSubLabel = rolloutSubLabelFor( doc.lifecycleState )
+                var queueLifecycleDisplay = rolloutSubLabel || queueLifecycle
 
                 var html = '<li class="queue-card" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" onclick="selectRevision(this.dataset.doc,this.dataset.rev)">'
                 html += '<span class="queue-card-bar" aria-hidden="true"></span>'
@@ -1385,8 +1411,12 @@
                 html += '<span class="queue-card-minutes" data-queue-minutes="' + queueMemoMinutes + '" title="Gesamte gesprochene Transcript-Dauer">\uD83C\uDF99 ' + queueMemoMinutes + ' Min</span>'
                 html += '<span class="queue-card-chip" data-queue-chip><span class="queue-card-chip-q">?</span>' + openNum + '</span>'
                 html += '</span>'
-                // Zeile 2: REV-NN · offen + Lifecycle-Status des Memos (PRD-004-Modell).
-                html += '<span class="queue-card-row2" data-queue-status data-queue-lifecycle="' + escapeAttr( queueLifecycle ) + '">' + escapeAttr( revStatusLine ) + '<span class="queue-card-lifecycle" data-queue-lifecycle-label>' + escapeAttr( queueLifecycle ) + '</span></span>'
+                // Zeile 2: REV-NN · offen + Lifecycle-Status des Memos (PRD-004-Modell). Memo 079 M4: the
+                // label shows the distinct rollout sub-label when present; data-queue-lifecycle keeps the
+                // coarse rung and data-queue-lifecycle-state carries the RAW db state (empty for legacy).
+                var rolloutStateAttr = rolloutSubLabel ? ( ' data-queue-lifecycle-state="' + escapeAttr( doc.lifecycleState || '' ) + '"' ) : ''
+                var lifecycleClass = rolloutSubLabel ? 'queue-card-lifecycle queue-card-lifecycle-rollout' : 'queue-card-lifecycle'
+                html += '<span class="queue-card-row2" data-queue-status data-queue-lifecycle="' + escapeAttr( queueLifecycle ) + '"' + rolloutStateAttr + '>' + escapeAttr( revStatusLine ) + '<span class="' + lifecycleClass + '" data-queue-lifecycle-label>' + escapeAttr( queueLifecycleDisplay ) + '</span></span>'
                 // Zeile 3: folder + Namespace + · Datum. WI-028: the ns label is suppressed when this item
                 // repeats the previous item's namespace (no per-item repetition of the same namespace).
                 html += '<span class="queue-card-row3">'
@@ -1689,11 +1719,12 @@
         // adds the fifth type 'rollout' — the rollout is triggered in a FRESH/empty context (user
         // trigger in frischem Kontext), so its context mode is 'leerer Kontext'. Used to tag sidebar
         // entries and label the injection block (no more "Unbekannt" fallback for a rollout leaf).
+        // Memo 079 M1 (REV-03 Kap 1 / WI-048): 'plan-start' removed — memo-plan was abolished,
+        // so the type no longer exists server-side and must not be offered as a sidebar label.
         var transcriptTypeMeta = {
             'frei': { label: 'Frei', context: 'im Thread' },
             'memo-init': { label: 'Memo-Init', context: 'leerer Kontext' },
             'revision': { label: 'Revision', context: 'im Thread' },
-            'plan-start': { label: 'Plan-Start', context: 'leerer Kontext' },
             'rollout': { label: 'Rollout', context: 'leerer Kontext' }
         }
 
@@ -1703,7 +1734,7 @@
         }
 
         // PRD-018 US-2: the only primary type is the one the user actually uses ("Memo
-        // erstellen" -> memo-init); frei/revision/plan-start are the nachrangige history.
+        // erstellen" -> memo-init); frei/revision/rollout are the nachrangige history.
         function isPrimaryTranscriptType( type ) {
             return type === 'memo-init'
         }
@@ -1984,7 +2015,6 @@
             var type = 'frei'
             if( /^# Transcript zu Memo /.test( firstLine ) ) { type = 'revision' }
             else if( /^# Transcript fuer neues Memo /.test( firstLine ) ) { type = 'memo-init' }
-            else if( /^# Transcript fuer Plan-Start /.test( firstLine ) ) { type = 'plan-start' }
             else if( /^# Transcript fuer Rollout /.test( firstLine ) ) { type = 'rollout' }
             else if( /^# Transcript \(frei/.test( firstLine ) ) { type = 'frei' }
 
@@ -2223,9 +2253,9 @@
         // in the root config. buildFolderTabDescriptors is the PURE mapping (config → render descriptors);
         // renderFolderTabs injects the buttons. A tab whose view maps to a BUILT-IN mode (spec/specs → the
         // existing Specs tab) is NOT duplicated — the built-in button already shows it, so the tab just
-        // routes there. A non-built-in folder tab renders a working toggle; its per-folder CONTENT surface
-        // (a registry + route, the Specs precedent generalized) is future server work, so it opens an
-        // honest placeholder for now.
+        // routes there. Memo 079 M2 (T052): a non-built-in folder tab now renders REAL content — its docs
+        // list from /api/folder, each doc marked-rendered from /api/folder-page (the Specs precedent
+        // generalized) — instead of the former dead-end placeholder.
         function buildFolderTabDescriptors( folderTabs ) {
             var builtinViews = { spec: 'specs', specs: 'specs' }
             var list = Array.isArray( folderTabs ) ? folderTabs : []
@@ -2291,11 +2321,11 @@
                 return
             }
 
-            showFolderPlaceholder( d )
+            renderFolderView( d )
         }
 
-        function showFolderPlaceholder( d ) {
-            // deactivate the three built-in tabs, then mark the clicked folder tab active.
+        // Memo 079 M2 (T052): mark the clicked folder tab active and deactivate the three built-in tabs.
+        function markFolderTabActive( d ) {
             setActiveModeButton( '' )
             var container = document.getElementById( 'mode-toggle' )
             if( container ) {
@@ -2305,19 +2335,105 @@
                     btn.setAttribute( 'aria-pressed', isActive ? 'true' : 'false' )
                 } )
             }
+        }
 
+        // Memo 079 M2 (T052 / WI-050): render a declared folder tab's CONTENT — the Specs precedent
+        // generalized. Fetches the doc list from /api/folder and renders it into #content; clicking a doc
+        // loads its raw markdown from /api/folder-page and marked-renders it. A fetch/parse error shows a
+        // visible note instead of the former silent placeholder dead-end.
+        function renderFolderView( d ) {
+            markFolderTabActive( d )
             var content = document.getElementById( 'content' )
             if( !content ) { return }
+            content.innerHTML = '<div class="folder-view-loading">Lade Ordner "' + escapeHtml( d.folder ) + '" …</div>'
+
+            fetch( '/api/folder?id=' + encodeURIComponent( d.id ) )
+                .then( function( res ) {
+                    if( !res.ok ) { throw new Error( 'HTTP ' + res.status ) }
+                    return res.json()
+                } )
+                .then( function( payload ) { renderFolderDocList( d, payload ) } )
+                .catch( function( err ) {
+                    content.innerHTML = '<div class="folder-view-error" style="color:#f85149">Ordner "' + escapeHtml( d.folder ) + '" konnte nicht geladen werden: ' + escapeHtml( String( err && err.message ? err.message : err ) ) + '</div>'
+                } )
+        }
+
+        function renderFolderDocList( d, payload ) {
+            var content = document.getElementById( 'content' )
+            if( !content ) { return }
+            var docs = ( payload && Array.isArray( payload.docs ) ) ? payload.docs : []
             content.innerHTML = ''
-            var box = document.createElement( 'div' )
-            box.className = 'folder-tab-placeholder'
+
+            var wrap = document.createElement( 'div' )
+            wrap.className = 'folder-view'
+
             var heading = document.createElement( 'h2' )
+            heading.className = 'folder-view-heading'
             heading.textContent = d.label
-            var note = document.createElement( 'p' )
-            note.textContent = 'Ordner-Tab "' + d.folder + '" — die Inhaltsansicht ist noch nicht verdrahtet (per-Folder-Registry + Route folgt). Der Specs-Tab ist die Vorlage.'
-            box.appendChild( heading )
-            box.appendChild( note )
-            content.appendChild( box )
+            wrap.appendChild( heading )
+
+            var sub = document.createElement( 'div' )
+            sub.className = 'folder-view-sub'
+            sub.textContent = payload && payload.folder ? payload.folder : d.folder
+            wrap.appendChild( sub )
+
+            if( docs.length === 0 ) {
+                var empty = document.createElement( 'p' )
+                empty.className = 'folder-view-empty'
+                empty.textContent = 'Keine Markdown-Dokumente in diesem Ordner.'
+                wrap.appendChild( empty )
+                content.appendChild( wrap )
+
+                return
+            }
+
+            var list = document.createElement( 'div' )
+            list.className = 'folder-doc-list'
+            docs.forEach( function( doc ) {
+                var link = document.createElement( 'button' )
+                link.className = 'folder-doc-link'
+                link.setAttribute( 'data-folder-doc', doc.stem )
+                link.textContent = doc.name
+                link.addEventListener( 'click', function() { selectFolderDoc( d, doc.stem ) } )
+                list.appendChild( link )
+            } )
+            wrap.appendChild( list )
+
+            var body = document.createElement( 'div' )
+            body.className = 'folder-doc-body'
+            body.id = 'folder-doc-body'
+            wrap.appendChild( body )
+
+            content.appendChild( wrap )
+
+            // auto-open the first doc so the view never renders an empty body (mirrors autoSelectFirstSpecPage).
+            selectFolderDoc( d, docs[ 0 ].stem )
+        }
+
+        function selectFolderDoc( d, stem ) {
+            var body = document.getElementById( 'folder-doc-body' )
+            if( !body ) { return }
+
+            var list = document.querySelector( '.folder-doc-list' )
+            if( list ) {
+                Array.prototype.slice.call( list.querySelectorAll( '.folder-doc-link' ) ).forEach( function( btn ) {
+                    btn.classList.toggle( 'active', btn.getAttribute( 'data-folder-doc' ) === stem )
+                } )
+            }
+
+            body.innerHTML = '<div class="folder-doc-loading">Lade …</div>'
+            fetch( '/api/folder-page?id=' + encodeURIComponent( d.id ) + '&page=' + encodeURIComponent( stem ) )
+                .then( function( res ) {
+                    if( !res.ok ) { throw new Error( 'HTTP ' + res.status ) }
+                    return res.json()
+                } )
+                .then( function( payload ) {
+                    body.innerHTML = marked.parse( ( payload && payload.content ) || '' )
+                    renderAllDiagrams()
+                } )
+                .catch( function( err ) {
+                    body.innerHTML = '<div style="color:#f85149">Dokument konnte nicht geladen werden: ' + escapeHtml( String( err && err.message ? err.message : err ) ) + '</div>'
+                } )
         }
 
         // Memo 079 PRD-23 (WI-052): fetch the resolved folderTabs from /api/index and render them. The
@@ -5252,11 +5368,14 @@
             return m ? m[ 1 ] : null
         }
 
-        // Fetch the memo's annotations (optionally scoped to the current revision) and re-run the pass.
+        // Fetch the memo's annotations (scoped to the current revision, or — Memo 079 M3=A — to the open
+        // research file) and re-run the pass.
         function refreshAnnotations() {
             if( !currentDocumentId ) { return }
             var rev = currentRevisionId()
-            var qs = rev ? ( '?revisionId=' + encodeURIComponent( rev ) ) : ''
+            var qs = currentResearchFile
+                ? ( '?researchFile=' + encodeURIComponent( currentResearchFile ) )
+                : ( rev ? ( '?revisionId=' + encodeURIComponent( rev ) ) : '' )
             fetch( '/api/documents/' + encodeURIComponent( currentDocumentId ) + '/annotations' + qs )
                 .then( function( r ) { return r.ok ? r.json() : { annotations: [] } } )
                 .then( function( data ) {
@@ -5655,11 +5774,13 @@
             var comment = commentEl ? String( commentEl.value || '' ).trim() : ''
             if( !pendingAnnotationAnchor ) { return }
 
-            // PRD-005 WI-127: catch the missing-revision case BEFORE the POST with a clear German message,
-            // instead of letting the server return a generic 422 (annotations bind to a REV-NN.md file).
+            // Memo 079 M3=A (T059): a research view is annotatable too — when currentResearchFile is set the
+            // POST carries targetKind:'research' + researchFile (no REV-NN required). Otherwise the existing
+            // revision path applies, and the missing-revision case is caught BEFORE the POST (PRD-005
+            // WI-127) with a clear German message instead of a generic 422.
             var rev = currentRevisionId()
-            if( !rev ) {
-                if( errEl ) { errEl.textContent = 'Anmerkungen sind nur auf einer Revisions-Datei (REV-NN.md) möglich.'; errEl.classList.remove( 't-hidden' ) }
+            if( !currentResearchFile && !rev ) {
+                if( errEl ) { errEl.textContent = 'Anmerkungen sind nur auf einer Revisions-Datei (REV-NN.md) oder einem Research-Dokument möglich.'; errEl.classList.remove( 't-hidden' ) }
 
                 return
             }
@@ -5669,12 +5790,10 @@
                 return
             }
 
-            var body = JSON.stringify( {
-                documentId: currentDocumentId,
-                revisionId: rev,
-                anchor: pendingAnnotationAnchor,
-                comment: comment
-            } )
+            var payload = currentResearchFile
+                ? { documentId: currentDocumentId, targetKind: 'research', researchFile: currentResearchFile, anchor: pendingAnnotationAnchor, comment: comment }
+                : { documentId: currentDocumentId, revisionId: rev, anchor: pendingAnnotationAnchor, comment: comment }
+            var body = JSON.stringify( payload )
 
             fetch( '/api/annotations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body } )
                 .then( function( r ) { return r.json().then( function( d ) { return { ok: r.ok, data: d } } ) } )
@@ -5918,7 +6037,6 @@
             var crossParts = [ 'Topics: ' + topicIds.join( ', ' ) ]
             if( wis.length ) { crossParts.push( 'Work-Items: ' + uniqueList( wis ).join( ', ' ) ) }
             if( deps.length ) { crossParts.push( 'Abhängt: ' + uniqueList( deps ).join( ', ' ) ) }
-            if( research.length ) { crossParts.push( 'Research: ' + uniqueList( research ).join( ', ' ) ) }
 
             if( crossParts.length ) {
                 var cross = document.createElement( 'div' )
@@ -5927,7 +6045,68 @@
                 wrap.appendChild( cross )
             }
 
+            // Memo 079 M3=A (T059): the research file(s) are no longer read-only text — each renders as a
+            // CLICKABLE link that opens the research MD as an annotatable view (openResearchDoc). The
+            // server annotation door (targetKind:'research') is finally reachable from the UI.
+            var uniqueResearch = uniqueList( research )
+            if( uniqueResearch.length ) {
+                var researchRow = document.createElement( 'div' )
+                researchRow.className = 'topic-research-line'
+                var label = document.createElement( 'span' )
+                label.className = 'topic-research-label'
+                label.textContent = 'Research: '
+                researchRow.appendChild( label )
+                uniqueResearch.forEach( function( file, index ) {
+                    if( index > 0 ) { researchRow.appendChild( document.createTextNode( ', ' ) ) }
+                    var link = document.createElement( 'button' )
+                    link.className = 'research-open-link'
+                    link.setAttribute( 'data-research-file', file )
+                    link.textContent = file
+                    link.title = 'Research-Dokument öffnen (annotierbar)'
+                    link.addEventListener( 'click', function() { openResearchDoc( file ) } )
+                    researchRow.appendChild( link )
+                } )
+                wrap.appendChild( researchRow )
+            }
+
             heading.parentNode.insertBefore( wrap, heading.nextSibling )
+        }
+
+
+        // Memo 079 M3=A (T059): open a served research MD as an ANNOTATABLE view. Fetches the raw markdown
+        // from /api/research-page (memoDir-relative, path-traversal-guarded server side), renders it into
+        // #content and sets currentResearchFile so the existing selection→anchor→POST pipeline emits
+        // targetKind:'research' + researchFile. A back-link returns to the memo prose (re-render on click).
+        function openResearchDoc( researchFile ) {
+            if( !currentDocumentId || typeof researchFile !== 'string' || researchFile.length === 0 ) { return }
+
+            var qs = '/api/research-page?documentId=' + encodeURIComponent( currentDocumentId )
+                + '&file=' + encodeURIComponent( researchFile )
+
+            fetch( qs )
+                .then( function( res ) {
+                    if( !res.ok ) { throw new Error( 'HTTP ' + res.status ) }
+                    return res.json()
+                } )
+                .then( function( payload ) {
+                    currentResearchFile = researchFile
+                    slugCounts.clear()
+                    var back = '<div class="research-view-bar"><button id="research-back" class="research-back-link">← zurück zum Memo</button>'
+                        + '<span class="research-view-file">' + escapeHtml( researchFile ) + '</span></div>'
+                    contentEl.innerHTML = back + marked.parse( ( payload && payload.content ) || '' )
+                    var backBtn = document.getElementById( 'research-back' )
+                    if( backBtn ) {
+                        backBtn.addEventListener( 'click', function() {
+                            currentResearchFile = null
+                            if( currentDocumentId && currentFileName ) { window.selectRevision( currentDocumentId, currentFileName ) }
+                        } )
+                    }
+                    renderAllDiagrams()
+                    refreshAnnotations()
+                } )
+                .catch( function() {
+                    contentEl.innerHTML = '<p style="color:#f85149">Research-Dokument konnte nicht geladen werden: ' + escapeHtml( researchFile ) + '</p>'
+                } )
         }
 
 
@@ -6580,6 +6759,10 @@
                         }
                     }
                 } )
+                // Memo 079 reframe-freetext-click-loss: the reformulation was committed ONLY on Enter, so
+                // typing it and clicking "Hinzufügen" (or opening the answer popup) — both of which blur the
+                // input BEFORE reading st.custom — silently dropped the typed text. Commit on blur too.
+                input.addEventListener( 'blur', function() { harvestReframeInput( qIdx ) } )
                 customRow.appendChild( input )
                 body.appendChild( customRow )
             }
@@ -6802,6 +6985,30 @@
             }
         }
 
+        // Memo 079 reframe-freetext-click-loss: fold the LIVE reframe reformulation input into st.custom
+        // (deduped) before any reader consumes st.custom. The reformulation used to be committed ONLY on
+        // Enter (keydown), so a user who typed it and clicked "Hinzufügen" — or opened the answer popup —
+        // lost the text (buildAnswerText / the popup prefill read st.custom while the value still sat in the
+        // input). Mirrors the Enter handler's push + clear + added-reset; only the reframe row is harvested.
+        function harvestReframeInput( qIdx ) {
+            var st = questionNav.state[ qIdx ]
+            if( !st ) { return }
+            var card = document.querySelector( '#question-widgets .qw-card[data-qidx="' + qIdx + '"]' )
+            if( !card ) { return }
+            var input = card.querySelector( '.qw-custom-row[data-reframe-row="1"] .qw-custom-input' )
+            if( !input ) { return }
+            var value = String( input.value || '' ).trim()
+            if( value.length === 0 ) { return }
+            if( st.custom.indexOf( value ) === -1 ) { st.custom.push( value ) }
+            input.value = ''
+            if( st.added ) {
+                st.added = false
+                st.addedText = null
+                setAddButtonState( qIdx, false )
+                updateSaveAnswersOnlyState()
+            }
+        }
+
         function submitQuestionAnswer( qIdx ) {
             var q = questionNav.questions[ qIdx ]
             var st = questionNav.state[ qIdx ]
@@ -6816,6 +7023,10 @@
 
                 return
             }
+
+            // Memo 079 reframe-freetext-click-loss: harvest a typed-but-not-Entered reformulation before
+            // buildAnswerText reads st.custom, so clicking "Hinzufügen" never drops it.
+            harvestReframeInput( qIdx )
 
             // PRD-006 (AC-09): re-adding after the selection changed simply overwrites
             // st.addedText with the freshly built answer — answers stay changeable.
@@ -7555,6 +7766,9 @@
 
                     if( data.fileName ) {
                         currentFileName = data.fileName
+                        // Memo 079 M3=A (T059): a real revision content broadcast means we left any research
+                        // view — clear the research scope so annotations bind to the revision again.
+                        currentResearchFile = null
                         currentMemoName = data.memoName || ''
                         currentDocumentId = data.documentId || currentDocumentId
                         // The sticky-header refresh is already neutralized by the generalized

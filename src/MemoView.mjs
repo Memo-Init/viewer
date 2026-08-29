@@ -3362,6 +3362,10 @@ class MemoView {
             clearInterval( heartbeat )
         } )
 
+        // Memo 081 (WI-079): same reasoning as the per-socket handler below, one level up — an error
+        // on the WebSocket SERVER must not be an unhandled 'error' event either.
+        wss.on( 'error', () => {} )
+
         wss.on( 'connection', ( ws ) => {
             clients.add( ws )
 
@@ -3377,6 +3381,15 @@ class MemoView {
             // never got a close handler and leaked in the `clients` Set. Register it unconditionally
             // here so every socket is removed on disconnect regardless of registry/state.
             ws.on( 'close', () => { clients.delete( ws ) } )
+
+            // Memo 081 (WI-079): a socket whose peer vanished mid-write emits 'error' (EPIPE/ECONNRESET).
+            // An EventEmitter 'error' without a listener THROWS — and since this one fires on the raw
+            // socket inside the ws layer, the unhandled event killed the whole server process. Observed
+            // repeatedly, most recently right after a transcript was added (evidence log in Memo 081
+            // context/). A dropped client is normal operation, never a reason to take the server down:
+            // drop it from the broadcast set and keep serving. Errors are swallowed deliberately — the
+            // peer is already gone, there is nobody left to report to.
+            ws.on( 'error', () => { clients.delete( ws ) } )
 
             // PRD-009 (Memo 076 H6, WI-080): tell the fresh socket which client bundle the server is
             // serving right now. The client compares this against the hash its page was rendered with
@@ -5274,6 +5287,23 @@ class MemoView {
 
         process.on( 'SIGINT', shutdown )
         process.on( 'SIGTERM', shutdown )
+
+        // Memo 081 (T082): the server had NO process-level guard — in Node 22 a single unhandled
+        // rejection in any async route handler terminates the whole process, silently and without
+        // a macOS crash report. For a local working surface that is the worst failure mode: the
+        // user loses the tool mid-work and there is nothing left to diagnose.
+        // The guard does NOT swallow the error — it makes it LOUD and durable (timestamp + stack
+        // to stderr) and keeps the process alive, so the defect becomes findable instead of fatal.
+        const survive = ( kind ) => {
+            return ( err ) => {
+                const at = new Date().toISOString()
+                const detail = err instanceof Error ? ( err.stack || err.message ) : String( err )
+                process.stderr.write( `\n[${ at }] SURVIVED ${ kind }\n${ detail }\n\n` )
+            }
+        }
+
+        process.on( 'uncaughtException', survive( 'uncaughtException' ) )
+        process.on( 'unhandledRejection', survive( 'unhandledRejection' ) )
     }
 }
 

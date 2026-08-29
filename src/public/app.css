@@ -2139,6 +2139,17 @@
             color: var(--text-1);
             box-sizing: border-box;
         }
+        /* Memo 081 (REV-10 User-Befund): an un-confirmed selection is shown as a placeholder hint,
+           never as a value — the value would be recorded as a user decision. Amber border marks
+           "you selected something but did not confirm it". */
+        .pp-question-input-unconfirmed {
+            border-color: var(--warn, #d08a2c);
+        }
+        .pp-question-input-unconfirmed::placeholder {
+            color: var(--warn, #d08a2c);
+            opacity: 0.85;
+            font-style: italic;
+        }
         .pp-questions-empty { font-size: 11px; color: var(--text-muted); font-style: italic; }
         .pp-footer {
             display: flex;

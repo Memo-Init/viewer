@@ -4898,11 +4898,22 @@
                 input.className = 'pp-question-input'
                 input.setAttribute( 'data-pp-answer', String( qIdx ) )
                 input.placeholder = 'Antwort...'
-                // Memo 079 PRD-24: prefill from the LIVE widget state, not only confirmed answers — a
-                // selection/custom entry WITHOUT an explicit "Hinzufügen" click no longer shows empty.
+                // Memo 081 (REV-10 User-Befund): ONLY the confirmed answer (st.added/st.addedText)
+                // may become a value here — this field's value is written verbatim into the
+                // "## Antwort auf F{N}" block below, i.e. it becomes a recorded user decision.
+                // Prefilling from the LIVE state (Memo 079 PRD-24) turned an un-confirmed click
+                // into an answer the user never gave. That is the "Vorauswahl ist keine Antwort"
+                // class (Memo 081 Kap 19): held/selected is irrelevant, only deterministically
+                // AND visibly confirmed counts.
+                // PRD-24's intent (do not silently drop a selection the user forgot to confirm)
+                // is preserved via placeholder: visible as a hint, never read as a value.
                 var st = questionNav.state[ qIdx ]
-                if( st && ( st.selected.length > 0 || st.custom.length > 0 ) ) {
+                if( st && st.added === true && st.addedText ) {
                     input.value = buildAnswerText( q, st ).answerLine
+                } else if( st && ( st.selected.length > 0 || st.custom.length > 0 ) ) {
+                    input.placeholder = 'Nicht bestätigt: ' + buildAnswerText( q, st ).answerLine
+                        + ' — im Widget auf "Hinzufügen" klicken, sonst wird nichts übernommen.'
+                    input.classList.add( 'pp-question-input-unconfirmed' )
                 }
                 row.appendChild( input )
 
@@ -6661,6 +6672,27 @@
                 body.appendChild( fr )
             }
 
+            // WI-041 (Memo 081): the AI recommendation is a DISPLAY property, never a selection.
+            // Both the option marker (qw-ai + "(KI-Empfehlung)" hint) and the green KI-EMPFEHLUNG
+            // line used to read `preselected` — but every question sets preselected:[] (the
+            // Vorauswahl-Sperre against the submit leak, Memo 081 Kap 19), so the Sperre silently
+            // switched the whole recommendation display off. Derive the recommended option ONCE
+            // here: from the preselection when present, otherwise from the leading option key of
+            // the recommendation text. Nothing below writes selection state — the Sperre holds.
+            var aiReasoning = typeof q.aiRecommendation === 'string' ? q.aiRecommendation.trim() : ''
+            var aiRecommendedIdx = -1
+            if( q.typ === 'single' ) {
+                if( Array.isArray( q.preselected ) && q.preselected.length > 0 ) {
+                    aiRecommendedIdx = q.preselected[ 0 ]
+                } else if( aiReasoning.length > 0 ) {
+                    var aiKeyMatch = aiReasoning.match( /^([A-H])\b/ )
+                    if( aiKeyMatch ) {
+                        aiRecommendedIdx = ( q.options || [] )
+                            .findIndex( function( o ) { return o && o.kind === 'option' && o.key === aiKeyMatch[ 1 ] } )
+                    }
+                }
+            }
+
             // Options (may be only the two defaults custom/topic if no A/B/C were found).
             var optsWrap = document.createElement( 'div' )
             optsWrap.className = 'qw-options'
@@ -6672,8 +6704,8 @@
                 row.className = 'qw-option'
                 row.setAttribute( 'data-oidx', String( optIdx ) )
                 var isSel = pre.indexOf( optIdx ) !== -1
-                // AI recommendation grey-preselected (opt-in, optional) — single only.
-                var isAi = q.typ === 'single' && Array.isArray( q.preselected ) && q.preselected.indexOf( optIdx ) !== -1
+                // AI recommendation marker — display only, from the derived index above (WI-041).
+                var isAi = aiRecommendedIdx === optIdx
                 if( isSel ) { row.classList.add( 'qw-selected' ) }
                 if( isAi ) { row.classList.add( 'qw-ai' ) }
 
@@ -6700,28 +6732,31 @@
             // just the preselected option label — the bare label never explained WHY the AI
             // recommends it. Prefer the reasoning string; fall back to the option label when no
             // reasoning text is present (e.g. a bare "A" recommendation).
-            var aiReasoning = typeof q.aiRecommendation === 'string' ? q.aiRecommendation.trim() : ''
-            if( q.typ === 'single' && Array.isArray( q.preselected ) && q.preselected.length > 0 ) {
-                var aiIdx = q.preselected[ 0 ]
-                var aiOpt = ( q.options || [] )[ aiIdx ]
-                if( aiOpt ) {
-                    // PRD-023 (Kap 11.4): the AI recommendation is its own clearly labelled,
-                    // visually separated block (own label span + qw-ai-line styling), not a
-                    // run-on sentence after the options.
-                    var aiLine = document.createElement( 'div' )
-                    aiLine.className = 'qw-ai-line'
-                    var aiLabel = document.createElement( 'span' )
-                    aiLabel.className = 'qw-ai-label'
-                    aiLabel.textContent = 'KI-EMPFEHLUNG'
-                    var aiText = document.createElement( 'span' )
-                    aiText.className = 'qw-ai-text'
-                    var aiKeyPrefix = ( aiOpt.kind === 'option' ? aiOpt.key + ') ' : '' )
-                    aiText.textContent = aiReasoning.length > 0 ? ( aiKeyPrefix + aiReasoning ) : ( aiKeyPrefix + aiOpt.label )
-                    aiLine.appendChild( aiLabel )
-                    aiLine.appendChild( document.createTextNode( ' ' ) )
-                    aiLine.appendChild( aiText )
-                    body.appendChild( aiLine )
-                }
+            // WI-041: both aiReasoning and the recommended option are derived above the option
+            // loop (display-only), so the line and the option marker can never drift apart again.
+            var aiOpt = aiRecommendedIdx >= 0 ? ( ( q.options || [] )[ aiRecommendedIdx ] || null ) : null
+            if( aiReasoning.length > 0 || aiOpt !== null ) {
+                // PRD-023 (Kap 11.4): the AI recommendation is its own clearly labelled,
+                // visually separated block (own label span + qw-ai-line styling), not a
+                // run-on sentence after the options.
+                var aiLine = document.createElement( 'div' )
+                aiLine.className = 'qw-ai-line'
+                var aiLabel = document.createElement( 'span' )
+                aiLabel.className = 'qw-ai-label'
+                aiLabel.textContent = 'KI-EMPFEHLUNG'
+                var aiText = document.createElement( 'span' )
+                aiText.className = 'qw-ai-text'
+                // Avoid a doubled key when the reasoning already starts with it ("A — …").
+                var aiKeyPrefix = ( aiOpt !== null && aiOpt.kind === 'option' && aiReasoning.indexOf( aiOpt.key ) !== 0 )
+                    ? ( aiOpt.key + ') ' )
+                    : ''
+                aiText.textContent = aiReasoning.length > 0
+                    ? ( aiKeyPrefix + aiReasoning )
+                    : ( aiOpt.key + ') ' + aiOpt.label )
+                aiLine.appendChild( aiLabel )
+                aiLine.appendChild( document.createTextNode( ' ' ) )
+                aiLine.appendChild( aiText )
+                body.appendChild( aiLine )
             }
 
             // Custom-entry input. Multi-select gets it as "+ eigener Eintrag" (allowCustomEntries).

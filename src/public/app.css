@@ -3106,3 +3106,48 @@
         .pp-quality-list { display: flex; flex-wrap: wrap; gap: 10px 16px; }
         .pp-quality-item { display: inline-flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-2, #c9d1d9); cursor: pointer; }
         .pp-quality-check { accent-color: var(--accent); margin: 0; }
+
+        /* PRD-V1 (Memo 080, Kap 15 — Das Schaufenster): the read-only raw-table view on the per-memo
+           database. A few rules only — horizontal scroll for wide tables, a sticky header row, and a
+           visible mark on a server-side truncated cell. No new design system. */
+        .dbtables-view { padding: 16px 20px; }
+        .dbtables-heading { margin: 0; font-size: 18px; color: var(--text-1, #f0f6fc); }
+        .dbtables-sub { margin: 2px 0 12px; font-size: 12px; color: var(--text-2, #c9d1d9); }
+        .dbtables-body { display: flex; gap: 16px; align-items: flex-start; }
+        .dbtables-list { flex: 0 0 220px; display: flex; flex-direction: column; gap: 2px; max-height: 70vh; overflow-y: auto; }
+        .dbtables-table-link { display: flex; justify-content: space-between; gap: 8px; width: 100%; padding: 4px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text-2, #c9d1d9); font-size: 12px; text-align: left; cursor: pointer; }
+        .dbtables-table-link:hover { background: var(--hover-bg, #2b313b); }
+        .dbtables-table-link.active { background: var(--bg-4, #21262d); border-color: var(--border, #30363d); color: var(--text-1, #f0f6fc); }
+        .dbtables-table-count { color: var(--text-muted, #8b949e); font-variant-numeric: tabular-nums; }
+        .dbtables-page { flex: 1 1 auto; min-width: 0; }
+        .dbtables-page-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+        .dbtables-page-title { font-size: 14px; font-weight: 700; color: var(--text-1, #f0f6fc); }
+        .dbtables-position { font-size: 12px; color: var(--text-2, #c9d1d9); font-variant-numeric: tabular-nums; }
+        .dbtables-nav { border: 1px solid var(--border, #30363d); background: var(--bg-2, #161b22); color: var(--text-2, #c9d1d9); border-radius: 6px; font-size: 12px; padding: 2px 8px; cursor: pointer; }
+        .dbtables-nav:disabled { opacity: .4; cursor: default; }
+        .dbtables-scroll { overflow-x: auto; max-height: 70vh; overflow-y: auto; border: 1px solid var(--border, #30363d); border-radius: 6px; }
+        .dbtables-grid { border-collapse: collapse; font-size: 12px; width: max-content; min-width: 100%; }
+        .dbtables-grid th { position: sticky; top: 0; z-index: 1; background: var(--bg-4, #21262d); color: var(--text-1, #f0f6fc); text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--border, #30363d); white-space: nowrap; }
+        .dbtables-grid td { padding: 4px 8px; border-bottom: 1px solid var(--border-subtle, rgba(110,118,129,.4)); color: var(--text-2, #c9d1d9); vertical-align: top; max-width: 420px; overflow-wrap: anywhere; }
+        .dbtables-null { color: var(--text-muted, #8b949e); font-style: italic; }
+        .dbtables-truncated { display: inline-block; margin-left: 4px; padding: 0 4px; border-radius: 4px; background: rgba(210, 153, 34, .18); color: #d29922; font-size: 11px; white-space: nowrap; }
+        .dbtables-loading { padding: 12px 0; font-size: 12px; color: var(--text-muted, #8b949e); }
+        .dbtables-error { padding: 10px 12px; border: 1px solid #f85149; border-radius: 6px; color: #f85149; font-size: 13px; }
+
+        /* PRD-V4 (Memo 080, Kap 16 — WI-174): footnote markers and the reference apparatus at the end
+           of a document. Colours come from the existing CSS variables only — no new colour scheme. */
+        .fn-mark { line-height: 0; }
+        .fn-ref { border: 0; background: transparent; padding: 0 1px; color: var(--accent-bright, #3fb950); font-size: 11px; font-variant-numeric: tabular-nums; cursor: pointer; }
+        .fn-ref:hover { color: var(--text-1, #f0f6fc); text-decoration: underline; }
+        .fn-ref:focus-visible { outline: 1px solid var(--accent-bright, #3fb950); outline-offset: 1px; border-radius: 3px; }
+        .fn-apparatus { margin: 32px 0 8px; padding-top: 12px; border-top: 1px solid var(--border, #30363d); }
+        .fn-apparatus h2 { margin: 0 0 10px; font-size: 16px; color: var(--text-1, #f0f6fc); }
+        .fn-list { margin: 0; padding-left: 24px; }
+        .fn-entry { margin: 0 0 6px; font-size: 12px; line-height: 1.6; color: var(--text-2, #c9d1d9); overflow-wrap: anywhere; }
+        .fn-entry:target { background: var(--bg-4, #21262d); border-radius: 4px; }
+        .fn-entry:focus { outline: none; background: var(--bg-4, #21262d); border-radius: 4px; }
+        .fn-entry-target { margin-right: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-1, #f0f6fc); }
+        .fn-entry-text { color: var(--text-2, #c9d1d9); }
+        .fn-entry-orphan { margin-left: 6px; padding: 0 4px; border-radius: 4px; background: rgba(210, 153, 34, .18); color: #d29922; font-size: 11px; white-space: nowrap; }
+        .fn-backref { margin-left: 6px; color: var(--text-muted, #8b949e); text-decoration: none; }
+        .fn-backref:hover { color: var(--accent-bright, #3fb950); }

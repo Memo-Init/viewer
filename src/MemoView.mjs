@@ -1,11 +1,12 @@
 import { createServer } from 'node:http'
-import { readFile, access, readdir, mkdir, writeFile } from 'node:fs/promises'
+import { readFile, access, readdir, mkdir, writeFile, appendFile } from 'node:fs/promises'
 import { watch, existsSync, readFileSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve, basename, dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 import { exec } from 'node:child_process'
+import { Readable, pipeline } from 'node:stream'
 
 import { WebSocketServer } from 'ws'
 
@@ -82,6 +83,18 @@ const makeBundleReader = ( path ) => {
 
 const getCssBundle = makeBundleReader( APP_CSS_PATH )
 const getClientBundle = makeBundleReader( APP_CLIENT_JS_PATH )
+
+// PRD-V5 (Memo 080 Kap 16, WI-136): the client bundle went out as ONE ~460 KB res.end() without an
+// error sink. A browser that navigates away mid-write turns that single write into the `write EPIPE`
+// on a Socket recorded in the 2026-08-23 crash logs. 64 KiB blocks piped through stream.pipeline give
+// the delivery exactly ONE error sink (the pipeline callback) instead of none.
+const BUNDLE_CHUNK_SIZE = 65536
+
+// PRD-V5 (Memo 080 Kap 16, WI-136, US-5): the crash forensics ended at "Todesursache nicht mehr
+// feststellbar: kein Logfile" — the server wrote exclusively to the channels of the starting shell.
+// The durable log lives NEXT TO the session config store, so it shares the already-resolved,
+// loopback-local, never-committed location instead of inventing a second one.
+const ERROR_LOG_FILE = 'memo-view.log'
 
 const PORT_COLORS = {
     3333: '4493f8',
@@ -913,6 +926,32 @@ class MemoView {
     }
 
 
+    // PRD-V1 (Memo 080, Kap 15 / WI-101): resolve a registered memoPath to its per-memo database file for
+    // the RAW-TABLE routes. Deliberately NO second resolution path — it walks the SAME chain the serve
+    // weiche walks (resolveMemoDir → DoltDbAssembler.hasDb → DoltDbAssembler.resolveDbPath, mirror of
+    // #loadRevisionSource). A memo without a memo-NNN.db returns status:false WITH a message that names
+    // the missing database, so the route can answer 404 "no database" instead of an empty table list that
+    // would fake an empty database. Public+pure-ish (fs existence only) so the rule is unit-testable.
+    static resolveMemoDbPath( { memoPath } ) {
+        const location = MemoView.resolveMemoDir( { memoPath } )
+
+        if( location[ 'status' ] !== true ) {
+            return { 'status': false, 'dbPath': null, 'memoDir': null, 'message': 'Kein memoPath registriert — das Memo-Verzeichnis ist nicht auflösbar' }
+        }
+
+        const memoDir = location[ 'memoDir' ]
+        const { hasDb } = DoltDbAssembler.hasDb( { memoDir } )
+
+        if( hasDb !== true ) {
+            return { 'status': false, 'dbPath': null, memoDir, 'message': `Dieses Memo führt keine per-Memo-Datenbank (memo-NNN.db) in "${ memoDir }"` }
+        }
+
+        const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
+
+        return { 'status': true, dbPath, memoDir, 'message': null }
+    }
+
+
     // PRD-005 (Memo 076 Phase 3, WI-122): pure line-search over a revision's markdown `content`, mirroring
     // the client anchor resolution. Public+pure (the MemoView convention for testable statics) — the POST
     // route does the file read and passes the string in. text-quote: first line containing `exact`, with
@@ -1433,6 +1472,10 @@ class MemoView {
                  with a local 3-stage publish badge. Replaces the separate cli/spec-view (port 3344)
                  with ONE surface in this viewer, no second port. -->
             <button id="mode-specs" class="mode-toggle">Specs</button>
+            <!-- PRD-V1 (Memo 080, Kap 15 — Das Schaufenster): the RAW-TABLE view on the per-memo
+                 database. Read-only: it lists the tables of the selected memo's memo-NNN.db and pages
+                 through one table at a time (/api/db/tables + /api/db/table/{name}). -->
+            <button id="mode-dbtables" class="mode-toggle">Rohtabellen</button>
             <!-- PRD-002 (Memo 076, Phase 1, F10, WI-045/053): the Clients 4th-tab is REMOVED. Clients
                  is now an overlay-popup (#clients-modal) opened from #clients-head — it no longer owns
                  #content or the sidebar, so the clients-side header-bleed + sidebar-mismatch vanish. -->
@@ -1714,28 +1757,45 @@ class MemoView {
             res.end( body )
         }
 
-        const readBody = ( req ) => {
-            return new Promise( ( resolvePromise ) => {
-                const chunks = []
+        // PRD-V5 (Memo 080 Kap 16, WI-136): blockweise Auslieferung der grossen Statik-Bundles. The
+        // client bundle used to leave as ONE res.end() of ~460 KB with no error listener — a peer that
+        // aborts mid-write produced the `write EPIPE` on a Socket recorded in the crash logs. The
+        // source is cut into BUNDLE_CHUNK_SIZE blocks (loop-free) and piped; the pipeline callback is
+        // the SINGLE error sink. A peer abort (EPIPE / ECONNRESET / ERR_STREAM_PREMATURE_CLOSE) is
+        // normal operation and is dropped silently — it must NOT surface in the process-wide net.
+        // Any OTHER error stays visible in the durable log.
+        const sendBundle = ( req, res, source ) => {
+            const { chunks } = MemoView.buildDeliveryChunks( { source, 'chunkSize': BUNDLE_CHUNK_SIZE } )
 
-                req.on( 'data', ( chunk ) => {
-                    chunks.push( chunk )
-                } )
+            pipeline( Readable.from( chunks ), res, ( err ) => {
+                if( err === undefined || err === null ) { return }
 
-                req.on( 'end', () => {
-                    const body = Buffer.concat( chunks ).toString( 'utf-8' )
+                const peerGone = [ 'EPIPE', 'ECONNRESET', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED' ].includes( err.code )
 
-                    resolvePromise( { body } )
-                } )
+                if( peerGone === true ) { return }
+
+                MemoView.#logError( { 'kind': 'bundle', 'url': req.url, 'method': req.method, 'error': err } )
             } )
         }
 
-        const handler = async ( req, res ) => {
-            const url = decodeURIComponent( req.url.split( '?' )[0] )
+        // PRD-V5 (Memo 080 Kap 16, WI-136): the body reader moved to the public static
+        // MemoView.readRequestBody so the abort/error branches are exercisable; the closure stays as
+        // the call-site seam. It now yields { body, aborted } — every call site checks `aborted`.
+        const readBody = ( req ) => {
+            return MemoView.readRequestBody( { req } )
+        }
 
+        // PRD-V5 (Memo 080 Kap 16, WI-136): `route` carries the whole routing body that used to BE the
+        // handler. It is called from exactly one try/catch below, so a throw anywhere in any route ends
+        // as a 500 with a log entry instead of as a dead process.
+        const route = async ( req, res, url ) => {
             if( url === '/api/documents' && req.method === 'POST' ) {
 
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -2205,7 +2265,11 @@ class MemoView {
                     return
                 }
 
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -2345,7 +2409,11 @@ class MemoView {
                 }
 
                 const transcriptId = url.slice( '/api/transcripts/'.length )
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -2369,6 +2437,15 @@ class MemoView {
                 sendJson( res, 200, { 'status': 'ok' } )
 
                 process.stdout.write( `  Transcript updated: ${ transcriptId }\n` )
+
+                // PRD-V5 (Memo 080 Kap 16, WI-134): the PUT branch mirrored NOTHING into the database —
+                // 4 #captureUserInput calls existed, none of them here, so every "Uebernehmen" on an
+                // EXISTING transcript was invisible to the per-memo DB. Same call as the POST branch
+                // (:2304), after the response, best-effort: a mirror failure never changes the 200.
+                // `unchanged` PUTs (byte-identical content) write no file, so they mirror nothing either.
+                if( result[ 'unchanged' ] !== true ) {
+                    await MemoView.#captureUserInput( { 'memoId': result[ 'memoId' ], 'transcriptType': 'revision', content, 'sessionId': parsed[ 'sessionId' ], 'withAnswers': true } )
+                }
 
                 return
             }
@@ -2442,7 +2519,11 @@ class MemoView {
             if( url.startsWith( '/api/session/' ) && url.endsWith( '/arm' ) && req.method === 'POST' ) {
 
                 const sessionId = url.slice( '/api/session/'.length, -'/arm'.length )
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed = {}
 
                 if( body.length > 0 ) {
@@ -2489,7 +2570,11 @@ class MemoView {
                 const sessionId = url.slice( '/api/session/'.length, -'/wake'.length )
                 // PRD-P3-03 (Memo 075 Phase 3, WI-010): pass the transcriptId through into the flag
                 // payload so the re-invoked agent full-reads the exact transcript without a second lookup.
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed = {}
 
                 if( body.length > 0 ) {
@@ -2521,7 +2606,11 @@ class MemoView {
             // 127.0.0.1 inherited); session-flüchtig, no persistence, no new server.listen.
             if( url === '/api/clients' && req.method === 'POST' ) {
 
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed = {}
 
                 if( body.length > 0 ) {
@@ -2585,7 +2674,11 @@ class MemoView {
             // the write the annotationList is broadcast so every viewer re-runs its render pass.
             if( url === '/api/annotations' && req.method === 'POST' ) {
 
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -2666,7 +2759,11 @@ class MemoView {
                 }
 
                 const transcriptId = url.slice( '/api/transcripts/'.length )
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed = {}
 
                 if( body.length > 0 ) {
@@ -2708,7 +2805,11 @@ class MemoView {
                     return
                 }
 
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -2784,7 +2885,11 @@ class MemoView {
                     return
                 }
 
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -2844,7 +2949,11 @@ class MemoView {
                     return
                 }
 
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -2923,7 +3032,11 @@ class MemoView {
 
                 const middle = url.slice( '/api/other/transcripts/'.length, -'/promote'.length )
                 const transcriptId = middle
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -2964,7 +3077,11 @@ class MemoView {
                 }
 
                 const transcriptId = url.slice( '/api/other/transcripts/'.length, -'/transform'.length )
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -3042,6 +3159,9 @@ class MemoView {
             // src/public/app.css (extracted from the formerly inline <style> block).
             // PRD-009 (Memo 076 H6, WI-079): mtime-invalidated re-read + build-hash ETag so an edited
             // bundle is served fresh (no stale-drift) and the hash is observable in the response.
+            // PRD-V5 (Memo 080 Kap 16, WI-136): blockweise Auslieferung. Same headers as before
+            // (Content-Length + ETag unchanged), but the body goes out through sendBundle — one
+            // error sink instead of none.
             if( url === '/app.css' && req.method === 'GET' ) {
                 const cssBundle = getCssBundle()
                 res.writeHead( 200, {
@@ -3050,7 +3170,7 @@ class MemoView {
                     'Cache-Control': 'no-cache',
                     'ETag': '"' + cssBundle.hash + '"'
                 } )
-                res.end( cssBundle.source )
+                sendBundle( req, res, cssBundle.source )
 
                 return
             }
@@ -3068,7 +3188,7 @@ class MemoView {
                     'Cache-Control': 'no-cache',
                     'ETag': '"' + clientBundle.hash + '"'
                 } )
-                res.end( clientBundle.source )
+                sendBundle( req, res, clientBundle.source )
 
                 return
             }
@@ -3108,7 +3228,11 @@ class MemoView {
             // 422 on status:false — the Error-Codes (messages) live in the body in both cases.
             if( url === '/api/validate' && req.method === 'POST' ) {
 
-                const { body } = await readBody( req )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
                 let parsed
 
                 try {
@@ -3258,6 +3382,109 @@ class MemoView {
                 return
             }
 
+            // PRD-V1 (Memo 080, Kap 15 — Das Schaufenster / WI-101): the RAW-TABLE surface on the per-memo
+            // database. Two READ-ONLY routes, built like /api/folder + /api/folder-page above:
+            //   GET /api/db/tables?documentId=<id>                        → every table + its row count
+            //   GET /api/db/table/{name}?documentId=<id>&limit=&offset=   → one page of one table
+            // Discipline (US-3/US-4/US-5): the {name} segment is checked against the list read from
+            // sqlite_master (exact match, no character filtering) INSIDE DoltDbAssembler; limit/offset are
+            // bound `?` values; the database is opened READ-ONLY and closed per request; nothing here
+            // writes (the single-writer rule F4=A stays intact); no new listener and no new binding — both
+            // hang off the existing BIND_HOST-bound server. Errors: unknown memo / no database / unknown
+            // table → 404, a bad page window → 400, an open/read failure → 503 (the server stays alive).
+            if( url === '/api/db/tables' || url.startsWith( '/api/db/table/' ) ) {
+                if( req.method !== 'GET' ) {
+                    sendJson( res, 405, { 'error': 'Nur lesende Anfragen (GET) — die Rohtabellen-Ansicht schreibt nie' } )
+
+                    return
+                }
+
+                if( !MemoView.#registry ) {
+                    sendJson( res, 503, { 'error': 'Registry not initialized' } )
+
+                    return
+                }
+
+                const params = new URLSearchParams( req.url.split( '?' )[ 1 ] || '' )
+                const documentId = params.get( 'documentId' )
+                const lookup = MemoView.#registry.getDocument( { documentId } )
+
+                if( !lookup[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': lookup[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                let resolved = null
+
+                try {
+                    resolved = MemoView.resolveMemoDbPath( { 'memoPath': lookup[ 'document' ][ 'memoPath' ] } )
+                } catch( error ) {
+                    // A folder that vanishes between hasDb and resolveDbPath (a rollout moving files) must
+                    // not take the request down — the server answers and stays alive.
+                    sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
+
+                    return
+                }
+
+                if( resolved[ 'status' ] !== true ) {
+                    sendJson( res, 404, { 'error': resolved[ 'message' ] } )
+
+                    return
+                }
+
+                if( url === '/api/db/tables' ) {
+                    try {
+                        const listed = DoltDbAssembler.readTableList( { 'dbPath': resolved[ 'dbPath' ] } )
+
+                        sendJson( res, 200, { documentId, 'tables': listed[ 'tables' ], 'tableCount': listed[ 'tableCount' ] } )
+                    } catch( error ) {
+                        sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
+                    }
+
+                    return
+                }
+
+                const tableName = url.slice( '/api/db/table/'.length )
+
+                if( tableName.length === 0 ) {
+                    sendJson( res, 404, { 'error': 'Kein Tabellenname angegeben' } )
+
+                    return
+                }
+
+                let page = null
+
+                try {
+                    page = DoltDbAssembler.readTablePage( {
+                        'dbPath': resolved[ 'dbPath' ], 'table': tableName,
+                        'limit': params.get( 'limit' ), 'offset': params.get( 'offset' )
+                    } )
+                } catch( error ) {
+                    const isWindowError = error.message.indexOf( 'normalizeTablePage' ) !== -1
+
+                    sendJson( res, isWindowError ? 400 : 503, {
+                        'error': isWindowError ? error.message : `Datenbank vorübergehend nicht verfügbar: ${ error.message }`
+                    } )
+
+                    return
+                }
+
+                if( page[ 'found' ] !== true ) {
+                    sendJson( res, 404, { 'error': `Unbekannte Tabelle: ${ tableName }`, 'tableCount': page[ 'tableCount' ] } )
+
+                    return
+                }
+
+                sendJson( res, 200, {
+                    documentId, 'table': page[ 'table' ], 'columns': page[ 'columns' ], 'rows': page[ 'rows' ],
+                    'totalRows': page[ 'totalRows' ], 'limit': page[ 'limit' ], 'offset': page[ 'offset' ],
+                    'truncatedCells': page[ 'truncatedCells' ]
+                } )
+
+                return
+            }
+
             // Memo 079 M3=A (T059): serve a memo's research MD as an annotatable view — the GET door that
             // makes the already-built server annotation path (targetKind:'research') reachable from the UI.
             // GET /api/research-page?documentId=<id>&file=<memoDir-relative research path>. The file is read
@@ -3312,7 +3539,9 @@ class MemoView {
             // PRD-011: SPA routes. /memos must serve the same HTML page so direct navigation /
             // reload does not 404. The client reads location.pathname and restores the matching
             // view mode.
-            const isSpaRoute = url === '/' || url === '/memos' || url === '/specs'
+            // PRD-V1 (Memo 080): /dbtables joins the SPA routes so a direct reload of the raw-table view
+            // serves the same shell instead of 404-ing.
+            const isSpaRoute = url === '/' || url === '/memos' || url === '/specs' || url === '/dbtables'
 
             if( !isSpaRoute ) {
                 res.writeHead( 404, { 'Content-Type': 'text/plain; charset=utf-8' } )
@@ -3323,6 +3552,46 @@ class MemoView {
 
             res.writeHead( 200, { 'Content-Type': 'text/html; charset=utf-8' } )
             res.end( html )
+        }
+
+        // PRD-V5 (Memo 080 Kap 16, WI-136) — Masche 1 und 2 des Fehlernetzes.
+        //   (a) ONE response guard per request. `res.on( 'error' )` had 0 occurrences in the whole
+        //       server while 108 sendJson calls and 18 direct res.end calls existed; an `error` event
+        //       without a listener throws. Set ONCE here, not 108 times at the call sites.
+        //   (b) The URL decode, previously the unguarded first statement, answers 400 on a broken
+        //       percent sequence instead of throwing (Beleg 16.6, `GET /%`).
+        //   (c) The whole routing body runs inside ONE try/catch: 500 + log entry instead of a dead
+        //       process. When the headers are already on the wire the connection is destroyed and the
+        //       error only logged — writing twice would raise ERR_HTTP_HEADERS_SENT.
+        // The process-wide net in #registerShutdown stays the LAST mesh, not the first.
+        const handler = async ( req, res ) => {
+            res.on( 'error', ( err ) => {
+                MemoView.#logError( { 'kind': 'response', 'url': req.url, 'method': req.method, 'error': err } )
+            } )
+
+            const decoded = MemoView.decodeRequestPath( { 'rawUrl': req.url } )
+
+            if( decoded[ 'status' ] !== true ) {
+                res.writeHead( 400, { 'Content-Type': 'text/plain; charset=utf-8' } )
+                res.end( decoded[ 'message' ] )
+
+                return
+            }
+
+            try {
+                await route( req, res, decoded[ 'url' ] )
+            } catch ( err ) {
+                await MemoView.#logError( { 'kind': 'handler', 'url': req.url, 'method': req.method, 'error': err } )
+
+                if( res.headersSent === true ) {
+                    res.destroy()
+
+                    return
+                }
+
+                res.writeHead( 500, { 'Content-Type': 'text/plain; charset=utf-8' } )
+                res.end( 'Internal Server Error' )
+            }
         }
 
         return { handler }
@@ -3786,6 +4055,177 @@ class MemoView {
             return { 'reject': questionMessages.length > 0, 'messages': questionMessages }
         } catch {
             return { 'reject': false, 'messages': [] }
+        }
+    }
+
+
+    // ------------------------------------------------------------------------------------------
+    // PRD-V5 (Memo 080 Kap 16, WI-136) — das Fehlernetz. Four meshes: handler-wide catch, guards on
+    // the connections, guards on the output channels, and a durable log. The pure leaves live here
+    // as public statics so every mesh is exercisable without booting a server; the handler and the
+    // shutdown registration are their only production callers.
+    // ------------------------------------------------------------------------------------------
+
+    // Mesh 2a — the URL decode. `decodeURIComponent` THROWS a URIError on a broken percent sequence,
+    // and it was the FIRST statement of the request handler, outside any try. A single anonymous
+    // `GET /%` therefore killed the whole process (Beleg 16.6). Returns a struct, never throws.
+    static decodeRequestPath( { rawUrl } ) {
+        const struct = { 'status': false, 'url': null, 'message': null }
+        const safeRaw = typeof rawUrl === 'string' ? rawUrl : ''
+        const pathPart = safeRaw.split( '?' )[ 0 ]
+
+        try {
+            struct[ 'url' ] = decodeURIComponent( pathPart )
+            struct[ 'status' ] = true
+        } catch ( err ) {
+            struct[ 'message' ] = `Bad Request: malformed percent-encoding in URL (${ err.message })`
+        }
+
+        return struct
+    }
+
+
+    // Mesh 4a — split a bundle source into fixed-size blocks. Loop-free per the Node baseline
+    // (node-sop: no for/while): the block count is computed, then Array.from materialises the slices.
+    // Returns the blocks AND their count so a test can state HOW MUCH it compared.
+    static buildDeliveryChunks( { source, chunkSize } ) {
+        const safeSource = typeof source === 'string' ? source : ''
+        const size = ( typeof chunkSize === 'number' && chunkSize > 0 ) ? chunkSize : BUNDLE_CHUNK_SIZE
+        const count = safeSource.length === 0 ? 0 : Math.ceil( safeSource.length / size )
+        const chunks = Array.from( { 'length': count }, ( _, index ) => safeSource.slice( index * size, ( index + 1 ) * size ) )
+
+        return { chunks, count }
+    }
+
+
+    // Mesh 4b — where the durable log lives. Next to the session config store (the already-resolved,
+    // loopback-local, never-committed location). No config found -> the OS tmp dir, so a log path
+    // always exists and logging never depends on a project layout.
+    static resolveErrorLogPath( { cwd, env } = {} ) {
+        const { configPath } = SessionConfigStore.resolveConfigPath( { cwd, env } )
+
+        if( typeof configPath === 'string' && configPath.length > 0 ) {
+            return { 'logPath': join( dirname( configPath ), ERROR_LOG_FILE ) }
+        }
+
+        return { 'logPath': join( tmpdir(), ERROR_LOG_FILE ) }
+    }
+
+
+    // Mesh 4c — ONE log line. Timestamp, kind, method, address and stack, nothing else: the line is
+    // assembled ONLY from these four inputs, so no transcript body and no secret can reach the file.
+    static formatErrorLogLine( { kind, url, method, error } ) {
+        const at = new Date().toISOString()
+        const safeKind = ( typeof kind === 'string' && kind.length > 0 ) ? kind : 'unknown'
+        const safeMethod = ( typeof method === 'string' && method.length > 0 ) ? method : '-'
+        const safeUrl = ( typeof url === 'string' && url.length > 0 ) ? url : '-'
+        const detail = error instanceof Error ? ( error.stack || error.message ) : String( error )
+        const flattened = String( detail ).split( '\n' ).join( ' | ' )
+        const line = `[${ at }] ${ safeKind } ${ safeMethod } ${ safeUrl } :: ${ flattened }\n`
+
+        return { line }
+    }
+
+
+    // Mesh 4d — the append itself. Logging must NEVER become the cause of a crash: an unwritable
+    // path degrades to stderr and reports `fallback: true` instead of throwing.
+    static async writeErrorLog( { logPath, line } ) {
+        const struct = { 'status': false, 'fallback': false, 'message': null }
+        const safeLine = typeof line === 'string' ? line : String( line )
+
+        if( typeof logPath !== 'string' || logPath.length === 0 ) {
+            struct[ 'fallback' ] = true
+            struct[ 'message' ] = 'MEMOVIEW-LOG-001: no log path resolved'
+            process.stderr.write( safeLine )
+
+            return struct
+        }
+
+        try {
+            await appendFile( logPath, safeLine, 'utf-8' )
+            struct[ 'status' ] = true
+        } catch ( err ) {
+            struct[ 'fallback' ] = true
+            struct[ 'message' ] = `MEMOVIEW-LOG-002: error log not writable (${ err.message })`
+            process.stderr.write( safeLine )
+        }
+
+        return struct
+    }
+
+
+    // Mesh 3 — the output-channel guards. 46 unguarded process.stdout.write calls exist in src/; a
+    // single `error` event without a listener throws in Node. ONE listener per channel disarms all 46
+    // at once (Beleg 16.5). Idempotent: a second call adds nothing. The listeners are returned so a
+    // test can detach exactly what it attached.
+    static armOutputChannelGuards() {
+        const struct = { 'armed': false, 'stdoutGuard': null, 'stderrGuard': null }
+
+        if( process.stdout.listenerCount( 'error' ) === 0 ) {
+            const stdoutGuard = ( err ) => { MemoView.#logError( { 'kind': 'stdout', 'url': null, 'method': null, 'error': err } ) }
+            process.stdout.on( 'error', stdoutGuard )
+            struct[ 'stdoutGuard' ] = stdoutGuard
+            struct[ 'armed' ] = true
+        }
+
+        if( process.stderr.listenerCount( 'error' ) === 0 ) {
+            const stderrGuard = ( err ) => { MemoView.#logError( { 'kind': 'stderr', 'url': null, 'method': null, 'error': err } ) }
+            process.stderr.on( 'error', stderrGuard )
+            struct[ 'stderrGuard' ] = stderrGuard
+            struct[ 'armed' ] = true
+        }
+
+        return struct
+    }
+
+
+    // Mesh 2b — the request-body reader. Before PRD-V5 it registered ONLY `data` and `end`: an
+    // aborted request left the promise pending FOREVER (a leaked handler per abort) and an `error`
+    // event without a listener threw. Now `error` and `aborted` resolve the promise with
+    // `{ body: null, aborted: true }` so the 14 call sites can bail out without writing to a dead
+    // socket. Resolves exactly once — never rejects.
+    static readRequestBody( { req } ) {
+        return new Promise( ( resolvePromise ) => {
+            const chunks = []
+            const state = { 'settled': false }
+            const settle = ( result ) => {
+                if( state[ 'settled' ] === true ) { return }
+                state[ 'settled' ] = true
+                resolvePromise( result )
+            }
+
+            req.on( 'data', ( chunk ) => {
+                chunks.push( chunk )
+            } )
+
+            req.on( 'end', () => {
+                const body = Buffer.concat( chunks ).toString( 'utf-8' )
+
+                settle( { body, 'aborted': false } )
+            } )
+
+            req.on( 'aborted', () => {
+                settle( { 'body': null, 'aborted': true } )
+            } )
+
+            req.on( 'error', ( err ) => {
+                MemoView.#logError( { 'kind': 'request', 'url': req.url, 'method': req.method, 'error': err } )
+                settle( { 'body': null, 'aborted': true } )
+            } )
+        } )
+    }
+
+
+    // The one durable-log entry point. Best-effort by construction: it resolves the path, formats the
+    // line and appends — and swallows its OWN failures (writeErrorLog already falls back to stderr).
+    static async #logError( { kind, url, method, error } ) {
+        try {
+            const { logPath } = MemoView.resolveErrorLogPath( {} )
+            const { line } = MemoView.formatErrorLogLine( { kind, url, method, error } )
+
+            await MemoView.writeErrorLog( { logPath, line } )
+        } catch {
+            // A failure inside the logger must never propagate — writeErrorLog already fell back.
         }
     }
 
@@ -5288,17 +5728,28 @@ class MemoView {
         process.on( 'SIGINT', shutdown )
         process.on( 'SIGTERM', shutdown )
 
+        // PRD-V5 (Memo 080 Kap 16, WI-136, Beleg 16.5): arm the output channels. 46 unguarded
+        // process.stdout.write calls live in src/; an `error` event without a listener throws, so a
+        // closed pipe (`memo-view | head`, a detached terminal) killed the server. ONE listener per
+        // channel disarms all 46 at once — no rewrite of the 46 call sites (YAGNI, Abgrenzung).
+        MemoView.armOutputChannelGuards()
+
         // Memo 081 (T082): the server had NO process-level guard — in Node 22 a single unhandled
         // rejection in any async route handler terminates the whole process, silently and without
         // a macOS crash report. For a local working surface that is the worst failure mode: the
         // user loses the tool mid-work and there is nothing left to diagnose.
         // The guard does NOT swallow the error — it makes it LOUD and durable (timestamp + stack
         // to stderr) and keeps the process alive, so the defect becomes findable instead of fatal.
+        //
+        // PRD-V5 (Memo 080 Kap 16, WI-136, US-5): the semantics above stay UNCHANGED — this net keeps
+        // surviving and keeps writing to stderr. It only gains a second destination: the durable log,
+        // so a crash leaves a trace on disk instead of dying with the shell that started the server.
         const survive = ( kind ) => {
             return ( err ) => {
                 const at = new Date().toISOString()
                 const detail = err instanceof Error ? ( err.stack || err.message ) : String( err )
                 process.stderr.write( `\n[${ at }] SURVIVED ${ kind }\n${ detail }\n\n` )
+                MemoView.#logError( { kind, 'url': null, 'method': null, 'error': err } )
             }
         }
 

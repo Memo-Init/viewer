@@ -62,15 +62,36 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
 
 
     describe( 'assembleFromDb', () => {
-        it( 'renders the header from the memo row', () => {
+        it( 'renders the header from the memo row as the mandatory head TABLE (Memo 080, PRD-R1)', () => {
             seedDb( { path: dbPath } )
 
             const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
 
+            // The former bullet head (`- ID:` / `- Type:` / `- Status:`) carried NONE of the five mandatory
+            // head fields, so every assembled revision failed five header checks. The head is a table now —
+            // the shape the validator expects — and the memo row is still its source.
             expect( markdown ).toContain( '# Datenbank-Traceability' )
-            expect( markdown ).toContain( '- ID: M079' )
-            expect( markdown ).toContain( '- Type: Strategie' )
-            expect( markdown ).toContain( '- Status: finalized' )
+            expect( markdown ).toContain( '| Feld | Wert |' )
+            expect( markdown ).toContain( '| **Memo** | M079 |' )
+            expect( markdown ).toContain( '| **Memo-Name** | Datenbank-Traceability |' )
+            expect( markdown ).toContain( '| **Datum** | 2026-08-20T00:00:00Z |' )
+            expect( markdown ).toContain( '| **Status** | finalized |' )
+            expect( markdown ).not.toContain( '- ID: M079' )
+        } )
+
+        it( 'renders the VISIBLE generation note and the scope line in the head (Memo 080, PRD-R2)', () => {
+            seedDb( { path: dbPath } )
+
+            const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+            // the note is plain Markdown, not an HTML comment nobody sees while reading.
+            expect( markdown ).toContain( '_Generated from the memo database — not hand-written._' )
+            expect( markdown ).not.toContain( '<!--' )
+            // one figure per carrier, each named WITH its carrier. This db carries 2 blocks + 2 work items and
+            // has NO topic / question / rollout table at all — a missing carrier counts 0, it never throws.
+            expect( markdown ).toContain( '**Scope:** 2 blocks · 0 topics · 2 work items · 0 questions · 0 phases · 0 phase items' )
+            // and the note stands ABOVE the head table, in the shared render order the core assembler fixes.
+            expect( markdown.indexOf( '_Generated from the memo database' ) ).toBeLessThan( markdown.indexOf( '| Feld | Wert |' ) )
         } )
 
         it( 'renders block titles ORDER BY sort with their ids', () => {
@@ -422,6 +443,12 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.exec( 'CREATE TABLE IF NOT EXISTS research_topics ( r_no INTEGER, topic_id TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS research_files ( r_no INTEGER, path TEXT, sha256 TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS user_input_answers ( input_id TEXT, question_id TEXT, option_key TEXT, answer_verbatim TEXT, preselected INTEGER )' )
+            // Memo 080, PRD-R1: the three formerly unrendered kinds of data plus the two new carriers.
+            db.exec( 'CREATE TABLE IF NOT EXISTS snag ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, status TEXT, verdict TEXT, disposition TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS goal ( id TEXT PRIMARY KEY, name TEXT, kind TEXT, pct INTEGER, status TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS maintenance_card ( repo TEXT PRIMARY KEY, freshness INTEGER, blast TEXT, maint_status TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS memo_section ( id TEXT PRIMARY KEY, heading TEXT, body TEXT, sort INTEGER )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS memo_head ( field TEXT PRIMARY KEY, value TEXT, sort INTEGER )' )
 
             db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
                 .run( 'M079', 'DB Traceability', 'strategy', 'finalized', '2026-08-20T00:00:00.000Z', 'Kontext Zeile eins.\nKontext Zeile zwei.' )
@@ -464,6 +491,28 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             // ## Beantwortete Fragen render is byte-identical across both repos (Memo 079 audit T2-M1).
             db.prepare( 'INSERT INTO user_input_answers ( input_id, question_id, option_key, answer_verbatim, preselected ) VALUES ( ?, ?, ?, ?, ? )' )
                 .run( 'UI-0001', 'F2', 'A', 'A — Normalisierung laeuft aus rollout/state.json.', 0 )
+            // Memo 080, PRD-R1 — rows IDENTICAL to what the core production writers (MemoContentStore
+            // setSnags / setGoals / setMaintenanceCards / setSections / setHeadFields) produce from
+            // seedCanonical, so the new sections and the head table render byte-identically in both repos.
+            db.prepare( 'INSERT INTO snag ( id, memo_id, title, status, verdict, disposition ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+                .run( '079-tag-grenze', 'M079', 'tag-grenze', 'open', 'offen', 'traced' )
+            db.prepare( 'INSERT INTO goal ( id, name, kind, pct, status ) VALUES ( ?, ?, ?, ?, ? )' )
+                .run( 'G-001', 'DB als SoT', 'capability', 65, 'open' )
+            db.prepare( 'INSERT INTO maintenance_card ( repo, freshness, blast, maint_status ) VALUES ( ?, ?, ?, ? )' )
+                .run( 'core', 82, '3', 'ok' )
+            const insertSection = db.prepare( 'INSERT INTO memo_section ( id, heading, body, sort ) VALUES ( ?, ?, ?, ? )' )
+            insertSection.run( 'S-vorwort', 'Vorwort', 'Diese Revision entsteht aus der Datenbank.', 0 )
+            insertSection.run( 'S-phase-hints', 'Phase-Hints', '- P1 kann parallel zu P2 laufen.', 1 )
+            insertSection.run( 'S-finalisierungs-checkliste', 'Finalisierungs-Checkliste', '- [x] Evidenz geprueft', 2 )
+            insertSection.run( 'S-ancillary-files', 'Ancillary Files', '1. `context/research/2026-08-19--doltlite-machbarkeit.md`', 3 )
+            insertSection.run( 'S-rollout-entry-points', 'Rollout-Entry-Points', '1. `cli/src/RevisionAssembler.mjs`', 4 )
+            insertSection.run( 'S-lessons-learned', 'Lessons-Learned', 'Ein Traeger fehlt erst dann auf, wenn er gerendert werden soll.', 5 )
+            const insertHead = db.prepare( 'INSERT INTO memo_head ( field, value, sort ) VALUES ( ?, ?, ? )' )
+            insertHead.run( 'Memo', 'M079', 0 )
+            insertHead.run( 'Memo-Name', 'DB Traceability', 1 )
+            insertHead.run( 'Revision', '01', 2 )
+            insertHead.run( 'Datum', '2026-08-20', 3 )
+            insertHead.run( 'Status', 'finalized', 4 )
             db.close()
         }
 
@@ -480,6 +529,25 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             expect( markdown ).toContain( '## Research\n\n| R | Title | Kind | Topics | Files |' )
             expect( markdown ).toContain( '| R1 | doltlite Machbarkeit | wave-2 | T01 | context/research/2026-08-19--doltlite-machbarkeit.md |' )
             expect( markdown ).toContain( '| R2 | Memo-Korpus | wave-2 | T01, T02 |  |' )
+
+            // Memo 080, PRD-R1: the head table, the six mandatory prose sections and the three formerly
+            // unrendered kinds of data appear in the viewer render exactly as in the frozen core revision.
+            expect( markdown ).toContain( '| Feld | Wert |\n| --- | --- |\n| **Memo** | M079 |' )
+            expect( markdown ).toContain( '| **Revision** | 01 |' )
+            // Memo 080, PRD-R2: the visible generation note + the scope line are part of the canonical bytes
+            // both renderers must reproduce; the six figures count content carriers ONLY (this db carries no
+            // `revision` / `provenance` / `history_journal` rows and the line must not depend on them anyway).
+            expect( markdown ).toContain( '_Generated from the memo database — not hand-written._' )
+            expect( markdown ).toContain( '**Scope:** 1 blocks · 2 topics · 2 work items · 2 questions · 1 phases · 1 phase items' )
+            expect( markdown ).toContain( '## Vorwort\n\nDiese Revision entsteht aus der Datenbank.' )
+            expect( markdown ).toContain( '## Phase-Hints\n\n- P1 kann parallel zu P2 laufen.' )
+            expect( markdown ).toContain( '## Snags\n\n| ID | Title | Status | Verdict | Disposition |' )
+            expect( markdown ).toContain( '## Goals\n\n| ID | Name | Kind | Pct | Status |' )
+            expect( markdown ).toContain( '## Maintenance\n\n| Repo | Freshness | Blast | Status |' )
+            expect( markdown ).toContain( '## Finalisierungs-Checkliste\n\n- [x] Evidenz geprueft' )
+            expect( markdown ).toContain( '## Ancillary Files\n\n1. `context/research/2026-08-19--doltlite-machbarkeit.md`' )
+            expect( markdown ).toContain( '## Rollout-Entry-Points\n\n1. `cli/src/RevisionAssembler.mjs`' )
+            expect( markdown ).toContain( '## Lessons-Learned\n\nEin Traeger fehlt erst dann auf, wenn er gerendert werden soll.' )
 
             // hand-edit guard: the vendored fixture must hash to the recorded manifest sha256 (same value the
             // core repo records), so a doctored golden that would silently satisfy the equality is caught.
@@ -539,6 +607,17 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             expect( markdown ).toContain( '## Offene Fragen\n\nkeine' )
             // no question / user_input_answers table → the answered section degrades to the empty sentinel.
             expect( markdown ).toContain( '## Beantwortete Fragen\n\n_keine beantworteten Fragen_' )
+            // Memo 080, PRD-R1: the three new data sections and the six mandatory prose sections degrade the
+            // same way — the heading is ALWAYS there, the emptiness is stated, nothing is silently dropped.
+            expect( markdown ).toContain( '## Snags\n\n_no snags_' )
+            expect( markdown ).toContain( '## Goals\n\n_no goals_' )
+            expect( markdown ).toContain( '## Maintenance\n\n_no maintenance cards_' )
+            const mandatoryProse = [ 'Vorwort', 'Phase-Hints', 'Finalisierungs-Checkliste', 'Ancillary Files', 'Rollout-Entry-Points', 'Lessons-Learned' ]
+            expect( mandatoryProse.length ).toBe( 6 )
+            mandatoryProse
+                .forEach( ( heading ) => {
+                    expect( markdown ).toContain( `## ${ heading }\n\n_kein Inhalt_` )
+                } )
         } )
     } )
 
@@ -685,6 +764,293 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             const ids = fenceIdsInOrder( { markdown } )
             expect( ids.indexOf( 'F3' ) ).toBeLessThan( ids.indexOf( 'F10' ) )
             expect( ids[ ids.length - 1 ] ).toBe( 'F2' )
+        } )
+    } )
+} )
+
+
+// PRD-V1 (Memo 080, Kap 15 — Das Schaufenster / WI-101): the READ-ONLY raw-table window. Every case below
+// states HOW MUCH it compared (table count / row count / number of rejected names), so an empty result is
+// only ever honest emptiness and never a check that found nothing to compare
+// (lesson deterministic-gates-can-be-vacuum-green). Tests write ONLY into the repo-internal .test-tmp/.
+describe( 'DoltDbAssembler — PRD-V1 raw-table window (Memo 080, Kap 15)', () => {
+    const repoTmpRoot = join( process.cwd(), '.test-tmp' )
+    let memoDir = ''
+    let dbPath = ''
+
+    // The seeded database carries exactly these tables — the number every listing case compares against.
+    const SEEDED_TABLES = [ 'block', 'block_tables', 'lifecycle', 'memo', 'work_item' ]
+
+    // The four identifier-injection shapes named in the PRD assertions. None of them is a table in the
+    // seeded database, so all four must die at the whitelist — NOT at a character filter.
+    const INJECTION_NAMES = [ 'work_item; DROP TABLE memo', 'work_item"', 'work_item`', '../work_item' ]
+
+    const LONG_CELL_LENGTH = 5000
+
+
+    const seedRawDb = ( { path } ) => {
+        const db = new DatabaseSync( path )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS lifecycle ( state TEXT, at TEXT, by TEXT, evidence TEXT )' )
+
+        db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 'M080', 'DB-Vollausbau', 'strategy', 'draft', '2026-08-31T00:00:00.000Z' )
+
+        const insertWorkItem = db.prepare( 'INSERT INTO work_item ( id, topic, title, status, grp ) VALUES ( ?, ?, ?, ?, ? )' )
+        // 7 rows — enough to page twice with limit 3 and still overshoot with a large offset.
+        const ids = [ 'WI-1', 'WI-2', 'WI-3', 'WI-4', 'WI-5', 'WI-6', 'WI-7' ]
+        ids
+            .forEach( ( id, index ) => {
+                insertWorkItem.run( id, 'schaufenster', `Titel ${ id }`, index === 0 ? 'done' : 'open', 'P0' )
+            } )
+
+        // One over-long cell (5 000 chars) to exercise the 2 000-char server-side truncation, plus a cell
+        // that carries markup so the client-side escaping has a real payload to neutralise.
+        db.prepare( 'INSERT INTO block_tables ( id, block_id, title, tsv ) VALUES ( ?, ?, ?, ? )' )
+            .run( 'T1', 'B001', 'Kennzahlen', 'x'.repeat( LONG_CELL_LENGTH ) )
+        db.prepare( 'INSERT INTO block ( id, title, sort ) VALUES ( ?, ?, ? )' )
+            .run( 'B001', '<script>alert(1)</script>', 1 )
+
+        db.close()
+    }
+
+
+    beforeEach( () => {
+        mkdirSync( repoTmpRoot, { recursive: true } )
+        memoDir = mkdtempSync( join( repoTmpRoot, 'memo-080-raw-' ) )
+        dbPath = resolve( memoDir, 'memo-080.db' )
+        seedRawDb( { path: dbPath } )
+    } )
+
+    afterEach( () => {
+        rmSync( memoDir, { recursive: true, force: true } )
+    } )
+
+
+    describe( 'readTableList (US-1 — die Tabellen der Datenbank sehen)', () => {
+        it( 'lists every seeded table WITH its row count and states how many it compared', () => {
+            const { tables, tableCount } = DoltDbAssembler.readTableList( { dbPath } )
+
+            // (a) the count is the measured comparison base — 5 seeded tables, not "some".
+            expect( tableCount ).toBe( SEEDED_TABLES.length )
+            expect( tables.length ).toBe( SEEDED_TABLES.length )
+            expect( tables.map( ( t ) => t[ 'name' ] ) ).toEqual( SEEDED_TABLES )
+
+            // (b) the row counts are real per-table facts, not a shared placeholder.
+            const byName = Object.fromEntries( tables.map( ( t ) => [ t[ 'name' ], t[ 'rowCount' ] ] ) )
+            expect( byName[ 'work_item' ] ).toBe( 7 )
+            expect( byName[ 'memo' ] ).toBe( 1 )
+            expect( byName[ 'lifecycle' ] ).toBe( 0 )
+        } )
+
+
+        it( 'fails loud on a missing / empty dbPath instead of returning an empty list', () => {
+            expect( () => DoltDbAssembler.readTableList( {} ) ).toThrow( /"dbPath" is required/ )
+            expect( () => DoltDbAssembler.readTableList( { dbPath: '' } ) ).toThrow( /"dbPath" is required/ )
+            expect( () => DoltDbAssembler.readTableList( { dbPath: resolve( memoDir, 'nope.db' ) } ) ).toThrow( /does not exist/ )
+        } )
+    } )
+
+
+    describe( 'readTablePage (US-2 — eine Tabelle seitenweise lesen)', () => {
+        it( 'returns column heads, rows, total, limit and offset for a named table', () => {
+            const page = DoltDbAssembler.readTablePage( { dbPath, table: 'work_item', limit: 3, offset: 0 } )
+
+            expect( page[ 'found' ] ).toBe( true )
+            expect( page[ 'columns' ] ).toEqual( [ 'id', 'topic', 'title', 'status', 'grp' ] )
+            expect( page[ 'rows' ].length ).toBe( 3 )
+            expect( page[ 'totalRows' ] ).toBe( 7 )
+            expect( page[ 'limit' ] ).toBe( 3 )
+            expect( page[ 'offset' ] ).toBe( 0 )
+            expect( page[ 'rows' ][ 0 ][ 0 ][ 'value' ] ).toBe( 'WI-1' )
+            // the cell count per row matches the column count — 5 columns compared, none dropped.
+            expect( page[ 'rows' ][ 0 ].length ).toBe( page[ 'columns' ].length )
+        } )
+
+
+        it( 'pages forward: offset 3 with limit 3 yields the next 3 of the same 7 rows', () => {
+            const page = DoltDbAssembler.readTablePage( { dbPath, table: 'work_item', limit: 3, offset: 3 } )
+
+            expect( page[ 'rows' ].length ).toBe( 3 )
+            expect( page[ 'totalRows' ] ).toBe( 7 )
+            expect( page[ 'offset' ] ).toBe( 3 )
+            expect( page[ 'rows' ][ 0 ][ 0 ][ 'value' ] ).toBe( 'WI-4' )
+        } )
+
+
+        it( 'applies the documented default limit of 100 when the caller names none', () => {
+            const page = DoltDbAssembler.readTablePage( { dbPath, table: 'work_item' } )
+
+            expect( page[ 'limit' ] ).toBe( 100 )
+            expect( page[ 'offset' ] ).toBe( 0 )
+            expect( page[ 'rows' ].length ).toBe( 7 )
+            expect( page[ 'totalRows' ] ).toBe( 7 )
+        } )
+
+
+        it( 'an offset beyond the total yields EMPTY rows WITH the total stated — not an error, not a mute zero', () => {
+            const page = DoltDbAssembler.readTablePage( { dbPath, table: 'work_item', limit: 10, offset: 500 } )
+
+            expect( page[ 'found' ] ).toBe( true )
+            expect( page[ 'rows' ] ).toEqual( [] )
+            expect( page[ 'totalRows' ] ).toBe( 7 )
+            expect( page[ 'offset' ] ).toBe( 500 )
+        } )
+    } )
+
+
+    describe( 'Whitelist (US-3 — der Name einer Tabelle ist keine Einfallsschneise)', () => {
+        it( 'rejects an unknown table name WITHOUT querying it, and says how many names it checked against', () => {
+            const page = DoltDbAssembler.readTablePage( { dbPath, table: 'does_not_exist' } )
+
+            expect( page[ 'found' ] ).toBe( false )
+            expect( page[ 'rows' ] ).toEqual( [] )
+            expect( page[ 'columns' ] ).toEqual( [] )
+            // the comparison base is stated: 5 known names were checked, so found:false is a real miss.
+            expect( page[ 'tableCount' ] ).toBe( SEEDED_TABLES.length )
+        } )
+
+
+        it( 'rejects ALL FOUR injection shapes — because they are not in the list, not by filtering characters', () => {
+            const verdicts = INJECTION_NAMES
+                .map( ( name ) => DoltDbAssembler.readTablePage( { dbPath, table: name } ) )
+
+            // 4 of 4 rejected — the count is stated so a shrunken input list cannot pass unnoticed.
+            expect( verdicts.length ).toBe( 4 )
+            expect( verdicts.filter( ( v ) => v[ 'found' ] === false ).length ).toBe( 4 )
+            // the rejected name is echoed VERBATIM (no character was stripped to make it "safe").
+            expect( verdicts.map( ( v ) => v[ 'table' ] ) ).toEqual( INJECTION_NAMES )
+
+            // and the database is untouched: the same 5 tables with the same 7 work_item rows.
+            const after = DoltDbAssembler.readTableList( { dbPath } )
+            expect( after[ 'tableCount' ] ).toBe( SEEDED_TABLES.length )
+            expect( after[ 'tables' ].map( ( t ) => t[ 'name' ] ) ).toEqual( SEEDED_TABLES )
+            expect( DoltDbAssembler.readTablePage( { dbPath, table: 'work_item' } )[ 'totalRows' ] ).toBe( 7 )
+        } )
+
+
+        it( 'fails loud on a missing table argument (no silent "list everything")', () => {
+            expect( () => DoltDbAssembler.readTablePage( { dbPath } ) ).toThrow( /"table" is required/ )
+            expect( () => DoltDbAssembler.readTablePage( { dbPath, table: '' } ) ).toThrow( /"table" is required/ )
+        } )
+    } )
+
+
+    describe( 'normalizeTablePage (US-2 — eine unsinnige Begrenzung erreicht die Datenbank nie)', () => {
+        it( 'takes the documented default for an absent window', () => {
+            expect( DoltDbAssembler.normalizeTablePage( {} ) ).toEqual( { limit: 100, offset: 0 } )
+            expect( DoltDbAssembler.normalizeTablePage( { limit: null, offset: '' } ) ).toEqual( { limit: 100, offset: 0 } )
+        } )
+
+
+        it( 'accepts numeric strings (the query-parameter shape) as real numbers', () => {
+            expect( DoltDbAssembler.normalizeTablePage( { limit: '25', offset: '50' } ) ).toEqual( { limit: 25, offset: 50 } )
+        } )
+
+
+        it( 'rejects EVERY unusable window shape — non-numeric, negative, fractional, zero, above the ceiling', () => {
+            const bad = [
+                { limit: 'abc' }, { limit: '10; DROP TABLE memo' }, { limit: -5 }, { limit: 0 },
+                { limit: 1.5 }, { limit: 100000 }, { offset: -1 }, { offset: 'x' }
+            ]
+
+            // 8 of 8 shapes rejected — the count is stated so a shrunken input list cannot pass unnoticed.
+            const thrown = bad
+                .filter( ( window ) => {
+                    try {
+                        DoltDbAssembler.normalizeTablePage( window )
+
+                        return false
+                    } catch {
+                        return true
+                    }
+                } )
+
+            expect( bad.length ).toBe( 8 )
+            expect( thrown.length ).toBe( 8 )
+        } )
+
+
+        it( 'readTablePage refuses a bad window BEFORE it touches the database', () => {
+            expect( () => DoltDbAssembler.readTablePage( { dbPath, table: 'work_item', limit: 'abc' } ) )
+                .toThrow( /normalizeTablePage/ )
+            expect( () => DoltDbAssembler.readTablePage( { dbPath, table: 'work_item', offset: -1 } ) )
+                .toThrow( /normalizeTablePage/ )
+        } )
+
+
+        it( 'the paged SELECT binds limit/offset as `?` — no number is concatenated into the SQL', () => {
+            const source = readFileSync( resolve( process.cwd(), 'src', 'DoltDbAssembler.mjs' ), 'utf-8' )
+
+            expect( source ).toContain( 'LIMIT ? OFFSET ?' )
+            // no interpolated numeric window anywhere in the module (`LIMIT ${...}` / `OFFSET ${...}`).
+            expect( /LIMIT \$\{/.test( source ) ).toBe( false )
+            expect( /OFFSET \$\{/.test( source ) ).toBe( false )
+        } )
+    } )
+
+
+    describe( 'Zell-Kuerzung (US-2 — grosse Zellen kommen gekuerzt und markiert an)', () => {
+        it( 'cuts a 5 000-char cell at 2 000 chars, marks it and reports the original length', () => {
+            const page = DoltDbAssembler.readTablePage( { dbPath, table: 'block_tables' } )
+            const tsvIndex = page[ 'columns' ].indexOf( 'tsv' )
+            const cellValue = page[ 'rows' ][ 0 ][ tsvIndex ]
+
+            expect( page[ 'rows' ].length ).toBe( 1 )
+            expect( cellValue[ 'truncated' ] ).toBe( true )
+            expect( cellValue[ 'value' ].length ).toBe( 2000 )
+            expect( cellValue[ 'length' ] ).toBe( LONG_CELL_LENGTH )
+            // exactly ONE cell of this page was cut — stated, not implied.
+            expect( page[ 'truncatedCells' ] ).toBe( 1 )
+        } )
+
+
+        it( 'leaves a short cell untouched and unmarked, and passes markup through verbatim (escaping is the client\'s job)', () => {
+            const page = DoltDbAssembler.readTablePage( { dbPath, table: 'block' } )
+            const titleIndex = page[ 'columns' ].indexOf( 'title' )
+            const cellValue = page[ 'rows' ][ 0 ][ titleIndex ]
+
+            expect( cellValue[ 'truncated' ] ).toBe( false )
+            expect( cellValue[ 'value' ] ).toBe( '<script>alert(1)</script>' )
+            expect( page[ 'truncatedCells' ] ).toBe( 0 )
+        } )
+
+
+        it( 'keeps a NULL cell null (an empty cell and a cut cell stay different facts)', () => {
+            const page = DoltDbAssembler.readTablePage( { dbPath, table: 'memo' } )
+            const typeIndex = page[ 'columns' ].indexOf( 'memo_type' )
+
+            expect( page[ 'rows' ].length ).toBe( 1 )
+            expect( page[ 'rows' ][ 0 ][ typeIndex ][ 'value' ] ).toBe( 'strategy' )
+            expect( page[ 'rows' ][ 0 ][ typeIndex ][ 'truncated' ] ).toBe( false )
+        } )
+    } )
+
+
+    describe( 'Nur lesend (US-4 — die Ein-Schreiber-Disziplin bleibt unberuehrt)', () => {
+        it( 'the raw-table leaves carry no write verb at all', () => {
+            const source = readFileSync( resolve( process.cwd(), 'src', 'DoltDbAssembler.mjs' ), 'utf-8' )
+            const start = source.indexOf( 'static normalizeTablePage' )
+            const end = source.indexOf( '// ---- private ----' )
+            const added = source.slice( start, end )
+
+            expect( start ).toBeGreaterThan( -1 )
+            expect( end ).toBeGreaterThan( start )
+            // the whole new public surface is scanned — 1 contiguous region, 5 forbidden verbs.
+            const verbs = [ 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE' ]
+            expect( verbs.length ).toBe( 5 )
+            expect( verbs.filter( ( verb ) => added.indexOf( verb ) !== -1 ) ).toEqual( [] )
+        } )
+
+
+        it( 'the retired "no injection surface" claim is gone and the whitelist is named instead', () => {
+            const source = readFileSync( resolve( process.cwd(), 'src', 'DoltDbAssembler.mjs' ), 'utf-8' )
+
+            expect( source ).not.toContain( 'never user input — no injection surface' )
+            expect( source ).toContain( 'whitelist is the safeguard' )
         } )
     } )
 } )

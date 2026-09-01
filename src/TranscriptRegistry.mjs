@@ -275,7 +275,7 @@ class TranscriptRegistry {
 
 
     async updateTranscript( { transcriptId, content } ) {
-        const struct = { 'status': false, 'messages': [], 'unchanged': false }
+        const struct = { 'status': false, 'messages': [], 'unchanged': false, 'memoId': null, 'backupPath': null }
 
         const { status: validStatus, messages: validMessages } = TranscriptRegistry.validateUpdateTranscript( { transcriptId, content } )
 
@@ -291,10 +291,23 @@ class TranscriptRegistry {
             return struct
         }
 
+        struct[ 'memoId' ] = this.#transcripts.get( transcriptId )[ 'memoId' ]
+
         const { hasHeader } = TranscriptHeader.detect( { content } )
 
         if( hasHeader ) {
             struct[ 'messages' ].push( 'TRANSCRIPT-PUT-001: Body must contain only the transcript content, not the header. Header is added server-side.' )
+
+            return struct
+        }
+
+        // PRD-V5 (Memo 080 Kap 16, WI-134): the line-1 check above stays, but it is blind to the shape
+        // that actually damaged 5 files — a header REST starting mid-sentence. detectInBody reads the
+        // WHOLE body and names the offset, so the rejection says where the signature sits.
+        const { hasHeaderSignature, at, signature } = TranscriptHeader.detectInBody( { content } )
+
+        if( hasHeaderSignature ) {
+            struct[ 'messages' ].push( `TRANSCRIPT-PUT-001: Body carries a header signature (${ signature }) at offset ${ at }. Body must contain only the transcript content; the header is added server-side.` )
 
             return struct
         }
@@ -321,6 +334,21 @@ class TranscriptRegistry {
 
         const finalPath = transcript[ 'absolutePath' ]
         const tmpPath = `${ finalPath }.tmp`
+
+        // PRD-V5 (Memo 080 Kap 16, WI-134): the PUT branch wrote DESTRUCTIVELY — tmp file plus rename,
+        // no safety net — while the POST branch has a do-not-overwrite gate (TRANSCRIPT-SEQ-001). In the
+        // 2026-08-23 incident the previous state was therefore unrecoverable. A copy of the current
+        // state is put aside BEFORE the rename. No target file yet -> nothing to back up. A FAILING
+        // backup rejects the PUT: no destructive write without a net. The backup is NEVER deleted by code.
+        const { status: backupStatus, backupPath, message: backupMessage } = await TranscriptRegistry.#backupBeforeWrite( { finalPath } )
+
+        if( backupStatus !== true ) {
+            struct[ 'messages' ].push( backupMessage )
+
+            return struct
+        }
+
+        struct[ 'backupPath' ] = backupPath
 
         try {
             await writeFile( tmpPath, wrappedContent, 'utf-8' )
@@ -1626,6 +1654,37 @@ class TranscriptRegistry {
     shutdown() {
         this.#transcripts.clear()
         this.#otherTranscripts.clear()
+    }
+
+
+    // PRD-V5 (Memo 080 Kap 16, WI-134): put the current state aside before a destructive PUT. The
+    // backup keeps the `.bak` suffix AFTER the `.md`, so it does not match REVIEW_FILE_PATTERN and is
+    // never registered as a second transcript. A missing target file is not an error (nothing to save
+    // yet). A failing copy IS an error — the caller rejects the PUT rather than writing without a net.
+    // Nothing in this module ever deletes a backup.
+    static async #backupBeforeWrite( { finalPath } ) {
+        const struct = { 'status': false, 'backupPath': null, 'message': null }
+
+        try {
+            await access( finalPath )
+        } catch {
+            struct[ 'status' ] = true
+
+            return struct
+        }
+
+        const backupPath = `${ finalPath }.bak`
+
+        try {
+            const previous = await readFile( finalPath, 'utf-8' )
+            await writeFile( backupPath, previous, 'utf-8' )
+            struct[ 'status' ] = true
+            struct[ 'backupPath' ] = backupPath
+        } catch ( err ) {
+            struct[ 'message' ] = `TRANSCRIPT-BACKUP-001: Could not back up the previous state, PUT rejected: ${ err.message }`
+        }
+
+        return struct
     }
 
 

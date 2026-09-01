@@ -98,7 +98,11 @@ describe( 'Asset extraction — app.css (PRD-010, Memo 016 F1)', () => {
             const routeBlock = source.slice( routeIdx, routeIdx + 500 )
             expect( /res\.writeHead\(\s*200/.test( routeBlock ) ).toBe( true )
             expect( routeBlock.includes( 'getCssBundle()' ) ).toBe( true )
-            expect( routeBlock.includes( 'res.end( cssBundle.source )' ) ).toBe( true )
+            // PRD-V5 (Memo 080 Kap 16, WI-136): the SAME source is still what leaves the route, but it
+            // now goes out blockweise through sendBundle (one error sink) instead of one unguarded
+            // res.end. Same strength of assertion: the fresh bundle source is what is delivered.
+            expect( routeBlock.includes( 'sendBundle( req, res, cssBundle.source )' ) ).toBe( true )
+            expect( routeBlock.includes( 'res.end( cssBundle.source )' ) ).toBe( false )
             expect( routeBlock.includes( "'ETag'" ) ).toBe( true )
         } )
 

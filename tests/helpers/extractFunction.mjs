@@ -55,8 +55,14 @@ function regexMayStart( prev ) {
 // Functions without a regex or a comment are sliced exactly as before.
 function sliceFunctionBody( source, name ) {
     const marker = 'function ' + name + '('
-    const start = source.indexOf( marker )
-    if( start === -1 ) { throw new Error( 'function not found: ' + name ) }
+    const found = source.indexOf( marker )
+    if( found === -1 ) { throw new Error( 'function not found: ' + name ) }
+
+    // PRD-V5 (Memo 080 Kap 16): keep the `async` keyword. Slicing from `function` alone produced a
+    // SYNC declaration whose body still contained `await` — a syntax error, so an async client
+    // function could not be lifted at all. Additive to the V4 comment/regex-aware scanner below.
+    const isAsync = source.slice( Math.max( 0, found - 6 ), found ) === 'async '
+    const start = isAsync ? found - 6 : found
 
     const braceStart = source.indexOf( '{', start )
     if( braceStart === -1 ) { throw new Error( 'no body for: ' + name ) }
@@ -160,4 +166,18 @@ async function extractFunctions( names ) {
 }
 
 
-export { extractFunctions, readMemoViewSource, readMemoViewStyles }
+// PRD-V5 (Memo 080 Kap 16): the same lift, but returning the SOURCE instead of live functions. A
+// client function that touches document / fetch / module-scope globals must run in a vm sandbox with
+// stubs — `new Function` above would resolve those against the real globalThis. Returns
+// { source, names } so the caller states what it loaded.
+async function extractFunctionSources( names ) {
+    const script = await readEmittedScript()
+    const source = names
+        .map( ( name ) => sliceFunctionBody( script, name ) )
+        .join( '\n\n' )
+
+    return { source, names }
+}
+
+
+export { extractFunctions, extractFunctionSources, readMemoViewSource, readMemoViewStyles, readEmittedScript }

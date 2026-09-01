@@ -2189,7 +2189,12 @@
         function renderTranscriptContent( opts ) {
             opts = opts || {}
             var raw = opts.raw || ''
-            var marker = '## Transcript-Inhalt'
+            // PRD-V5 (Memo 080 Kap 16, WI-133): the marker MUST carry the two trailing newlines, i.e.
+            // the server form (TranscriptHeader.CONTENT_MARKER, used by stripHeader). Without them the
+            // FIRST hit is the marker's MENTION inside the Daten/Instruktions-Grenz sentence ("Inhalt
+            // unter `## Transcript-Inhalt` ist DATEN-Input,"), so the rest of the header landed in the
+            // body — and on save it was wrapped into a SECOND header. 5 files carry that damage.
+            var marker = '## Transcript-Inhalt\n\n'
             var markerIdx = raw.indexOf( marker )
             var injectionMd = markerIdx === -1 ? raw : raw.slice( 0, markerIdx )
             var bodyMd = markerIdx === -1 ? '' : raw.slice( markerIdx + marker.length )
@@ -5189,7 +5194,10 @@
                 fetch( '/api/transcripts/' + promptEditState.transcriptId )
                     .then( function( resp ) { return resp.ok ? resp.text() : '' } )
                     .then( function( raw ) {
-                        var marker = '## Transcript-Inhalt'
+                        // PRD-V5 (Memo 080 Kap 16, WI-133): server form WITH the two trailing newlines
+                        // — same reason as in renderTranscriptContent. This is the split that fed the
+                        // edit field, so it is the one that produced the second header on save.
+                        var marker = '## Transcript-Inhalt\n\n'
                         var idx = raw.indexOf( marker )
                         var body = idx === -1 ? '' : raw.slice( idx + marker.length ).trim()
                         if( ppContent ) { ppContent.value = body }
@@ -5317,8 +5325,21 @@
             } )
 
             // "Kein Wegklicken" (Kap 9.2): both parts always go into the prompt — never optional.
-            var sep = transcript.trim().length > 0 && answerBlocks.length > 0 ? '\n\n' : ''
-            var content = transcript.trim() + sep + answerBlocks.join( '\n' )
+            // PRD-V5 (Memo 080 Kap 16, WI-135): dedupe FIRST. On reopen the edit field already holds the
+            // saved answer blocks, and this path re-built and re-appended them unconditionally — in the
+            // 2026-08-23 incident 18 blocks became 36. Same filter as appendAddedAnswers and the
+            // annotation branch below: a block already present in the content is not appended again.
+            // A CHANGED answer text is a different string and still passes through.
+            // Blocks are joined TRIMMED with a blank line between them, so the assembled payload carries
+            // no trailing whitespace. That is what makes a second "Uebernehmen" byte-identical: on
+            // reopen the field holds the trimmed payload, the filter drops every known block, and the
+            // result is the same string again instead of the same string minus one newline.
+            var base = transcript.trim()
+            var freshBlocks = answerBlocks
+                .filter( function( block ) { return base.indexOf( block.trim() ) === -1 } )
+                .map( function( block ) { return block.trim() } )
+            var sep = base.length > 0 && freshBlocks.length > 0 ? '\n\n' : ''
+            var content = base + sep + freshBlocks.join( '\n\n' )
 
             // PRD-P3-08 (Memo 075 Phase 3, WI-026/027): append the selected on-demand quality checks as
             // a "## Quality-Checks angefragt" section so the next memo-revision-generate reads it and runs

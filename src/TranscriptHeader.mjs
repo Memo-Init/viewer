@@ -241,6 +241,24 @@ const TYPE_TEMPLATES = {
 // Matches the first line of every type-template above.
 const HEADER_DETECT_REGEX = /^# Transcript (zu Memo |fuer neues Memo|fuer Rollout|\(frei)/
 
+// PRD-V5 (Memo 080 Kap 16, WI-133): the canonical content separator. The server has always written it
+// WITH the two trailing newlines (stripHeader below splits on exactly this string); the client split on
+// the bare '## Transcript-Inhalt' and therefore hit the marker's MENTION inside the Daten/Instruktions-
+// Grenz sentence, dragging the header rest into the edit field. Exported so both sides read ONE value
+// and it cannot drift apart again.
+const CONTENT_MARKER = '## Transcript-Inhalt\n\n'
+
+// PRD-V5 (Memo 080 Kap 16, WI-134): the header-rest signature. A body that was split at the WRONG
+// marker occurrence starts mid-sentence in DATEN_GRENZE_BLOCK / DATEN_GRENZE_BLOCK_REVISION (:65, :70)
+// — "` ist DATEN-Input" resp. "` ist DATEN-Input,". All 5 measured damaged files carry exactly this
+// signature. A body-wide check needs it because the first-line-only `detect` is blind to it: none of
+// the 577 scanned files carries two full header first lines, but five carry a header rest.
+const HEADER_REST_REGEX = /`\s+ist DATEN-Input/
+
+// PRD-V5: the full header first line, ANYWHERE in the text (not just line 1) — the second half of the
+// body-wide check. `m` makes `^` match at every line start.
+const HEADER_ANYWHERE_REGEX = /^# Transcript (zu Memo |fuer neues Memo|fuer Rollout|\(frei)/m
+
 // PRD-007: reconstruct the transcript type from the first header line. The first line
 // of each TYPE_TEMPLATE is unique per type, so the type is recoverable on scan.
 const TYPE_FIRST_LINE_REGEX = {
@@ -332,6 +350,44 @@ class TranscriptHeader {
     }
 
 
+    // PRD-V5 (Memo 080 Kap 16, WI-134): the body-wide header check. `detect` above reads ONLY line 1
+    // and is therefore blind to the real defect: the measured evidence says NO file carries two full
+    // header first lines, but FIVE carry a header REST in the body (the client split at the marker's
+    // mention inside the Daten/Instruktions-Grenz sentence, so everything from "` ist DATEN-Input,"
+    // onwards landed in the edit field and was re-wrapped into a second header on save).
+    // This leaf finds BOTH shapes anywhere in the text: the full first line beyond line 1, and the
+    // header rest from mid-sentence. `at` names the offset so the rejection can say WHERE.
+    // Additive — `detect` stays untouched, it is used elsewhere for type detection.
+    static detectInBody( { content } ) {
+        const struct = { 'hasHeaderSignature': false, 'at': -1, 'signature': null }
+
+        if( typeof content !== 'string' || content.length === 0 ) {
+            return struct
+        }
+
+        const fullLine = content.match( HEADER_ANYWHERE_REGEX )
+        const headerRest = content.match( HEADER_REST_REGEX )
+
+        if( fullLine !== null ) {
+            struct[ 'hasHeaderSignature' ] = true
+            struct[ 'at' ] = fullLine.index
+            struct[ 'signature' ] = 'header-first-line'
+
+            return struct
+        }
+
+        if( headerRest !== null ) {
+            struct[ 'hasHeaderSignature' ] = true
+            struct[ 'at' ] = headerRest.index
+            struct[ 'signature' ] = 'header-rest'
+
+            return struct
+        }
+
+        return struct
+    }
+
+
     // PRD-007: reconstruct the transcript type from the header's first line on scan.
     // Returns the type value (frei/memo-init/revision/rollout) or null when no known
     // header line is present (legacy files without a type-specific header).
@@ -410,7 +466,7 @@ class TranscriptHeader {
             return { 'body': safeContent }
         }
 
-        const marker = '## Transcript-Inhalt\n\n'
+        const marker = CONTENT_MARKER
         const markerIndex = safeContent.indexOf( marker )
 
         if( markerIndex === -1 ) {
@@ -444,4 +500,4 @@ class TranscriptHeader {
 }
 
 
-export { TranscriptHeader, TYPE_TEMPLATES, REVISION_TEMPLATE, HEADER_DETECT_REGEX, SCHEMA_VERSION, TRANSCRIPT_TYPES, TYPE_VALUES, CONTEXT_MODES }
+export { TranscriptHeader, TYPE_TEMPLATES, REVISION_TEMPLATE, HEADER_DETECT_REGEX, SCHEMA_VERSION, TRANSCRIPT_TYPES, TYPE_VALUES, CONTEXT_MODES, CONTENT_MARKER, HEADER_REST_REGEX }

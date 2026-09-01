@@ -370,11 +370,25 @@ class UserInputCapture {
                 resolvePromise( struct )
             } )
 
-            if( input !== undefined && input !== null ) {
-                child.stdin.write( input )
+            // PRD-V5 (Memo 080 Kap 16, WI-136, Beleg 16.5): `child.on( 'error' )` above was handled, the
+            // stdin STREAM was not. When the spawn fails (ENOENT on an unknown binary) or the child dies
+            // early, the write below hits a broken pipe and stdin emits `error` — without a listener that
+            // THROWS and takes the whole server with it. The guard records the message and resolves the
+            // same best-effort promise as the child error path: { status: false } with a message, never
+            // a throw. write() and end() additionally take a per-call callback, so an async EPIPE from
+            // the write itself has a sink as well.
+            const onStdinError = ( err ) => {
+                struct[ 'stderr' ] += err.message
+                resolvePromise( struct )
             }
 
-            child.stdin.end()
+            child.stdin.on( 'error', onStdinError )
+
+            if( input !== undefined && input !== null ) {
+                child.stdin.write( input, () => {} )
+            }
+
+            child.stdin.end( () => {} )
         } )
     }
 }

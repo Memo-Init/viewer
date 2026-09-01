@@ -124,7 +124,12 @@ describe( 'Asset extraction — app.client.mjs (PRD-011, Memo 016 F1/F2)', () =>
             const routeBlock = source.slice( routeIdx, routeIdx + 500 )
             expect( /res\.writeHead\(\s*200/.test( routeBlock ) ).toBe( true )
             expect( routeBlock.includes( 'getClientBundle()' ) ).toBe( true )
-            expect( routeBlock.includes( 'res.end( clientBundle.source )' ) ).toBe( true )
+            // PRD-V5 (Memo 080 Kap 16, WI-136): the SAME source is still what leaves the route, but it
+            // now goes out blockweise through sendBundle (one error sink) instead of one unguarded
+            // res.end of ~460 KB — that single write was the `write EPIPE` in the 2026-08-23 crash log.
+            // Same strength of assertion: the fresh bundle source is what is delivered.
+            expect( routeBlock.includes( 'sendBundle( req, res, clientBundle.source )' ) ).toBe( true )
+            expect( routeBlock.includes( 'res.end( clientBundle.source )' ) ).toBe( false )
             expect( routeBlock.includes( "'ETag'" ) ).toBe( true )
         } )
 

@@ -88,7 +88,7 @@ describe( 'PRD-040 gate emitted message (serialisation / safety)', () => {
 
         expect( parsed[ 'type' ] ).toBe( 'content' )
         expect( parsed[ 'validation' ] ).toBeDefined()
-        expect( Object.keys( parsed[ 'validation' ] ).sort() ).toEqual( [ 'info', 'messages', 'status' ] )
+        expect( Object.keys( parsed[ 'validation' ] ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'status' ] )
         expect( typeof parsed[ 'validation' ][ 'status' ] ).toBe( 'boolean' )
     } )
 

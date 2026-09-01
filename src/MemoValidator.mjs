@@ -62,7 +62,7 @@ const AI_ON_BEHALF_START_THRESHOLD = 0.95
 
 class MemoValidator {
     static validate( { doc, fileName } ) {
-        const struct = { 'status': false, 'messages': [], 'info': [] }
+        const struct = { 'status': false, 'messages': [], 'info': [], 'checked': { 'sections': 0, 'headerFields': 0 } }
 
         if( typeof doc !== 'string' || doc.length === 0 ) {
             const { message } = MemoValidator.#buildMessage( {
@@ -106,6 +106,10 @@ class MemoValidator {
         struct[ 'messages' ] = messages
         struct[ 'info' ] = info
         struct[ 'status' ] = messages.length === 0
+        // Memo 080, PRD-R1: a verdict without its comparison basis is not readable. `checked` states HOW
+        // MUCH was compared — how many mandatory sections and how many mandatory header fields the run
+        // examined — so a `status: true` can be told apart from a run that simply had nothing to check.
+        struct[ 'checked' ] = { 'sections': sections[ 'checked' ], 'headerFields': header[ 'checked' ] }
 
         return struct
     }
@@ -228,7 +232,7 @@ class MemoValidator {
 
 
     static #validateRequiredSections( { doc } ) {
-        const struct = { 'messages': [], 'info': [] }
+        const struct = { 'messages': [], 'info': [], 'checked': 0 }
         // PRD-002 (Memo 011, Kap 10): enforce the 10 mandatory sections = the 9 canonical
         // Pflicht-Sections from memo-init/SKILL.md ("Pflicht-Sections (PRD-029)" table)
         // PLUS `Beantwortete Fragen`. `Beantwortete Fragen` is kept (validation finding
@@ -262,12 +266,14 @@ class MemoValidator {
                 }
             } )
 
+        struct[ 'checked' ] = required.length
+
         return struct
     }
 
 
     static #validateHeaderFields( { doc } ) {
-        const struct = { 'messages': [], 'info': [] }
+        const struct = { 'messages': [], 'info': [], 'checked': 0 }
         const requiredHeaderFields = [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ]
 
         requiredHeaderFields
@@ -294,6 +300,8 @@ class MemoValidator {
                     } )
                 }
             } )
+
+        struct[ 'checked' ] = requiredHeaderFields.length
 
         // H3-decision (Memo Kap 13 validation): the Schema-Version marker check is advisory
         // (INFO) for now, NOT blocking — writing skills do not yet set the marker in memo files.

@@ -1,13 +1,25 @@
 # DB Traceability
 
-- ID: M079
-- Type: strategy
-- Status: finalized
+_Generated from the memo database — not hand-written._
+
+**Scope:** 1 blocks · 2 topics · 2 work items · 2 questions · 1 phases · 1 phase items
+
+| Feld | Wert |
+| --- | --- |
+| **Memo** | M079 |
+| **Memo-Name** | DB Traceability |
+| **Revision** | 01 |
+| **Datum** | 2026-08-20 |
+| **Status** | finalized |
 
 ## Kontext
 
 Kontext Zeile eins.
 Kontext Zeile zwei.
+
+## Vorwort
+
+Diese Revision entsteht aus der Datenbank.
 
 ## Work Items
 
@@ -51,12 +63,34 @@ graph TD
 | --- | --- | --- | --- | --- |
 | PRD-01 | adapter | done | core | code |
 
+## Phase-Hints
+
+- P1 kann parallel zu P2 laufen.
+
 ## Research
 
 | R | Title | Kind | Topics | Files |
 | --- | --- | --- | --- | --- |
 | R1 | doltlite Machbarkeit | wave-2 | T01 | context/research/2026-08-19--doltlite-machbarkeit.md |
 | R2 | Memo-Korpus | wave-2 | T01, T02 |  |
+
+## Snags
+
+| ID | Title | Status | Verdict | Disposition |
+| --- | --- | --- | --- | --- |
+| 079-tag-grenze | tag-grenze | open | offen | traced |
+
+## Goals
+
+| ID | Name | Kind | Pct | Status |
+| --- | --- | --- | --- | --- |
+| G-001 | DB als SoT | capability | 65 | open |
+
+## Maintenance
+
+| Repo | Freshness | Blast | Status |
+| --- | --- | --- | --- |
+| core | 82 | 3 | ok |
 
 ## Fragen
 
@@ -119,3 +153,19 @@ graph TD
 - **AI-Empfehlung war:** A
 - **User-Entscheidung:** A — Aus rollout/state.json projizieren
 - **Wortlaut:** A — Normalisierung laeuft aus rollout/state.json.
+
+## Finalisierungs-Checkliste
+
+- [x] Evidenz geprueft
+
+## Ancillary Files
+
+1. `context/research/2026-08-19--doltlite-machbarkeit.md`
+
+## Rollout-Entry-Points
+
+1. `cli/src/RevisionAssembler.mjs`
+
+## Lessons-Learned
+
+Ein Traeger fehlt erst dann auf, wenn er gerendert werden soll.

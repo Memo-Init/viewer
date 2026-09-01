@@ -72,13 +72,26 @@ const VALID_DOC = [
 
 
 describe( 'MemoValidator.validate — result shape & status (PRD-036)', () => {
-    it( 'returns exactly the keys status, messages, info', () => {
+    it( 'returns exactly the keys status, messages, info, checked', () => {
         const result = MemoValidator.validate( { doc: VALID_DOC } )
 
-        expect( Object.keys( result ).sort() ).toEqual( [ 'info', 'messages', 'status' ] )
+        // Memo 080, PRD-R1 widened the shape by ONE key: `checked`, the comparison basis the verdict
+        // rests on. The assertion stays EXACT (a fourth key would still fail) — it is not loosened.
+        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'status' ] )
         expect( Array.isArray( result[ 'messages' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'info' ] ) ).toBe( true )
         expect( typeof result[ 'status' ] ).toBe( 'boolean' )
+        // the ten mandatory sections and five mandatory header fields the run actually examined.
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5 } )
+    } )
+
+
+    it( 'reports a comparison basis of zero when there was nothing to check (empty document)', () => {
+        const result = MemoValidator.validate( { doc: '' } )
+
+        // A refusal is not a measurement: an empty document examined NOTHING, and says so.
+        expect( result[ 'status' ] ).toBe( false )
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 0, 'headerFields': 0 } )
     } )
 
 

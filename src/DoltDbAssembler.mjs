@@ -8,8 +8,10 @@
 // The FULL render is a PURE function of the database rows and stays byte-identical to
 // wt-core-079/cli/src/RevisionAssembler.mjs #renderBody and its section renderers, so the DB view and the
 // assembled REV never diverge. Same SQL, same ORDER BY, same escaping, same fence formatting. The sections
-// — Kontext, Work Items, Blocks (+diagrams), Topics, Phasen, Fragen (questions-json fence), Offene Fragen —
-// match the core assembler one-for-one. The header (`<!-- assembled-revision ... -->`) is deliberately NOT
+// — the head table, Kontext, Vorwort, Work Items, Blocks (+diagrams), Topics, Phasen, Phase-Hints, Research,
+// Snags, Goals, Maintenance, Fragen (questions-json fence), Offene Fragen, Beantwortete Fragen,
+// Finalisierungs-Checkliste, Ancillary Files, Rollout-Entry-Points, Lessons-Learned — match the core
+// assembler one-for-one. The header (`<!-- assembled-revision ... -->`) is deliberately NOT
 // emitted here — it is the assemble-time wrapper; this class returns the hashed BODY only.
 //
 // Memo 079 broad build-out (PRD-16): the questions sections are now emitted by the CORE assembler too, so
@@ -61,6 +63,33 @@ const raw = ( value ) => {
 const DIAGRAM_KINDS = [ 'mermaid', 'vega-lite' ]
 
 
+// The six mandatory prose sections rendered from the `memo_section` carrier and the five mandatory head
+// fields rendered from `memo_head` (Memo 080, PRD-R1). Byte-identical to RevisionAssembler (core): same
+// headings, same order, same empty mark — a one-sided change fails the hash-gated parity fixture.
+const PROSE_EMPTY = '_kein Inhalt_'
+
+const HEAD_FIELDS = [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ]
+
+
+// The visible generation note + the scope line of the head (Memo 080, PRD-R2 / WI-025). Byte-identical to
+// RevisionAssembler (core): same wording, same label, same carrier order — a one-sided change fails the
+// hash-gated parity fixture. Both lines are a PURE function of the content rows: no clock, no commit hash,
+// and no count of `revision` / `provenance` / `history_journal` (those are written after the render, so
+// counting them would make the frozen body drift on the next verify).
+const GENERATED_NOTE = '_Generated from the memo database — not hand-written._'
+
+const SCOPE_LABEL = '**Scope:**'
+
+const SCOPE_CARRIERS = [
+    { key: 'blocks', table: 'block', where: null },
+    { key: 'topics', table: 'topic', where: null },
+    { key: 'work items', table: 'work_item', where: null },
+    { key: 'questions', table: 'question', where: null },
+    { key: 'phases', table: 'rollout_phase', where: "id != '__state__'" },
+    { key: 'phase items', table: 'rollout_work_item', where: null }
+]
+
+
 // Memo 079 PRD-22 (#4): normalize a question identifier for cross-source dedup. The `question` table
 // `id` and the `user_input_answers` `question_id` are both the `F<N>` token (DoltSchema); trimming +
 // upper-casing lets the answer-record source dedup against the open-question ids case/whitespace-safe.
@@ -68,6 +97,37 @@ const DIAGRAM_KINDS = [ 'mermaid', 'vega-lite' ]
 // it stays honestly open, never silently cleared).
 const normalizeQuestionId = ( value ) => {
     return value === null || value === undefined ? '' : String( value ).trim().toUpperCase()
+}
+
+
+// Memo 080, PRD-V1 (WI-101) — the raw-table schaufenster. The per-memo database carries cells with very
+// large payloads (`block_tables.tsv`, transcript full texts, the JSON overflow columns of rollout_phase /
+// rollout_work_item), so a table page is bounded on THREE axes before it reaches the client:
+//   * CELL_TRUNCATE_LIMIT   — a single cell is cut at this many characters and MARKED as cut
+//   * TABLE_PAGE_DEFAULT_LIMIT — the page size when the caller names none
+//   * TABLE_PAGE_MAX_LIMIT  — the hard ceiling; a larger requested limit is REJECTED, never silently capped
+const CELL_TRUNCATE_LIMIT = 2000
+
+const TABLE_PAGE_DEFAULT_LIMIT = 100
+
+const TABLE_PAGE_MAX_LIMIT = 500
+
+
+// Cut an over-long cell for transport and say so. Returns the ORIGINAL length too, so a reader (and a
+// test) can see how much was withheld instead of guessing. A null/undefined cell stays null — an empty
+// cell and a cut cell are different facts and must not collapse into the same rendering.
+const truncateCell = ( value ) => {
+    if( value === null || value === undefined ) {
+        return { 'value': null, 'truncated': false, 'length': 0 }
+    }
+
+    const text = String( value )
+
+    if( text.length <= CELL_TRUNCATE_LIMIT ) {
+        return { 'value': text, 'truncated': false, 'length': text.length }
+    }
+
+    return { 'value': text.slice( 0, CELL_TRUNCATE_LIMIT ), 'truncated': true, 'length': text.length }
 }
 
 
@@ -312,6 +372,123 @@ class DoltDbAssembler {
     }
 
 
+    // Bring a caller-supplied page window into a usable range (Memo 080, PRD-V1 / WI-101). PURE + public so
+    // the route layer can reject a bad window BEFORE opening the database, and so the rule is testable on
+    // its own. An ABSENT limit/offset takes the documented default (100 / 0) — that is the published
+    // contract, not a silent default. A PRESENT but unusable value (non-numeric, fractional, negative, or
+    // above the ceiling) FAILS LOUD; it is never quietly bent into something else and never reaches the
+    // database. Numeric strings are accepted because the values arrive as query parameters.
+    static normalizeTablePage( { limit, offset } ) {
+        const readBound = ( { value, fallback, min, max, name } ) => {
+            const isAbsent = value === undefined || value === null || value === ''
+
+            if( isAbsent === true ) {
+                return fallback
+            }
+
+            const numeric = Number( value )
+
+            if( Number.isInteger( numeric ) !== true ) {
+                throw new Error( `DoltDbAssembler.normalizeTablePage: "${ name }" must be an integer — got "${ value }"` )
+            }
+            if( numeric < min || numeric > max ) {
+                throw new Error( `DoltDbAssembler.normalizeTablePage: "${ name }" must be between ${ min } and ${ max } — got "${ value }"` )
+            }
+
+            return numeric
+        }
+
+        return {
+            'limit': readBound( { 'value': limit, 'fallback': TABLE_PAGE_DEFAULT_LIMIT, 'min': 1, 'max': TABLE_PAGE_MAX_LIMIT, 'name': 'limit' } ),
+            'offset': readBound( { 'value': offset, 'fallback': 0, 'min': 0, 'max': Number.MAX_SAFE_INTEGER, 'name': 'offset' } )
+        }
+    }
+
+
+    // List every table of a per-memo database with its row count (Memo 080, PRD-V1 / WI-101 — US-1). The
+    // names come from `sqlite_master`, so the count is a measured fact about THIS file, never a hard-coded
+    // schema list. `tableCount` is returned alongside the list on purpose: a check must be able to say how
+    // much it compared, so an EMPTY list is only ever honest emptiness and never a lookup that found
+    // nothing (lesson deterministic-gates-can-be-vacuum-green). Read-only open, close in `finally`.
+    static readTableList( { dbPath } ) {
+        if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.readTableList: "dbPath" is required (non-empty string)' )
+        }
+        if( existsSync( dbPath ) !== true ) {
+            throw new Error( `DoltDbAssembler.readTableList: "${ dbPath }" does not exist — cannot list the tables` )
+        }
+
+        const db = DoltDbAssembler.#open( { dbPath } )
+        try {
+            const names = DoltDbAssembler.#tableNames( { db } )
+            const tables = names
+                .map( ( name ) => {
+                    const row = DoltDbAssembler.#get( { db, 'sql': `SELECT count( * ) AS n FROM \`${ name }\`` } )
+
+                    return { name, 'rowCount': row === null ? 0 : Number( row[ 'n' ] ) }
+                } )
+
+            return { tables, 'tableCount': tables.length }
+        } finally {
+            db.close()
+        }
+    }
+
+
+    // Read ONE page of ONE table (Memo 080, PRD-V1 / WI-101 — US-2/US-3). The incoming `table` is the only
+    // value in this class that may come from outside, so it is checked against the list read from
+    // `sqlite_master` by EXACT string comparison — a whitelist, not a character filter. A name that is not
+    // in the list returns found:false WITHOUT running a query against it, so a name carrying a semicolon
+    // and a second statement, a quote, a backtick or a `../` traversal all die at the list check. Only the
+    // matched name (a value that came OUT of the database) is ever interpolated; limit and offset travel
+    // as bound `?` parameters. Read-only open, close in `finally`.
+    static readTablePage( { dbPath, table, limit, offset } ) {
+        if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.readTablePage: "dbPath" is required (non-empty string)' )
+        }
+        if( existsSync( dbPath ) !== true ) {
+            throw new Error( `DoltDbAssembler.readTablePage: "${ dbPath }" does not exist — cannot read a table` )
+        }
+        if( typeof table !== 'string' || table.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.readTablePage: "table" is required (non-empty string)' )
+        }
+
+        const window = DoltDbAssembler.normalizeTablePage( { limit, offset } )
+        const db = DoltDbAssembler.#open( { dbPath } )
+        try {
+            const names = DoltDbAssembler.#tableNames( { db } )
+            const match = names
+                .find( ( name ) => name === table )
+
+            if( match === undefined ) {
+                return {
+                    'found': false, 'table': table, 'columns': [], 'rows': [], 'totalRows': 0,
+                    'limit': window[ 'limit' ], 'offset': window[ 'offset' ], 'truncatedCells': 0, 'tableCount': names.length
+                }
+            }
+
+            const columns = DoltDbAssembler.#all( { db, 'sql': `PRAGMA table_info(\`${ match }\`)` } )
+                .map( ( row ) => String( row[ 'name' ] ) )
+            const totalRow = DoltDbAssembler.#get( { db, 'sql': `SELECT count( * ) AS n FROM \`${ match }\`` } )
+            const totalRows = totalRow === null ? 0 : Number( totalRow[ 'n' ] )
+            const raw = DoltDbAssembler.#allPaged( {
+                db, 'sql': `SELECT * FROM \`${ match }\` LIMIT ? OFFSET ?`, 'limit': window[ 'limit' ], 'offset': window[ 'offset' ]
+            } )
+            const rows = raw
+                .map( ( row ) => columns.map( ( column ) => truncateCell( row[ column ] ) ) )
+            const truncatedCells = rows
+                .reduce( ( sum, cells ) => sum + cells.filter( ( cell ) => cell[ 'truncated' ] === true ).length, 0 )
+
+            return {
+                'found': true, 'table': match, columns, rows, totalRows,
+                'limit': window[ 'limit' ], 'offset': window[ 'offset' ], truncatedCells, 'tableCount': names.length
+            }
+        } finally {
+            db.close()
+        }
+    }
+
+
     // ---- private ----
 
     static #open( { dbPath } ) {
@@ -336,6 +513,23 @@ class DoltDbAssembler {
     }
 
 
+    // A page read with BOUND value parameters (Memo 080, PRD-V1). limit/offset are passed as `?` values —
+    // never string-concatenated into the SQL — so no number from the outside can carry a second statement.
+    static #allPaged( { db, sql, limit, offset } ) {
+        return db.prepare( sql ).all( limit, offset )
+    }
+
+
+    // Every table name of this database, read from `sqlite_master`. This list is BOTH the raw-table
+    // listing (readTableList) and the whitelist a caller-supplied name is checked against (readTablePage).
+    static #tableNames( { db } ) {
+        const rows = DoltDbAssembler.#all( { db, sql: "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name" } )
+
+        return rows
+            .map( ( row ) => String( row[ 'name' ] ) )
+    }
+
+
     // The ORDER BY clause for the question read: the authored-order `sort` ordinal with `id` as a stable
     // tie-break when the column exists (a widened / production db), degrading to plain `id` on a pre-this-fix
     // or early hand-seeded db that lacks the column. Probed via PRAGMA table_info so a missing column never
@@ -351,8 +545,14 @@ class DoltDbAssembler {
 
 
     // Does a table exist in this database? doltlite is node:sqlite-compatible and exposes sqlite_master,
-    // so a MISSING table (early/hand-seeded db) can be detected WITHOUT a "no such table" throw. `table`
-    // is an internal literal ('revision' / 'question'), never user input — no injection surface.
+    // so a MISSING table (early/hand-seeded db) can be detected WITHOUT a "no such table" throw.
+    // Memo 080, PRD-V1: the older note here promised the table name is "never user input". That promise no
+    // longer holds for the class as a whole — readTablePage takes a name from the raw-table route. The
+    // sentence is replaced by the guarantee that actually carries the risk: the ONLY name that is ever
+    // interpolated is one that came OUT of `sqlite_master` (readTableList / #tableNames). readTablePage
+    // matches the incoming name against that list by exact comparison and returns found:false on a miss —
+    // the whitelist is the safeguard, not the (still true) fact that THIS private leaf is called with
+    // internal literals ('revision' / 'question' / 'user_input_answers') only.
     static #tableExists( { db, table } ) {
         const row = DoltDbAssembler.#get( { db, sql: `SELECT name FROM sqlite_master WHERE type = 'table' AND name = '${ table }'` } )
 
@@ -424,27 +624,219 @@ class DoltDbAssembler {
         const researchFiles = DoltDbAssembler.#tableExists( { db, table: 'research_files' } ) === true
             ? DoltDbAssembler.#all( { db, sql: 'SELECT r_no, path, sha256 FROM research_files ORDER BY r_no, path' } )
             : []
+        // snag / goal / maintenance_card + the memo_section / memo_head carriers (Memo 080, PRD-R1):
+        // the same reads, the same ORDER BY and the same #tableExists guard-and-degrade the core
+        // RevisionAssembler applies, so both renderers stay byte-identical on ANY database state.
+        const snags = DoltDbAssembler.#tableExists( { db, table: 'snag' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, title, status, verdict, disposition FROM snag ORDER BY id' } )
+            : []
+        const goals = DoltDbAssembler.#tableExists( { db, table: 'goal' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, name, kind, pct, status FROM goal ORDER BY id' } )
+            : []
+        const maintenanceCards = DoltDbAssembler.#tableExists( { db, table: 'maintenance_card' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT repo, freshness, blast, maint_status FROM maintenance_card ORDER BY repo' } )
+            : []
+        const sections = DoltDbAssembler.#tableExists( { db, table: 'memo_section' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, heading, body, sort FROM memo_section ORDER BY sort, id' } )
+            : []
+        const headRows = DoltDbAssembler.#tableExists( { db, table: 'memo_head' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT field, value, sort FROM memo_head ORDER BY sort, field' } )
+            : []
 
-        const head = [
-            `# ${ cell( memo[ 'name' ] ) }`,
-            '',
-            `- ID: ${ cell( memo[ 'id' ] ) }`,
-            `- Type: ${ cell( memo[ 'memo_type' ] ) }`,
-            `- Status: ${ cell( memo[ 'status' ] ) }`,
-            ''
-        ]
+        const head = DoltDbAssembler.#renderHead( { db, memo, headRows } )
 
+        // The section ORDER mirrors RevisionAssembler.#renderBody exactly — it is part of the byte equality.
         return head
             .concat( DoltDbAssembler.#renderKontext( { context } ) )
+            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Vorwort' } ) )
             .concat( DoltDbAssembler.#renderWorkItems( { workItems } ) )
             .concat( DoltDbAssembler.#renderBlocks( { blocks, blockTables, blockDiagrams } ) )
             .concat( DoltDbAssembler.#renderTopics( { topics } ) )
             .concat( DoltDbAssembler.#renderPhases( { phases, phaseWorkItems } ) )
+            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Phase-Hints' } ) )
             .concat( DoltDbAssembler.#renderResearch( { research, researchTopics, researchFiles } ) )
+            .concat( DoltDbAssembler.#renderSnags( { snags } ) )
+            .concat( DoltDbAssembler.#renderGoals( { goals } ) )
+            .concat( DoltDbAssembler.#renderMaintenance( { cards: maintenanceCards } ) )
             .concat( DoltDbAssembler.#renderQuestionsJson( { questions, questionOptions } ) )
             .concat( DoltDbAssembler.#renderOpenQuestions( { questions } ) )
             .concat( DoltDbAssembler.#renderAnsweredQuestions( { questions, questionOptions, answers } ) )
+            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Finalisierungs-Checkliste' } ) )
+            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Ancillary Files' } ) )
+            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Rollout-Entry-Points' } ) )
+            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Lessons-Learned' } ) )
             .join( '\n' )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderHead: the memo name as H1, the visible generation note,
+    // the scope line, then the head TABLE the validator expects (`| **Feld** | Wert |`). The one difference
+    // is WHERE the revision number comes from: the core render is handed the number it is freezing, the
+    // viewer renders HEAD — so it reads the newest frozen `revision` row, which after an assemble IS that
+    // same number.
+    static #renderHead( { db, memo, headRows } ) {
+        const latestRevNo = DoltDbAssembler.#latestRevNo( { db } )
+        const rows = HEAD_FIELDS
+            .map( ( field ) => `| **${ field }** | ${ cell( DoltDbAssembler.#headValue( { field, memo, headRows, latestRevNo } ) ) } |` )
+
+        return [ `# ${ cell( memo[ 'name' ] ) }`, '', GENERATED_NOTE, '', DoltDbAssembler.#scopeLine( { db } ), '', '| Feld | Wert |', '| --- | --- |' ]
+            .concat( rows )
+            .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#scopeLine (core): `**Scope:** N blocks · N topics · …`, one
+    // figure per content carrier in the shared carrier order, each figure named WITH its carrier. Every
+    // count is #tableExists-guarded and degrades to 0, so an early hand-seeded db renders the same bytes the
+    // core renderer produces for the same state instead of throwing.
+    static #scopeLine( { db } ) {
+        const parts = SCOPE_CARRIERS
+            .map( ( carrier ) => `${ DoltDbAssembler.#countCarrier( { db, carrier } ) } ${ carrier[ 'key' ] }` )
+
+        return `${ SCOPE_LABEL } ${ parts.join( ' · ' ) }`
+    }
+
+
+    // One carrier row count. `table` / `where` are internal literals from SCOPE_CARRIERS, never user input.
+    static #countCarrier( { db, carrier } ) {
+        const { table, where } = carrier
+        if( DoltDbAssembler.#tableExists( { db, table } ) !== true ) {
+            return 0
+        }
+
+        const clause = where === null ? '' : ` WHERE ${ where }`
+        const row = DoltDbAssembler.#get( { db, sql: `SELECT count(*) AS n FROM ${ table }${ clause }` } )
+
+        return row === null ? 0 : Number( row[ 'n' ] )
+    }
+
+
+    // The newest frozen revision number, or null on a db without a `revision` table or without rows.
+    static #latestRevNo( { db } ) {
+        if( DoltDbAssembler.#tableExists( { db, table: 'revision' } ) !== true ) {
+            return null
+        }
+
+        const row = DoltDbAssembler.#get( { db, sql: 'SELECT max( rev_no ) AS maxRev FROM revision' } )
+        const maxRev = row === null ? null : row[ 'maxRev' ]
+
+        return typeof maxRev === 'number' ? maxRev : null
+    }
+
+
+    // ONE head-field value — the same precedence per field the core render applies (see
+    // RevisionAssembler.#headValue), with the newest frozen revision number standing in for the core's
+    // passed parameter. An unresolvable field yields the explicit em-dash mark, never an empty cell.
+    static #headValue( { field, memo, headRows, latestRevNo } ) {
+        const carried = headRows
+            .find( ( row ) => row[ 'field' ] === field )
+        const carriedValue = carried !== undefined && typeof carried[ 'value' ] === 'string' && carried[ 'value' ].length > 0
+            ? carried[ 'value' ]
+            : null
+        if( field === 'Revision' ) {
+            const frozen = latestRevNo === null ? null : String( latestRevNo ).padStart( 2, '0' )
+
+            return DoltDbAssembler.#firstFilled( { values: [ frozen, carriedValue ] } )
+        }
+
+        const derived = {
+            'Memo': memo[ 'id' ],
+            'Memo-Name': memo[ 'name' ],
+            'Datum': memo[ 'created_at' ],
+            'Status': memo[ 'status' ]
+        }
+
+        return DoltDbAssembler.#firstFilled( { values: [ carriedValue, derived[ field ] ] } )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#firstFilled.
+    static #firstFilled( { values } ) {
+        const found = values
+            .find( ( value ) => value !== null && value !== undefined && String( value ).length > 0 )
+
+        return found === undefined ? '—' : String( found )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderProse — one mandatory prose section from the
+    // `memo_section` carrier, all matching rows in (sort, id) order, empty renders the explicit mark.
+    static #renderProse( { sections, heading } ) {
+        const matched = sections
+            .filter( ( row ) => row[ 'heading' ] === heading )
+        const bodies = matched
+            .map( ( row ) => raw( row[ 'body' ] ) )
+            .filter( ( body ) => body.length > 0 )
+        if( bodies.length === 0 ) {
+            return [ `## ${ heading }`, '', PROSE_EMPTY, '' ]
+        }
+
+        return [ `## ${ heading }`, '' ]
+            .concat( bodies.join( '\n\n' ).split( '\n' ) )
+            .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderSnags.
+    static #renderSnags( { snags } ) {
+        const heading = [ '## Snags', '' ]
+        if( snags.length === 0 ) {
+            return heading.concat( [ '_no snags_', '' ] )
+        }
+
+        const table = [
+            '| ID | Title | Status | Verdict | Disposition |',
+            '| --- | --- | --- | --- | --- |'
+        ]
+        const bodyRows = snags
+            .map( ( row ) => `| ${ cell( row[ 'id' ] ) } | ${ cell( row[ 'title' ] ) } | ${ cell( row[ 'status' ] ) } | ${ cell( row[ 'verdict' ] ) } | ${ cell( row[ 'disposition' ] ) } |` )
+
+        return heading
+            .concat( table )
+            .concat( bodyRows )
+            .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderGoals.
+    static #renderGoals( { goals } ) {
+        const heading = [ '## Goals', '' ]
+        if( goals.length === 0 ) {
+            return heading.concat( [ '_no goals_', '' ] )
+        }
+
+        const table = [
+            '| ID | Name | Kind | Pct | Status |',
+            '| --- | --- | --- | --- | --- |'
+        ]
+        const bodyRows = goals
+            .map( ( row ) => `| ${ cell( row[ 'id' ] ) } | ${ cell( row[ 'name' ] ) } | ${ cell( row[ 'kind' ] ) } | ${ cell( row[ 'pct' ] ) } | ${ cell( row[ 'status' ] ) } |` )
+
+        return heading
+            .concat( table )
+            .concat( bodyRows )
+            .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderMaintenance.
+    static #renderMaintenance( { cards } ) {
+        const heading = [ '## Maintenance', '' ]
+        if( cards.length === 0 ) {
+            return heading.concat( [ '_no maintenance cards_', '' ] )
+        }
+
+        const table = [
+            '| Repo | Freshness | Blast | Status |',
+            '| --- | --- | --- | --- |'
+        ]
+        const bodyRows = cards
+            .map( ( row ) => `| ${ cell( row[ 'repo' ] ) } | ${ cell( row[ 'freshness' ] ) } | ${ cell( row[ 'blast' ] ) } | ${ cell( row[ 'maint_status' ] ) } |` )
+
+        return heading
+            .concat( table )
+            .concat( bodyRows )
+            .concat( [ '' ] )
     }
 
 

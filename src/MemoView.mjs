@@ -913,6 +913,32 @@ class MemoView {
     }
 
 
+    // PRD-V1 (Memo 080, Kap 15 / WI-101): resolve a registered memoPath to its per-memo database file for
+    // the RAW-TABLE routes. Deliberately NO second resolution path — it walks the SAME chain the serve
+    // weiche walks (resolveMemoDir → DoltDbAssembler.hasDb → DoltDbAssembler.resolveDbPath, mirror of
+    // #loadRevisionSource). A memo without a memo-NNN.db returns status:false WITH a message that names
+    // the missing database, so the route can answer 404 "no database" instead of an empty table list that
+    // would fake an empty database. Public+pure-ish (fs existence only) so the rule is unit-testable.
+    static resolveMemoDbPath( { memoPath } ) {
+        const location = MemoView.resolveMemoDir( { memoPath } )
+
+        if( location[ 'status' ] !== true ) {
+            return { 'status': false, 'dbPath': null, 'memoDir': null, 'message': 'Kein memoPath registriert — das Memo-Verzeichnis ist nicht auflösbar' }
+        }
+
+        const memoDir = location[ 'memoDir' ]
+        const { hasDb } = DoltDbAssembler.hasDb( { memoDir } )
+
+        if( hasDb !== true ) {
+            return { 'status': false, 'dbPath': null, memoDir, 'message': `Dieses Memo führt keine per-Memo-Datenbank (memo-NNN.db) in "${ memoDir }"` }
+        }
+
+        const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
+
+        return { 'status': true, dbPath, memoDir, 'message': null }
+    }
+
+
     // PRD-005 (Memo 076 Phase 3, WI-122): pure line-search over a revision's markdown `content`, mirroring
     // the client anchor resolution. Public+pure (the MemoView convention for testable statics) — the POST
     // route does the file read and passes the string in. text-quote: first line containing `exact`, with
@@ -1433,6 +1459,10 @@ class MemoView {
                  with a local 3-stage publish badge. Replaces the separate cli/spec-view (port 3344)
                  with ONE surface in this viewer, no second port. -->
             <button id="mode-specs" class="mode-toggle">Specs</button>
+            <!-- PRD-V1 (Memo 080, Kap 15 — Das Schaufenster): the RAW-TABLE view on the per-memo
+                 database. Read-only: it lists the tables of the selected memo's memo-NNN.db and pages
+                 through one table at a time (/api/db/tables + /api/db/table/{name}). -->
+            <button id="mode-dbtables" class="mode-toggle">Rohtabellen</button>
             <!-- PRD-002 (Memo 076, Phase 1, F10, WI-045/053): the Clients 4th-tab is REMOVED. Clients
                  is now an overlay-popup (#clients-modal) opened from #clients-head — it no longer owns
                  #content or the sidebar, so the clients-side header-bleed + sidebar-mismatch vanish. -->
@@ -3258,6 +3288,109 @@ class MemoView {
                 return
             }
 
+            // PRD-V1 (Memo 080, Kap 15 — Das Schaufenster / WI-101): the RAW-TABLE surface on the per-memo
+            // database. Two READ-ONLY routes, built like /api/folder + /api/folder-page above:
+            //   GET /api/db/tables?documentId=<id>                        → every table + its row count
+            //   GET /api/db/table/{name}?documentId=<id>&limit=&offset=   → one page of one table
+            // Discipline (US-3/US-4/US-5): the {name} segment is checked against the list read from
+            // sqlite_master (exact match, no character filtering) INSIDE DoltDbAssembler; limit/offset are
+            // bound `?` values; the database is opened READ-ONLY and closed per request; nothing here
+            // writes (the single-writer rule F4=A stays intact); no new listener and no new binding — both
+            // hang off the existing BIND_HOST-bound server. Errors: unknown memo / no database / unknown
+            // table → 404, a bad page window → 400, an open/read failure → 503 (the server stays alive).
+            if( url === '/api/db/tables' || url.startsWith( '/api/db/table/' ) ) {
+                if( req.method !== 'GET' ) {
+                    sendJson( res, 405, { 'error': 'Nur lesende Anfragen (GET) — die Rohtabellen-Ansicht schreibt nie' } )
+
+                    return
+                }
+
+                if( !MemoView.#registry ) {
+                    sendJson( res, 503, { 'error': 'Registry not initialized' } )
+
+                    return
+                }
+
+                const params = new URLSearchParams( req.url.split( '?' )[ 1 ] || '' )
+                const documentId = params.get( 'documentId' )
+                const lookup = MemoView.#registry.getDocument( { documentId } )
+
+                if( !lookup[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': lookup[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                let resolved = null
+
+                try {
+                    resolved = MemoView.resolveMemoDbPath( { 'memoPath': lookup[ 'document' ][ 'memoPath' ] } )
+                } catch( error ) {
+                    // A folder that vanishes between hasDb and resolveDbPath (a rollout moving files) must
+                    // not take the request down — the server answers and stays alive.
+                    sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
+
+                    return
+                }
+
+                if( resolved[ 'status' ] !== true ) {
+                    sendJson( res, 404, { 'error': resolved[ 'message' ] } )
+
+                    return
+                }
+
+                if( url === '/api/db/tables' ) {
+                    try {
+                        const listed = DoltDbAssembler.readTableList( { 'dbPath': resolved[ 'dbPath' ] } )
+
+                        sendJson( res, 200, { documentId, 'tables': listed[ 'tables' ], 'tableCount': listed[ 'tableCount' ] } )
+                    } catch( error ) {
+                        sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
+                    }
+
+                    return
+                }
+
+                const tableName = url.slice( '/api/db/table/'.length )
+
+                if( tableName.length === 0 ) {
+                    sendJson( res, 404, { 'error': 'Kein Tabellenname angegeben' } )
+
+                    return
+                }
+
+                let page = null
+
+                try {
+                    page = DoltDbAssembler.readTablePage( {
+                        'dbPath': resolved[ 'dbPath' ], 'table': tableName,
+                        'limit': params.get( 'limit' ), 'offset': params.get( 'offset' )
+                    } )
+                } catch( error ) {
+                    const isWindowError = error.message.indexOf( 'normalizeTablePage' ) !== -1
+
+                    sendJson( res, isWindowError ? 400 : 503, {
+                        'error': isWindowError ? error.message : `Datenbank vorübergehend nicht verfügbar: ${ error.message }`
+                    } )
+
+                    return
+                }
+
+                if( page[ 'found' ] !== true ) {
+                    sendJson( res, 404, { 'error': `Unbekannte Tabelle: ${ tableName }`, 'tableCount': page[ 'tableCount' ] } )
+
+                    return
+                }
+
+                sendJson( res, 200, {
+                    documentId, 'table': page[ 'table' ], 'columns': page[ 'columns' ], 'rows': page[ 'rows' ],
+                    'totalRows': page[ 'totalRows' ], 'limit': page[ 'limit' ], 'offset': page[ 'offset' ],
+                    'truncatedCells': page[ 'truncatedCells' ]
+                } )
+
+                return
+            }
+
             // Memo 079 M3=A (T059): serve a memo's research MD as an annotatable view — the GET door that
             // makes the already-built server annotation path (targetKind:'research') reachable from the UI.
             // GET /api/research-page?documentId=<id>&file=<memoDir-relative research path>. The file is read
@@ -3312,7 +3445,9 @@ class MemoView {
             // PRD-011: SPA routes. /memos must serve the same HTML page so direct navigation /
             // reload does not 404. The client reads location.pathname and restores the matching
             // view mode.
-            const isSpaRoute = url === '/' || url === '/memos' || url === '/specs'
+            // PRD-V1 (Memo 080): /dbtables joins the SPA routes so a direct reload of the raw-table view
+            // serves the same shell instead of 404-ing.
+            const isSpaRoute = url === '/' || url === '/memos' || url === '/specs' || url === '/dbtables'
 
             if( !isSpaRoute ) {
                 res.writeHead( 404, { 'Content-Type': 'text/plain; charset=utf-8' } )

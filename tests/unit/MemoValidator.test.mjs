@@ -72,17 +72,19 @@ const VALID_DOC = [
 
 
 describe( 'MemoValidator.validate — result shape & status (PRD-036)', () => {
-    it( 'returns exactly the keys status, messages, info, checked', () => {
+    it( 'returns exactly the keys status, messages, info, checked, revisionType', () => {
         const result = MemoValidator.validate( { doc: VALID_DOC } )
 
         // Memo 080, PRD-R1 widened the shape by ONE key: `checked`, the comparison basis the verdict
-        // rests on. The assertion stays EXACT (a fourth key would still fail) — it is not loosened.
-        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'status' ] )
+        // rests on. PRD-V13 widened it by ONE more: `revisionType`, WHICH schema was applied.
+        // The assertion stays EXACT (a sixth key would still fail) — it is not loosened.
+        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'revisionType', 'status' ] )
         expect( Array.isArray( result[ 'messages' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'info' ] ) ).toBe( true )
         expect( typeof result[ 'status' ] ).toBe( 'boolean' )
         // the ten mandatory sections and five mandatory header fields the run actually examined.
         expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5 } )
+        expect( result[ 'revisionType' ] ).toBe( 'full' )
     } )
 
 
@@ -212,6 +214,23 @@ describe( 'MemoValidator required sections (MEMO-001, PRD-002 — 10 sections)',
         const sectionMsgs = result[ 'messages' ].filter( ( m ) => m.startsWith( 'MEMO-001' ) )
 
         expect( sectionMsgs.length ).toBe( 9 )
+        expect( result[ 'status' ] ).toBe( false )
+    } )
+
+
+    it( 'Memo 080 PRD-V13 (A2): a REV-NN.md file keeps the full 10-section / 5-header duty', () => {
+        // The revision-type split must not touch the full schema. Explicit `fileName: REV-NN.md`
+        // (the type the corpus measurement calls `full`) — the ten sections and five header fields
+        // are still demanded, and the comparison basis still states 10 / 5.
+        const stripped = VALID_DOC
+            .replace( '## Lessons-Learned', '## Entfernt-Lessons-Learned' )
+            .replace( '| **Memo-Name** | Test |\n', '' )
+        const result = MemoValidator.validate( { doc: stripped, fileName: 'REV-01.md' } )
+
+        expect( result[ 'revisionType' ] ).toBe( 'full' )
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5 } )
+        expect( result[ 'messages' ].filter( ( m ) => m.includes( 'section.Lessons-Learned' ) ).length ).toBe( 1 )
+        expect( result[ 'messages' ].filter( ( m ) => m.includes( 'header.Memo-Name' ) ).length ).toBe( 1 )
         expect( result[ 'status' ] ).toBe( false )
     } )
 

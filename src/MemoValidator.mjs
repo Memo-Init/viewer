@@ -51,6 +51,68 @@ const ERROR_CODE_CATALOG = [
 ]
 
 
+// Memo 080, Kap 16 / WI-218 (T106): a revision file is not one shape but three. `full`
+// (REV-NN.md), `update` (REV-NN-update.md) and `prepare` (REV-NN-prepare.md) carry DIFFERENT
+// obligations by definition, yet every file was checked against the full-revision schema — which
+// made the gate worthless exactly there (measured 2026-08-31 over 514 revision files: 157 of 157
+// prepare files red, none of the findings a duty a prepare file is ever meant to carry).
+// This table binds the check families to the revision type. It is the ONE place the per-type
+// duties live; no rule is copied further down and no new error code is introduced — MEMO-001 and
+// MEMO-010 keep their number, severity and theme, only their required set becomes type-dependent.
+//
+//   sections        the MEMO-001 required-section list of this type
+//   sectionAliases  accepted alternative headings per section (both spellings occur in the corpus)
+//   headerFields    the MEMO-010 required header-field list of this type
+//   headerAliases   accepted alternative field names per header field
+//   schemaVersion   INFO-010 advisory Schema-Version hint on/off
+//   questionFamilies  MEMO-020a/b/c/d, MEMO-025, MEMO-030..033, MEMO-040, MEMO-050 on/off
+//   lifecycleMarker   MEMO-070 "[Research offen]" on/off
+//
+// A prepare artefact is written BEFORE the revision it plans; its question list is an informal
+// planning note ("keine / Liste der offenen Fragen die IN die Revision einfliessen",
+// memo-revision-generate/SKILL.md) and it legitimately plans open research — so the question
+// families and the lifecycle marker are off for `prepare` and on everywhere else. MEMO-060
+// (filename suffix) and MEMO-080 (block-meta) apply to every type.
+const REVISION_SCHEMA = {
+    'full': {
+        'sections': [ 'Kontext', 'Vorwort', 'Offene Fragen', 'Beantwortete Fragen', 'Phasen', 'Phase-Hints', 'Finalisierungs-Checkliste', 'Ancillary Files', 'Rollout-Entry-Points', 'Lessons-Learned' ],
+        'sectionAliases': { 'Vorwort': [ 'Vorwort', 'Claude-Vorwort' ] },
+        'headerFields': [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ],
+        'headerAliases': {},
+        'schemaVersion': true,
+        'questionFamilies': true,
+        'lifecycleMarker': true
+    },
+    'update': {
+        // An update revision replaces or extends chapters but must still carry the FULL set of
+        // open questions (spec 07-revisions-and-questions, "Full-Revision vs. Update-Revision
+        // Modes") — the two question sections are its structural duty, the four delivery sections
+        // (Finalisierungs-Checkliste, Ancillary Files, Rollout-Entry-Points, Lessons-Learned) are
+        // not. All 24 update files in the corpus carry the five full header fields, so the header
+        // duty stays identical to `full`.
+        'sections': [ 'Offene Fragen', 'Beantwortete Fragen' ],
+        'sectionAliases': {},
+        'headerFields': [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ],
+        'headerAliases': {},
+        'schemaVersion': true,
+        'questionFamilies': true,
+        'lifecycleMarker': true
+    },
+    'prepare': {
+        // The three duties of the prepare artefact per memo-revision-generate/SKILL.md
+        // ("REV-{XX}-prepare.md Format"). Both spellings of the change heading and both header
+        // field names are evidenced in the corpus, hence the alias lists.
+        'sections': [ 'Interpretation des Feedbacks', 'Geplante Änderungen pro Kapitel', 'Revisions-Blocker' ],
+        'sectionAliases': { 'Geplante Änderungen pro Kapitel': [ 'Geplante Änderungen pro Kapitel', 'Geplante Aenderungen pro Kapitel' ] },
+        'headerFields': [ 'Memo', 'Geplante Revision' ],
+        'headerAliases': { 'Geplante Revision': [ 'Geplante Revision', 'Revision' ] },
+        'schemaVersion': false,
+        'questionFamilies': false,
+        'lifecycleMarker': false
+    }
+}
+
+
 // Memo 038 Kap 7 (F8=A): the start confidence threshold for an AI "im Namen des Users"
 // pre-decision. The AI may only pre-decide a question at VERY high confidence (>= 95 %) and the
 // threshold is lowered over time as the User Mental Model proves itself. This is advisory
@@ -62,7 +124,11 @@ const AI_ON_BEHALF_START_THRESHOLD = 0.95
 
 class MemoValidator {
     static validate( { doc, fileName } ) {
-        const struct = { 'status': false, 'messages': [], 'info': [], 'checked': { 'sections': 0, 'headerFields': 0 } }
+        // Memo 080, Kap 16 / WI-218: derive the revision type ONCE, then hand it to every check
+        // family. Derived before the empty-document guard so even a refusal reports which schema
+        // it would have applied.
+        const { revisionType } = MemoValidator.#revisionTypeOf( { doc, fileName } )
+        const struct = { 'status': false, 'messages': [], 'info': [], 'checked': { 'sections': 0, 'headerFields': 0 }, revisionType }
 
         if( typeof doc !== 'string' || doc.length === 0 ) {
             const { message } = MemoValidator.#buildMessage( {
@@ -80,12 +146,12 @@ class MemoValidator {
         const { questions: jsonQuestions, found: jsonFound, error: jsonError } = DocumentRegistry.parseQuestionJsonBlock( { content: doc } )
         const questionSchema = jsonFound ? { 'questions': jsonQuestions } : { 'questions': markdownQuestions }
 
-        const sections = MemoValidator.#validateRequiredSections( { doc } )
-        const header = MemoValidator.#validateHeaderFields( { doc } )
-        const json = MemoValidator.#validateJsonBlock( { doc, jsonFound, jsonError } )
-        const questions = MemoValidator.#validateQuestions( { doc, questionSchema, jsonFound } )
-        const optionKinds = MemoValidator.#validateOptionKinds( { doc, jsonFound } )
-        const lintExt = MemoValidator.#validateLintExtensions( { doc, fileName } )
+        const sections = MemoValidator.#validateRequiredSections( { doc, revisionType } )
+        const header = MemoValidator.#validateHeaderFields( { doc, revisionType } )
+        const json = MemoValidator.#validateJsonBlock( { doc, jsonFound, jsonError, revisionType } )
+        const questions = MemoValidator.#validateQuestions( { doc, questionSchema, jsonFound, revisionType } )
+        const optionKinds = MemoValidator.#validateOptionKinds( { doc, jsonFound, revisionType } )
+        const lintExt = MemoValidator.#validateLintExtensions( { doc, fileName, revisionType } )
 
         const messages = []
             .concat( sections[ 'messages' ] )
@@ -209,6 +275,48 @@ class MemoValidator {
     }
 
 
+    static #revisionTypeOf( { doc, fileName } ) {
+        // Memo 080, Kap 16 / WI-218 — two-stage detection, both stages measured over the corpus.
+        //
+        // Stage 1: the file name suffix, the SAME form MEMO-060 accepts. This is authoritative
+        // whenever a name is supplied (memo lint, the post-revision gate).
+        // Stage 2: the document itself, because MemoView.#computeValidation calls validate()
+        // WITHOUT a file name. Measured signals: the `# REV-NN-prepare` title or a
+        // `| **Geplante Revision** |` header field hits 122 of 157 prepare files with 0 false
+        // positives on the 357 non-prepare files; a `| **Typ** | Update …` header field hits
+        // 24 of 24 update files with 0 false positives on the 333 full files.
+        //
+        // Without a signal the type stays `full` — today's behaviour, which keeps every existing
+        // call site and every existing test stable.
+        const base = typeof fileName === 'string' && fileName.length > 0
+            ? fileName.split( '/' ).pop()
+            : ''
+        const suffixMatch = base.match( /^REV-\d{2}(-prepare|-update)?\.md$/ )
+
+        if( suffixMatch !== null && suffixMatch[ 1 ] === '-prepare' ) { return { 'revisionType': 'prepare' } }
+        if( suffixMatch !== null && suffixMatch[ 1 ] === '-update' ) { return { 'revisionType': 'update' } }
+        if( suffixMatch !== null ) { return { 'revisionType': 'full' } }
+
+        if( typeof doc !== 'string' || doc.length === 0 ) { return { 'revisionType': 'full' } }
+
+        const prepareTitle = /^#\s+REV-\d+-prepare\b/im.test( doc )
+        const prepareHeader = /\|\s*\*\*Geplante Revision\*\*\s*\|/i.test( doc )
+        if( prepareTitle === true || prepareHeader === true ) { return { 'revisionType': 'prepare' } }
+
+        const updateHeader = /\|\s*\*\*Typ\*\*\s*\|\s*Update/i.test( doc )
+        if( updateHeader === true ) { return { 'revisionType': 'update' } }
+
+        return { 'revisionType': 'full' }
+    }
+
+
+    static #schemaOf( { revisionType } ) {
+        const schema = REVISION_SCHEMA[ revisionType ]
+
+        return { 'schema': schema === undefined ? REVISION_SCHEMA[ 'full' ] : schema }
+    }
+
+
     static #buildMessage( { code, feldPfad, description } ) {
         // node-error-codes Abschnitt 1: `{PREFIX}-{NUMBER} {location}: {description}`.
         const message = `${ code } ${ feldPfad }: ${ description }`
@@ -231,19 +339,24 @@ class MemoValidator {
     }
 
 
-    static #validateRequiredSections( { doc } ) {
+    static #validateRequiredSections( { doc, revisionType } ) {
         const struct = { 'messages': [], 'info': [], 'checked': 0 }
-        // PRD-002 (Memo 011, Kap 10): enforce the 10 mandatory sections = the 9 canonical
-        // Pflicht-Sections from memo-init/SKILL.md ("Pflicht-Sections (PRD-029)" table)
-        // PLUS `Beantwortete Fragen`. `Beantwortete Fragen` is kept (validation finding
-        // REV-05) because the REV format uses it throughout (F1–F18) — the validator must
-        // not stop checking a section the REV format actually uses (silent regression drift).
-        const required = [ 'Kontext', 'Vorwort', 'Offene Fragen', 'Beantwortete Fragen', 'Phasen', 'Phase-Hints', 'Finalisierungs-Checkliste', 'Ancillary Files', 'Rollout-Entry-Points', 'Lessons-Learned' ]
+        // PRD-002 (Memo 011, Kap 10) defined the 10 mandatory sections of a FULL revision = the 9
+        // canonical Pflicht-Sections from memo-init/SKILL.md ("Pflicht-Sections (PRD-029)" table)
+        // PLUS `Beantwortete Fragen`. `Beantwortete Fragen` is kept (validation finding REV-05)
+        // because the REV format uses it throughout (F1–F18) — the validator must not stop
+        // checking a section the REV format actually uses (silent regression drift).
+        // Memo 080 / WI-218: the list is no longer fixed — it comes from the schema of the
+        // revision type, so a prepare or update file is measured against its own duties.
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        const required = schema[ 'sections' ]
 
         // Some sections allow alternative headings (SKILL.md Z.413): `## Vorwort` may also
-        // appear as `## Claude-Vorwort`. A section counts as present if ANY of its accepted
-        // headings is found. Sections without an alias map to a single-element list.
-        const aliases = { 'Vorwort': [ 'Vorwort', 'Claude-Vorwort' ] }
+        // appear as `## Claude-Vorwort`, `## Geplante Änderungen pro Kapitel` also as the
+        // transliterated `## Geplante Aenderungen pro Kapitel`. A section counts as present if
+        // ANY of its accepted headings is found. Sections without an alias map to a
+        // single-element list.
+        const aliases = schema[ 'sectionAliases' ]
 
         required
             .forEach( ( heading ) => {
@@ -259,7 +372,7 @@ class MemoValidator {
                     MemoValidator.#route( {
                         'code': 'MEMO-001',
                         'feldPfad': `section.${ heading.replace( /\s+/g, '' ) }`,
-                        'description': `Required section missing (expected heading "## ${ heading }")`,
+                        'description': `Required section missing for revision type "${ revisionType }" (expected heading "## ${ heading }")`,
                         'messages': struct[ 'messages' ],
                         'info': struct[ 'info' ]
                     } )
@@ -272,29 +385,37 @@ class MemoValidator {
     }
 
 
-    static #validateHeaderFields( { doc } ) {
+    static #validateHeaderFields( { doc, revisionType } ) {
         const struct = { 'messages': [], 'info': [], 'checked': 0 }
-        const requiredHeaderFields = [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ]
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        const requiredHeaderFields = schema[ 'headerFields' ]
+        const headerAliases = schema[ 'headerAliases' ]
 
         requiredHeaderFields
             .forEach( ( field ) => {
-                const pattern = new RegExp( `\\|\\s*\\*\\*${ field }\\*\\*\\s*\\|\\s*([^|]*?)\\s*\\|`, 'i' )
-                const matched = doc.match( pattern )
-                const value = matched !== null ? matched[ 1 ].trim() : ''
+                const accepted = Array.isArray( headerAliases[ field ] ) ? headerAliases[ field ] : [ field ]
+                const hits = accepted
+                    .map( ( candidate ) => {
+                        const pattern = new RegExp( `\\|\\s*\\*\\*${ candidate }\\*\\*\\s*\\|\\s*([^|]*?)\\s*\\|`, 'i' )
 
-                if( matched === null ) {
+                        return doc.match( pattern )
+                    } )
+                    .filter( ( matched ) => matched !== null )
+                const value = hits.length > 0 ? hits[ 0 ][ 1 ].trim() : ''
+
+                if( hits.length === 0 ) {
                     MemoValidator.#route( {
                         'code': 'MEMO-010',
-                        'feldPfad': `header.${ field }`,
-                        'description': `Header field missing (expected "| **${ field }** | ... |")`,
+                        'feldPfad': `header.${ field.replace( /\s+/g, '' ) }`,
+                        'description': `Header field missing for revision type "${ revisionType }" (expected "| **${ field }** | ... |")`,
                         'messages': struct[ 'messages' ],
                         'info': struct[ 'info' ]
                     } )
                 } else if( value.length === 0 ) {
                     MemoValidator.#route( {
                         'code': 'MEMO-010',
-                        'feldPfad': `header.${ field }`,
-                        'description': `Header field empty (expected a value for "${ field }")`,
+                        'feldPfad': `header.${ field.replace( /\s+/g, '' ) }`,
+                        'description': `Header field empty for revision type "${ revisionType }" (expected a value for "${ field }")`,
                         'messages': struct[ 'messages' ],
                         'info': struct[ 'info' ]
                     } )
@@ -305,9 +426,10 @@ class MemoValidator {
 
         // H3-decision (Memo Kap 13 validation): the Schema-Version marker check is advisory
         // (INFO) for now, NOT blocking — writing skills do not yet set the marker in memo files.
+        // Memo 080 / WI-218: off for `prepare` — a planning artefact carries no schema version.
         const hasSchemaVersion = /Schema-Version\s*[:|]/i.test( doc )
 
-        if( !hasSchemaVersion ) {
+        if( !hasSchemaVersion && schema[ 'schemaVersion' ] === true ) {
             MemoValidator.#route( {
                 'code': 'INFO-010',
                 'feldPfad': 'header.Schema-Version',
@@ -321,8 +443,13 @@ class MemoValidator {
     }
 
 
-    static #validateJsonBlock( { doc, jsonFound, jsonError } ) {
+    static #validateJsonBlock( { doc, jsonFound, jsonError, revisionType } ) {
         const struct = { 'messages': [], 'info': [] }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+
+        // Memo 080 / WI-218: the question families are off for `prepare` — the binding question
+        // surface is the revision itself, where they keep applying unchanged.
+        if( schema[ 'questionFamilies' ] !== true ) { return struct }
 
         // PRD-039: only flag the JSON block when a marker is present but parsing failed.
         const markerPresent = /```questions-json/.test( doc )
@@ -345,8 +472,13 @@ class MemoValidator {
     }
 
 
-    static #validateQuestions( { doc, questionSchema, jsonFound } ) {
+    static #validateQuestions( { doc, questionSchema, jsonFound, revisionType } ) {
         const struct = { 'messages': [], 'info': [] }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+
+        // Memo 080 / WI-218: off for `prepare` (see #validateJsonBlock for the reasoning).
+        if( schema[ 'questionFamilies' ] !== true ) { return struct }
+
         const questions = ( questionSchema !== null && typeof questionSchema === 'object' && Array.isArray( questionSchema[ 'questions' ] ) )
             ? questionSchema[ 'questions' ]
             : []
@@ -504,8 +636,9 @@ class MemoValidator {
     }
 
 
-    static #validateLintExtensions( { doc, fileName } ) {
+    static #validateLintExtensions( { doc, fileName, revisionType } ) {
         const struct = { 'messages': [], 'info': [] }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
 
         // MEMO-060 (Memo 012 Kap 3): the revision filename suffix. Only checked when a file
         // name is supplied (the server write-gate validates raw doc strings without one). The
@@ -529,9 +662,11 @@ class MemoValidator {
         // survive into a delivered revision. Markers inside inline code spans (`[Research offen]`)
         // or fenced code blocks are documentation about the marker, not an active marker — strip
         // those first, then look for a residual occurrence.
+        // Memo 080 / WI-218: off for `prepare` — that artefact sits BEFORE delivery and plans the
+        // research, so an open marker there is the intended state, not a defect.
         const withoutFences = doc.replace( /```[\s\S]*?```/g, '' )
         const withoutInlineCode = withoutFences.replace( /`[^`]*`/g, '' )
-        if( /\[Research offen\]/i.test( withoutInlineCode ) === true ) {
+        if( /\[Research offen\]/i.test( withoutInlineCode ) === true && schema[ 'lifecycleMarker' ] === true ) {
             MemoValidator.#route( {
                 'code': 'MEMO-070',
                 'feldPfad': 'lifecycle.research',
@@ -604,13 +739,17 @@ class MemoValidator {
     }
 
 
-    static #validateOptionKinds( { doc, jsonFound } ) {
+    static #validateOptionKinds( { doc, jsonFound, revisionType } ) {
         // MEMO-033 (Memo 041 Teil B, Kap 10): the kind-validity check the renderer needs but the
         // validator was missing. Inspect the RAW questions-json options (before #normalizeJsonQuestion
         // coerces unknown kinds to 'option') so a bad authored kind — e.g. kind:"normal" — fails LOUD
         // at the door instead of silently dropping the option into the browser fallback. Only meaningful
         // when a questions-json block exists; the markdown mirror never carries an explicit kind.
         const struct = { 'messages': [], 'info': [] }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+
+        // Memo 080 / WI-218: off for `prepare` (see #validateJsonBlock for the reasoning).
+        if( schema[ 'questionFamilies' ] !== true ) { return struct }
 
         if( jsonFound !== true ) { return struct }
 

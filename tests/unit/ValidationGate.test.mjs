@@ -88,8 +88,11 @@ describe( 'PRD-040 gate emitted message (serialisation / safety)', () => {
 
         expect( parsed[ 'type' ] ).toBe( 'content' )
         expect( parsed[ 'validation' ] ).toBeDefined()
-        expect( Object.keys( parsed[ 'validation' ] ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'status' ] )
+        // Memo 080: the envelope grew additively — `checked` (PRD-R1, the comparison basis) and
+        // `revisionType` (PRD-V13, WHICH schema was applied). The assertion stays EXACT.
+        expect( Object.keys( parsed[ 'validation' ] ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'revisionType', 'status' ] )
         expect( typeof parsed[ 'validation' ][ 'status' ] ).toBe( 'boolean' )
+        expect( parsed[ 'validation' ][ 'revisionType' ] ).toBe( 'full' )
     } )
 
 

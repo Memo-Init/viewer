@@ -3133,3 +3133,21 @@
         .dbtables-truncated { display: inline-block; margin-left: 4px; padding: 0 4px; border-radius: 4px; background: rgba(210, 153, 34, .18); color: #d29922; font-size: 11px; white-space: nowrap; }
         .dbtables-loading { padding: 12px 0; font-size: 12px; color: var(--text-muted, #8b949e); }
         .dbtables-error { padding: 10px 12px; border: 1px solid #f85149; border-radius: 6px; color: #f85149; font-size: 13px; }
+
+        /* PRD-V4 (Memo 080, Kap 16 — WI-174): footnote markers and the reference apparatus at the end
+           of a document. Colours come from the existing CSS variables only — no new colour scheme. */
+        .fn-mark { line-height: 0; }
+        .fn-ref { border: 0; background: transparent; padding: 0 1px; color: var(--accent-bright, #3fb950); font-size: 11px; font-variant-numeric: tabular-nums; cursor: pointer; }
+        .fn-ref:hover { color: var(--text-1, #f0f6fc); text-decoration: underline; }
+        .fn-ref:focus-visible { outline: 1px solid var(--accent-bright, #3fb950); outline-offset: 1px; border-radius: 3px; }
+        .fn-apparatus { margin: 32px 0 8px; padding-top: 12px; border-top: 1px solid var(--border, #30363d); }
+        .fn-apparatus h2 { margin: 0 0 10px; font-size: 16px; color: var(--text-1, #f0f6fc); }
+        .fn-list { margin: 0; padding-left: 24px; }
+        .fn-entry { margin: 0 0 6px; font-size: 12px; line-height: 1.6; color: var(--text-2, #c9d1d9); overflow-wrap: anywhere; }
+        .fn-entry:target { background: var(--bg-4, #21262d); border-radius: 4px; }
+        .fn-entry:focus { outline: none; background: var(--bg-4, #21262d); border-radius: 4px; }
+        .fn-entry-target { margin-right: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-1, #f0f6fc); }
+        .fn-entry-text { color: var(--text-2, #c9d1d9); }
+        .fn-entry-orphan { margin-left: 6px; padding: 0 4px; border-radius: 4px; background: rgba(210, 153, 34, .18); color: #d29922; font-size: 11px; white-space: nowrap; }
+        .fn-backref { margin-left: 6px; color: var(--text-muted, #8b949e); text-decoration: none; }
+        .fn-backref:hover { color: var(--accent-bright, #3fb950); }

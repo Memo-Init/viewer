@@ -39,6 +39,20 @@ async function readEmittedScript() {
 }
 
 
+// PRD-V4 (Memo 080 Kap 16): a `/` opens a regex literal only where an operand may start. After an
+// identifier, a number or a closing bracket it is a division. This is the classic lexer heuristic and
+// is enough for the client script.
+function regexMayStart( prev ) {
+    if( prev === '' ) { return true }
+
+    return '([{,;=:!&|?+-*%~^<>'.indexOf( prev ) !== -1
+}
+
+
+// PRD-V4 (Memo 080 Kap 16): the brace scanner now also skips comments AND regex literals. The former
+// version only knew about quotes, so a regex such as /"/g or /`+/ flipped it into a phantom string —
+// escapeHtml and escapeAttr could not be lifted out at all (the generated factory failed to parse).
+// Functions without a regex or a comment are sliced exactly as before.
 function sliceFunctionBody( source, name ) {
     const marker = 'function ' + name + '('
     const start = source.indexOf( marker )
@@ -47,29 +61,91 @@ function sliceFunctionBody( source, name ) {
     const braceStart = source.indexOf( '{', start )
     if( braceStart === -1 ) { throw new Error( 'no body for: ' + name ) }
 
-    let depth = 0
-    let idx = braceStart
-    let inString = false
-    let quote = ''
+    const body = source.slice( braceStart )
+    const seed = { mode: 'code', quote: '', escaped: false, skip: false, inClass: false, depth: 0, prev: '', end: -1 }
+    const state = body
+        .split( '' )
+        .reduce( ( acc, ch, idx ) => {
+            if( acc.end !== -1 ) { return acc }
+            if( acc.skip ) {
+                acc.skip = false
 
-    while( idx < source.length ) {
-        const ch = source[ idx ]
-        const prev = source[ idx - 1 ]
-        if( inString ) {
-            if( ch === quote && prev !== '\\' ) { inString = false }
-        } else if( ch === '"' || ch === "'" || ch === '`' ) {
-            inString = true
-            quote = ch
-        } else if( ch === '{' ) {
-            depth += 1
-        } else if( ch === '}' ) {
-            depth -= 1
-            if( depth === 0 ) { return source.slice( start, idx + 1 ) }
-        }
-        idx += 1
-    }
+                return acc
+            }
+            if( acc.escaped ) {
+                acc.escaped = false
 
-    throw new Error( 'unbalanced braces for: ' + name )
+                return acc
+            }
+
+            const next = body[ idx + 1 ] || ''
+
+            if( acc.mode === 'string' ) {
+                if( ch === '\\' ) { acc.escaped = true }
+                else if( ch === acc.quote ) { acc.mode = 'code' }
+
+                return acc
+            }
+            if( acc.mode === 'line' ) {
+                if( ch === '\n' ) { acc.mode = 'code' }
+
+                return acc
+            }
+            if( acc.mode === 'block' ) {
+                if( ch === '*' && next === '/' ) {
+                    acc.mode = 'code'
+                    acc.skip = true
+                }
+
+                return acc
+            }
+            if( acc.mode === 'regex' ) {
+                if( ch === '\\' ) { acc.escaped = true }
+                else if( ch === '[' ) { acc.inClass = true }
+                else if( ch === ']' ) { acc.inClass = false }
+                else if( ch === '/' && !acc.inClass ) { acc.mode = 'code' }
+
+                return acc
+            }
+
+            if( ch === '/' && next === '/' ) {
+                acc.mode = 'line'
+                acc.skip = true
+
+                return acc
+            }
+            if( ch === '/' && next === '*' ) {
+                acc.mode = 'block'
+                acc.skip = true
+
+                return acc
+            }
+            if( ch === '/' && regexMayStart( acc.prev ) ) {
+                acc.mode = 'regex'
+                acc.inClass = false
+
+                return acc
+            }
+            if( ch === '"' || ch === "'" || ch === '`' ) {
+                acc.mode = 'string'
+                acc.quote = ch
+                acc.prev = ch
+
+                return acc
+            }
+            if( ch === '{' ) { acc.depth += 1 }
+            if( ch === '}' ) {
+                acc.depth -= 1
+                if( acc.depth === 0 ) { acc.end = idx }
+            }
+            if( !/\s/.test( ch ) ) { acc.prev = ch }
+
+            return acc
+        }, seed )
+
+    if( state.end === -1 ) { throw new Error( 'unbalanced braces for: ' + name ) }
+
+    return source.slice( start, braceStart + state.end + 1 )
 }
 
 

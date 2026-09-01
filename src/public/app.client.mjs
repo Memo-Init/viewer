@@ -128,6 +128,191 @@
         // standard paragraph behaviour. Table CSS already exists in app.css (table / th, td / th).
         marked.setOptions( { renderer, gfm: true, breaks: false } )
 
+        // PRD-V4 (Memo 080 Kap 16, WI-174): markdown footnotes are resolved HERE, BEFORE marked ever
+        // sees them. `marked` is loaded from the CDN with an SRI hash and WITHOUT a footnote extension,
+        // so a `[^1]: ...` line is read as a CommonMark link-reference definition: almost all of them
+        // fall back to a raw paragraph inside the prose, and the one that ends title-shaped turns into
+        // an <a> onto a dead route. Removing the definitions up front kills both symptoms at once and
+        // lets us render a real, numbered reference apparatus at the end of the document instead.
+        //
+        // parseFootnotes( markdown ) -> { markdown, footnotes, unresolved }
+        //   markdown    the source WITHOUT the definition lines, markers rewritten to <sup> markup
+        //   footnotes   [ { number, label, text, target, targetKind, referenced } ] in definition order
+        //   unresolved  [ label ] markers that carry no definition — left as a literal `[^N]` in the text
+        // Fence-aware (``` / ~~~) and inline-code-aware (backtick runs): a definition or a marker quoted
+        // inside code stays untouched. That is what keeps REV-18 Kap 16 and the research document
+        // readable — they DOCUMENT the defect and must not be rewritten by the fix.
+        function parseFootnotes( markdown ) {
+            var source = String( markdown == null ? '' : markdown )
+
+            // Pass 1 — tag every line with its fenced-code state. The fence line itself counts as
+            // "inside" so an opening/closing ``` is never mistaken for prose.
+            var scan = source.split( '\n' ).reduce( function( acc, line ) {
+                if( /^\s*(```|~~~)/.test( line ) ) {
+                    acc.rows.push( { line: line, inFence: true } )
+                    acc.open = !acc.open
+
+                    return acc
+                }
+                acc.rows.push( { line: line, inFence: acc.open } )
+
+                return acc
+            }, { open: false, rows: [] } )
+
+            // Pass 2 — collect the definitions (column 1, outside a fence) in order of appearance.
+            // The apparatus number is the ordinal, the label is the number written in the source.
+            var defs = []
+            scan.rows.forEach( function( row ) {
+                if( row.inFence ) { return }
+                var hit = row.line.match( /^\[\^([0-9]+)\]:[ \t]?(.*)$/ )
+                if( !hit ) { return }
+                var resolved = resolveFootnoteTarget( hit[ 2 ] )
+                defs.push( {
+                    number: defs.length + 1,
+                    label: hit[ 1 ],
+                    text: hit[ 2 ].trim(),
+                    target: resolved.target,
+                    targetKind: resolved.targetKind,
+                    referenced: false
+                } )
+            } )
+
+            var byLabel = new Map()
+            defs.forEach( function( def ) {
+                if( byLabel.has( def.label ) ) { return }
+                byLabel.set( def.label, def )
+            } )
+
+            // Pass 3 — drop the definition lines, rewrite the remaining markers.
+            var unresolved = []
+            var out = scan.rows
+                .filter( function( row ) {
+                    if( row.inFence ) { return true }
+
+                    return !/^\[\^[0-9]+\]:/.test( row.line )
+                } )
+                .map( function( row ) {
+                    if( row.inFence ) { return row.line }
+
+                    // Inline-code awareness: split on backtick RUNS. Everything between a matching
+                    // pair of runs is code and stays literal; only the segments outside are rewritten.
+                    var openRun = ''
+
+                    return row.line
+                        .split( /(`+)/ )
+                        .map( function( segment ) {
+                            if( /^`+$/.test( segment ) ) {
+                                if( openRun === '' ) { openRun = segment }
+                                else if( openRun === segment ) { openRun = '' }
+
+                                return segment
+                            }
+                            if( openRun !== '' ) { return segment }
+
+                            return segment.replace( /\[\^([0-9]+)\]/g, function( whole, label ) {
+                                var def = byLabel.get( label )
+                                if( !def ) {
+                                    // A marker is NEVER silently dropped — an orphan marker stays a
+                                    // literal and is reported back so the author can see the gap.
+                                    if( unresolved.indexOf( label ) === -1 ) { unresolved.push( label ) }
+
+                                    return whole
+                                }
+                                def.referenced = true
+
+                                return '<sup class="fn-mark"><button type="button" class="fn-ref" id="fnref-' + def.number
+                                    + '" data-fn="' + def.number
+                                    + '" data-fn-target-kind="' + def.targetKind
+                                    + '" aria-describedby="fn-' + def.number + '">' + def.number + '</button></sup>'
+                            } )
+                        } )
+                        .join( '' )
+                } )
+
+            return { markdown: out.join( '\n' ), footnotes: defs, unresolved: unresolved }
+        }
+
+        // PRD-V4 (Memo 080 Kap 16): resolve the FIRST inline-code span of a definition into a document
+        // target. Conservative on purpose (the memo does not decide research question 1): only a
+        // memo-relative .md path counts as a document, so no read ever leaves the memo folder. A code
+        // reference like `repos/core/cli/src/DoltSchema.mjs:50-344` stays plain evidence text.
+        function resolveFootnoteTarget( definitionText ) {
+            var span = String( definitionText == null ? '' : definitionText ).match( /`([^`]+)`/ )
+            if( !span ) { return { target: null, targetKind: 'text' } }
+
+            var candidate = span[ 1 ].trim().replace( /:[0-9]+(-[0-9]+)?$/, '' )
+            if( candidate.indexOf( '..' ) !== -1 ) { return { target: null, targetKind: 'text' } }
+            if( candidate.charAt( 0 ) === '/' ) { return { target: null, targetKind: 'text' } }
+            if( /^https?:/i.test( candidate ) ) { return { target: null, targetKind: 'text' } }
+            if( !/^[A-Za-z0-9._/-]+\.md$/.test( candidate ) ) { return { target: null, targetKind: 'text' } }
+
+            return { target: candidate, targetKind: 'doc' }
+        }
+
+        // PRD-V4 (Memo 080 Kap 16): the reference apparatus at the end of the document — numbered
+        // entries, resolved target, evidence text and a back-jump to the marker. Returns '' for an
+        // empty list so documents WITHOUT footnotes never grow an empty box. The heading is an h2 so
+        // buildTOC picks it up as a regular chapter. data-fn-target is the documented anchor point a
+        // later overlay (PRD-V6) binds to; it is set here even though nobody reads it yet.
+        function buildFootnoteApparatus( footnotes ) {
+            var list = Array.isArray( footnotes ) ? footnotes : []
+            if( list.length === 0 ) { return '' }
+
+            var items = list
+                .map( function( entry ) {
+                    var head = entry.targetKind === 'doc'
+                        ? '<span class="fn-entry-target" data-fn-target="' + escapeAttr( entry.target )
+                            + '" data-fn-target-kind="doc">' + escapeHtml( entry.target ) + '</span>'
+                        : ''
+                    // A9/A10 keep evidence that is not a document as plain text — but a definition that
+                    // nobody references is NEVER discarded, it is shown and flagged instead.
+                    var orphan = entry.referenced ? '' : '<span class="fn-entry-orphan">ohne Verweis im Text</span>'
+
+                    return '<li class="fn-entry" id="fn-' + entry.number + '">'
+                        + head
+                        + '<span class="fn-entry-text">' + escapeHtml( entry.text ) + '</span>'
+                        + orphan
+                        + '<a class="fn-backref" href="#fnref-' + entry.number + '" title="Zurueck zur Fundstelle">&#8617;</a>'
+                        + '</li>'
+                } )
+                .join( '' )
+
+            return '<section class="fn-apparatus"><h2 id="fn-apparatus">Referenzen</h2>'
+                + '<ol class="fn-list">' + items + '</ol></section>'
+        }
+
+        // PRD-V4 (Memo 080 Kap 16): THE prose render path. All four prose render sites go through this
+        // one function, so the footnote resolution can never land at three of four places again.
+        function renderMarkdownWithFootnotes( markdown ) {
+            var parsed = parseFootnotes( markdown )
+            var html = marked.parse( parsed.markdown )
+
+            return { html: html + buildFootnoteApparatus( parsed.footnotes ), footnotes: parsed.footnotes }
+        }
+
+        // PRD-V4 (Memo 080 Kap 16): bind the footnote markers WITHOUT an inline onclick (CSP-safe,
+        // same rule the diff-chapter link already follows). A click stays inside the document — it
+        // scrolls to the apparatus entry and moves focus there. Idempotent via a dataset flag, so a
+        // repeated wiring pass never stacks a second listener on the same button.
+        function wireFootnoteRefs( rootEl ) {
+            if( !rootEl || !rootEl.querySelectorAll ) { return }
+
+            rootEl.querySelectorAll( '.fn-ref' ).forEach( function( btn ) {
+                if( btn.dataset.fnBound === '1' ) { return }
+                btn.dataset.fnBound = '1'
+
+                btn.addEventListener( 'click', function( e ) {
+                    e.preventDefault()
+                    var entry = document.getElementById( 'fn-' + btn.getAttribute( 'data-fn' ) )
+                    if( !entry ) { return }
+
+                    entry.setAttribute( 'tabindex', '-1' )
+                    entry.scrollIntoView( { behavior: 'smooth', block: 'center' } )
+                    entry.focus()
+                } )
+            } )
+        }
+
         const contentEl = document.getElementById( 'content' )
         const statusEl = document.getElementById( 'status' )
 
@@ -4389,7 +4574,10 @@
                 renderDiffView( lastContent, currentDiff )
             } else {
                 slugCounts.clear()
-                contentEl.innerHTML = marked.parse( lastContent )
+                // PRD-V4 (Memo 080 Kap 16): ONE prose render path — footnotes resolved, apparatus
+                // appended, markers wired BEFORE interceptLinks so the back-jump anchors survive.
+                contentEl.innerHTML = renderMarkdownWithFootnotes( lastContent ).html
+                wireFootnoteRefs( contentEl )
                 interceptLinks()
                 renderAllDiagrams()
             }
@@ -4887,7 +5075,9 @@
                     renderDiffView( lastContent, currentDiff )
                 } else {
                     slugCounts.clear()
-                    contentEl.innerHTML = marked.parse( lastContent )
+                    // PRD-V4 (Memo 080 Kap 16): same single prose render path as renderProseContent.
+                    contentEl.innerHTML = renderMarkdownWithFootnotes( lastContent ).html
+                    wireFootnoteRefs( contentEl )
                     interceptLinks()
                     renderAllDiagrams()
                 }
@@ -6284,7 +6474,10 @@
                     slugCounts.clear()
                     var back = '<div class="research-view-bar"><button id="research-back" class="research-back-link">← zurück zum Memo</button>'
                         + '<span class="research-view-file">' + escapeHtml( researchFile ) + '</span></div>'
-                    contentEl.innerHTML = back + marked.parse( ( payload && payload.content ) || '' )
+                    // PRD-V4 (Memo 080 Kap 16): same single prose render path; the research-view-bar
+                    // stays in front of the rendered body unchanged.
+                    contentEl.innerHTML = back + renderMarkdownWithFootnotes( ( payload && payload.content ) || '' ).html
+                    wireFootnoteRefs( contentEl )
                     var backBtn = document.getElementById( 'research-back' )
                     if( backBtn ) {
                         backBtn.addEventListener( 'click', function() {
@@ -7782,19 +7975,50 @@
             }
         }
 
+        // PRD-V4 (Memo 080 Kap 16, WI-175): the decision core of interceptLinks, extracted as a pure
+        // function. The old gate tested the RAW href for the string '.md', so a percent-encoded or
+        // backtick-wrapped address (`%60context/foo.md%60`) missed the in-app path and fell through to
+        // a real browser navigation onto the server 404 page. Normalise FIRST, then decide:
+        //   external  http/https/mailto/tel and any other scheme  -> untouched
+        //   anchor    starts with '#'                             -> untouched (TOC, footnote back-jump)
+        //   route     starts with '/'                             -> untouched (SPA routes /memos, /specs)
+        //   doc       document-relative, normalises to a .md path -> in-app navigation
+        //   dead      document-relative, anything else            -> swallowed, no browser navigation
+        function classifyLinkHref( href ) {
+            var raw = String( href == null ? '' : href ).trim()
+            var decoded = raw
+            try {
+                decoded = decodeURIComponent( raw )
+            } catch( e ) {
+                // A malformed percent sequence throws URIError — fall back to the raw value.
+                decoded = raw
+            }
+            var target = decoded.trim().replace( /^`+/, '' ).replace( /`+$/, '' ).trim()
+
+            if( target.length === 0 ) { return { href: target, kind: 'none' } }
+            if( target.charAt( 0 ) === '#' ) { return { href: target, kind: 'anchor' } }
+            if( target.charAt( 0 ) === '/' ) { return { href: target, kind: 'route' } }
+            if( /^[a-z][a-z0-9+.-]*:/i.test( target ) ) { return { href: target, kind: 'external' } }
+            if( target.split( '#' )[ 0 ].split( '?' )[ 0 ].endsWith( '.md' ) ) { return { href: target, kind: 'doc' } }
+
+            return { href: target, kind: 'dead' }
+        }
+
         function interceptLinks() {
             contentEl.querySelectorAll( 'a' ).forEach( function( link ) {
-                const href = link.getAttribute( 'href' )
+                const decision = classifyLinkHref( link.getAttribute( 'href' ) )
 
-                if( !href ) { return }
-                if( href.startsWith( 'http://' ) || href.startsWith( 'https://' ) ) { return }
-                if( !href.endsWith( '.md' ) ) { return }
+                if( decision.kind === 'none' ) { return }
+                if( decision.kind === 'external' || decision.kind === 'anchor' || decision.kind === 'route' ) { return }
 
                 link.addEventListener( 'click', function( e ) {
+                    // A document-relative link can no longer leave the viewer: a 'doc' goes into the
+                    // in-app navigation, a 'dead' one is swallowed instead of hitting the 404 page.
                     e.preventDefault()
 
+                    if( decision.kind !== 'doc' ) { return }
                     if( !currentWs ) { return }
-                    currentWs.send( JSON.stringify( { type: 'navigate', path: href } ) )
+                    currentWs.send( JSON.stringify( { type: 'navigate', path: decision.href } ) )
                     window.scrollTo( 0, 0 )
                 } )
             } )
@@ -7958,7 +8182,9 @@
                                 renderDiffView( data.content, currentDiff )
                             } else {
                                 slugCounts.clear()
-                                contentEl.innerHTML = marked.parse( data.content )
+                                // PRD-V4 (Memo 080 Kap 16): same single prose render path as renderProseContent.
+                                contentEl.innerHTML = renderMarkdownWithFootnotes( data.content ).html
+                                wireFootnoteRefs( contentEl )
                                 interceptLinks()
 
                                 renderAllDiagrams()

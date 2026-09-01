@@ -1,5 +1,5 @@
 import { readdir, readFile, writeFile, rename, unlink, mkdir, access, stat } from 'node:fs/promises'
-import { resolve, basename, dirname } from 'node:path'
+import { resolve, basename, dirname, sep } from 'node:path'
 
 import { TranscriptHeader } from './TranscriptHeader.mjs'
 
@@ -48,6 +48,27 @@ const AUTOBIND_AMBIGUITY_THRESHOLD_MS = 60000
 // memo-init skill (Schritt 4b). 24h is generous vs. "within seconds" while decisively rejecting
 // days/weeks-old candidates. Only applied when the memo's creation time is known (targetMtimeMs > 0).
 const AUTOBIND_MAX_STALENESS_MS = 86400000
+
+// Snag 080-sicherung-eingenerationig (Memo 080, follow-up to PRD-V5/WI-134): the PUT backup used to
+// be written to the single name `<file>.bak`, so the SECOND PUT overwrote what the first one saved —
+// two faulty PUTs in a row displaced the last good state. The timestamp now sits IN THE NAME:
+// `<file>.<stamp>.bak`. The shape is the project's existing stamped-store name (`<name>.<ISO with `:`
+// and `.` written as `-`>.<ext>`), the same one the memo store already writes — e.g.
+// `.memo/memos/*/_topics/T005.2026-06-29T22-53-55-093Z.json`, `.memo/.backups/requirements-...Z`,
+// `rollout-handover.2026-08-24T15-21-24Z.md` and AnnotationStore.#archiveThenWrite in this repo.
+// Resolution is the store's millisecond form on purpose: the second-resolution variant collides for
+// two PUTs inside the same second, which is exactly the case this fix exists for.
+const BACKUP_SUFFIX = '.bak'
+// The stamp as it appears in a name: 2026-09-01T12-34-56-789Z.
+const BACKUP_STAMP_PATTERN = '\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z'
+// How many youngest generations are kept PER FILE. Older ones are MOVED into the project `.trash/`
+// (workbench spec 32-trash: a removal is a recoverable move, never a hard delete) so the folder stays
+// bounded without ever erasing a state. 10 covers a long editing session; beyond that the older
+// generations are still recoverable from `.trash/`, which only a human empties.
+const RETAINED_BACKUP_GENERATIONS = 10
+// Loop-free, bounded collision probe: candidate names are built from stamp+0ms, +1ms, ... until a free
+// one is found. Two PUTs inside the same millisecond therefore still produce two distinct backups.
+const BACKUP_STAMP_PROBES = 1000
 
 
 /**
@@ -275,7 +296,7 @@ class TranscriptRegistry {
 
 
     async updateTranscript( { transcriptId, content } ) {
-        const struct = { 'status': false, 'messages': [], 'unchanged': false, 'memoId': null, 'backupPath': null }
+        const struct = { 'status': false, 'messages': [], 'unchanged': false, 'memoId': null, 'backupPath': null, 'trashedBackups': [] }
 
         const { status: validStatus, messages: validMessages } = TranscriptRegistry.validateUpdateTranscript( { transcriptId, content } )
 
@@ -340,7 +361,10 @@ class TranscriptRegistry {
         // 2026-08-23 incident the previous state was therefore unrecoverable. A copy of the current
         // state is put aside BEFORE the rename. No target file yet -> nothing to back up. A FAILING
         // backup rejects the PUT: no destructive write without a net. The backup is NEVER deleted by code.
-        const { status: backupStatus, backupPath, message: backupMessage } = await TranscriptRegistry.#backupBeforeWrite( { finalPath } )
+        // Snag 080-sicherung-eingenerationig: each PUT saves its OWN generation (`<file>.<stamp>.bak`),
+        // so two PUTs in a row leave two states; generations beyond the retained window are moved to
+        // `.trash/`, never erased.
+        const { status: backupStatus, backupPath, trashedBackups, message: backupMessage } = await TranscriptRegistry.#backupBeforeWrite( { finalPath, 'memoId': transcript[ 'memoId' ] } )
 
         if( backupStatus !== true ) {
             struct[ 'messages' ].push( backupMessage )
@@ -349,6 +373,7 @@ class TranscriptRegistry {
         }
 
         struct[ 'backupPath' ] = backupPath
+        struct[ 'trashedBackups' ] = trashedBackups
 
         try {
             await writeFile( tmpPath, wrappedContent, 'utf-8' )
@@ -1657,13 +1682,17 @@ class TranscriptRegistry {
     }
 
 
-    // PRD-V5 (Memo 080 Kap 16, WI-134): put the current state aside before a destructive PUT. The
-    // backup keeps the `.bak` suffix AFTER the `.md`, so it does not match REVIEW_FILE_PATTERN and is
-    // never registered as a second transcript. A missing target file is not an error (nothing to save
-    // yet). A failing copy IS an error — the caller rejects the PUT rather than writing without a net.
-    // Nothing in this module ever deletes a backup.
-    static async #backupBeforeWrite( { finalPath } ) {
-        const struct = { 'status': false, 'backupPath': null, 'message': null }
+    // PRD-V5 (Memo 080 Kap 16, WI-134) + Snag 080-sicherung-eingenerationig: put the current state
+    // aside before a destructive PUT. The backup keeps the `.bak` suffix AFTER the `.md` and carries
+    // the timestamp in the middle segment (`<file>.<stamp>.bak`), so it matches neither
+    // REVIEW_FILE_PATTERN nor any other scan pattern (all of them require a `.md` ending) and is never
+    // registered as a second transcript. Every PUT writes its OWN generation — a second PUT no longer
+    // displaces what the first one saved. A missing target file is not an error (nothing to save yet).
+    // A failing copy IS an error — the caller rejects the PUT rather than writing without a net.
+    // Nothing in this module ever DELETES a backup: generations beyond RETAINED_BACKUP_GENERATIONS are
+    // MOVED into the project `.trash/` (see #pruneBackupGenerations).
+    static async #backupBeforeWrite( { finalPath, memoId } ) {
+        const struct = { 'status': false, 'backupPath': null, 'trashedBackups': [], 'trashDir': null, 'backupMessages': [], 'message': null }
 
         try {
             await access( finalPath )
@@ -1673,7 +1702,34 @@ class TranscriptRegistry {
             return struct
         }
 
-        const backupPath = `${ finalPath }.bak`
+        const transcriptsDir = dirname( finalPath )
+        const fileName = basename( finalPath )
+
+        let entries = []
+
+        try {
+            entries = await readdir( transcriptsDir )
+        } catch {
+            // Unreadable folder -> no known names to avoid; the write below fails loudly instead.
+            entries = []
+        }
+
+        const taken = new Set( entries )
+        const epochMs = Date.now()
+        const freeOffset = Array.from( { 'length': BACKUP_STAMP_PROBES }, ( _, index ) => index )
+            .find( ( offset ) => {
+                const candidate = TranscriptRegistry.#backupNameFor( { fileName, 'epochMs': epochMs + offset } )
+
+                return taken.has( candidate ) === false
+            } )
+
+        if( freeOffset === undefined ) {
+            struct[ 'message' ] = `TRANSCRIPT-BACKUP-001: Could not back up the previous state, PUT rejected: no free backup name for ${ fileName } within ${ BACKUP_STAMP_PROBES } stamps`
+
+            return struct
+        }
+
+        const backupPath = resolve( transcriptsDir, TranscriptRegistry.#backupNameFor( { fileName, 'epochMs': epochMs + freeOffset } ) )
 
         try {
             const previous = await readFile( finalPath, 'utf-8' )
@@ -1682,7 +1738,128 @@ class TranscriptRegistry {
             struct[ 'backupPath' ] = backupPath
         } catch ( err ) {
             struct[ 'message' ] = `TRANSCRIPT-BACKUP-001: Could not back up the previous state, PUT rejected: ${ err.message }`
+
+            return struct
         }
+
+        const { trashedPaths, trashDir, messages } = await TranscriptRegistry.#pruneBackupGenerations( { transcriptsDir, fileName, memoId } )
+        struct[ 'trashedBackups' ] = trashedPaths
+        struct[ 'trashDir' ] = trashDir
+        struct[ 'backupMessages' ] = messages
+
+        return struct
+    }
+
+
+    // The one place a backup name is built: `<file>.<stamp>.bak` with the stamp in the project's
+    // stamped-store form (ISO-8601, `:` and `.` written as `-`). Fixed width, so a plain string sort
+    // over these names IS the chronological order (used by #pruneBackupGenerations).
+    static #backupNameFor( { fileName, epochMs } ) {
+        const stamp = new Date( epochMs ).toISOString().replace( /[:.]/g, '-' )
+
+        return `${ fileName }.${ stamp }${ BACKUP_SUFFIX }`
+    }
+
+
+    static #escapeForRegExp( { text } ) {
+        return text.replace( /[.*+?^${}()|[\]\\]/g, '\\$&' )
+    }
+
+
+    // Matches ONLY the stamped generations of exactly this file. A legacy single-generation
+    // `<file>.bak` (written before the snag fix) carries no stamp, so it is neither counted nor moved
+    // — old material is left exactly where it is.
+    static #backupPattern( { fileName } ) {
+        const escapedName = TranscriptRegistry.#escapeForRegExp( { 'text': fileName } )
+        const escapedSuffix = TranscriptRegistry.#escapeForRegExp( { 'text': BACKUP_SUFFIX } )
+
+        return new RegExp( `^${ escapedName }\\.${ BACKUP_STAMP_PATTERN }${ escapedSuffix }$` )
+    }
+
+
+    // Workbench spec 32-trash: removing material means MOVING it into `<projectRoot>/.trash/<memo-id>/`
+    // — never erasing it, and `.trash/` is emptied by a human only. The project root is the path in
+    // front of the `/.memo/` marker, the same idiom MemoView.resolveRequirementsLocation uses. A
+    // transcripts folder outside a `.memo` tree (test fixture, ad-hoc layout) has no project root; it
+    // then falls back to a `.trash/` beside the memo folder, and the fallback is REPORTED, never
+    // silent. A missing memoId lands in the spec's literal `undefined` segment, so a removal always
+    // has a valid target.
+    static #resolveTrashDir( { transcriptsDir, memoId } ) {
+        const marker = `${ sep }.memo${ sep }`
+        const markerIndex = transcriptsDir.indexOf( marker )
+        const usedMemoLocalFallback = markerIndex === -1
+        const base = usedMemoLocalFallback === true ? dirname( transcriptsDir ) : transcriptsDir.slice( 0, markerIndex )
+        const segment = typeof memoId === 'string' && memoId.length > 0 ? memoId : 'undefined'
+
+        return { 'trashDir': resolve( base, '.trash', segment ), usedMemoLocalFallback }
+    }
+
+
+    // Keeps the RETAINED_BACKUP_GENERATIONS youngest generations of ONE file and moves the older ones
+    // into `.trash/<memo-id>/`. Never unlinks. A failure here is reported but does NOT fail the PUT —
+    // the net (the fresh backup) is already on disk; only the housekeeping did not happen.
+    static async #pruneBackupGenerations( { transcriptsDir, fileName, memoId } ) {
+        const struct = { 'trashedPaths': [], 'trashDir': null, 'usedMemoLocalFallback': false, 'messages': [] }
+
+        let entries = []
+
+        try {
+            entries = await readdir( transcriptsDir )
+        } catch ( err ) {
+            struct[ 'messages' ].push( `TRANSCRIPT-BACKUP-002: Could not list the backup generations of ${ fileName }: ${ err.message }` )
+
+            return struct
+        }
+
+        const pattern = TranscriptRegistry.#backupPattern( { fileName } )
+        const overflow = entries
+            .filter( ( entry ) => pattern.test( entry ) === true )
+            .sort()
+            .reverse()
+            .slice( RETAINED_BACKUP_GENERATIONS )
+
+        if( overflow.length === 0 ) {
+            return struct
+        }
+
+        const { trashDir, usedMemoLocalFallback } = TranscriptRegistry.#resolveTrashDir( { transcriptsDir, memoId } )
+        struct[ 'trashDir' ] = trashDir
+        struct[ 'usedMemoLocalFallback' ] = usedMemoLocalFallback
+
+        if( usedMemoLocalFallback === true ) {
+            struct[ 'messages' ].push( `TRASHROOT-FALLBACK-001: ${ transcriptsDir } lies outside a .memo tree — old backup generations go to the memo-local ${ trashDir }` )
+        }
+
+        try {
+            await mkdir( trashDir, { recursive: true } )
+        } catch ( err ) {
+            struct[ 'messages' ].push( `TRANSCRIPT-BACKUP-003: Could not open the trash folder ${ trashDir }, ${ overflow.length } old generation(s) kept in place: ${ err.message }` )
+
+            return struct
+        }
+
+        const moves = overflow
+            .map( async ( name ) => {
+                const target = resolve( trashDir, name )
+
+                try {
+                    await rename( resolve( transcriptsDir, name ), target )
+                } catch ( err ) {
+                    return { 'movedPath': null, 'message': `TRANSCRIPT-BACKUP-003: Could not move ${ name } to ${ trashDir }, kept in place: ${ err.message }` }
+                }
+
+                return { 'movedPath': target, 'message': null }
+            } )
+
+        const results = await Promise.all( moves )
+        struct[ 'trashedPaths' ] = results
+            .filter( ( result ) => result[ 'movedPath' ] !== null )
+            .map( ( result ) => result[ 'movedPath' ] )
+        struct[ 'messages' ] = struct[ 'messages' ]
+            .concat( results
+                .filter( ( result ) => result[ 'message' ] !== null )
+                .map( ( result ) => result[ 'message' ] )
+            )
 
         return struct
     }

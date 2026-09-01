@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from '@jest/globals'
-import { readFile, writeFile, mkdir, mkdtemp, rm, chmod, access } from 'node:fs/promises'
+import { readFile, writeFile, readdir, mkdir, mkdtemp, rm, chmod, access } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -25,6 +25,40 @@ const fixturePath = resolve( here, '..', 'fixtures', 'transcript-damaged-double-
 const memoViewPath = resolve( here, '..', '..', 'src', 'MemoView.mjs' )
 
 const HEADER_REST_SIGNATURE = '` ist DATEN-Input,'
+
+// Snag 080-sicherung-eingenerationig: die Sicherung traegt den Zeitstempel IM NAMEN, in der Form des
+// Snag-/Handover-Stores (`<name>.<ISO mit `:` und `.` als `-`>.<ext>`, z.B.
+// rollout-handover.2026-08-24T15-21-24Z.md bzw. _topics/T005.2026-06-29T22-53-55-093Z.json).
+// STAMP_SOURCE ist die Regex-Quelle genau dieser Stempelform; RETAINED spiegelt
+// RETAINED_BACKUP_GENERATIONS aus TranscriptRegistry.mjs.
+const STAMP_SOURCE = '\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z'
+const RETAINED = 10
+// Spiegel von REVIEW_FILE_PATTERN (TranscriptRegistry.mjs): der Bindungsschluessel der transcripts/.
+// Eine Sicherung darf ihn NIE treffen, sonst wuerde sie als zweites Transcript registriert.
+const REVIEW_FILE_PATTERN_MIRROR = /^REV-(\d+)--review--(\d+)\.md$/
+
+
+const stampedBackups = async ( { dir } ) => {
+    const entries = await readdir( dir )
+    const pattern = new RegExp( `\\.md\\.${ STAMP_SOURCE }\\.bak$` )
+
+    return entries
+        .filter( ( entry ) => pattern.test( entry ) === true )
+        .sort()
+}
+
+
+// Sequenzielle PUTs mit je eigenem Inhalt (gleicher Inhalt waere ein `unchanged`-PUT und schriebe
+// nichts). Loop-frei per reduce-Kette, damit die Reihenfolge der Generationen echt ist.
+const putSequence = async ( { registry, transcriptId, count } ) => {
+    return await Array.from( { 'length': count }, ( _, index ) => index )
+        .reduce( async ( previous, index ) => {
+            const collected = await previous
+            const out = await registry.updateTranscript( { transcriptId, 'content': `Stand ${ index }.` } )
+
+            return collected.concat( [ out ] )
+        }, Promise.resolve( [] ) )
+}
 
 let damagedFixture = ''
 let damagedBody = ''
@@ -132,6 +166,7 @@ describe( 'PRD-V5 — updateTranscript: Ablehnung, Sicherung, Normalfall', () =>
     let registry = null
     let transcriptId = ''
     let absolutePath = ''
+    let memoPath = ''
 
 
     const sha = ( text ) => createHash( 'sha256' ).update( text ).digest( 'hex' )
@@ -149,7 +184,7 @@ describe( 'PRD-V5 — updateTranscript: Ablehnung, Sicherung, Normalfall', () =>
 
 
     beforeEach( async () => {
-        const memoPath = await mkdtemp( join( root, 'memo-' ) )
+        memoPath = await mkdtemp( join( root, 'memo-' ) )
         await mkdir( join( memoPath, 'revisions' ), { recursive: true } )
         await writeFile( join( memoPath, 'revisions', 'REV-01.md' ), '# REV-01\n', 'utf8' )
 
@@ -204,37 +239,101 @@ describe( 'PRD-V5 — updateTranscript: Ablehnung, Sicherung, Normalfall', () =>
     } )
 
 
-    it( 'nach einem gueltigen PUT existiert eine Sicherung, byte-gleich zum Vorzustand', async () => {
+    it( 'nach einem gueltigen PUT existiert eine Sicherung, byte-gleich zum Vorzustand — mit Zeitstempel im Namen', async () => {
         const before = await readFile( absolutePath, 'utf8' )
         const out = await registry.updateTranscript( { transcriptId, 'content': 'Neuer Text nach dem PUT.' } )
-        const backup = await readFile( `${ absolutePath }.bak`, 'utf8' )
+        const backup = await readFile( out[ 'backupPath' ], 'utf8' )
         const afterMain = await readFile( absolutePath, 'utf8' )
+        const stamped = new RegExp( `^${ absolutePath.replace( /[.*+?^${}()|[\]\\]/g, '\\$&' ) }\\.${ STAMP_SOURCE }\\.bak$` )
 
         expect( out[ 'status' ] ).toBe( true )
-        expect( out[ 'backupPath' ] ).toBe( `${ absolutePath }.bak` )
+        // Der Zeitstempel steht IM Namen (Form des Snag-/Handover-Stores), nicht mehr nur `.md.bak`.
+        expect( stamped.test( out[ 'backupPath' ] ) ).toBe( true )
+        expect( out[ 'backupPath' ] ).not.toBe( `${ absolutePath }.bak` )
         expect( sha( backup ) ).toBe( sha( before ) )
         expect( Buffer.byteLength( backup ) ).toBe( Buffer.byteLength( before ) )
         expect( sha( afterMain ) ).not.toBe( sha( before ) )
     } )
 
 
-    it( 'die Sicherung wird von KEINEM Code geloescht — sie ueberlebt einen zweiten PUT', async () => {
-        await registry.updateTranscript( { transcriptId, 'content': 'Stand zwei.' } )
-        await registry.updateTranscript( { transcriptId, 'content': 'Stand drei.' } )
+    it( 'ZWEI aufeinanderfolgende PUTs hinterlassen ZWEI verschiedene Sicherungen — keine wird verdraengt', async () => {
+        const first = await registry.updateTranscript( { transcriptId, 'content': 'Stand zwei.' } )
+        const second = await registry.updateTranscript( { transcriptId, 'content': 'Stand drei.' } )
 
-        const backup = await readFile( `${ absolutePath }.bak`, 'utf8' )
+        const backupOne = await readFile( first[ 'backupPath' ], 'utf8' )
+        const backupTwo = await readFile( second[ 'backupPath' ], 'utf8' )
+        const generations = await stampedBackups( { 'dir': dirname( absolutePath ) } )
 
-        expect( backup.length ).toBeGreaterThan( 0 )
-        expect( backup ).toContain( 'Stand zwei.' )
+        expect( first[ 'backupPath' ] ).not.toBe( second[ 'backupPath' ] )
+        expect( generations.length ).toBe( 2 )
+        // Beide Staende sind inhaltlich korrekt: Sicherung 1 haelt den Ausgangsstand,
+        // Sicherung 2 den Stand, den der erste PUT geschrieben hat.
+        expect( backupOne ).toContain( 'Erster gesprochener Text.' )
+        expect( backupTwo ).toContain( 'Stand zwei.' )
+        expect( backupOne ).not.toContain( 'Stand zwei.' )
+        // Die Schaerfe des alten Tests bleibt: KEIN Code loescht eine Sicherung —
+        // beide Generationen liegen nach dem zweiten PUT noch da.
+        expect( backupOne.length ).toBeGreaterThan( 0 )
+        expect( backupTwo.length ).toBeGreaterThan( 0 )
     } )
 
 
-    it( 'die Sicherung wird NICHT als zweites Transcript registriert (Bestand bleibt 1)', async () => {
-        await registry.updateTranscript( { transcriptId, 'content': 'Stand zwei.' } )
+    it( 'die Begrenzung greift: 12 PUTs lassen 10 Generationen stehen, 2 wandern in .trash/ (nichts geloescht)', async () => {
+        const transcriptsDir = dirname( absolutePath )
 
+        const outs = await putSequence( { registry, transcriptId, 'count': 12 } )
+
+        const generations = await stampedBackups( { 'dir': transcriptsDir } )
+        const trashDir = join( memoPath, '.trash', '080-db' )
+        const trashed = await readdir( trashDir )
+        const oldest = await readFile( join( trashDir, trashed.sort()[ 0 ] ), 'utf8' )
+
+        expect( outs.filter( ( out ) => out[ 'status' ] === true ).length ).toBe( 12 )
+        // 12 Sicherungen entstanden, 10 bleiben liegen — der Ordner waechst nicht unbegrenzt.
+        expect( generations.length ).toBe( RETAINED )
+        // Die 2 aeltesten sind NICHT weg, sondern verschoben — und weiter lesbar.
+        expect( trashed.length ).toBe( 2 )
+        expect( oldest ).toContain( 'Erster gesprochener Text.' )
+        expect( outs.filter( ( out ) => out[ 'trashedBackups' ].length > 0 ).length ).toBe( 2 )
+        // Verschoben, nicht kopiert: die getrashten Namen liegen nicht mehr im transcripts/-Ordner.
+        expect( generations.filter( ( name ) => trashed.includes( name ) ).length ).toBe( 0 )
+    } )
+
+
+    it( 'die juengsten Generationen bleiben — die Begrenzung wirft von hinten weg, nicht von vorn', async () => {
+        const transcriptsDir = dirname( absolutePath )
+
+        await putSequence( { registry, transcriptId, 'count': 12 } )
+
+        const generations = await stampedBackups( { 'dir': transcriptsDir } )
+        const newest = await readFile( join( transcriptsDir, generations[ generations.length - 1 ] ), 'utf8' )
+        const oldestKept = await readFile( join( transcriptsDir, generations[ 0 ] ), 'utf8' )
+
+        // Namen sind fixe Breite -> String-Sortierung IST die Chronologie.
+        expect( generations ).toEqual( [ ...generations ].sort() )
+        expect( newest ).toContain( 'Stand 10.' )
+        expect( oldestKept ).toContain( 'Stand 1.' )
+    } )
+
+
+    it( 'die Sicherung wird NICHT als Transcript registriert — auch nicht nach einem frischen Scan', async () => {
+        await putSequence( { registry, transcriptId, 'count': 3 } )
+
+        const generations = await stampedBackups( { 'dir': dirname( absolutePath ) } )
         const listed = registry.listTranscripts( { 'memoId': '080-db' } )
 
+        const fresh = TranscriptRegistry.create( {} )[ 'registry' ]
+        const scanned = await fresh.scanMemo( { memoPath, 'projectId': 'memo-init', 'memoId': '080-db' } )
+        const rescanned = fresh.listTranscripts( { 'memoId': '080-db' } )
+
+        // Es liegen wirklich Sicherungen daneben — die Pruefung laeuft nicht ins Leere.
+        expect( generations.length ).toBe( 3 )
         expect( listed[ 'transcripts' ].length ).toBe( 1 )
+        // Der Scan liest den Ordner NEU von der Platte und findet trotzdem genau ein Transcript:
+        // der Zeitstempel-Name endet auf `.bak`, matcht also REVIEW_FILE_PATTERN (`...\.md$`) nicht.
+        expect( scanned[ 'registered' ] ).toBe( 1 )
+        expect( rescanned[ 'transcripts' ].length ).toBe( 1 )
+        expect( generations.filter( ( name ) => REVIEW_FILE_PATTERN_MIRROR.test( name ) ).length ).toBe( 0 )
     } )
 
 
@@ -266,6 +365,67 @@ describe( 'PRD-V5 — updateTranscript: Ablehnung, Sicherung, Normalfall', () =>
         const out = await registry.updateTranscript( { transcriptId, 'content': 'Text fuer den Spiegel.' } )
 
         expect( out[ 'memoId' ] ).toBe( '080-db' )
+    } )
+} )
+
+
+// Snag 080-sicherung-eingenerationig, Aufraeum-Ziel: im ECHTEN Projekt-Layout liegt das transcripts/
+// unter <projectRoot>/.memo/memos/<memo>/. Die Begrenzung muss die alten Staende dann in das
+// projekt-lokale .trash/<memo-id>/ verschieben (workbench-spec 32-trash: Entfernen = verschieben,
+// nie loeschen), nicht daneben. Der Fall oben laeuft im Test-Layout ohne .memo-Segment.
+describe( 'Snag 080 — Aufraeumen landet im projekt-lokalen .trash/<memo-id>/', () => {
+    let root = ''
+    let registry = null
+    let transcriptId = ''
+    let absolutePath = ''
+
+
+    beforeAll( async () => {
+        await mkdir( join( process.cwd(), '.test-tmp' ), { recursive: true } )
+        root = await mkdtemp( join( process.cwd(), '.test-tmp', 'backup-trash-' ) )
+
+        const memoPath = join( root, '.memo', 'memos', '080-db-vollausbau' )
+        await mkdir( join( memoPath, 'revisions' ), { recursive: true } )
+        await writeFile( join( memoPath, 'revisions', 'REV-01.md' ), '# REV-01\n', 'utf8' )
+
+        registry = TranscriptRegistry.create( {} )[ 'registry' ]
+
+        const added = await registry.addTranscript( {
+            'projectId': 'memo-init',
+            'memoId': '080-db',
+            'revisionId': 'REV-01',
+            'content': 'Erster gesprochener Text.',
+            memoPath
+        } )
+
+        expect( added[ 'status' ] ).toBe( true )
+        transcriptId = added[ 'transcriptId' ]
+        absolutePath = join( memoPath, 'transcripts', 'REV-01--review--01.md' )
+    } )
+
+
+    afterAll( async () => {
+        await rm( root, { recursive: true, force: true } )
+    } )
+
+
+    it( 'die 2 aeltesten Generationen liegen unter <projectRoot>/.trash/080-db/ und sind unversehrt', async () => {
+        const outs = await putSequence( { registry, transcriptId, 'count': 12 } )
+
+        const trashDir = join( root, '.trash', '080-db' )
+        const trashed = ( await readdir( trashDir ) ).sort()
+        const kept = await stampedBackups( { 'dir': dirname( absolutePath ) } )
+        const oldest = await readFile( join( trashDir, trashed[ 0 ] ), 'utf8' )
+        const second = await readFile( join( trashDir, trashed[ 1 ] ), 'utf8' )
+
+        expect( outs.filter( ( out ) => out[ 'status' ] === true ).length ).toBe( 12 )
+        expect( kept.length ).toBe( RETAINED )
+        expect( trashed.length ).toBe( 2 )
+        // Verschoben, nicht geloescht: beide Staende sind im .trash/ vollstaendig lesbar.
+        expect( oldest ).toContain( 'Erster gesprochener Text.' )
+        expect( second ).toContain( 'Stand 0.' )
+        // Der Rueckgabewert nennt das Ziel — der Pfad ist das projekt-lokale .trash/, nicht das memo-lokale.
+        expect( outs[ 11 ][ 'trashedBackups' ][ 0 ].startsWith( trashDir ) ).toBe( true )
     } )
 } )
 

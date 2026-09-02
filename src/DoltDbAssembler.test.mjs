@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals'
-import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 
@@ -1052,5 +1052,225 @@ describe( 'DoltDbAssembler — PRD-V1 raw-table window (Memo 080, Kap 15)', () =
             expect( source ).not.toContain( 'never user input — no injection surface' )
             expect( source ).toContain( 'whitelist is the safeguard' )
         } )
+    } )
+} )
+
+
+// ── Memo 080, PRD-D5 — external payload pointers in the viewer ──────────────────────────────────────
+//
+// MEASURED DEFECT this closes: the render read `SELECT id, block_id, title, tsv FROM block_tables` and
+// `SELECT ... source, feed FROM block_diagrams` — neither pointer column was read at all. A payload-backed
+// row therefore rendered an EMPTY table and a payload-backed diagram an EMPTY fence: the silent substitute
+// the error rule forbids, and a byte-parity break in the MATCHED case, not only in the gap case.
+//
+// The gate is the THIRD cross-repo fixture, `revision-body-pointer-v1`, vendored BYTE-IDENTICALLY from
+// repos/core/cli/test/fixtures/ (same sha256 in the manifest). Both halves are asserted: viewer render ===
+// fixture AND sha256(fixture) === manifest.sha256, so neither this renderer nor the fixture can drift alone.
+describe( 'DoltDbAssembler — external payload pointers (Memo 080, PRD-D5)', () => {
+    const repoTmpRoot = join( process.cwd(), '.test-tmp' )
+    const FIXTURE_DIR = resolve( process.cwd(), 'tests', 'fixtures', 'revision-body-pointer-v1' )
+    const POINTER_GOLDEN_BODY = readFileSync( resolve( FIXTURE_DIR, 'full-body.md' ), 'utf8' )
+    const POINTER_MANIFEST = JSON.parse( readFileSync( resolve( FIXTURE_DIR, 'manifest.json' ), 'utf8' ) )
+
+    // The canonical payloads — the SAME bytes the core fixture seed writes (RevisionAssembler.test
+    // TEMPLATE_BODY / TABLE_PAYLOAD / RESEARCH_BODY). Identical bytes in, identical bytes out.
+    const TEMPLATE_BODY = 'graph TD{{#rows}}\n  {{name}} --> {{status}}{{/rows}}'
+    const TABLE_PAYLOAD = '{"columns":["name","status"],"rows":[["commit","ok"]]}'
+    const RESEARCH_BODY = '# doltlite Machbarkeit\n'
+    const digestOf = ( { text } ) => createHash( 'sha256' ).update( Buffer.from( text, 'utf8' ) ).digest( 'hex' )
+
+    let projectRoot = ''
+    let memoDir = ''
+    let dbPath = ''
+
+
+    // A REAL reference-point layout (`<projectRoot>/.memo/memos/NNN-slug`), because the resolution derives
+    // both roots from the database path: a bare temp folder would carry no `.memo` segment and therefore no
+    // project reference point at all.
+    beforeEach( () => {
+        mkdirSync( repoTmpRoot, { recursive: true } )
+        projectRoot = mkdtempSync( join( repoTmpRoot, 'pointer-' ) )
+        memoDir = resolve( projectRoot, '.memo', 'memos', '080-pointer' )
+        mkdirSync( resolve( memoDir, 'context' ), { recursive: true } )
+        mkdirSync( resolve( projectRoot, 'context' ), { recursive: true } )
+        dbPath = resolve( memoDir, 'memo-080.db' )
+    } )
+
+    afterEach( () => {
+        rmSync( projectRoot, { recursive: true, force: true } )
+    } )
+
+
+    // The schema shape a per-memo database has after DoltSchema.apply for every table this render touches,
+    // including the two pointer pairs. `withPointerColumns:false` reproduces a database that PREDATES them.
+    const createSchema = ( { db, withPointerColumns } ) => {
+        const tableColumns = withPointerColumns === true
+            ? 'id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT, render TEXT, payload_ref TEXT, payload_sha256 TEXT'
+            : 'id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT'
+        const diagramColumns = withPointerColumns === true
+            ? 'id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT, source_ref TEXT, source_sha256 TEXT'
+            : 'id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT'
+
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT, context TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
+        db.exec( `CREATE TABLE IF NOT EXISTS block_tables ( ${ tableColumns } )` )
+        db.exec( `CREATE TABLE IF NOT EXISTS block_diagrams ( ${ diagramColumns } )` )
+        db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, depends_on TEXT, can_parallel_with TEXT, commit_hash TEXT, spillover TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, commit_hash TEXT, depends_on TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS question_option ( question_id TEXT, opt_key TEXT, label TEXT, kind TEXT, sort INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS research ( r_no INTEGER PRIMARY KEY, memo_id TEXT, title TEXT, kind TEXT, path TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS research_topics ( r_no INTEGER, topic_id TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS research_files ( r_no INTEGER, path TEXT, sha256 TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS user_input_answers ( input_id TEXT, question_id TEXT, option_key TEXT, answer_verbatim TEXT, preselected INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS snag ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, status TEXT, verdict TEXT, disposition TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS goal ( id TEXT PRIMARY KEY, name TEXT, kind TEXT, pct INTEGER, status TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS maintenance_card ( repo TEXT PRIMARY KEY, freshness INTEGER, blast TEXT, maint_status TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo_section ( id TEXT PRIMARY KEY, heading TEXT, body TEXT, sort INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo_head ( field TEXT PRIMARY KEY, value TEXT, sort INTEGER )' )
+    }
+
+
+    // The CANONICAL pointer fixture, row for row the same state the core seed produces: one payload-backed
+    // block table, one payload-backed diagram fed from it, and four research file edges covering
+    // matched / mismatched / missing / unhashed in ONE render.
+    const seedPointerCanonical = ( { render } ) => {
+        writeFileSync( resolve( memoDir, 'context', 'table.json' ), TABLE_PAYLOAD, 'utf8' )
+        writeFileSync( resolve( memoDir, 'context', 'diagram.mmd' ), TEMPLATE_BODY, 'utf8' )
+        writeFileSync( resolve( projectRoot, 'context', 'matched.md' ), RESEARCH_BODY, 'utf8' )
+        writeFileSync( resolve( projectRoot, 'context', 'drifted.md' ), '# drifted since it was measured\n', 'utf8' )
+        writeFileSync( resolve( projectRoot, 'context', 'unmeasured.md' ), '# never measured\n', 'utf8' )
+
+        const db = new DatabaseSync( dbPath )
+        createSchema( { db, withPointerColumns: true } )
+        db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+            .run( 'M080', 'Externe Payload-Referenz', 'strategy', 'finalized', '2026-08-31T00:00:00.000Z', 'Die Klammer endet an der Datei-Grenze.' )
+        db.prepare( 'INSERT INTO block ( id, title, sort ) VALUES ( ?, ?, ? )' ).run( 'B001', 'Zeiger', 1 )
+        db.prepare( 'INSERT INTO block_tables ( id, block_id, title, tsv, render, payload_ref, payload_sha256 ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' )
+            .run( 'BT001', 'B001', 'Primitives', null, render === undefined ? null : render, 'context/table.json', digestOf( { text: TABLE_PAYLOAD } ) )
+        db.prepare( 'INSERT INTO block_diagrams ( id, block_id, title, kind, `source`, feed, source_ref, source_sha256 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+            .run( 'BT001', 'B001', 'Flow', 'mermaid', null, 'BT001', 'context/diagram.mmd', digestOf( { text: TEMPLATE_BODY } ) )
+        db.prepare( 'INSERT INTO research ( r_no, memo_id, title, kind, path ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 1, 'M080', 'Vier Zustaende', 'wave-1', null )
+        const insertFile = db.prepare( 'INSERT INTO research_files ( r_no, path, sha256 ) VALUES ( ?, ?, ? )' )
+        insertFile.run( 1, 'context/matched.md', digestOf( { text: RESEARCH_BODY } ) )
+        insertFile.run( 1, 'context/drifted.md', 'c'.repeat( 64 ) )
+        insertFile.run( 1, 'context/gone.md', 'd'.repeat( 64 ) )
+        insertFile.run( 1, 'context/unmeasured.md', null )
+        const insertHead = db.prepare( 'INSERT INTO memo_head ( field, value, sort ) VALUES ( ?, ?, ? )' )
+        insertHead.run( 'Memo', 'M080', 0 )
+        insertHead.run( 'Memo-Name', 'Externe Payload-Referenz', 1 )
+        insertHead.run( 'Revision', '01', 2 )
+        insertHead.run( 'Datum', '2026-08-31', 3 )
+        insertHead.run( 'Status', 'finalized', 4 )
+        db.close()
+    }
+
+
+    it( 'renders the pointer body byte-identical to the core fixture — payload pulled in, gaps named', () => {
+        seedPointerCanonical( {} )
+
+        const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+        expect( markdown ).toBe( POINTER_GOLDEN_BODY )
+
+        // the INLINE pointers were pulled in THROUGH their checksum — not left empty
+        expect( markdown ).toContain( '```tsv\nname\tstatus\ncommit\tok\n```' )
+        expect( markdown ).toContain( '```mermaid\ngraph TD\n  commit --> ok\n```' )
+
+        // the REFERENCE pointers: matched renders bare, every other state renders a NAMED gap
+        const researchRow = markdown.split( '\n' ).find( ( line ) => line.startsWith( '| R1 |' ) )
+        expect( researchRow ).toContain( 'context/matched.md' )
+        expect( researchRow ).toContain( 'project:context/drifted.md (GAP: checksum mismatch)' )
+        expect( researchRow ).toContain( 'project:context/gone.md (GAP: file missing)' )
+        expect( researchRow ).toContain( 'project:context/unmeasured.md (GAP: never measured)' )
+        expect( researchRow.split( 'context/' ).length - 1 ).toBe( 4 )      // compared 4 reference pointers
+        expect( markdown ).not.toContain( '_no research_' )
+
+        // hand-edit guard: the vendored fixture must hash to the manifest sha256 the CORE repo records,
+        // so a doctored golden that would silently satisfy the equality above is caught here.
+        const fixtureSha = createHash( 'sha256' ).update( POINTER_GOLDEN_BODY, 'utf8' ).digest( 'hex' )
+        expect( fixtureSha ).toBe( POINTER_MANIFEST[ 'sha256' ] )
+        expect( Buffer.byteLength( POINTER_GOLDEN_BODY, 'utf8' ) ).toBe( POINTER_MANIFEST[ 'byteLength' ] )
+        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1320 )             // compared 1320 bytes, > 0
+    } )
+
+
+    // The NEIGHBOURING presentation branch, not the noticed one: `memo block add-table` defaults the
+    // authored kind to "table", so this is what a CLI-authored payload table renders as. The pointer
+    // resolution may not hang on one branch, and the Markdown table must match the core render exactly.
+    it( 'a payload-backed table authored as render "table" renders the Markdown table, not the fence', () => {
+        seedPointerCanonical( { render: 'table' } )
+
+        const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+        expect( markdown ).toContain( '| name | status |\n|---|---|\n| commit | ok |' )
+        expect( markdown ).not.toContain( '```tsv' )                        // compared 2 render kinds
+        // and the diagram fed FROM that same table still interpolates the pulled-in payload
+        expect( markdown ).toContain( '```mermaid\ngraph TD\n  commit --> ok\n```' )
+    } )
+
+
+    it( 'a drifted inline payload ABORTS — never an empty table, never a stale one', () => {
+        seedPointerCanonical( {} )
+        writeFileSync( resolve( memoDir, 'context', 'table.json' ), '{"columns":["name","status"],"rows":[["commit","BROKEN"]]}', 'utf8' )
+
+        // the throw is the CONTRACT: MemoView catches it and falls back to the frozen revision file.
+        expect( () => DoltDbAssembler.assembleFromDb( { dbPath } ) ).toThrow( /mismatched/ )
+        expect( () => DoltDbAssembler.assembleFromDb( { dbPath } ) ).toThrow( /context\/table\.json/ )
+    } )
+
+
+    it( 'a missing inline payload and a drifted diagram TEMPLATE abort as well — both branches', () => {
+        seedPointerCanonical( {} )
+        const db = new DatabaseSync( dbPath )
+        db.prepare( 'UPDATE block_tables SET payload_ref = ? WHERE id = ?' ).run( 'context/never-written.json', 'BT001' )
+        db.close()
+        expect( () => DoltDbAssembler.assembleFromDb( { dbPath } ) ).toThrow( /missing/ )
+
+        const second = new DatabaseSync( dbPath )
+        second.prepare( 'UPDATE block_tables SET payload_ref = ? WHERE id = ?' ).run( 'context/table.json', 'BT001' )
+        second.close()
+        writeFileSync( resolve( memoDir, 'context', 'diagram.mmd' ), 'graph TD; A-->B', 'utf8' )
+        expect( () => DoltDbAssembler.assembleFromDb( { dbPath } ) ).toThrow( /mismatched/ )   // compared 2 abort branches
+    } )
+
+
+    it( 'a database WITHOUT the pointer columns renders exactly as before — the additive degrade', () => {
+        const db = new DatabaseSync( dbPath )
+        createSchema( { db, withPointerColumns: false } )
+        db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+            .run( 'M080', 'Externe Payload-Referenz', 'strategy', 'finalized', '2026-08-31T00:00:00.000Z', 'Die Klammer endet an der Datei-Grenze.' )
+        db.prepare( 'INSERT INTO block ( id, title, sort ) VALUES ( ?, ?, ? )' ).run( 'B001', 'Zeiger', 1 )
+        db.prepare( 'INSERT INTO block_tables ( id, block_id, title, tsv ) VALUES ( ?, ?, ?, ? )' )
+            .run( 'BT001', 'B001', 'Primitives', 'name\tstatus\ncommit\tok' )
+        db.prepare( 'INSERT INTO block_diagrams ( id, block_id, title, kind, `source`, feed ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+            .run( 'M1', 'B001', 'Flow', 'mermaid', TEMPLATE_BODY, 'BT001' )
+        db.close()
+
+        const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+        expect( markdown ).toContain( '```tsv\nname\tstatus\ncommit\tok\n```' )
+        expect( markdown ).toContain( '```mermaid\ngraph TD\n  commit --> ok\n```' )
+        expect( markdown ).toContain( '## Research\n\n_no research_' )      // compared 1 table + 1 diagram
+    } )
+
+
+    // The register, not the case: the resolution reads PointerSites, so the viewer names no table of its
+    // own. A one-sided edit that hard-codes a table name here would show up as a missing declaration.
+    it( 'every pointer site the viewer resolves comes OUT of the register, not out of this file', () => {
+        const source = readFileSync( resolve( process.cwd(), 'src', 'DoltDbAssembler.mjs' ), 'utf-8' )
+        const resolverStart = source.indexOf( 'external payload pointers (Memo 080, PRD-D5)' )
+        const resolverEnd = source.indexOf( 'ONE dataset table body' )
+        const region = source.slice( resolverStart, resolverEnd )
+
+        expect( resolverStart ).toBeGreaterThan( -1 )
+        expect( resolverEnd ).toBeGreaterThan( resolverStart )
+        // the three site lookups in the region all go through PointerSites.bySite via #site( { table } )
+        const lookups = region.split( 'PointerSites.bySite' ).length - 1
+        expect( lookups ).toBe( 1 )                                          // ONE lookup helper, 3 callers
+        expect( region.split( '#site( { table:' ).length - 1 ).toBe( 3 )     // compared 3 declared sites used
     } )
 } )

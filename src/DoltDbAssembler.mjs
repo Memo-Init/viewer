@@ -28,13 +28,30 @@
 // The viewer has no access to the core DoltStore class, so the doltlite handle is opened locally via
 // DatabaseSync (node:sqlite-compatible). `source` is a reserved word and is backtick-quoted.
 //
+// EXTERNAL PAYLOAD POINTERS (Memo 080, PRD-D5). The MODEL SOURCE for everything below is the core
+// RevisionAssembler: the same PointerSites register, the same PayloadPointer resolution, the same
+// checksum check and the same gap render, mirrored byte-faithfully. PointerSites / PayloadPointer /
+// BlockTablePayload are VENDORED copies of the core files (the worktree boundary forbids an import).
+// Measured before this: `SELECT id, block_id, title, tsv FROM block_tables` read no pointer column at
+// all, so a payload-backed row rendered an EMPTY table and a payload-backed diagram an EMPTY fence —
+// exactly the silent substitute the error rule forbids, and a byte-parity break in the MATCHED case,
+// not only in the gap case. `render` is mirrored in the same step for the same reason: with the
+// authored render kind read on one side only, every CLI-authored table (which defaults to render
+// 'table') rendered as a Markdown table in core and as a TSV fence here.
+// No new error behaviour: an inline payload that does not check out THROWS, and the throw runs into the
+// existing fallback onto the frozen file (MemoView), which stays untouched.
+//
 // Class architecture per node-class-architecture: static-only, object params, object returns,
 // private-by-default, NO SILENT DEFAULTS (every missing argument fails loud), no for/while loops.
 
 import { existsSync, readdirSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { resolve, sep } from 'node:path'
 
 import { DatabaseSync } from '@dolthub/doltlite'
+
+import { PointerSites } from './PointerSites.mjs'
+import { PayloadPointer } from './PayloadPointer.mjs'
+import { BlockTablePayload } from './BlockTablePayload.mjs'
 
 
 // A per-memo database file is named `memo-<NNN>.db` (e.g. memo-079.db) — the Zwei-Regime marker.
@@ -61,6 +78,16 @@ const raw = ( value ) => {
 // The fence language of a block_diagram is its `kind`; only these two are legal (fail-loud on any
 // other value — a diagram with an unknown kind is a hard error, never a silent skip).
 const DIAGRAM_KINDS = [ 'mermaid', 'vega-lite' ]
+
+
+// The reason text of a `mode: reference` gap. Byte-identical to RevisionAssembler GAP_REASON (core) —
+// the words are part of the rendered body and therefore part of the cross-repo byte parity.
+const GAP_REASON = {
+    mismatched: 'checksum mismatch',
+    missing: 'file missing',
+    unhashed: 'never measured',
+    escaped: 'pointer leaves its base'
+}
 
 
 // The six mandatory prose sections rendered from the `memo_section` carrier and the five mandatory head
@@ -142,7 +169,7 @@ class DoltDbAssembler {
 
         const db = DoltDbAssembler.#open( { dbPath } )
         try {
-            const markdown = DoltDbAssembler.#renderBody( { db } )
+            const markdown = DoltDbAssembler.#renderBody( { db, dbPath } )
 
             return { markdown }
         } finally {
@@ -560,13 +587,25 @@ class DoltDbAssembler {
     }
 
 
-    static #renderBody( { db } ) {
+    static #renderBody( { db, dbPath } ) {
         const memo = DoltDbAssembler.#memoRow( { db } )
         const context = DoltDbAssembler.#readContext( { db } )
         const workItems = DoltDbAssembler.#all( { db, sql: 'SELECT id, topic, title, status, grp FROM work_item ORDER BY id' } )
         const blocks = DoltDbAssembler.#all( { db, sql: 'SELECT id, title, sort FROM block ORDER BY sort, id' } )
-        const blockTables = DoltDbAssembler.#all( { db, sql: 'SELECT id, block_id, title, tsv FROM block_tables ORDER BY block_id, id' } )
-        const blockDiagrams = DoltDbAssembler.#all( { db, sql: 'SELECT id, block_id, title, kind, `source`, feed FROM block_diagrams ORDER BY block_id, id' } )
+        // Memo 080, PRD-D5 — mirrors RevisionAssembler.#renderBody. `block_tables` is read with SELECT *
+        // because it carries TWO independent additive sets (the `render` kind and the pointer pair), and
+        // every field is read defensively so an early hand-seeded db that has neither still renders exactly
+        // as before; `block_diagrams` carries one additive set and is PRAGMA-probed. Where a pointer IS
+        // present the payload is pulled in and CHECKED here, before any interpolation.
+        const pointer = DoltDbAssembler.#pointerContext( { dbPath } )
+        const rawBlockTables = DoltDbAssembler.#all( { db, sql: 'SELECT * FROM block_tables ORDER BY block_id, id' } )
+        const blockTables = DoltDbAssembler.#resolveTablePayloads( { rows: rawBlockTables, pointer } )
+        const hasDiagramPointer = DoltDbAssembler.#hasColumns( { db, table: 'block_diagrams', columns: [ 'source_ref', 'source_sha256' ] } )
+        const rawBlockDiagrams = DoltDbAssembler.#all( { db, sql: hasDiagramPointer === true
+            ? 'SELECT id, block_id, title, kind, `source`, feed, source_ref, source_sha256 FROM block_diagrams ORDER BY block_id, id'
+            : 'SELECT id, block_id, title, kind, `source`, feed FROM block_diagrams ORDER BY block_id, id'
+        } )
+        const blockDiagrams = DoltDbAssembler.#resolveDiagramPayloads( { rows: rawBlockDiagrams, pointer } )
         // topic / rollout_phase / rollout_work_item / question mirror the core RevisionAssembler read. The
         // viewer, however, may open an EARLY hand-seeded db that predates these tables, so each read is
         // guarded by #tableExists and degrades to an empty array — which renders byte-identically to the
@@ -654,7 +693,7 @@ class DoltDbAssembler {
             .concat( DoltDbAssembler.#renderTopics( { topics } ) )
             .concat( DoltDbAssembler.#renderPhases( { phases, phaseWorkItems } ) )
             .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Phase-Hints' } ) )
-            .concat( DoltDbAssembler.#renderResearch( { research, researchTopics, researchFiles } ) )
+            .concat( DoltDbAssembler.#renderResearch( { research, researchTopics, researchFiles, pointer } ) )
             .concat( DoltDbAssembler.#renderSnags( { snags } ) )
             .concat( DoltDbAssembler.#renderGoals( { goals } ) )
             .concat( DoltDbAssembler.#renderMaintenance( { cards: maintenanceCards } ) )
@@ -923,7 +962,7 @@ class DoltDbAssembler {
     // "Research-Kanten leben in der DB") from the `research` table + its `research_topics` / `research_files`
     // edges, ORDER BY r_no, with the bound topic ids and produced file paths as joined cells. The always-null
     // `research.path` scalar is omitted (superseded by the research_files edges). Empty renders `_no research_`.
-    static #renderResearch( { research, researchTopics, researchFiles } ) {
+    static #renderResearch( { research, researchTopics, researchFiles, pointer } ) {
         const heading = [ '## Research', '' ]
         if( research.length === 0 ) {
             return heading.concat( [ '_no research_', '' ] )
@@ -941,7 +980,7 @@ class DoltDbAssembler {
                     .join( ', ' )
                 const files = researchFiles
                     .filter( ( edge ) => edge[ 'r_no' ] === entry[ 'r_no' ] )
-                    .map( ( edge ) => edge[ 'path' ] )
+                    .map( ( edge ) => DoltDbAssembler.#researchFileCell( { edge, pointer } ) )
                     .join( ', ' )
 
                 return `| R${ cell( entry[ 'r_no' ] ) } | ${ cell( entry[ 'title' ] ) } | ${ cell( entry[ 'kind' ] ) } | ${ cell( topics ) } | ${ cell( files ) } |`
@@ -951,6 +990,166 @@ class DoltDbAssembler {
             .concat( table )
             .concat( bodyRows )
             .concat( [ '' ] )
+    }
+
+
+    // ---- external payload pointers (Memo 080, PRD-D5) — mirrored from RevisionAssembler (core) ----
+
+    // The reference points THIS render resolves pointers against, derived from the DATABASE PATH: the memo
+    // folder is the directory holding memo-<NNN>.db, the project root is its `.memo` ancestor's parent.
+    // A db outside a `.memo` tree (a bare fixture) has NO project reference point; that is a MISSING
+    // PRECONDITION and the READ path then degrades to the pre-PRD-D5 rendering for `mode: reference`
+    // — the ONE documented degrade. It never applies to `mode: inline`, which aborts instead.
+    static #pointerContext( { dbPath } ) {
+        const hasDbPath = typeof dbPath === 'string' && dbPath.length > 0
+        const memoDir = hasDbPath === true ? resolve( dbPath, '..' ) : null
+        const marker = `${ sep }.memo${ sep }`
+        const index = memoDir === null ? -1 : memoDir.indexOf( marker )
+        const projectRoot = index === -1 ? null : memoDir.slice( 0, index )
+
+        return {
+            memoDir,
+            projectRoot,
+            memoAvailable: memoDir !== null,
+            projectAvailable: projectRoot !== null
+        }
+    }
+
+
+    static #availableFor( { base, pointer } ) {
+        return base === 'memo' ? pointer.memoAvailable === true : pointer.projectAvailable === true
+    }
+
+
+    static #site( { table } ) {
+        const { site } = PointerSites.bySite( { table } )
+        if( site === null ) {
+            throw new Error( `DoltDbAssembler: "${ table }" is not a declared pointer site — declare it in PointerSites instead of resolving it here` )
+        }
+
+        return { site }
+    }
+
+
+    // Pull every payload-backed block table IN, through its checksum. `mode: inline` means any state other
+    // than matched ABORTS (PayloadPointer throws, naming path, expected and read hash) — the viewer never
+    // substitutes the last known content, an empty table, or a skipped row; the throw runs into the frozen-
+    // file fallback the serve path already carries.
+    static #resolveTablePayloads( { rows, pointer } ) {
+        const { site } = DoltDbAssembler.#site( { table: 'block_tables' } )
+
+        return rows
+            .map( ( row ) => {
+                const ref = row[ site.pathColumn ]
+                if( typeof ref !== 'string' || ref.length === 0 ) {
+                    return row
+                }
+                if( DoltDbAssembler.#availableFor( { base: site.base, pointer } ) !== true ) {
+                    throw new Error( `DoltDbAssembler: block table "${ row[ 'id' ] }" points at payload "${ ref }" but the render was given no ${ site.base } reference point — an inline payload is never rendered unchecked` )
+                }
+
+                const { tsv } = BlockTablePayload.load( {
+                    memoDir: pointer.memoDir,
+                    projectRoot: pointer.projectRoot,
+                    ref,
+                    expected: row[ site.shaColumn ]
+                } )
+
+                return { ...row, tsv }
+            } )
+    }
+
+
+    // Pull every payload-backed diagram TEMPLATE in — checked BEFORE it is interpolated, so a changed
+    // template can never be displayed as if it were the frozen one. Same inline rule: no match, no render.
+    static #resolveDiagramPayloads( { rows, pointer } ) {
+        const { site } = DoltDbAssembler.#site( { table: 'block_diagrams' } )
+
+        return rows
+            .map( ( row ) => {
+                const ref = row[ site.pathColumn ]
+                if( typeof ref !== 'string' || ref.length === 0 ) {
+                    return row
+                }
+                if( DoltDbAssembler.#availableFor( { base: site.base, pointer } ) !== true ) {
+                    throw new Error( `DoltDbAssembler: block_diagram "${ row[ 'id' ] }" points at template "${ ref }" but the render was given no ${ site.base } reference point — an inline payload is never rendered unchecked` )
+                }
+
+                const { content } = PayloadPointer.readVerified( {
+                    base: site.base,
+                    memoDir: pointer.memoDir,
+                    projectRoot: pointer.projectRoot,
+                    ref,
+                    expected: row[ site.shaColumn ]
+                } )
+
+                return { ...row, source: content }
+            } )
+    }
+
+
+    // ONE research file edge as a table cell. `mode: reference` means the pointer is RENDERED, never pulled
+    // in: a matched pointer renders as the bare path, any other state renders as a GAP naming the resolved
+    // pointer and the reason. The entry is never dropped and never blanked. The resolution is stated as
+    // `<base>:<path-relative-to-that-base>` — the absolute path is deliberately NOT rendered, because it
+    // would make the bytes machine-dependent. Byte-identical to RevisionAssembler.#researchFileCell.
+    static #researchFileCell( { edge, pointer } ) {
+        const { site } = DoltDbAssembler.#site( { table: 'research_files' } )
+        const path = edge[ site.pathColumn ]
+        if( DoltDbAssembler.#availableFor( { base: site.base, pointer } ) !== true ) {
+            return path
+        }
+
+        const { state, resolvedRef, escaped } = DoltDbAssembler.#checkReference( { site, pointer, ref: path, expected: edge[ site.shaColumn ] } )
+        if( state === 'matched' ) {
+            return path
+        }
+
+        const where = resolvedRef === null ? path : `${ site.base }:${ resolvedRef }`
+        const reason = escaped === true && state === 'unhashed'
+            ? `${ GAP_REASON[ state ] }; the pointer also leaves its base "${ site.base }"`
+            : GAP_REASON[ state ]
+
+        return `${ where } (GAP: ${ reason })`
+    }
+
+
+    // The reference-mode check. SAME RANKING AS the core reader: an absent checksum outranks an
+    // unresolvable path, because `sha256 IS NULL` is a property of the row that no filesystem lookup can
+    // change. The resolver's own message is NOT rendered — it carries absolute paths.
+    static #checkReference( { site, pointer, ref, expected } ) {
+        const hasExpected = typeof expected === 'string' && expected.length > 0
+        try {
+            const result = PayloadPointer.verify( {
+                base: site.base,
+                memoDir: pointer.memoDir,
+                projectRoot: pointer.projectRoot,
+                ref,
+                expected,
+                mode: 'reference'
+            } )
+
+            return { state: result.state, resolvedRef: result.resolvedRef, escaped: false }
+        } catch( error ) {
+            const detail = error.message
+
+            return { state: hasExpected === true ? 'escaped' : 'unhashed', resolvedRef: null, escaped: true, detail }
+        }
+    }
+
+
+    // Does a table carry every one of these columns? The pointer pairs are ADDITIVE, so a database that
+    // predates them must read without a "no such column" throw. Mirrors RevisionAssembler.#hasColumns.
+    static #hasColumns( { db, table, columns } ) {
+        if( DoltDbAssembler.#tableExists( { db, table } ) !== true ) {
+            return false
+        }
+
+        const rows = DoltDbAssembler.#all( { db, sql: `PRAGMA table_info(\`${ table }\`)` } )
+        const names = rows
+            .map( ( row ) => row[ 'name' ] )
+
+        return columns.every( ( column ) => names.includes( column ) === true )
     }
 
 
@@ -1169,6 +1368,29 @@ class DoltDbAssembler {
     }
 
 
+    // ONE dataset table body. The AUTHORED render kind decides the presentation: 'table' emits a Markdown
+    // table, anything else (including an absent/NULL kind on a database that predates the column) keeps the
+    // TSV fence the render always emitted. Byte-identical to RevisionAssembler.#renderBlockTableBody — the
+    // named cross-repo divergence that stood here before (viewer always emitting the fence) is closed with
+    // this method: `memo block add-table` defaults the kind to 'table', so the divergence was reachable by
+    // every CLI-authored table, not only by a hypothetical future one.
+    static #renderBlockTableBody( { entry } ) {
+        const tsv = raw( entry[ 'tsv' ] )
+        if( entry[ 'render' ] !== 'table' ) {
+            return [ '```tsv', tsv, '```', '' ]
+        }
+
+        const { header, rows } = DoltDbAssembler.#parseTsv( { tsv } )
+        if( header.length === 0 ) {
+            return [ '```tsv', tsv, '```', '' ]
+        }
+
+        return [ `| ${ header.map( ( name ) => cell( name ) ).join( ' | ' ) } |`, `|${ header.map( () => '---' ).join( '|' ) }|` ]
+            .concat( rows.map( ( row ) => `| ${ header.map( ( name, index ) => cell( row[ index ] === undefined ? null : row[ index ] ) ).join( ' | ' ) } |` ) )
+            .concat( [ '' ] )
+    }
+
+
     static #renderBlocks( { blocks, blockTables, blockDiagrams } ) {
         const heading = [ '## Blocks', '' ]
         if( blocks.length === 0 ) {
@@ -1180,7 +1402,7 @@ class DoltDbAssembler {
                 const tables = blockTables
                     .filter( ( entry ) => entry[ 'block_id' ] === block[ 'id' ] )
                 const tableLines = tables
-                    .map( ( entry ) => [ `#### ${ cell( entry[ 'title' ] ) }`, '', '```tsv', raw( entry[ 'tsv' ] ), '```', '' ] )
+                    .map( ( entry ) => [ `#### ${ cell( entry[ 'title' ] ) }`, '' ].concat( DoltDbAssembler.#renderBlockTableBody( { entry } ) ) )
                     .reduce( ( acc, part ) => acc.concat( part ), [] )
 
                 const diagrams = blockDiagrams

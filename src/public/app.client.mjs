@@ -324,6 +324,12 @@
         let lastContent = ''
         let lastQuestionSchema = []
         let lastVorwort = ''
+        // PRD-Q3 (Memo 080, Kap 25): the validator result of the last content broadcast. The server
+        // has been attaching `validation` to EVERY content message since PRD-040 — until now nobody
+        // read it, so the non-blocking INFO hints of the shared validator only ever reached the CLI.
+        // `undefined` means "no broadcast seen yet"; `null` means the server could not validate at
+        // all, which is rendered as a stated gap, never as an empty (reassuring) band.
+        let lastValidation = undefined
         let isFirstLoad = true
         // PRD-009 (Memo 024 Kap 7, F5=A): the last seen queue-key snapshot drives the Audio-Notify
         // diff. null = no snapshot yet (initial load) — the first renderSidebar only seeds it and
@@ -4588,6 +4594,7 @@
             }
             applyContentStructure()
             renderVorwort( lastVorwort )
+            renderFormHints( lastValidation )
             renderQuestionWidgets( lastQuestionSchema )
             buildTOC( currentDiff )
             window.scrollTo( 0, scrollY )
@@ -5106,6 +5113,7 @@
                 // toggle (both ON and OFF), instead of leaving a flat, structureless body.
                 applyContentStructure()
                 renderVorwort( lastVorwort )
+                renderFormHints( lastValidation )
                 renderQuestionWidgets( lastQuestionSchema )
                 buildTOC( currentDiff )
             } )
@@ -5548,7 +5556,22 @@
         // - "Offene Fragen" heading becomes a prominent, linkable anchor (id="offene-fragen", F11).
         // - A Vorwort placeholder section (id="vorwort") is inserted directly before it
         //   (Befuellung Phase 6 / Kap 19); it stays hidden while empty.
+        // PRD-Q3 (Memo 080, Kap 25): the hint-band placeholder, mirroring the Vorwort placeholder
+        // inside applyContentStructure. Its own function on purpose — applyContentStructure returns
+        // early on a document WITHOUT an "Offene Fragen" heading, and a memo without open questions
+        // must still be able to show its hints, so this runs before that guard.
+        function ensureFormHintsSection() {
+            if( document.getElementById( 'form-hints' ) ) { return }
+
+            var formHints = document.createElement( 'section' )
+            formHints.id = 'form-hints'
+            formHints.className = 'form-hints-section form-hints-empty'
+            formHints.setAttribute( 'aria-label', 'Form-Hinweise' )
+            contentEl.insertBefore( formHints, contentEl.firstChild )
+        }
+
         function applyContentStructure() {
+            ensureFormHintsSection()
             var headings = contentEl.querySelectorAll( 'h1, h2, h3, h4' )
             // PRD-006 (#C2/#C3): anchor on the canonical EXACT "## Offene Fragen" (H2), NOT the
             // first h1-h4 match. The old first-match scan landed on a chapter-5 "### Offene Fragen"
@@ -6765,6 +6788,65 @@
             section.innerHTML = '<div class="vorwort-body">' + marked.parse( text ) + '</div>'
         }
 
+        // PRD-Q3 (Memo 080, Kap 25): the non-blocking hint band of the SHARED validator.
+        //
+        // The channel has been carrying this for a long time — the server attaches `validation` to
+        // every content message (four send sites) — but no client code ever read it, so the INFO
+        // family only ever showed up in `memo lint`. This function is that missing receiver.
+        //
+        // Three states that must NEVER look alike:
+        //   info: [ ... ]  -> the hints, one line each, WITH their number
+        //   info: []       -> an invisible band (pattern vorwort-empty), NOT a green "all good"
+        //   validation null-> the stated gap "Pruefung nicht verfuegbar", NOT an empty band
+        // Nothing here blocks or gates: `struct.status` is computed from `messages`, and an INFO
+        // code never lands in `messages` (MemoValidator #route) — the band is a hint, never a verdict.
+        //
+        // Degrades silently by contract: a hint must never be able to break the document render.
+        function renderFormHints( validation ) {
+            try {
+                var section = document.getElementById( 'form-hints' )
+                if( !section ) { return }
+
+                // Nothing broadcast yet — there is nothing to say, so the band stays invisible.
+                if( validation === undefined ) {
+                    section.innerHTML = ''
+                    section.classList.add( 'form-hints-empty' )
+                    return
+                }
+
+                // Defensive server fallback: the validator could not run at all. "Not checked" and
+                // "nothing to complain about" are different statements and get different displays.
+                if( validation === null || typeof validation !== 'object' ) {
+                    section.classList.remove( 'form-hints-empty' )
+                    section.innerHTML = '<div class="form-hints-band form-hints-luecke">'
+                        + '<div class="form-hints-head">Form-Hinweise: Pruefung nicht verfuegbar</div>'
+                        + '<div class="form-hints-note">Kein Hinweis-Bestand — das ist eine Luecke, keine Freigabe.</div>'
+                        + '</div>'
+                    return
+                }
+
+                var info = Array.isArray( validation.info ) ? validation.info : []
+
+                if( info.length === 0 ) {
+                    section.innerHTML = ''
+                    section.classList.add( 'form-hints-empty' )
+                    return
+                }
+
+                var items = info
+                    .map( function( entry ) { return '<li class="form-hints-item">' + escHtml( entry ) + '</li>' } )
+                    .join( '' )
+
+                section.classList.remove( 'form-hints-empty' )
+                section.innerHTML = '<div class="form-hints-band form-hints-info">'
+                    + '<div class="form-hints-head">Form-Hinweise: ' + info.length + ' (nicht blockierend)</div>'
+                    + '<ul class="form-hints-list">' + items + '</ul>'
+                    + '</div>'
+            } catch( err ) {
+                // Silent degradation: the document render must never fail because of a hint.
+            }
+        }
+
         // PRD-013 (Kap 15): interactive question-widget state.
         // questionNav drives the Claude-Code-style carousel keyboard navigation.
         // PRD-006 (Kap 9): fertig carries the explicit "abgeschlossen"-state (AC-05);
@@ -7366,7 +7448,7 @@
             // template-literal escaping layer any more — that stale assumption is what broke this).
             // In a plain JS string literal single backslashes collapse: '\s' -> 's', '\b' -> the
             // backspace char (U+0008), '\.' -> '.', so the old source built the regex
-            // /kap(itel)?.?s*<pos>/ and matched NO real heading. Use DOUBLE backslashes so the
+            // /kap(itel)?.?s*<pos>\b/ and matched NO real heading. Use DOUBLE backslashes so the
             // regex source keeps its metaclasses (\. \s \b) and regex-escape the dynamic pos so
             // "11.7" cannot accidentally match "11x7". Returns null when no heading matches.
             var headings = contentEl.querySelectorAll( 'h1, h2, h3, h4' )
@@ -8205,6 +8287,10 @@
                     lastContent = data.content
                     lastQuestionSchema = data.questionSchema || []
                     lastVorwort = data.vorwort || ''
+                    // PRD-Q3 (Memo 080, Kap 25): adopt the validator result of THIS broadcast. No
+                    // `|| {}` fallback on purpose — a missing/failed validation must stay null so
+                    // the band can state the gap instead of showing an empty, reassuring strip.
+                    lastValidation = data.validation === undefined ? null : data.validation
                     currentDiff = data.diff || null
 
                     if( currentDiff && currentDiff.hasDiff ) {
@@ -8243,6 +8329,7 @@
 
                             applyContentStructure()
                             renderVorwort( lastVorwort )
+                            renderFormHints( lastValidation )
                             renderQuestionWidgets( lastQuestionSchema )
                             buildTOC( currentDiff )
 

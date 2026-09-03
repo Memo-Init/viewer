@@ -2304,6 +2304,57 @@
             display: none;
         }
 
+        /* PRD-Q3 (Memo 080, Kap 25): non-blocking hint band of the shared validator, above the
+           document. Hidden while empty (same pattern as vorwort-empty) — an empty band is NOT a
+           green verdict, it is simply nothing to say. */
+        #content .form-hints-section {
+            scroll-margin-top: 120px;
+        }
+
+        #content .form-hints-section.form-hints-empty:empty {
+            display: none;
+        }
+
+        #content .form-hints-band {
+            border-left: 4px solid var(--warning);
+            background: var(--bg-2);
+            padding: var(--sp-3) var(--sp-4);
+            margin: var(--sp-4) 0;
+            border-radius: 6px;
+            color: var(--text-2);
+        }
+
+        /* The GAP look must be distinguishable from a measured one at a glance: no filled bar, a
+           dashed outline and a muted surface. "Not checked" may never look like "checked, fine". */
+        #content .form-hints-band.form-hints-luecke {
+            border-left: 4px dashed var(--text-muted);
+            background: transparent;
+        }
+
+        #content .form-hints-head {
+            font-weight: 600;
+            color: var(--warning);
+        }
+
+        #content .form-hints-band.form-hints-luecke .form-hints-head {
+            color: var(--text-muted);
+        }
+
+        #content .form-hints-note {
+            margin-top: var(--sp-2);
+            font-size: 0.9em;
+            color: var(--text-muted);
+        }
+
+        #content .form-hints-list {
+            margin: var(--sp-2) 0 0 0;
+            padding-left: var(--sp-4);
+        }
+
+        #content .form-hints-item {
+            margin: 2px 0;
+        }
+
         /* PRD-014 (Kap 19): persisted Claude-Vorwort, shown above the open questions. */
         #content .vorwort-section .vorwort-body {
             border-left: 4px solid var(--accent);

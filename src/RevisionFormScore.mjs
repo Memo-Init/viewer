@@ -499,10 +499,14 @@ class RevisionFormScore {
     // then lit, so the displayed value and its light can never disagree.
     static #gauge( { id, basis, value } ) {
         const spec = METRICS[ id ]
+        // `unit` travels with the metric (ADDITIVE, Memo 080 PRD-Q3): the display contract must be
+        // able to write "60.2 %" instead of a bare "60.2" WITHOUT holding a second catalogue — a
+        // renderer that guessed the unit would print a unit nobody measured.
         const shared = {
             label: spec.label,
             axis: spec.axis,
             threshold: spec.threshold,
+            unit: spec.unit,
             basis,
             basisLabel: spec.basisLabel
         }
@@ -562,6 +566,7 @@ class RevisionFormScore {
                 label: spec.label,
                 value: values[ id ],
                 traffic: null,
+                unit: spec.unit,
                 basis: bases[ id ],
                 basisLabel: spec.basisLabel
             } ]

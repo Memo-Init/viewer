@@ -134,29 +134,37 @@ describe( 'inline prose pipeline shape (PRD-007, D1/D2/D3)', () => {
     } )
 
 
+    // Memo 080, PRD-Q3: the structure set grew from four calls to FIVE — renderFormHints joined it
+    // on every render path (broadcast, prose restore, diff toggle). The parity rule is unchanged;
+    // only the set it compares is one entry longer, and the byte window one entry wider.
+    const STRUCTURE_SET = [
+        'applyContentStructure()',
+        'renderVorwort( lastVorwort )',
+        'renderFormHints( lastValidation )',
+        'renderQuestionWidgets( lastQuestionSchema )',
+        'buildTOC( currentDiff )'
+    ]
+
+
     it( 'bindDiffToggle re-runs the SAME structure set as the content handler (D2)', () => {
         const start = source.indexOf( 'function bindDiffToggle()' )
         expect( start ).toBeGreaterThan( -1 )
         const end = source.indexOf( 'function bindPromptEdit', start )
         const slice = source.slice( start, end )
 
-        // the exact four structure functions the data.type==='content' handler calls.
-        expect( slice ).toContain( 'applyContentStructure()' )
-        expect( slice ).toContain( 'renderVorwort( lastVorwort )' )
-        expect( slice ).toContain( 'renderQuestionWidgets( lastQuestionSchema )' )
-        expect( slice ).toContain( 'buildTOC( currentDiff )' )
+        const missing = STRUCTURE_SET.filter( ( call ) => slice.includes( call ) === false )
+        expect( missing ).toEqual( [] )
+        expect( STRUCTURE_SET.length ).toBe( 5 )
     } )
 
 
     it( 'the content handler structure set is the canonical reference for D2 (parity)', () => {
-        // sanity: the four calls D2 mirrors really do live together in the WS content handler too.
+        // sanity: the five calls D2 mirrors really do live together in the WS content handler too.
         const idx = source.indexOf( "if( data.type === 'content' )" )
         expect( idx ).toBeGreaterThan( -1 )
-        const slice = source.slice( idx, idx + 4000 )
+        const slice = source.slice( idx, idx + 4600 )
 
-        expect( slice ).toContain( 'applyContentStructure()' )
-        expect( slice ).toContain( 'renderVorwort( lastVorwort )' )
-        expect( slice ).toContain( 'renderQuestionWidgets( lastQuestionSchema )' )
-        expect( slice ).toContain( 'buildTOC( currentDiff )' )
+        const missing = STRUCTURE_SET.filter( ( call ) => slice.includes( call ) === false )
+        expect( missing ).toEqual( [] )
     } )
 } )

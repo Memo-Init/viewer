@@ -12,6 +12,13 @@
 // zero result and not a full one — it is a GAP: `value: null`, `traffic: 'luecke'`, plus a stated
 // reason. A green value without a comparison set is an error, not a success.
 //
+// BOTH SIDES OF THE FRACTION TRAVEL (ADDITIVE, Memo 080 PRD-Q4): `numerator` is the counted side
+// the metric divided, `basis` the side it divided BY. It is emitted here — where the counting
+// happens — and nowhere else, so a consumer that has to keep the anti-gaming counter-conditions
+// readable at its own record (the metric store) never has to recompute a metric to learn them. A
+// second derivation of the numerator, from a value that was already rounded for display, would be
+// a number nobody measured.
+//
 // NO OVERALL GRADE. Aggregating the lights is measurably misleading: REV-03 of memo 080 (evidence
 // collapse, 5 markers on 28.621 words) reaches 73 % and beats the praised REV-01 (60 %), because
 // eight green structural values outvote the collapse (chapter 25, evidence 25.8). The verdict is
@@ -455,16 +462,16 @@ class RevisionFormScore {
             .length
 
         return {
-            K1: RevisionFormScore.#gauge( { id: 'K1', basis: counts.words, value: counts.words === 0 ? 0 : evidence.markers / counts.words * 1000 } ),
-            K2: RevisionFormScore.#gauge( { id: 'K2', basis: chapterCount, value: chapterCount === 0 ? 0 : evidenceFree / chapterCount * 100 } ),
-            K3: RevisionFormScore.#gauge( { id: 'K3', basis: evidence.markers, value: evidence.markers === 0 ? 0 : evidence.bound / evidence.markers * 100 } ),
-            K4: RevisionFormScore.#gauge( { id: 'K4', basis: chapterCount, value: chapterCount === 0 ? 0 : substance / chapterCount } ),
-            K5: RevisionFormScore.#gauge( { id: 'K5', basis: paragraphs.length, value: paragraphs.length === 0 ? 0 : paragraphChars / paragraphs.length } ),
-            K6: RevisionFormScore.#gauge( { id: 'K6', basis: chapterCount, value: chapterCount === 0 ? 0 : tables / chapterCount } ),
-            K7: RevisionFormScore.#gauge( { id: 'K7', basis: chapterCount, value: chapterCount === 0 ? 0 : quoted / chapterCount * 100 } ),
-            K8: RevisionFormScore.#gauge( { id: 'K8', basis: chapterCount, value: chapterCount === 0 ? 0 : contracted / chapterCount * 100 } ),
-            K9: RevisionFormScore.#gauge( { id: 'K9', basis: chapterCount, value: replacing } ),
-            K10: RevisionFormScore.#gauge( { id: 'K10', basis: chapterCount, value: chapterCount === 0 ? 0 : bound / chapterCount * 100 } )
+            K1: RevisionFormScore.#gauge( { id: 'K1', numerator: evidence.markers, basis: counts.words, value: counts.words === 0 ? 0 : evidence.markers / counts.words * 1000 } ),
+            K2: RevisionFormScore.#gauge( { id: 'K2', numerator: evidenceFree, basis: chapterCount, value: chapterCount === 0 ? 0 : evidenceFree / chapterCount * 100 } ),
+            K3: RevisionFormScore.#gauge( { id: 'K3', numerator: evidence.bound, basis: evidence.markers, value: evidence.markers === 0 ? 0 : evidence.bound / evidence.markers * 100 } ),
+            K4: RevisionFormScore.#gauge( { id: 'K4', numerator: substance, basis: chapterCount, value: chapterCount === 0 ? 0 : substance / chapterCount } ),
+            K5: RevisionFormScore.#gauge( { id: 'K5', numerator: paragraphChars, basis: paragraphs.length, value: paragraphs.length === 0 ? 0 : paragraphChars / paragraphs.length } ),
+            K6: RevisionFormScore.#gauge( { id: 'K6', numerator: tables, basis: chapterCount, value: chapterCount === 0 ? 0 : tables / chapterCount } ),
+            K7: RevisionFormScore.#gauge( { id: 'K7', numerator: quoted, basis: chapterCount, value: chapterCount === 0 ? 0 : quoted / chapterCount * 100 } ),
+            K8: RevisionFormScore.#gauge( { id: 'K8', numerator: contracted, basis: chapterCount, value: chapterCount === 0 ? 0 : contracted / chapterCount * 100 } ),
+            K9: RevisionFormScore.#gauge( { id: 'K9', numerator: replacing, basis: chapterCount, value: replacing } ),
+            K10: RevisionFormScore.#gauge( { id: 'K10', numerator: bound, basis: chapterCount, value: chapterCount === 0 ? 0 : bound / chapterCount * 100 } )
         }
     }
 
@@ -497,16 +504,22 @@ class RevisionFormScore {
     // #gauge — the ONE place the gap rule lives. A basis of 0 never produces a number: it produces
     // `value: null`, `traffic: 'luecke'` and a stated reason. Everything else is rounded FIRST and
     // then lit, so the displayed value and its light can never disagree.
-    static #gauge( { id, basis, value } ) {
+    static #gauge( { id, numerator, basis, value } ) {
         const spec = METRICS[ id ]
         // `unit` travels with the metric (ADDITIVE, Memo 080 PRD-Q3): the display contract must be
         // able to write "60.2 %" instead of a bare "60.2" WITHOUT holding a second catalogue — a
         // renderer that guessed the unit would print a unit nobody measured.
+        // `numerator` travels for the same reason one level down (ADDITIVE, Memo 080 PRD-Q4): the
+        // counted side of the fraction, so a stored record keeps the counter-conditions of evidence
+        // 25.11 readable without a second calculation. It is emitted EVEN ON A GAP — a gap of the
+        // "denominator is zero" kind has a numerator, and hiding it would remove the proof that the
+        // denominator really was the empty side.
         const shared = {
             label: spec.label,
             axis: spec.axis,
             threshold: spec.threshold,
             unit: spec.unit,
+            numerator,
             basis,
             basisLabel: spec.basisLabel
         }

@@ -105,6 +105,34 @@ describe( 'A3 — every metric carries its comparison set', () => {
 } )
 
 
+// Memo 080, PRD-Q4: the counted side of the fraction travels WITH the metric, so a consumer that
+// stores the run keeps the counter-conditions readable without recomputing anything.
+describe( 'A3b — every metric also carries the side it counted', () => {
+    test.each( METRIC_IDS )( '%s states an integer numerator next to its basis', ( id ) => {
+        const metric = scoreOf( { doc: healthyDoc } ).metrics[ id ]
+
+        expect( Number.isInteger( metric.numerator ) ).toBe( true )
+        expect( metric.numerator ).toBeGreaterThanOrEqual( 0 )
+    } )
+
+    test( 'the numerator is the real count — both chapters carry a quote, so K7 counts two of two', () => {
+        const result = scoreOf( { doc: healthyDoc } )
+
+        expect( result.metrics.K7.numerator ).toBe( 2 )
+        expect( result.metrics.K7.basis ).toBe( 2 )
+        expect( result.metrics.K7.value ).toBe( 100 )
+    } )
+
+    test( 'a gap keeps its numerator — a zero denominator is provable at the record, not asserted', () => {
+        const metric = scoreOf( { doc: 'nur Fliesstext ohne jede Kapitel-Ueberschrift.' } ).metrics.K2
+
+        expect( metric.value ).toBeNull()
+        expect( metric.basis ).toBe( 0 )
+        expect( metric.numerator ).toBe( 0 )
+    } )
+} )
+
+
 describe( 'A4 — basis 0 is a gap, never a number', () => {
     // One document per metric whose comparison set is empty. K1 needs an empty file, K3 a file
     // without a single evidence level, everything else a file without a numbered chapter.

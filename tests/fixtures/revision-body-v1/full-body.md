@@ -42,6 +42,19 @@ Kontext Zeile zwei.
 
 _kein Inhalt_
 
+### Anker-Tabelle
+
+| stufe | wert |
+|---|---|
+| zwei | ja |
+
+### Anker-Diagramm
+
+```mermaid
+graph LR
+  A --> B
+```
+
 ### Bewertung
 
 Der Block war formal gueltig und trotzdem unlesbar.
@@ -62,14 +75,14 @@ _kein Inhalt_
 
 _kein Inhalt_
 
-#### Primitives
+### Primitives
 
 ```tsv
 name	status
 commit	ok
 ```
 
-#### Flow
+### Flow
 
 ```mermaid
 graph TD

@@ -117,7 +117,10 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
 
             const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
 
-            expect( markdown ).toContain( '#### Kennzahlen' )
+            // LEVEL THREE since Memo 080 / PRD-R3 Vollausbau: the fourth level gets no anchor here in the
+            // viewer, which is why the markdown form rule of that same phase forbids it.
+            expect( markdown ).toContain( '### Kennzahlen' )
+            expect( markdown ).not.toContain( '#### Kennzahlen' )
             expect( markdown ).toContain( '```tsv' )
             expect( markdown ).toContain( 'metric\tvalue' )
             expect( markdown ).toContain( 'latency\t42' )
@@ -143,7 +146,8 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
 
             const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
 
-            expect( markdown ).toContain( '#### Fluss' )
+            expect( markdown ).toContain( '### Fluss' )
+            expect( markdown ).not.toContain( '#### Fluss' )
             expect( markdown ).toContain( '```mermaid' )
             expect( markdown ).toContain( 'graph TD' )
             expect( markdown ).toContain( '  A --> B' )
@@ -438,8 +442,12 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT, context TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT, disposition TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
-            db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT )' )
-            db.exec( 'CREATE TABLE IF NOT EXISTS block_diagrams ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT )' )
+            // Memo 080, PRD-R3 Vollausbau: the canonical seed carries the WIDENED shape (sort + section) the
+            // core schema declares, so this fixture exercises the authored order and the section anchor. The
+            // other seeds in this file deliberately keep the narrow shape — they are what proves the additive
+            // PRAGMA probe still degrades to the old ORDER BY instead of throwing.
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT, render TEXT, payload_ref TEXT, payload_sha256 TEXT, sort INTEGER, section TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_diagrams ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT, source_ref TEXT, source_sha256 TEXT, sort INTEGER, section TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT, status TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, depends_on TEXT, can_parallel_with TEXT, commit_hash TEXT, spillover TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, commit_hash TEXT, depends_on TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
@@ -471,9 +479,16 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.prepare( 'INSERT INTO work_item ( id, topic, title, status, grp ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'WI-02', 'assemble', 'render from DB', 'open', 'B' )
             db.prepare( 'INSERT INTO work_item ( id, topic, title, status, grp ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'WI-01', 'store', 'adapter', 'done', 'A' )
             db.prepare( 'INSERT INTO block ( id, title, sort ) VALUES ( ?, ?, ? )' ).run( 'B001', 'Backbone', 1 )
-            db.prepare( 'INSERT INTO block_tables ( id, block_id, title, tsv ) VALUES ( ?, ?, ?, ? )' ).run( 'BT001', 'B001', 'Primitives', 'name\tstatus\ncommit\tok' )
-            db.prepare( 'INSERT INTO block_diagrams ( id, block_id, title, kind, `source`, feed ) VALUES ( ?, ?, ?, ?, ?, ? )' )
-                .run( 'M1', 'B001', 'Flow', 'mermaid', 'graph TD{{#rows}}\n  {{name}} --> {{status}}{{/rows}}', 'BT001' )
+            // The rows the core seed produces through MemoContentStore.setBlocks: the key is
+            // <block_id>.<handle>, `sort` is the AUTHORED position and `section` the anchor. TWO tables and
+            // TWO diagrams on one block — one diagram fed from a block-local handle, one table plus one
+            // diagram anchored to `targetState`.
+            const insertBlockTable = db.prepare( 'INSERT INTO block_tables ( id, block_id, title, tsv, render, sort, section ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' )
+            insertBlockTable.run( 'B001.BT001', 'B001', 'Primitives', 'name\tstatus\ncommit\tok', null, 0, null )
+            insertBlockTable.run( 'B001.BT002', 'B001', 'Anker-Tabelle', 'stufe\twert\nzwei\tja', 'table', 1, 'targetState' )
+            const insertBlockDiagram = db.prepare( 'INSERT INTO block_diagrams ( id, block_id, title, kind, `source`, feed, sort, section ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+            insertBlockDiagram.run( 'B001.M1', 'B001', 'Flow', 'mermaid', 'graph TD{{#rows}}\n  {{name}} --> {{status}}{{/rows}}', 'BT001', 0, null )
+            insertBlockDiagram.run( 'B001.M2', 'B001', 'Anker-Diagramm', 'mermaid', 'graph LR\n  A --> B', null, 1, 'targetState' )
             db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block, origin, status ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' ).run( 'T01', 'M079', 'DB als SoT', 'P1', 'B001', 'init', 'registered' )
             db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block, origin, status ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' ).run( 'T02', 'M079', 'Traceability', 'P2', null, null, null )
             db.prepare( 'INSERT INTO block_chapter ( block_id, memo_id, chapter, heading ) VALUES ( ?, ?, ?, ? )' ).run( 'B001', 'M079', 13, 'Die erzeugte Revision' )
@@ -1232,10 +1247,10 @@ describe( 'DoltDbAssembler — external payload pointers (Memo 080, PRD-D5)', ()
         const fixtureSha = createHash( 'sha256' ).update( POINTER_GOLDEN_BODY, 'utf8' ).digest( 'hex' )
         expect( fixtureSha ).toBe( POINTER_MANIFEST[ 'sha256' ] )
         expect( Buffer.byteLength( POINTER_GOLDEN_BODY, 'utf8' ) ).toBe( POINTER_MANIFEST[ 'byteLength' ] )
-        // Measured after the Vollausbau render change (Memo 080, PRD-R1): the fixture grew from 1320 to
-        // 1859 bytes since the head note and the nine-figure Umfangszeile grew (Memo 080, PRD-R2
-        // Vollausbau). The figure is re-measured, never carried over.
-        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1859 )             // compared 1859 bytes, > 0
+        // Measured after the heading-level change (Memo 080, PRD-R3 Vollausbau): 1857 bytes, two fewer than
+        // the 1859 before, because the two `#### ` table/diagram headings became `### `. The figure is
+        // re-measured, never carried over.
+        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1857 )             // compared 1857 bytes, > 0
     } )
 
 
@@ -1433,5 +1448,93 @@ describe( 'DoltDbAssembler — the document form (Memo 080, PRD-R1 Vollausbau)',
 
         expect( () => DoltDbAssembler.assembleFromDb( { dbPath } ) )
             .toThrow( /block "B001" section "erfunden".*permitted: userMandate, currentState, targetState/ )
+    } )
+} )
+
+
+// ── Memo 080, PRD-R3 Vollausbau — the viewer mirror of the anchored 1:n render ───────────────────────
+//
+// The two renderers are held against each other byte for byte by the vendored revision-body-v1 fixture;
+// this suite adds the BEHAVIOUR the fixture can only show once: several tables and diagrams per block, the
+// section anchor, and the absence of the fourth heading level (which gets no anchor in this very viewer).
+//
+// EVERY CASE STATES HOW MUCH IT COMPARED.
+describe( 'DoltDbAssembler — anchored tables and diagrams per block (Memo 080, PRD-R3 Vollausbau)', () => {
+    const repoTmpRoot = join( process.cwd(), '.test-tmp' )
+    let memoDir = ''
+    let dbPath = ''
+
+    const seedAnchored = ( { path } ) => {
+        const db = new DatabaseSync( path )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT, render TEXT, sort INTEGER, section TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block_diagrams ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT, sort INTEGER, section TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block_section ( id TEXT PRIMARY KEY, block_id TEXT, name TEXT, body TEXT, sort INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+
+        db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 'M080', 'Anker', 'Strategie', 'open', '2026-09-01T00:00:00Z' )
+        db.prepare( 'INSERT INTO block ( id, title, sort ) VALUES ( ?, ?, ? )' ).run( 'B001', 'Anker', 0 )
+        db.prepare( 'INSERT INTO block_section ( id, block_id, name, body, sort ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 'B001:targetState', 'B001', 'targetState', 'Der Soll-Satz.', 2 )
+
+        const insertTable = db.prepare( 'INSERT INTO block_tables ( id, block_id, title, tsv, render, sort, section ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' )
+        insertTable.run( 'B001.d1', 'B001', 'Am Block', 'a\tb\n1\t2', 'table', 0, null )
+        insertTable.run( 'B001.d2', 'B001', 'Im Abschnitt', 'c\td\n3\t4', 'table', 1, 'targetState' )
+        const insertDiagram = db.prepare( 'INSERT INTO block_diagrams ( id, block_id, title, kind, `source`, feed, sort, section ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+        insertDiagram.run( 'B001.g1', 'B001', 'Am Block', 'mermaid', 'graph TD', null, 0, null )
+        insertDiagram.run( 'B001.g2', 'B001', 'Im Abschnitt', 'mermaid', 'graph LR', null, 1, 'targetState' )
+
+        db.close()
+    }
+
+    beforeEach( () => {
+        mkdirSync( repoTmpRoot, { recursive: true } )
+        memoDir = mkdtempSync( join( repoTmpRoot, 'memo-080-anchor-' ) )
+        dbPath = resolve( memoDir, 'memo-080.db' )
+    } )
+
+    afterEach( () => {
+        rmSync( memoDir, { recursive: true, force: true } )
+    } )
+
+    it( 'renders NO fourth-level heading and puts the anchored entries inside their section', () => {
+        seedAnchored( { path: dbPath } )
+
+        const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+
+        const lines = markdown.split( '\n' )
+        const h4 = lines.filter( ( line ) => line.startsWith( '#### ' ) === true )
+        const h3 = lines.filter( ( line ) => line.startsWith( '### ' ) === true )
+        expect( h4 ).toEqual( [] )
+        expect( h3.length ).toBeGreaterThan( 0 )                       // compared h3.length third-level headings
+
+        const target = markdown.indexOf( '### Soll-Zustand' )
+        const nextSection = markdown.indexOf( '### Topics' )
+        const anchoredTable = markdown.indexOf( '| c | d |' )
+        const anchoredDiagram = markdown.indexOf( 'graph LR' )
+        const looseTable = markdown.indexOf( '| a | b |' )
+        const looseDiagram = markdown.indexOf( 'graph TD' )
+        expect( target ).toBeGreaterThan( -1 )
+        expect( anchoredTable ).toBeGreaterThan( target )
+        expect( anchoredTable ).toBeLessThan( nextSection )
+        expect( anchoredDiagram ).toBeGreaterThan( target )
+        expect( anchoredDiagram ).toBeLessThan( nextSection )
+        expect( looseTable ).toBeGreaterThan( nextSection )
+        expect( looseDiagram ).toBeGreaterThan( looseTable )
+        // nothing is rendered twice — 2 tables and 2 diagrams compared
+        expect( markdown.split( '| c | d |' ).length - 1 ).toBe( 1 )
+        expect( markdown.split( 'graph LR' ).length - 1 ).toBe( 1 )
+    } )
+
+    it( 'aborts on an anchor outside the closed register, naming the row and the permitted set', () => {
+        seedAnchored( { path: dbPath } )
+        const db = new DatabaseSync( dbPath )
+        db.prepare( 'UPDATE block_tables SET section = ? WHERE id = ?' ).run( 'erfunden', 'B001.d2' )
+        db.close()
+
+        expect( () => DoltDbAssembler.assembleFromDb( { dbPath } ) )
+            .toThrow( /B001\.d2.*erfunden/ )
     } )
 } )

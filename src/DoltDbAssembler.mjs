@@ -658,13 +658,25 @@ class DoltDbAssembler {
         // every field is read defensively so an early hand-seeded db that has neither still renders exactly
         // as before; `block_diagrams` carries one additive set and is PRAGMA-probed. Where a pointer IS
         // present the payload is pulled in and CHECKED here, before any interpolation.
+        // Memo 080, PRD-R3 Vollausbau — mirrors RevisionAssembler: the AUTHORED order (`sort`) leads and the
+        // id is only the tie-break. `sort` / `section` are ADDITIVE and PRAGMA-probed with the identical
+        // probe, so both renderers degrade to the old ORDER BY on a database that predates them and stay
+        // byte-identical on ANY database state.
         const pointer = DoltDbAssembler.#pointerContext( { dbPath } )
-        const rawBlockTables = DoltDbAssembler.#all( { db, sql: 'SELECT * FROM block_tables ORDER BY block_id, id' } )
+        const hasTableSort = DoltDbAssembler.#hasColumns( { db, table: 'block_tables', columns: [ 'sort' ] } )
+        const rawBlockTables = DoltDbAssembler.#all( { db, sql: hasTableSort === true
+            ? 'SELECT * FROM block_tables ORDER BY block_id, sort, id'
+            : 'SELECT * FROM block_tables ORDER BY block_id, id'
+        } )
         const blockTables = DoltDbAssembler.#resolveTablePayloads( { rows: rawBlockTables, pointer } )
         const hasDiagramPointer = DoltDbAssembler.#hasColumns( { db, table: 'block_diagrams', columns: [ 'source_ref', 'source_sha256' ] } )
-        const rawBlockDiagrams = DoltDbAssembler.#all( { db, sql: hasDiagramPointer === true
-            ? 'SELECT id, block_id, title, kind, `source`, feed, source_ref, source_sha256 FROM block_diagrams ORDER BY block_id, id'
-            : 'SELECT id, block_id, title, kind, `source`, feed FROM block_diagrams ORDER BY block_id, id'
+        const hasDiagramSort = DoltDbAssembler.#hasColumns( { db, table: 'block_diagrams', columns: [ 'sort', 'section' ] } )
+        const diagramColumns = [ 'id', 'block_id', 'title', 'kind', '`source`', 'feed' ]
+            .concat( hasDiagramPointer === true ? [ 'source_ref', 'source_sha256' ] : [] )
+            .concat( hasDiagramSort === true ? [ 'sort', 'section' ] : [] )
+        const rawBlockDiagrams = DoltDbAssembler.#all( {
+            db,
+            sql: `SELECT ${ diagramColumns.join( ', ' ) } FROM block_diagrams ORDER BY block_id, ${ hasDiagramSort === true ? 'sort, ' : '' }id`
         } )
         const blockDiagrams = DoltDbAssembler.#resolveDiagramPayloads( { rows: rawBlockDiagrams, pointer } )
         // topic / rollout_phase / rollout_work_item / question mirror the core RevisionAssembler read. The
@@ -1574,20 +1586,25 @@ class DoltDbAssembler {
         }
 
         DoltDbAssembler.#assertKnownBlockSections( { blockSections } )
+        DoltDbAssembler.#assertKnownAnchors( { blockTables, blockDiagrams } )
 
         const rendered = blocks
             .map( ( block ) => {
-                const body = DoltDbAssembler.#renderBlockSections( { block, blockSections } )
-
                 const tables = blockTables
                     .filter( ( entry ) => entry[ 'block_id' ] === block[ 'id' ] )
-                const tableLines = tables
-                    .map( ( entry ) => [ `#### ${ cell( entry[ 'title' ] ) }`, '' ].concat( DoltDbAssembler.#renderBlockTableBody( { entry } ) ) )
-                    .reduce( ( acc, part ) => acc.concat( part ), [] )
-
                 const diagrams = blockDiagrams
                     .filter( ( entry ) => entry[ 'block_id' ] === block[ 'id' ] )
+                const body = DoltDbAssembler.#renderBlockSections( { block, blockSections, tables, diagrams, blockTables } )
+
+                // Memo 080, PRD-R3 Vollausbau: only the UNANCHORED entries stand at the block — an anchored
+                // one was already emitted inside its section.
+                const loose = ( entry ) => DoltDbAssembler.#anchorOf( { entry } ) === null
+                const tableLines = tables
+                    .filter( loose )
+                    .map( ( entry ) => DoltDbAssembler.#renderBlockTable( { entry } ) )
+                    .reduce( ( acc, part ) => acc.concat( part ), [] )
                 const diagramLines = diagrams
+                    .filter( loose )
                     .map( ( diagram ) => DoltDbAssembler.#renderDiagram( { diagram, blockTables } ) )
                     .reduce( ( acc, part ) => acc.concat( part ), [] )
 
@@ -1608,8 +1625,9 @@ class DoltDbAssembler {
 
 
     // Byte-identical to RevisionAssembler.#renderBlockSections: register order, level-three headings, the
-    // three mandatory plus the four generated positions ALWAYS rendered (absent ones with the empty mark).
-    static #renderBlockSections( { block, blockSections } ) {
+    // three mandatory plus the four generated positions ALWAYS rendered (absent ones with the empty mark),
+    // and since Memo 080 / PRD-R3 Vollausbau the tables and diagrams anchored to each section.
+    static #renderBlockSections( { block, blockSections, tables, diagrams, blockTables } ) {
         const carried = blockSections
             .filter( ( row ) => row[ 'block_id' ] === block[ 'id' ] )
 
@@ -1619,13 +1637,22 @@ class DoltDbAssembler {
                     .find( ( candidate ) => candidate[ 'name' ] === entry[ 'field' ] )
                 const body = row === undefined ? '' : raw( row[ 'body' ] )
                 const always = BLOCK_SECTION_ALWAYS.includes( entry[ 'kind' ] )
-                if( body.length === 0 && always !== true ) {
+                const anchoredTables = tables
+                    .filter( ( candidate ) => DoltDbAssembler.#anchorOf( { entry: candidate } ) === entry[ 'field' ] )
+                const anchoredDiagrams = diagrams
+                    .filter( ( candidate ) => DoltDbAssembler.#anchorOf( { entry: candidate } ) === entry[ 'field' ] )
+                const anchored = anchoredTables
+                    .map( ( candidate ) => DoltDbAssembler.#renderBlockTable( { entry: candidate } ) )
+                    .concat( anchoredDiagrams.map( ( candidate ) => DoltDbAssembler.#renderDiagram( { diagram: candidate, blockTables } ) ) )
+                    .reduce( ( acc, part ) => acc.concat( part ), [] )
+                if( body.length === 0 && always !== true && anchored.length === 0 ) {
                     return null
                 }
 
                 return [ `### ${ entry[ 'heading' ] }`, '' ]
                     .concat( body.length === 0 ? [ PROSE_EMPTY ] : body.split( '\n' ) )
                     .concat( [ '' ] )
+                    .concat( anchored )
             } )
             .filter( ( part ) => part !== null )
 
@@ -1633,6 +1660,57 @@ class DoltDbAssembler {
             lines: parts.reduce( ( acc, part ) => acc.concat( part ), [] ),
             count: parts.length
         }
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderBlockTable: the heading of an authored table is LEVEL
+    // THREE — a fourth-level heading gets no anchor here in the viewer, which is precisely why the markdown
+    // form rule of this phase forbids it.
+    static #renderBlockTable( { entry } ) {
+        return [ `### ${ cell( entry[ 'title' ] ) }`, '' ]
+            .concat( DoltDbAssembler.#renderBlockTableBody( { entry } ) )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#anchorOf / #handleOf: the anchored section of a row (null =
+    // anchored to the block itself) and the block-local handle behind the global `<block_id>.<handle>` key.
+    static #anchorOf( { entry } ) {
+        const value = entry[ 'section' ]
+
+        return typeof value === 'string' && value.length > 0 ? value : null
+    }
+
+
+    static #handleOf( { entry } ) {
+        const id = typeof entry[ 'id' ] === 'string' ? entry[ 'id' ] : ''
+        const prefix = `${ entry[ 'block_id' ] }.`
+
+        return id.startsWith( prefix ) === true ? id.slice( prefix.length ) : id
+    }
+
+
+    // Byte-identical to RevisionAssembler.#assertKnownAnchors: an anchor outside the closed register aborts
+    // the render, naming every offender and the permitted set.
+    static #assertKnownAnchors( { blockTables, blockDiagrams } ) {
+        const known = BLOCK_SECTION_ORDER
+            .map( ( entry ) => entry[ 'field' ] )
+        const offenders = blockTables
+            .map( ( entry ) => ( { axis: 'block_tables', entry } ) )
+            .concat( blockDiagrams.map( ( entry ) => ( { axis: 'block_diagrams', entry } ) ) )
+            .filter( ( candidate ) => {
+                const section = DoltDbAssembler.#anchorOf( { entry: candidate[ 'entry' ] } )
+
+                return section !== null && known.includes( section ) !== true
+            } )
+        if( offenders.length === 0 ) {
+            return { ok: true, checked: blockTables.length + blockDiagrams.length }
+        }
+
+        const named = offenders
+            .map( ( candidate ) => `${ candidate[ 'axis' ] } "${ candidate[ 'entry' ][ 'id' ] }" section "${ candidate[ 'entry' ][ 'section' ] }"` )
+            .join( ', ' )
+
+        throw new Error( `DoltDbAssembler: ${ named } — not in the closed heading register; permitted: ${ known.join( ', ' ) }` )
     }
 
 
@@ -1672,9 +1750,10 @@ class DoltDbAssembler {
             ? DoltDbAssembler.#feedDiagram( { source, feed, blockTables, diagramId: diagram[ 'id' ], blockId: diagram[ 'block_id' ] } )
             : source
 
+        // LEVEL THREE since Memo 080 / PRD-R3 Vollausbau, byte-identical to the core renderer.
         const titleLines = diagram[ 'title' ] === null || diagram[ 'title' ] === undefined
             ? []
-            : [ `#### ${ cell( diagram[ 'title' ] ) }`, '' ]
+            : [ `### ${ cell( diagram[ 'title' ] ) }`, '' ]
 
         return titleLines
             .concat( [ '```' + kind ] )
@@ -1685,7 +1764,7 @@ class DoltDbAssembler {
 
     static #feedDiagram( { source, feed, blockTables, diagramId, blockId } ) {
         const table = blockTables
-            .find( ( entry ) => entry[ 'id' ] === feed && entry[ 'block_id' ] === blockId )
+            .find( ( entry ) => entry[ 'block_id' ] === blockId && DoltDbAssembler.#handleOf( { entry } ) === feed )
         if( table === undefined ) {
             throw new Error( `DoltDbAssembler: block_diagram "${ diagramId }" feed "${ feed }" references an unknown block_tables handle in block "${ blockId }"` )
         }

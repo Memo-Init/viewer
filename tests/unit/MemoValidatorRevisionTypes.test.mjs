@@ -108,7 +108,10 @@ describe( 'MemoValidator revision types — derivation (A6)', () => {
 
         expect( result[ 'revisionType' ] ).toBe( 'full' )
         expect( result[ 'messages' ].filter( ( m ) => m.startsWith( 'MEMO-001' ) ).length ).toBe( 9 )
-        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5 } )
+        // Memo 080, PRD-R1 Vollausbau: `checked` grew ADDITIVELY by the comparison basis of the two
+        // document-level checks. Both are 0 while the check is off for this revision type. The
+        // assertion stays EXACT — it is widened by the new keys, never loosened to a subset match.
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5, 'comparedSections': 1, 'comparedHeaderFields': 2 } )
     } )
 
 
@@ -151,7 +154,10 @@ describe( 'MemoValidator revision types — the prepare schema (A1, A3, A5)', ()
     it( 'states its comparison basis: 3 sections and 2 header fields were examined', () => {
         const result = MemoValidator.validate( { doc: PREPARE_DOC, fileName: 'REV-07-prepare.md' } )
 
-        expect( result[ 'checked' ] ).toEqual( { 'sections': 3, 'headerFields': 2 } )
+        // Memo 080, PRD-R1 Vollausbau: `checked` grew ADDITIVELY by the comparison basis of the two
+        // document-level checks. Both are 0 while the check is off for this revision type. The
+        // assertion stays EXACT — it is widened by the new keys, never loosened to a subset match.
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 3, 'headerFields': 2, 'comparedSections': 0, 'comparedHeaderFields': 0 } )
     } )
 
 
@@ -267,7 +273,10 @@ describe( 'MemoValidator revision types — the update schema (A4)', () => {
         expect( result[ 'messages' ] ).toEqual( [] )
         expect( result[ 'status' ] ).toBe( true )
         expect( result[ 'revisionType' ] ).toBe( 'update' )
-        expect( result[ 'checked' ] ).toEqual( { 'sections': 2, 'headerFields': 5 } )
+        // Memo 080, PRD-R1 Vollausbau: `checked` grew ADDITIVELY by the comparison basis of the two
+        // document-level checks. Both are 0 while the check is off for this revision type. The
+        // assertion stays EXACT — it is widened by the new keys, never loosened to a subset match.
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 2, 'headerFields': 5, 'comparedSections': 0, 'comparedHeaderFields': 0 } )
     } )
 
 
@@ -307,15 +316,40 @@ describe( 'MemoValidator revision types — the update schema (A4)', () => {
 
 
 describe( 'MemoValidator revision types — no new error code (A8)', () => {
-    it( 'getCatalog() carries exactly the 19 codes it carried before the change', () => {
+    // PRD-V13 introduced NO code of its own and asserted the catalogue at 19. Memo 080 / PRD-R1
+    // Vollausbau adds exactly TWO — WARN-020 and WARN-021 — and the case is widened to 21 with the two
+    // named. That is the ONE test figure this PRD changes, and it changes it by naming the additions,
+    // never by relaxing the assertion to a length or a subset check. Every pre-existing code keeps its
+    // number, its severity and its theme; the second case below proves the severity half of that claim.
+    it( 'getCatalog() carries exactly 21 codes — the 19 of PRD-V13 plus the two new WARNINGs', () => {
         const { catalog } = MemoValidator.getCatalog()
         const codes = catalog.map( ( entry ) => entry[ 'code' ] ).sort()
 
         expect( codes ).toEqual( [
             'INFO-010', 'MEMO-001', 'MEMO-002', 'MEMO-010', 'MEMO-020a', 'MEMO-020b', 'MEMO-020c',
             'MEMO-020d', 'MEMO-025', 'MEMO-030', 'MEMO-031', 'MEMO-032', 'MEMO-033', 'MEMO-040',
-            'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010'
+            'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010', 'WARN-020', 'WARN-021'
         ] )
+    } )
+
+
+    it( 'no pre-existing severity changed — the two additions are WARNINGs and nothing else moved', () => {
+        const { catalog } = MemoValidator.getCatalog()
+        const severities = catalog
+            .filter( ( entry ) => [ 'WARN-020', 'WARN-021' ].includes( entry[ 'code' ] ) !== true )
+            .map( ( entry ) => [ entry[ 'code' ], entry[ 'severity' ] ] )
+            .sort( ( a, b ) => a[ 0 ].localeCompare( b[ 0 ] ) )
+
+        expect( severities.length ).toBe( 19 )
+        expect( severities ).toEqual( [
+            [ 'INFO-010', 'INFO' ], [ 'MEMO-001', 'ERROR' ], [ 'MEMO-002', 'ERROR' ], [ 'MEMO-010', 'ERROR' ],
+            [ 'MEMO-020a', 'ERROR' ], [ 'MEMO-020b', 'ERROR' ], [ 'MEMO-020c', 'ERROR' ], [ 'MEMO-020d', 'ERROR' ],
+            [ 'MEMO-025', 'ERROR' ], [ 'MEMO-030', 'ERROR' ], [ 'MEMO-031', 'ERROR' ], [ 'MEMO-032', 'ERROR' ],
+            [ 'MEMO-033', 'ERROR' ], [ 'MEMO-040', 'ERROR' ], [ 'MEMO-050', 'ERROR' ], [ 'MEMO-060', 'ERROR' ],
+            [ 'MEMO-070', 'ERROR' ], [ 'MEMO-080', 'ERROR' ], [ 'WARN-010', 'WARNING' ]
+        ] )
+        expect( catalog.filter( ( entry ) => [ 'WARN-020', 'WARN-021' ].includes( entry[ 'code' ] ) ).map( ( entry ) => entry[ 'severity' ] ) )
+            .toEqual( [ 'WARNING', 'WARNING' ] )
     } )
 } )
 
@@ -346,6 +380,9 @@ describe( 'MemoValidator revision types — the reproduced defect on the real fi
 
         expect( result[ 'revisionType' ] ).toBe( 'full' )
         expect( result[ 'messages' ] ).toEqual( [] )
-        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5 } )
+        // Memo 080, PRD-R1 Vollausbau: `checked` grew ADDITIVELY by the comparison basis of the two
+        // document-level checks. Both are 0 while the check is off for this revision type. The
+        // assertion stays EXACT — it is widened by the new keys, never loosened to a subset match.
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5, 'comparedSections': 9, 'comparedHeaderFields': 2 } )
     } )
 } )

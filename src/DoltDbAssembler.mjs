@@ -52,6 +52,7 @@ import { DatabaseSync } from '@dolthub/doltlite'
 import { PointerSites } from './PointerSites.mjs'
 import { PayloadPointer } from './PayloadPointer.mjs'
 import { BlockTablePayload } from './BlockTablePayload.mjs'
+import { BlockSections } from './BlockSections.mjs'
 
 
 // A per-memo database file is named `memo-<NNN>.db` (e.g. memo-079.db) — the Zwei-Regime marker.
@@ -95,7 +96,13 @@ const GAP_REASON = {
 // headings, same order, same empty mark — a one-sided change fails the hash-gated parity fixture.
 const PROSE_EMPTY = '_kein Inhalt_'
 
+// Byte-identical to RevisionAssembler HEAD_FIELDS (core): the five mandatory lint fields plus the two the
+// DOCUMENT LEVEL demands (REV-18 Z. 160 — `Typ`, `Aenderungen`; Memo 080, PRD-R1 Vollausbau). Both come
+// from the head CARRIER only, so this side needs no second source either.
 const HEAD_FIELDS = [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ]
+    .concat( BlockSections.documentSections().sections
+        .reduce( ( acc, entry ) => acc.concat( entry[ 'fields' ] ), [] )
+        .filter( ( field ) => [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ].includes( field ) !== true ) )
 
 
 // The visible generation note + the scope line of the head (Memo 080, PRD-R2 / WI-025). Byte-identical to
@@ -115,6 +122,42 @@ const SCOPE_CARRIERS = [
     { key: 'phases', table: 'rollout_phase', where: "id != '__state__'" },
     { key: 'phase items', table: 'rollout_work_item', where: null }
 ]
+
+
+// THE DOCUMENT ORDER, DECLARED — the MIRROR of RevisionAssembler DOCUMENT_SECTIONS (core), Memo 080,
+// PRD-R1 Vollausbau / WI-027. The twelve `document` positions and their sequence are NOT declared here:
+// they come from the ONE register (BlockSections.documentSections(), REV-18 Z. 158-172), and the
+// load-time gate at the bottom of this file proves this plan's document subsequence is the register's.
+// A one-sided edit against the core plan additionally fails the hash-gated parity fixture, which is what
+// keeps the two renderers character-identical.
+const DOCUMENT_SECTIONS = [
+    { section: 'Kopf', level: 'document', render: [ 'head' ], movedBy: null },
+    { section: 'Kontaminations-Metadaten', level: 'document', render: [ 'contaminationMeta' ], movedBy: null },
+    { section: 'Kontext', level: 'document', render: [ 'kontext' ], movedBy: null },
+    { section: 'Bloecke', level: 'document', render: [ 'blocks' ], movedBy: null },
+    { section: 'Vorwort', level: 'document', render: [ 'vorwort' ], movedBy: null },
+    { section: 'Offene Fragen', level: 'document', render: [ 'openQuestions' ], movedBy: null },
+    { section: 'Beantwortete Fragen', level: 'document', render: [ 'answeredQuestions' ], movedBy: null },
+    { section: 'Phasen und Phasen-Hinweise', level: 'document', render: [ 'phases', 'phaseHints' ], movedBy: null },
+    { section: 'Finalisierungs-Checkliste', level: 'document', render: [ 'finalisierungsCheckliste' ], movedBy: null },
+    { section: 'Anhaenge', level: 'document', render: [ 'anhaenge' ], movedBy: null },
+    { section: 'Einstiegspunkte', level: 'document', render: [ 'einstiegspunkte' ], movedBy: null },
+    { section: 'Lessons-Learned', level: 'document', render: [ 'lessonsLearned' ], movedBy: null },
+    { section: 'Work Items', level: 'collective', render: [ 'workItems' ], movedBy: 'PRD-R3 (P0, WI-153) verlagert die Work-Items in den Block und entfernt diese Sammel-Tabelle (F24=A)' },
+    { section: 'Topics', level: 'collective', render: [ 'topics' ], movedBy: 'PRD-R3 (P0) fuellt den erzeugten Block-Abschnitt `### Topics`; bis dahin steht das Register hier' },
+    { section: 'Research', level: 'collective', render: [ 'research' ], movedBy: 'PRD-R3 (P0) fuellt den erzeugten Beleg-Abschnitt des Blocks, in den das Research-Register gehoert' },
+    { section: 'Fragen', level: 'collective', render: [ 'questionsJson' ], movedBy: 'PRD-R1 (P0, WI-059) haelt diesen maschinenlesbaren Fragen-Zaun auf Dokument-Ebene — die Dokument-Ebene fuehrt nur die beiden LESBAREN Fragen-Abschnitte, und kein PRD dieses Rollouts verlagert den Zaun in einen Block' },
+    { section: 'Snags', level: 'collective', render: [ 'snags' ], movedBy: 'PRD-R1 (P0, WI-061) hat diesen Abschnitt angelegt und haelt ihn auf Dokument-Ebene — kein PRD dieses Rollouts verlagert ihn in einen Block' },
+    { section: 'Goals', level: 'collective', render: [ 'goals' ], movedBy: 'PRD-R1 (P0, WI-061) hat diesen Abschnitt angelegt und haelt ihn auf Dokument-Ebene — die Ziel-Tafel ist projekt-global, nicht kapitel-lokal' },
+    { section: 'Maintenance', level: 'collective', render: [ 'maintenance' ], movedBy: 'PRD-R1 (P0, WI-061) hat diesen Abschnitt angelegt und haelt ihn auf Dokument-Ebene — die Wartungs-Tafel ist repo-global, nicht kapitel-lokal' }
+]
+
+
+// The block toolkit in REGISTER order and the two kinds that are ALWAYS rendered — byte-identical to
+// RevisionAssembler (core). No heading string is typed on this side either.
+const BLOCK_SECTION_ORDER = BlockSections.all().sections
+
+const BLOCK_SECTION_ALWAYS = [ 'required', 'generated' ]
 
 
 // Memo 079 PRD-22 (#4): normalize a question identifier for cross-source dedup. The `question` table
@@ -681,30 +724,88 @@ class DoltDbAssembler {
         const headRows = DoltDbAssembler.#tableExists( { db, table: 'memo_head' } ) === true
             ? DoltDbAssembler.#all( { db, sql: 'SELECT field, value, sort FROM memo_head ORDER BY sort, field' } )
             : []
+        // The block toolkit carrier and the session table (Memo 080, PRD-R1 Vollausbau) — the same reads,
+        // the same ORDER BY and the same #tableExists guard-and-degrade the core RevisionAssembler applies.
+        const blockSections = DoltDbAssembler.#tableExists( { db, table: 'block_section' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, block_id, name, body, sort FROM block_section ORDER BY block_id, sort, id' } )
+            : []
+        const sessionRows = DoltDbAssembler.#tableExists( { db, table: 'sessions' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT session_id, role, model, started_at, tokens, tool_calls FROM sessions ORDER BY started_at, session_id' } )
+            : []
 
         const head = DoltDbAssembler.#renderHead( { db, memo, headRows } )
+        const rendered = DoltDbAssembler.#renderBlocks( { blocks, blockTables, blockDiagrams, blockSections } )
 
-        // The section ORDER mirrors RevisionAssembler.#renderBody exactly — it is part of the byte equality.
-        return head
-            .concat( DoltDbAssembler.#renderKontext( { context } ) )
-            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Vorwort' } ) )
-            .concat( DoltDbAssembler.#renderWorkItems( { workItems } ) )
-            .concat( DoltDbAssembler.#renderBlocks( { blocks, blockTables, blockDiagrams } ) )
-            .concat( DoltDbAssembler.#renderTopics( { topics } ) )
-            .concat( DoltDbAssembler.#renderPhases( { phases, phaseWorkItems } ) )
-            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Phase-Hints' } ) )
-            .concat( DoltDbAssembler.#renderResearch( { research, researchTopics, researchFiles, pointer } ) )
-            .concat( DoltDbAssembler.#renderSnags( { snags } ) )
-            .concat( DoltDbAssembler.#renderGoals( { goals } ) )
-            .concat( DoltDbAssembler.#renderMaintenance( { cards: maintenanceCards } ) )
-            .concat( DoltDbAssembler.#renderQuestionsJson( { questions, questionOptions } ) )
-            .concat( DoltDbAssembler.#renderOpenQuestions( { questions } ) )
-            .concat( DoltDbAssembler.#renderAnsweredQuestions( { questions, questionOptions, answers } ) )
-            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Finalisierungs-Checkliste' } ) )
-            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Ancillary Files' } ) )
-            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Rollout-Entry-Points' } ) )
-            .concat( DoltDbAssembler.#renderProse( { sections, heading: 'Lessons-Learned' } ) )
+        // ONE renderer per declared position — the mirror of the core render map.
+        const parts = {
+            head: head.lines,
+            contaminationMeta: DoltDbAssembler.#renderContaminationMeta( { rows: sessionRows } ),
+            kontext: DoltDbAssembler.#renderKontext( { context } ),
+            blocks: rendered.lines,
+            vorwort: DoltDbAssembler.#renderProse( { sections, heading: 'Vorwort' } ),
+            openQuestions: DoltDbAssembler.#renderOpenQuestions( { questions } ),
+            answeredQuestions: DoltDbAssembler.#renderAnsweredQuestions( { questions, questionOptions, answers } ),
+            // ONE document-level position, TWO renderers — the position binds a LIST of handles, exactly
+            // as the core plan does, so no `.concat()` chain composes the body order on either side.
+            phases: DoltDbAssembler.#renderPhases( { phases, phaseWorkItems } ),
+            phaseHints: DoltDbAssembler.#renderProse( { sections, heading: 'Phase-Hints' } ),
+            finalisierungsCheckliste: DoltDbAssembler.#renderProse( { sections, heading: 'Finalisierungs-Checkliste' } ),
+            anhaenge: DoltDbAssembler.#renderProse( { sections, heading: 'Ancillary Files' } ),
+            einstiegspunkte: DoltDbAssembler.#renderProse( { sections, heading: 'Rollout-Entry-Points' } ),
+            lessonsLearned: DoltDbAssembler.#renderProse( { sections, heading: 'Lessons-Learned' } ),
+            workItems: DoltDbAssembler.#renderWorkItems( { workItems } ),
+            topics: DoltDbAssembler.#renderTopics( { topics } ),
+            research: DoltDbAssembler.#renderResearch( { research, researchTopics, researchFiles, pointer } ),
+            questionsJson: DoltDbAssembler.#renderQuestionsJson( { questions, questionOptions } ),
+            snags: DoltDbAssembler.#renderSnags( { snags } ),
+            goals: DoltDbAssembler.#renderGoals( { goals } ),
+            maintenance: DoltDbAssembler.#renderMaintenance( { cards: maintenanceCards } )
+        }
+
+        // The section ORDER mirrors RevisionAssembler.#renderBody exactly — it is part of the byte
+        // equality, and since Memo 080 / PRD-R1 Vollausbau it is the SAME declared list on both sides
+        // instead of two call chains that could drift without a check noticing.
+        return DOCUMENT_SECTIONS
+            .map( ( entry ) => DoltDbAssembler.#sectionLines( { entry, parts } ) )
+            .reduce( ( acc, part ) => acc.concat( part ), [] )
             .join( '\n' )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#sectionLines: a position binds a LIST of render handles, and
+    // an unknown handle fails LOUD.
+    static #sectionLines( { entry, parts } ) {
+        const unknown = entry[ 'render' ]
+            .filter( ( handle ) => Object.prototype.hasOwnProperty.call( parts, handle ) !== true )
+        if( unknown.length > 0 ) {
+            throw new Error( `DoltDbAssembler: document position "${ entry[ 'section' ] }" names renderer(s) "${ unknown.join( ', ' ) }", which this render does not provide — declared handles: ${ Object.keys( parts ).join( ', ' ) }` )
+        }
+
+        return entry[ 'render' ]
+            .map( ( handle ) => parts[ handle ] )
+            .reduce( ( acc, part ) => acc.concat( part ), [] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderContaminationMeta — the mandatory document-level section
+    // fed by the `sessions` table (REV-18 Z. 159). Empty renders `_no sessions_`.
+    static #renderContaminationMeta( { rows } ) {
+        const heading = [ '## Kontaminations-Metadaten', '' ]
+        if( rows.length === 0 ) {
+            return heading.concat( [ '_no sessions_', '' ] )
+        }
+
+        const table = [
+            '| Session | Role | Model | Started | Tokens | Tool calls |',
+            '| --- | --- | --- | --- | --- | --- |'
+        ]
+        const bodyRows = rows
+            .map( ( row ) => `| ${ cell( row[ 'session_id' ] ) } | ${ cell( row[ 'role' ] ) } | ${ cell( row[ 'model' ] ) } | ${ cell( row[ 'started_at' ] ) } | ${ cell( row[ 'tokens' ] ) } | ${ cell( row[ 'tool_calls' ] ) } |` )
+
+        return heading
+            .concat( table )
+            .concat( bodyRows )
+            .concat( [ '' ] )
     }
 
 
@@ -717,10 +818,11 @@ class DoltDbAssembler {
         const latestRevNo = DoltDbAssembler.#latestRevNo( { db } )
         const rows = HEAD_FIELDS
             .map( ( field ) => `| **${ field }** | ${ cell( DoltDbAssembler.#headValue( { field, memo, headRows, latestRevNo } ) ) } |` )
-
-        return [ `# ${ cell( memo[ 'name' ] ) }`, '', GENERATED_NOTE, '', DoltDbAssembler.#scopeLine( { db } ), '', '| Feld | Wert |', '| --- | --- |' ]
+        const lines = [ `# ${ cell( memo[ 'name' ] ) }`, '', GENERATED_NOTE, '', DoltDbAssembler.#scopeLine( { db } ), '', '| Feld | Wert |', '| --- | --- |' ]
             .concat( rows )
             .concat( [ '' ] )
+
+        return { lines, fields: rows.length }
     }
 
 
@@ -1391,14 +1493,20 @@ class DoltDbAssembler {
     }
 
 
-    static #renderBlocks( { blocks, blockTables, blockDiagrams } ) {
+    // Byte-identical to RevisionAssembler.#renderBlocks (core) — since Memo 080 / PRD-R1 Vollausbau WITH
+    // the toolkit body of each block, read from the `block_section` carrier and ordered by the register.
+    static #renderBlocks( { blocks, blockTables, blockDiagrams, blockSections } ) {
         const heading = [ '## Blocks', '' ]
         if( blocks.length === 0 ) {
-            return heading.concat( [ '_no blocks_', '' ] )
+            return { lines: heading.concat( [ '_no blocks_', '' ] ), sections: 0 }
         }
 
-        const sections = blocks
+        DoltDbAssembler.#assertKnownBlockSections( { blockSections } )
+
+        const rendered = blocks
             .map( ( block ) => {
+                const body = DoltDbAssembler.#renderBlockSections( { block, blockSections } )
+
                 const tables = blockTables
                     .filter( ( entry ) => entry[ 'block_id' ] === block[ 'id' ] )
                 const tableLines = tables
@@ -1411,13 +1519,67 @@ class DoltDbAssembler {
                     .map( ( diagram ) => DoltDbAssembler.#renderDiagram( { diagram, blockTables } ) )
                     .reduce( ( acc, part ) => acc.concat( part ), [] )
 
-                return [ `### ${ cell( block[ 'title' ] ) } (${ cell( block[ 'id' ] ) })`, '' ]
-                    .concat( tableLines )
-                    .concat( diagramLines )
+                return {
+                    lines: [ `### ${ cell( block[ 'title' ] ) } (${ cell( block[ 'id' ] ) })`, '' ]
+                        .concat( body.lines )
+                        .concat( tableLines )
+                        .concat( diagramLines ),
+                    sections: body.count
+                }
             } )
-            .reduce( ( acc, part ) => acc.concat( part ), [] )
 
-        return heading.concat( sections )
+        return {
+            lines: heading.concat( rendered.reduce( ( acc, part ) => acc.concat( part.lines ), [] ) ),
+            sections: rendered.reduce( ( acc, part ) => acc + part.sections, 0 )
+        }
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderBlockSections: register order, level-three headings, the
+    // three mandatory plus the four generated positions ALWAYS rendered (absent ones with the empty mark).
+    static #renderBlockSections( { block, blockSections } ) {
+        const carried = blockSections
+            .filter( ( row ) => row[ 'block_id' ] === block[ 'id' ] )
+
+        const parts = BLOCK_SECTION_ORDER
+            .map( ( entry ) => {
+                const row = carried
+                    .find( ( candidate ) => candidate[ 'name' ] === entry[ 'field' ] )
+                const body = row === undefined ? '' : raw( row[ 'body' ] )
+                const always = BLOCK_SECTION_ALWAYS.includes( entry[ 'kind' ] )
+                if( body.length === 0 && always !== true ) {
+                    return null
+                }
+
+                return [ `### ${ entry[ 'heading' ] }`, '' ]
+                    .concat( body.length === 0 ? [ PROSE_EMPTY ] : body.split( '\n' ) )
+                    .concat( [ '' ] )
+            } )
+            .filter( ( part ) => part !== null )
+
+        return {
+            lines: parts.reduce( ( acc, part ) => acc.concat( part ), [] ),
+            count: parts.length
+        }
+    }
+
+
+    // Byte-identical to RevisionAssembler.#assertKnownBlockSections: a heading outside the closed register
+    // aborts the render, naming every offender and the permitted set.
+    static #assertKnownBlockSections( { blockSections } ) {
+        const known = BLOCK_SECTION_ORDER
+            .map( ( entry ) => entry[ 'field' ] )
+        const unknown = blockSections
+            .filter( ( row ) => known.includes( row[ 'name' ] ) !== true )
+        if( unknown.length === 0 ) {
+            return { ok: true, checked: blockSections.length }
+        }
+
+        const named = unknown
+            .map( ( row ) => `block "${ row[ 'block_id' ] }" section "${ row[ 'name' ] }"` )
+            .join( ', ' )
+
+        throw new Error( `DoltDbAssembler: ${ named } — not in the closed heading register; permitted: ${ known.join( ', ' ) }` )
     }
 
 
@@ -1520,4 +1682,43 @@ class DoltDbAssembler {
 }
 
 
-export { DoltDbAssembler }
+// LOAD-TIME GATE for the render plan — byte-identical in intent to the core gate (Memo 080, PRD-R1
+// Vollausbau). It proves that the plan's `document` positions ARE the register's twelve in the
+// register's sequence, and that every `collective` position states which PRD relocates it. It names how
+// much it compared; an empty comparison basis is refused, never reported green.
+const assertDocumentPlan = () => {
+    const declared = BlockSections.documentSections().sections
+        .map( ( entry ) => entry[ 'section' ] )
+    const planned = DOCUMENT_SECTIONS
+        .filter( ( entry ) => entry[ 'level' ] === 'document' )
+        .map( ( entry ) => entry[ 'section' ] )
+    if( declared.length === 0 || planned.length === 0 ) {
+        throw new Error( `DoltDbAssembler: the document order compared ${ planned.length } planned positions against ${ declared.length } declared ones — an empty comparison basis is refused, not reported green` )
+    }
+
+    const drift = planned
+        .map( ( section, index ) => ( { index, planned: section, declared: declared[ index ] } ) )
+        .filter( ( entry ) => entry[ 'planned' ] !== entry[ 'declared' ] )
+    if( planned.length !== declared.length || drift.length > 0 ) {
+        const detail = drift
+            .map( ( entry ) => `position ${ entry[ 'index' ] + 1 }: plan "${ entry[ 'planned' ] }" vs register "${ entry[ 'declared' ] }"` )
+            .join( '; ' )
+
+        throw new Error( `DoltDbAssembler: the render plan drifted from the document-level register (${ planned.length } planned vs ${ declared.length } declared)${ detail.length === 0 ? '' : ` — ${ detail }` }` )
+    }
+
+    const unattributed = DOCUMENT_SECTIONS
+        .filter( ( entry ) => entry[ 'level' ] === 'collective' )
+        .filter( ( entry ) => typeof entry[ 'movedBy' ] !== 'string' || entry[ 'movedBy' ].length === 0 )
+    if( unattributed.length > 0 ) {
+        throw new Error( `DoltDbAssembler: collective document position(s) without a relocating PRD: ${ unattributed.map( ( entry ) => entry[ 'section' ] ).join( ', ' ) }` )
+    }
+
+    return { ok: true, declared: declared.length, planned: planned.length }
+}
+
+
+assertDocumentPlan()
+
+
+export { DoltDbAssembler, DOCUMENT_SECTIONS, HEAD_FIELDS }

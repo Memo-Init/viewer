@@ -11,26 +11,56 @@ _Generated from the memo database — not hand-written._
 | **Revision** | 01 |
 | **Datum** | 2026-08-20 |
 | **Status** | finalized |
+| **Typ** | Full |
+| **Aenderungen** | Erstfassung aus der Datenbank |
+
+## Kontaminations-Metadaten
+
+| Session | Role | Model | Started | Tokens | Tool calls |
+| --- | --- | --- | --- | --- | --- |
+| sess-lead | orchestrator | opus | 2026-08-20T09:00:00.000Z | 12800 | 42 |
+| sess-worker | worker | opus | 2026-08-20T10:00:00.000Z | 4200 | 17 |
 
 ## Kontext
 
 Kontext Zeile eins.
 Kontext Zeile zwei.
 
-## Vorwort
-
-Diese Revision entsteht aus der Datenbank.
-
-## Work Items
-
-| ID | Topic | Title | Status | Group |
-| --- | --- | --- | --- | --- |
-| WI-01 | store | adapter | done | A |
-| WI-02 | assemble | render from DB | open | B |
-
 ## Blocks
 
 ### Backbone (B001)
+
+### User-Auftrag
+
+> "Die Revision soll aus der Datenbank entstehen."
+
+### Ist-Zustand
+
+- **[FAKT]** Der Erzeuger rendert je Block nur die Ueberschrift.
+
+### Soll-Zustand
+
+_kein Inhalt_
+
+### Bewertung
+
+Der Block war formal gueltig und trotzdem unlesbar.
+
+### Topics
+
+_kein Inhalt_
+
+### Work-Items
+
+_kein Inhalt_
+
+### PRD-Zuordnung
+
+_kein Inhalt_
+
+### Belege
+
+_kein Inhalt_
 
 #### Primitives
 
@@ -46,12 +76,22 @@ graph TD
   commit --> ok
 ```
 
-## Topics
+## Vorwort
 
-| ID | Title | Phase | Block | Origin |
-| --- | --- | --- | --- | --- |
-| T01 | DB als SoT | P1 | B001 | init |
-| T02 | Traceability | P2 |  |  |
+Diese Revision entsteht aus der Datenbank.
+
+## Offene Fragen
+
+- **F1** (info): Soll die DB die SoT sein?
+
+## Beantwortete Fragen
+
+### F2 — Phasen-Normalisierung
+
+- **Frage (Original):** Wie werden Phasen normalisiert?
+- **AI-Empfehlung war:** A
+- **User-Entscheidung:** A — Aus rollout/state.json projizieren
+- **Wortlaut:** A — Normalisierung laeuft aus rollout/state.json.
 
 ## Phasen
 
@@ -67,30 +107,42 @@ graph TD
 
 - P1 kann parallel zu P2 laufen.
 
+## Finalisierungs-Checkliste
+
+- [x] Evidenz geprueft
+
+## Ancillary Files
+
+1. `context/research/2026-08-19--doltlite-machbarkeit.md`
+
+## Rollout-Entry-Points
+
+1. `cli/src/RevisionAssembler.mjs`
+
+## Lessons-Learned
+
+Ein Traeger fehlt erst dann auf, wenn er gerendert werden soll.
+
+## Work Items
+
+| ID | Topic | Title | Status | Group |
+| --- | --- | --- | --- | --- |
+| WI-01 | store | adapter | done | A |
+| WI-02 | assemble | render from DB | open | B |
+
+## Topics
+
+| ID | Title | Phase | Block | Origin |
+| --- | --- | --- | --- | --- |
+| T01 | DB als SoT | P1 | B001 | init |
+| T02 | Traceability | P2 |  |  |
+
 ## Research
 
 | R | Title | Kind | Topics | Files |
 | --- | --- | --- | --- | --- |
 | R1 | doltlite Machbarkeit | wave-2 | T01 | context/research/2026-08-19--doltlite-machbarkeit.md |
 | R2 | Memo-Korpus | wave-2 | T01, T02 |  |
-
-## Snags
-
-| ID | Title | Status | Verdict | Disposition |
-| --- | --- | --- | --- | --- |
-| 079-tag-grenze | tag-grenze | open | offen | traced |
-
-## Goals
-
-| ID | Name | Kind | Pct | Status |
-| --- | --- | --- | --- | --- |
-| G-001 | DB als SoT | capability | 65 | open |
-
-## Maintenance
-
-| Repo | Freshness | Blast | Status |
-| --- | --- | --- | --- |
-| core | 82 | 3 | ok |
 
 ## Fragen
 
@@ -141,31 +193,20 @@ graph TD
 ]
 ```
 
-## Offene Fragen
+## Snags
 
-- **F1** (info): Soll die DB die SoT sein?
+| ID | Title | Status | Verdict | Disposition |
+| --- | --- | --- | --- | --- |
+| 079-tag-grenze | tag-grenze | open | offen | traced |
 
-## Beantwortete Fragen
+## Goals
 
-### F2 — Phasen-Normalisierung
+| ID | Name | Kind | Pct | Status |
+| --- | --- | --- | --- | --- |
+| G-001 | DB als SoT | capability | 65 | open |
 
-- **Frage (Original):** Wie werden Phasen normalisiert?
-- **AI-Empfehlung war:** A
-- **User-Entscheidung:** A — Aus rollout/state.json projizieren
-- **Wortlaut:** A — Normalisierung laeuft aus rollout/state.json.
+## Maintenance
 
-## Finalisierungs-Checkliste
-
-- [x] Evidenz geprueft
-
-## Ancillary Files
-
-1. `context/research/2026-08-19--doltlite-machbarkeit.md`
-
-## Rollout-Entry-Points
-
-1. `cli/src/RevisionAssembler.mjs`
-
-## Lessons-Learned
-
-Ein Traeger fehlt erst dann auf, wenn er gerendert werden soll.
+| Repo | Freshness | Blast | Status |
+| --- | --- | --- | --- |
+| core | 82 | 3 | ok |

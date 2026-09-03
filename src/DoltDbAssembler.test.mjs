@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto'
 import { DatabaseSync } from '@dolthub/doltlite'
 
 import { DoltDbAssembler } from './DoltDbAssembler.mjs'
+import { BlockSections } from './BlockSections.mjs'
 import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { isRenderable } from './QuestionContract.mjs'
 
@@ -449,6 +450,10 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.exec( 'CREATE TABLE IF NOT EXISTS maintenance_card ( repo TEXT PRIMARY KEY, freshness INTEGER, blast TEXT, maint_status TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS memo_section ( id TEXT PRIMARY KEY, heading TEXT, body TEXT, sort INTEGER )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS memo_head ( field TEXT PRIMARY KEY, value TEXT, sort INTEGER )' )
+            // Memo 080, PRD-R1 Vollausbau: the block toolkit carrier (PRD-D1 builds it) and the session
+            // table that feeds the mandatory `## Kontaminations-Metadaten` section.
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_section ( id TEXT PRIMARY KEY, block_id TEXT, name TEXT, body TEXT, sort INTEGER )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS sessions ( session_id TEXT PRIMARY KEY, memo_id TEXT, parent_session_id TEXT, role TEXT, model TEXT, started_at TEXT, tokens INTEGER, tool_calls INTEGER )' )
 
             db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
                 .run( 'M079', 'DB Traceability', 'strategy', 'finalized', '2026-08-20T00:00:00.000Z', 'Kontext Zeile eins.\nKontext Zeile zwei.' )
@@ -513,6 +518,19 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             insertHead.run( 'Revision', '01', 2 )
             insertHead.run( 'Datum', '2026-08-20', 3 )
             insertHead.run( 'Status', 'finalized', 4 )
+            // Memo 080, PRD-R1 Vollausbau — the two head fields the DOCUMENT LEVEL demands (REV-18 Z. 160),
+            // the block toolkit rows the core seed writes through MemoContentStore.setBlocks (sort = the
+            // register ordinal), and the two sessions that feed the contamination section. All rows are
+            // IDENTICAL to the core seed, so both renderers reproduce the same fixture bytes.
+            insertHead.run( 'Typ', 'Full', 5 )
+            insertHead.run( 'Aenderungen', 'Erstfassung aus der Datenbank', 6 )
+            const insertBlockSection = db.prepare( 'INSERT INTO block_section ( id, block_id, name, body, sort ) VALUES ( ?, ?, ?, ?, ? )' )
+            insertBlockSection.run( 'B001:userMandate', 'B001', 'userMandate', '> "Die Revision soll aus der Datenbank entstehen."', 0 )
+            insertBlockSection.run( 'B001:currentState', 'B001', 'currentState', '- **[FAKT]** Der Erzeuger rendert je Block nur die Ueberschrift.', 1 )
+            insertBlockSection.run( 'B001:assessment', 'B001', 'assessment', 'Der Block war formal gueltig und trotzdem unlesbar.', 3 )
+            const insertSession = db.prepare( 'INSERT INTO sessions ( session_id, memo_id, parent_session_id, role, model, started_at, tokens, tool_calls ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+            insertSession.run( 'sess-worker', 'M079', 'sess-lead', 'worker', 'opus', '2026-08-20T10:00:00.000Z', 4200, 17 )
+            insertSession.run( 'sess-lead', 'M079', null, 'orchestrator', 'opus', '2026-08-20T09:00:00.000Z', 12800, 42 )
             db.close()
         }
 
@@ -1194,7 +1212,10 @@ describe( 'DoltDbAssembler — external payload pointers (Memo 080, PRD-D5)', ()
         const fixtureSha = createHash( 'sha256' ).update( POINTER_GOLDEN_BODY, 'utf8' ).digest( 'hex' )
         expect( fixtureSha ).toBe( POINTER_MANIFEST[ 'sha256' ] )
         expect( Buffer.byteLength( POINTER_GOLDEN_BODY, 'utf8' ) ).toBe( POINTER_MANIFEST[ 'byteLength' ] )
-        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1320 )             // compared 1320 bytes, > 0
+        // Measured after the Vollausbau render change (Memo 080, PRD-R1): the fixture grew from 1320 to
+        // 1625 bytes because every block now carries its toolkit body and the document carries the
+        // contamination section. The figure is re-measured, never carried over.
+        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1625 )             // compared 1625 bytes, > 0
     } )
 
 
@@ -1272,5 +1293,125 @@ describe( 'DoltDbAssembler — external payload pointers (Memo 080, PRD-D5)', ()
         const lookups = region.split( 'PointerSites.bySite' ).length - 1
         expect( lookups ).toBe( 1 )                                          // ONE lookup helper, 3 callers
         expect( region.split( '#site( { table:' ).length - 1 ).toBe( 3 )     // compared 3 declared sites used
+    } )
+} )
+
+
+// ── Memo 080, PRD-R1 Vollausbau — the mirror carries the FORM, not only the sections ────────────
+//
+// The byte-parity fixture above already proves character equality for the canonical database. These
+// cases name WHAT the mirror has to carry, so a future one-sided edit fails with a readable reason
+// instead of a 4000-character diff: the declared document order, the toolkit body of a block, the
+// contamination section and the seven head fields.
+//
+// EVERY CASE STATES HOW MUCH IT COMPARED. A comparison basis of 0 is asserted RED, never green.
+describe( 'DoltDbAssembler — the document form (Memo 080, PRD-R1 Vollausbau)', () => {
+    const repoTmpRoot = join( process.cwd(), '.test-tmp' )
+    let tmpRoot = ''
+    let dbPath = ''
+
+    beforeEach( () => {
+        mkdirSync( repoTmpRoot, { recursive: true } )
+        tmpRoot = mkdtempSync( join( repoTmpRoot, 'form-' ) )
+        dbPath = join( tmpRoot, 'memo-080.db' )
+    } )
+
+    afterEach( () => {
+        rmSync( tmpRoot, { recursive: true, force: true } )
+    } )
+
+
+    const seedForm = ( { sections } ) => {
+        const db = new DatabaseSync( dbPath )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT, context TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block_diagrams ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS block_section ( id TEXT PRIMARY KEY, block_id TEXT, name TEXT, body TEXT, sort INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS sessions ( session_id TEXT PRIMARY KEY, memo_id TEXT, parent_session_id TEXT, role TEXT, model TEXT, started_at TEXT, tokens INTEGER, tool_calls INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo_head ( field TEXT PRIMARY KEY, value TEXT, sort INTEGER )' )
+        db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
+            .run( 'M080', 'Form', 'strategy', 'open', '2026-09-01T00:00:00.000Z', 'Kontext.' )
+        db.prepare( 'INSERT INTO block ( id, title, sort ) VALUES ( ?, ?, ? )' ).run( 'B001', 'Form', 0 )
+        const insertSection = db.prepare( 'INSERT INTO block_section ( id, block_id, name, body, sort ) VALUES ( ?, ?, ?, ?, ? )' )
+        sections.forEach( ( entry ) => insertSection.run( `B001:${ entry[ 0 ] }`, 'B001', entry[ 0 ], entry[ 1 ], entry[ 2 ] ) )
+        db.prepare( 'INSERT INTO sessions ( session_id, memo_id, parent_session_id, role, model, started_at, tokens, tool_calls ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+            .run( 'sess-a', 'M080', null, 'orchestrator', 'opus', '2026-09-01T09:00:00.000Z', 100, 4 )
+        const insertHead = db.prepare( 'INSERT INTO memo_head ( field, value, sort ) VALUES ( ?, ?, ? )' )
+        insertHead.run( 'Typ', 'Full', 5 )
+        insertHead.run( 'Aenderungen', 'Erstfassung', 6 )
+        db.close()
+    }
+
+
+    it( 'renders the level-2 sequence in the DECLARED document order — the register decides, not the code path', () => {
+        seedForm( { sections: [] } )
+
+        const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+        const emitted = markdown.split( '\n' )
+            .filter( ( line ) => /^##\s/.test( line ) === true )
+            .map( ( line ) => line.replace( /^##\s+/, '' ) )
+        const declared = BlockSections.documentSections().sections
+            .filter( ( entry ) => entry[ 'headings' ].length > 0 )
+            .map( ( entry ) => entry[ 'headings' ][ 0 ] )
+        const found = declared.filter( ( heading ) => emitted.includes( heading ) === true )
+
+        expect( found.length ).toBe( declared.length )
+        expect( found.length ).toBeGreaterThan( 0 )
+        // the declared positions appear in the declared order, before every collective position
+        const positionsInDoc = declared.map( ( heading ) => emitted.indexOf( heading ) )
+        const ascending = positionsInDoc.filter( ( index, order ) => order === 0 || index > positionsInDoc[ order - 1 ] )
+        expect( ascending.length ).toBe( positionsInDoc.length )
+        expect( emitted.indexOf( 'Work Items' ) ).toBeGreaterThan( emitted.indexOf( 'Lessons-Learned' ) )
+    } )
+
+
+    it( 'renders the toolkit body of a block in register order and marks every empty mandatory heading', () => {
+        seedForm( { sections: [ [ 'currentState', 'Gemessen.', 1 ], [ 'assessment', 'Bewertet.', 3 ] ] } )
+
+        const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+        const lines = markdown.split( '\n' )
+        const start = lines.findIndex( ( line ) => line === '## Blocks' )
+        const rest = lines.slice( start + 1 )
+        const endOffset = rest.findIndex( ( line ) => /^##\s/.test( line ) === true )
+        const headings = ( endOffset === -1 ? rest : rest.slice( 0, endOffset ) )
+            .filter( ( line ) => /^###\s/.test( line ) === true )
+            .map( ( line ) => line.replace( /^###\s+/, '' ) )
+            .filter( ( heading ) => heading.startsWith( 'Form (' ) !== true )
+        const registerOrder = BlockSections.all().sections
+            .map( ( entry ) => entry[ 'heading' ] )
+            .filter( ( heading ) => headings.includes( heading ) === true )
+
+        expect( headings.length ).toBe( 8 )                    // 3 mandatory + 4 generated + 1 optional
+        expect( headings ).toEqual( registerOrder )
+        expect( markdown ).toContain( '### Ist-Zustand\n\nGemessen.' )
+        expect( markdown ).toContain( '### User-Auftrag\n\n_kein Inhalt_' )
+        expect( markdown ).toContain( '### Belege\n\n_kein Inhalt_' )
+        // no fourth-level heading is produced by the toolkit render (a level 4 gets no anchor)
+        expect( markdown.split( '\n' ).filter( ( line ) => /^####\s/.test( line ) === true ) ).toEqual( [] )
+    } )
+
+
+    it( 'renders the contamination section and the seven head fields, mirroring the core assembler', () => {
+        seedForm( { sections: [] } )
+
+        const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
+        const headRows = markdown.split( '\n' )
+            .filter( ( line ) => /^\|\s\*\*[^*]+\*\*\s\|/.test( line ) === true )
+
+        expect( headRows.length ).toBe( 7 )
+        expect( markdown ).toContain( '| **Typ** | Full |' )
+        expect( markdown ).toContain( '| **Aenderungen** | Erstfassung |' )
+        expect( markdown ).toContain( '## Kontaminations-Metadaten\n\n| Session | Role | Model | Started | Tokens | Tool calls |' )
+        expect( markdown ).toContain( '| sess-a | orchestrator | opus | 2026-09-01T09:00:00.000Z | 100 | 4 |' )
+    } )
+
+
+    it( 'aborts LOUD on a section heading outside the closed register — never a silent skip', () => {
+        seedForm( { sections: [ [ 'erfunden', 'Inhalt, der sonst verschwindet', 99 ] ] } )
+
+        expect( () => DoltDbAssembler.assembleFromDb( { dbPath } ) )
+            .toThrow( /block "B001" section "erfunden".*permitted: userMandate, currentState, targetState/ )
     } )
 } )

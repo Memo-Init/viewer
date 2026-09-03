@@ -84,24 +84,37 @@ const SECTIONS = [
 
 
 // The fixed section order of a revision DOCUMENT (REV-18, Z. 158-172). Kap 2 calls this table "the
-// checklist for the generation" — which database table feeds which section. This module PROVIDES the
-// checklist; applying it belongs to the generator path (PRD-R1 / PRD-R2), which is why nothing here
-// calls it. The parenthetical detail of the memo table is kept in this comment rather than in the
-// section name, so the name stays a stable handle: Kopf (Memo, Revision, Datum, Typ, Aenderungen),
-// Kontext (Projekt, Repos, Bereiche, Material), Bloecke (Kapitel).
+// checklist for the generation" — which database table feeds which section. The parenthetical detail
+// of the memo table is kept in this comment rather than in the section name, so the name stays a
+// stable handle: Kopf (Memo, Revision, Datum, Typ, Aenderungen), Kontext (Projekt, Repos, Bereiche,
+// Material), Bloecke (Kapitel).
+//
+// SINCE Memo 080 / PRD-R1 THIS ORDER IS APPLIED, NOT ONLY PROVIDED. Three readers bind to it and none
+// of them keeps a list of its own: the core generator (RevisionAssembler DOCUMENT_SECTIONS render
+// plan), its viewer mirror (DoltDbAssembler) and the document-level lint (MemoValidator WARN-020 /
+// WARN-021). Both generators gate their render plan against this array at LOAD time, so a divergence
+// breaks the import instead of producing a differently ordered revision.
+//
+// TWO KEYS SERVE THOSE READERS AND ARE PART OF THE REGISTER, NOT OF A RENDERER:
+//   headings  the level-2 headings a document carries for this position. It is a LIST because one
+//             position may legitimately be written as two headings ("Phasen und Phasen-Hinweise" is
+//             `## Phasen` plus `## Phase-Hints`) and because a position may accept an established
+//             alias (`## Claude-Vorwort`). `Kopf` carries NO heading — it is a table, not a section.
+//   fields    the head fields this position declares (Z. 160). Only `Kopf` carries any; every other
+//             position keeps an empty list rather than an absent key, so a reader never has to guess.
 const DOCUMENT_SECTIONS = [
-    { section: 'Kopf', required: true, source: 'Memo-Tabelle plus Revisions-Tabelle' },
-    { section: 'Kontaminations-Metadaten', required: true, source: 'Sitzungs-Tabelle' },
-    { section: 'Kontext', required: true, source: 'Memo-Tabelle plus Referenz-Tabelle' },
-    { section: 'Bloecke', required: true, source: 'Block-, Abschnitts-, Topic-, Work-Item-Tabelle' },
-    { section: 'Vorwort', required: true, source: 'hand-geschrieben, in der Prosa-Tabelle' },
-    { section: 'Offene Fragen', required: true, source: 'Fragen-Tabelle mit Status offen' },
-    { section: 'Beantwortete Fragen', required: true, source: 'Fragen-Tabelle mit Status beantwortet, getrennt nach Herkunft' },
-    { section: 'Phasen und Phasen-Hinweise', required: true, source: 'Phasen-Tabelle' },
-    { section: 'Finalisierungs-Checkliste', required: true, source: 'fester Satz plus Ergebnis-Tabelle' },
-    { section: 'Anhaenge', required: true, source: 'Referenz-Tabelle' },
-    { section: 'Einstiegspunkte', required: true, source: 'hand-geschrieben, in der Prosa-Tabelle' },
-    { section: 'Lessons-Learned', required: true, source: 'Lessons-Tabelle (waechst auch nach der Finalisierung)' }
+    { section: 'Kopf', required: true, source: 'Memo-Tabelle plus Revisions-Tabelle', headings: [], fields: [ 'Memo', 'Revision', 'Datum', 'Typ', 'Aenderungen' ] },
+    { section: 'Kontaminations-Metadaten', required: true, source: 'Sitzungs-Tabelle', headings: [ 'Kontaminations-Metadaten' ], fields: [] },
+    { section: 'Kontext', required: true, source: 'Memo-Tabelle plus Referenz-Tabelle', headings: [ 'Kontext' ], fields: [] },
+    { section: 'Bloecke', required: true, source: 'Block-, Abschnitts-, Topic-, Work-Item-Tabelle', headings: [ 'Blocks' ], fields: [] },
+    { section: 'Vorwort', required: true, source: 'hand-geschrieben, in der Prosa-Tabelle', headings: [ 'Vorwort', 'Claude-Vorwort' ], fields: [] },
+    { section: 'Offene Fragen', required: true, source: 'Fragen-Tabelle mit Status offen', headings: [ 'Offene Fragen' ], fields: [] },
+    { section: 'Beantwortete Fragen', required: true, source: 'Fragen-Tabelle mit Status beantwortet, getrennt nach Herkunft', headings: [ 'Beantwortete Fragen' ], fields: [] },
+    { section: 'Phasen und Phasen-Hinweise', required: true, source: 'Phasen-Tabelle', headings: [ 'Phasen', 'Phase-Hints' ], fields: [] },
+    { section: 'Finalisierungs-Checkliste', required: true, source: 'fester Satz plus Ergebnis-Tabelle', headings: [ 'Finalisierungs-Checkliste' ], fields: [] },
+    { section: 'Anhaenge', required: true, source: 'Referenz-Tabelle', headings: [ 'Ancillary Files' ], fields: [] },
+    { section: 'Einstiegspunkte', required: true, source: 'hand-geschrieben, in der Prosa-Tabelle', headings: [ 'Rollout-Entry-Points' ], fields: [] },
+    { section: 'Lessons-Learned', required: true, source: 'Lessons-Tabelle (waechst auch nach der Finalisierung)', headings: [ 'Lessons-Learned' ], fields: [] }
 ]
 
 
@@ -193,11 +206,18 @@ class BlockSections {
     }
 
 
-    // The document-level section order (REV-18, Z. 158-172), as a defensive copy. Pure, and PROVIDED
-    // only: no generator in this repo calls it — applying the checklist is PRD-R1 / PRD-R2 scope.
+    // The document-level section order (REV-18, Z. 158-172), as a defensive copy — the lists are copied
+    // too, so a caller can never mutate the register it reads. Pure: no file access, no state. Since
+    // Memo 080 / PRD-R1 this is the source BOTH generators and the document-level lint bind to.
     static documentSections() {
         const sections = DOCUMENT_SECTIONS
-            .map( ( entry ) => ( { section: entry[ 'section' ], required: entry[ 'required' ], source: entry[ 'source' ] } ) )
+            .map( ( entry ) => ( {
+                section: entry[ 'section' ],
+                required: entry[ 'required' ],
+                source: entry[ 'source' ],
+                headings: entry[ 'headings' ].slice(),
+                fields: entry[ 'fields' ].slice()
+            } ) )
 
         return { sections }
     }

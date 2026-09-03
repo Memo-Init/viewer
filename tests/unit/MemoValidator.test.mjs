@@ -76,14 +76,19 @@ describe( 'MemoValidator.validate — result shape & status (PRD-036)', () => {
         const result = MemoValidator.validate( { doc: VALID_DOC } )
 
         // Memo 080, PRD-R1 widened the shape by ONE key: `checked`, the comparison basis the verdict
-        // rests on. PRD-V13 widened it by ONE more: `revisionType`, WHICH schema was applied.
-        // The assertion stays EXACT (a sixth key would still fail) — it is not loosened.
-        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'revisionType', 'status' ] )
+        // rests on. PRD-V13 widened it by ONE more: `revisionType`, WHICH schema was applied. The
+        // Vollausbau widens it by ONE more: `warnings`, the NON-BLOCKING channel — a WARNING routed into
+        // `messages` would set status:false, which is the whole reason it has a channel of its own.
+        // The assertion stays EXACT (a seventh key would still fail) — it is not loosened.
+        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'revisionType', 'status', 'warnings' ] )
         expect( Array.isArray( result[ 'messages' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'info' ] ) ).toBe( true )
+        expect( Array.isArray( result[ 'warnings' ] ) ).toBe( true )
         expect( typeof result[ 'status' ] ).toBe( 'boolean' )
-        // the ten mandatory sections and five mandatory header fields the run actually examined.
-        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5 } )
+        // the ten mandatory sections and five mandatory header fields the run actually examined, plus the
+        // comparison basis of the two document-level checks (9 of the 11 heading-bearing positions are
+        // present in this fixture, and the 2 head fields the document level adds on top of MEMO-010).
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5, 'comparedSections': 9, 'comparedHeaderFields': 2 } )
         expect( result[ 'revisionType' ] ).toBe( 'full' )
     } )
 
@@ -93,7 +98,10 @@ describe( 'MemoValidator.validate — result shape & status (PRD-036)', () => {
 
         // A refusal is not a measurement: an empty document examined NOTHING, and says so.
         expect( result[ 'status' ] ).toBe( false )
-        expect( result[ 'checked' ] ).toEqual( { 'sections': 0, 'headerFields': 0 } )
+        // Memo 080, PRD-R1 Vollausbau: `checked` grew ADDITIVELY by the comparison basis of the two
+        // document-level checks. Both are 0 while the check is off for this revision type. The
+        // assertion stays EXACT — it is widened by the new keys, never loosened to a subset match.
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 0, 'headerFields': 0, 'comparedSections': 0, 'comparedHeaderFields': 0 } )
     } )
 
 
@@ -228,7 +236,10 @@ describe( 'MemoValidator required sections (MEMO-001, PRD-002 — 10 sections)',
         const result = MemoValidator.validate( { doc: stripped, fileName: 'REV-01.md' } )
 
         expect( result[ 'revisionType' ] ).toBe( 'full' )
-        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5 } )
+        // Memo 080, PRD-R1 Vollausbau: `checked` grew ADDITIVELY by the comparison basis of the two
+        // document-level checks. Both are 0 while the check is off for this revision type. The
+        // assertion stays EXACT — it is widened by the new keys, never loosened to a subset match.
+        expect( result[ 'checked' ] ).toEqual( { 'sections': 10, 'headerFields': 5, 'comparedSections': 8, 'comparedHeaderFields': 2 } )
         expect( result[ 'messages' ].filter( ( m ) => m.includes( 'section.Lessons-Learned' ) ).length ).toBe( 1 )
         expect( result[ 'messages' ].filter( ( m ) => m.includes( 'header.Memo-Name' ) ).length ).toBe( 1 )
         expect( result[ 'status' ] ).toBe( false )

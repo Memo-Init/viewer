@@ -1,6 +1,7 @@
 import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
 import { invalidOptionKinds } from './QuestionContract.mjs'
+import { BlockSections } from './BlockSections.mjs'
 
 
 // PRD-036/037/038 (Memo 016, Kap 13): deterministic, server-side, STRUCTURAL validation of
@@ -47,7 +48,20 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'MEMO-070', 'severity': 'ERROR', 'theme': 'lifecycle', 'description': 'Unresolved "[Research offen]" marker present outside code spans' },
     { 'code': 'MEMO-080', 'severity': 'ERROR', 'theme': 'block-meta', 'description': 'block-meta overlay block is malformed (invalid JSON; topic/prd ids not in T001 / PRD-001 shape; or a Parent/Child invariant is violated — child carrying prds, a block mixing singular topic with plural topics, or a grandchild/second level)' },
     { 'code': 'INFO-010', 'severity': 'INFO', 'theme': 'header', 'description': 'Schema-Version marker missing (advisory until writing skills set it)' },
-    { 'code': 'WARN-010', 'severity': 'WARNING', 'theme': 'frage-continuity', 'description': 'Open-question set shrank between revisions without a matching new answered entry (Memo 067 WI-6-09: every revision must carry the FULL open-questions set)' }
+    { 'code': 'WARN-010', 'severity': 'WARNING', 'theme': 'frage-continuity', 'description': 'Open-question set shrank between revisions without a matching new answered entry (Memo 067 WI-6-09: every revision must carry the FULL open-questions set)' },
+    // Memo 080, PRD-R1 Vollausbau — the DOCUMENT LEVEL as a check (REV-18 Z. 154-172). Both enter the
+    // catalogue as WARNING and are switched on for `full` ONLY (REVISION_SCHEMA below).
+    //
+    // THE SHARPENING RULE — WARNING -> ERROR — IS A NAMED CONDITION, NOT A JUDGEMENT CALL:
+    //   1. measure the corpus AGAIN, grouped by revision type (full / update / prepare), each group
+    //      stating HOW MANY files it compared. A group with 0 compared files is RED, never green.
+    //   2. sharpen only when the FULL group shows 0 hits of the code being sharpened.
+    //   3. otherwise it stays WARNING and the measured stand is recorded as a snag (`memo snag add`) —
+    //      no suspended state, no silent exception.
+    // The figures of the PRD are NOT a substitute for that measurement: a severity raised against a
+    // number nobody re-measured is a claim, not a gate.
+    { 'code': 'WARN-020', 'severity': 'WARNING', 'theme': 'dokument-ebene', 'description': 'The document section sequence deviates from the declared document-level order (BlockSections.documentSections, REV-18 Z. 158-172)' },
+    { 'code': 'WARN-021', 'severity': 'WARNING', 'theme': 'header', 'description': 'A head field of the document level is missing (Typ, Aenderungen — REV-18 Z. 160; the MEMO-010 duty is a SUBSET of the form requirement, not its replacement)' }
 ]
 
 
@@ -67,6 +81,13 @@ const ERROR_CODE_CATALOG = [
 //   schemaVersion   INFO-010 advisory Schema-Version hint on/off
 //   questionFamilies  MEMO-020a/b/c/d, MEMO-025, MEMO-030..033, MEMO-040, MEMO-050 on/off
 //   lifecycleMarker   MEMO-070 "[Research offen]" on/off
+//   documentOrder     WARN-020 document-level section sequence on/off (Memo 080, PRD-R1 Vollausbau)
+//   documentHeader    WARN-021 document-level head fields on/off (Memo 080, PRD-R1 Vollausbau)
+//
+// The two document-level checks are `full`-ONLY, and that is the whole reason they can exist at all: an
+// order/head duty applied to every file would have hit all 157 prepare artefacts on the first run, for a
+// form none of them was ever meant to carry. They are entered in THIS table rather than in a second one
+// — there is exactly one place where a per-type duty lives.
 //
 // A prepare artefact is written BEFORE the revision it plans; its question list is an informal
 // planning note ("keine / Liste der offenen Fragen die IN die Revision einfliessen",
@@ -81,7 +102,9 @@ const REVISION_SCHEMA = {
         'headerAliases': {},
         'schemaVersion': true,
         'questionFamilies': true,
-        'lifecycleMarker': true
+        'lifecycleMarker': true,
+        'documentOrder': true,
+        'documentHeader': true
     },
     'update': {
         // An update revision replaces or extends chapters but must still carry the FULL set of
@@ -96,7 +119,9 @@ const REVISION_SCHEMA = {
         'headerAliases': {},
         'schemaVersion': true,
         'questionFamilies': true,
-        'lifecycleMarker': true
+        'lifecycleMarker': true,
+        'documentOrder': false,
+        'documentHeader': false
     },
     'prepare': {
         // The three duties of the prepare artefact per memo-revision-generate/SKILL.md
@@ -108,7 +133,9 @@ const REVISION_SCHEMA = {
         'headerAliases': { 'Geplante Revision': [ 'Geplante Revision', 'Revision' ] },
         'schemaVersion': false,
         'questionFamilies': false,
-        'lifecycleMarker': false
+        'lifecycleMarker': false,
+        'documentOrder': false,
+        'documentHeader': false
     }
 }
 
@@ -128,7 +155,12 @@ class MemoValidator {
         // family. Derived before the empty-document guard so even a refusal reports which schema
         // it would have applied.
         const { revisionType } = MemoValidator.#revisionTypeOf( { doc, fileName } )
-        const struct = { 'status': false, 'messages': [], 'info': [], 'checked': { 'sections': 0, 'headerFields': 0 }, revisionType }
+        // Memo 080, PRD-R1 Vollausbau: `warnings` is a channel of its OWN, deliberately not folded into
+        // `messages`. A WARNING that lands in `messages` sets status:false and blocks — which would turn
+        // every existing full revision red on the day the check is introduced, before anybody has
+        // measured anything. The channel is what makes "enter as WARNING, sharpen later" a real state
+        // rather than a promise.
+        const struct = { 'status': false, 'messages': [], 'info': [], 'warnings': [], 'checked': { 'sections': 0, 'headerFields': 0, 'comparedSections': 0, 'comparedHeaderFields': 0 }, revisionType }
 
         if( typeof doc !== 'string' || doc.length === 0 ) {
             const { message } = MemoValidator.#buildMessage( {
@@ -152,6 +184,8 @@ class MemoValidator {
         const questions = MemoValidator.#validateQuestions( { doc, questionSchema, jsonFound, revisionType } )
         const optionKinds = MemoValidator.#validateOptionKinds( { doc, jsonFound, revisionType } )
         const lintExt = MemoValidator.#validateLintExtensions( { doc, fileName, revisionType } )
+        const documentOrder = MemoValidator.#validateDocumentOrder( { doc, revisionType } )
+        const documentHeader = MemoValidator.#validateDocumentHeader( { doc, revisionType } )
 
         const messages = []
             .concat( sections[ 'messages' ] )
@@ -171,11 +205,22 @@ class MemoValidator {
 
         struct[ 'messages' ] = messages
         struct[ 'info' ] = info
+        struct[ 'warnings' ] = documentOrder[ 'warnings' ].concat( documentHeader[ 'warnings' ] )
         struct[ 'status' ] = messages.length === 0
         // Memo 080, PRD-R1: a verdict without its comparison basis is not readable. `checked` states HOW
         // MUCH was compared — how many mandatory sections and how many mandatory header fields the run
         // examined — so a `status: true` can be told apart from a run that simply had nothing to check.
-        struct[ 'checked' ] = { 'sections': sections[ 'checked' ], 'headerFields': header[ 'checked' ] }
+        // `comparedSections` / `comparedHeaderFields` are the SAME statement for the two document-level
+        // checks (Vollausbau): how many declared positions and how many declared head fields they held
+        // the document against. Both are 0 when the check did not RUN for this revision type — which is a
+        // different statement from "ran and found nothing to compare", and that second case emits its own
+        // warning instead of reporting a green zero.
+        struct[ 'checked' ] = {
+            'sections': sections[ 'checked' ],
+            'headerFields': header[ 'checked' ],
+            'comparedSections': documentOrder[ 'checked' ],
+            'comparedHeaderFields': documentHeader[ 'checked' ]
+        }
 
         return struct
     }
@@ -325,9 +370,22 @@ class MemoValidator {
     }
 
 
-    static #route( { code, feldPfad, description, messages, info } ) {
+    // Route ONE finding into the channel its severity belongs to. WARNING is its own channel since Memo
+    // 080 / PRD-R1 Vollausbau; a caller that can emit a WARN code MUST hand the array in. Falling back to
+    // `messages` would make a non-blocking code block — the defect this guard closes for the WHOLE class,
+    // not only for the two codes that exist today.
+    static #route( { code, feldPfad, description, messages, info, warnings } ) {
         const { severity } = MemoValidator.classify( { code } )
         const { message } = MemoValidator.#buildMessage( { code, feldPfad, description } )
+
+        if( severity === 'WARNING' ) {
+            if( Array.isArray( warnings ) !== true ) {
+                throw new Error( `MemoValidator.#route: "${ code }" is a WARNING and needs the non-blocking "warnings" channel — routing it into "messages" would make an advisory code block` )
+            }
+            warnings.push( message )
+
+            return { messages, info, warnings }
+        }
 
         if( severity === 'INFO' ) {
             info.push( message )
@@ -335,7 +393,134 @@ class MemoValidator {
             messages.push( message )
         }
 
-        return { messages, info }
+        return { messages, info, warnings }
+    }
+
+
+    // WARN-020 — the DOCUMENT ORDER (Memo 080, PRD-R1 Vollausbau / WI-027). The sequence of the level-2
+    // headings a document carries is held against the ONE declared document-level order
+    // (BlockSections.documentSections, REV-18 Z. 158-172). Only positions that are PRESENT are compared:
+    // a missing section is MEMO-001's subject, not this check's, and reporting it twice would say the same
+    // thing in two channels.
+    //
+    // `Kopf` carries no level-2 heading (it is a table) and is therefore not part of the compared
+    // sequence. A position may be written under more than one heading — "Phasen und Phasen-Hinweise" is
+    // `## Phasen` plus `## Phase-Hints`, `Vorwort` also as `## Claude-Vorwort` — so the FIRST heading of a
+    // position that appears decides its place.
+    //
+    // A RUN THAT COMPARED NOTHING IS RED: zero recognised positions has no comparison basis, and the
+    // honest answer is a warning that says so, never a silent green.
+    static #validateDocumentOrder( { doc, revisionType } ) {
+        const struct = { 'messages': [], 'info': [], 'warnings': [], 'checked': 0 }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        if( schema[ 'documentOrder' ] !== true ) { return struct }
+
+        const lines = typeof doc === 'string' ? doc.split( '\n' ) : []
+        const positions = BlockSections.documentSections().sections
+            .filter( ( entry ) => entry[ 'headings' ].length > 0 )
+        const declared = positions
+            .map( ( entry ) => ( { 'section': entry[ 'section' ], 'index': MemoValidator.#firstHeadingIndex( { lines, headings: entry[ 'headings' ] } ) } ) )
+            .filter( ( entry ) => entry[ 'index' ] !== -1 )
+
+        struct[ 'checked' ] = declared.length
+
+        if( declared.length === 0 ) {
+            MemoValidator.#route( {
+                'code': 'WARN-020',
+                'feldPfad': 'document.order',
+                'description': `No declared document-level section was found, so 0 of ${ positions.length } positions could be compared — a check without a comparison basis reports red, not green`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+
+            return struct
+        }
+
+        const actual = declared
+            .slice()
+            .sort( ( a, b ) => a[ 'index' ] - b[ 'index' ] )
+        const mismatches = declared
+            .map( ( entry, position ) => ( { 'position': position + 1, 'expected': entry[ 'section' ], 'found': actual[ position ][ 'section' ] } ) )
+            .filter( ( entry ) => entry[ 'expected' ] !== entry[ 'found' ] )
+
+        if( mismatches.length > 0 ) {
+            const first = mismatches[ 0 ]
+            MemoValidator.#route( {
+                'code': 'WARN-020',
+                'feldPfad': 'document.order',
+                'description': `Document section sequence deviates from the declared order: at position ${ first[ 'position' ] } expected "${ first[ 'expected' ] }" but found "${ first[ 'found' ] }" (${ mismatches.length } of ${ declared.length } compared positions out of order)`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+        }
+
+        return struct
+    }
+
+
+    // The line index of the FIRST `## <heading>` line matching any accepted heading of a position, or -1.
+    static #firstHeadingIndex( { lines, headings } ) {
+        const patterns = headings
+            .map( ( heading ) => new RegExp( `^##\\s+${ heading.replace( /[.*+?^${}()|[\]\\-]/g, '\\$&' ) }\\s*$` ) )
+
+        return lines
+            .findIndex( ( line ) => patterns.some( ( pattern ) => pattern.test( line ) === true ) )
+    }
+
+
+    // WARN-021 — the DOCUMENT-LEVEL HEAD FIELDS (Memo 080, PRD-R1 Vollausbau). The form requirement names
+    // the head as `Memo, Revision, Datum, Typ, Aenderungen` (REV-18 Z. 160); the MEMO-010 duty of this
+    // revision type covers part of that set. What is compared here is exactly the REMAINDER, so a field is
+    // never reported twice under two codes. On today's `full` schema the remainder is `Typ` and
+    // `Aenderungen` — derived, not typed out, so widening either list keeps the two in step.
+    static #validateDocumentHeader( { doc, revisionType } ) {
+        const struct = { 'messages': [], 'info': [], 'warnings': [], 'checked': 0 }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        if( schema[ 'documentHeader' ] !== true ) { return struct }
+
+        const kopf = BlockSections.documentSections().sections
+            .find( ( entry ) => entry[ 'fields' ].length > 0 )
+        const covered = schema[ 'headerFields' ]
+        const remainder = kopf === undefined
+            ? []
+            : kopf[ 'fields' ].filter( ( field ) => covered.includes( field ) !== true )
+
+        struct[ 'checked' ] = remainder.length
+
+        if( remainder.length === 0 ) {
+            MemoValidator.#route( {
+                'code': 'WARN-021',
+                'feldPfad': 'document.header',
+                'description': 'The document level declares no head field beyond the MEMO-010 set, so 0 fields could be compared — a check without a comparison basis reports red, not green',
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+
+            return struct
+        }
+
+        remainder
+            .forEach( ( field ) => {
+                const pattern = new RegExp( `\\|\\s*\\*\\*${ field }\\*\\*\\s*\\|\\s*([^|]*?)\\s*\\|`, 'i' )
+                const matched = typeof doc === 'string' ? doc.match( pattern ) : null
+                const value = matched === null ? '' : matched[ 1 ].trim()
+
+                if( matched === null || value.length === 0 ) {
+                    MemoValidator.#route( {
+                        'code': 'WARN-021',
+                        'feldPfad': `header.${ field.replace( /\s+/g, '' ) }`,
+                        'description': `Head field of the document level ${ matched === null ? 'missing' : 'empty' } (expected "| **${ field }** | ... |"; ${ remainder.length } document-level head field(s) compared)`,
+                        'messages': struct[ 'messages' ],
+                        'info': struct[ 'info' ],
+                        'warnings': struct[ 'warnings' ]
+                    } )
+                }
+            } )
+
+        return struct
     }
 
 

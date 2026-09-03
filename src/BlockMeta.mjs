@@ -32,7 +32,10 @@ import { BlockSections } from './BlockSections.mjs'
 
 const FENCE = /```block-meta\s*\n([\s\S]*?)\n```/g
 const T_ID = /^T\d{3}$/
-const PRD_ID = /^PRD-\d{3}$/
+// Memo 080, PRD-B4: the LETTER form (PRD-B4, PRD-V13) alongside the numeric one. Memo 080 alone names
+// 77 identifiers that way, and a block-meta fence carrying its own memo's identifiers was refused by
+// #validateIds. Additive — `PRD-001` stays valid.
+const PRD_ID = /^(?:PRD-\d{3}|PRD-[A-Z]+\d+)$/
 const B_ID = /^B\d{3}$/
 
 // Memo 080, PRD-B1: the parser no longer keeps a body-section list of its own. It reads the ONE

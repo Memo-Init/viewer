@@ -402,3 +402,29 @@ describe( 'MemoValidator MEMO-080 — block-meta integration (memo lint SSOT)', 
         expect( result[ 'messages' ].some( ( m ) => m.startsWith( 'MEMO-080' ) ) ).toBe( false )
     } )
 } )
+
+
+// Memo 080, PRD-B4 (A16): the LETTER form of a PRD identifier. Memo 080 alone names 77 identifiers
+// that way (PRD-B4, PRD-V13), and the numeric-only pattern refused a block-meta fence that carried its
+// own memo's identifiers. ADDITIVE: PRD-001 stays valid and a text that is neither shape stays invalid,
+// so the widening did not turn the check off.
+describe( 'BlockMeta PRD identifiers — Memo 080, PRD-B4', () => {
+    it( 'accepts the letter form alongside the numeric one', () => {
+        const block = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "topics": ["T012"], "prds": ["PRD-B4", "PRD-D2", "PRD-V13", "PRD-001"] }\n```'
+        } ).blocks[ 0 ]
+        const { messages } = BlockMeta.validateShape( { block } )
+
+        expect( block.prds ).toHaveLength( 4 )
+        expect( messages.filter( ( m ) => m.includes( 'prd id' ) ) ).toEqual( [] )
+    } )
+
+    it( 'still refuses a text that is neither shape — the widening did not turn the check off', () => {
+        const block = BlockMeta.parse( {
+            doc: '## X\n```block-meta\n{ "topics": ["T012"], "prds": ["PRD-b4", "PRD-", "B4"] }\n```'
+        } ).blocks[ 0 ]
+        const { messages } = BlockMeta.validateShape( { block } )
+
+        expect( messages.filter( ( m ) => m.includes( 'prd id' ) ) ).toHaveLength( 3 )
+    } )
+} )

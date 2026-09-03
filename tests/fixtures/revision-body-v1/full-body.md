@@ -1,8 +1,8 @@
 # DB Traceability
 
-_Generated from the memo database — not hand-written._
+_Erzeugt aus der Memo-Datenbank `memo-079.db` durch `memo revision assemble`, geprueft durch `memo revision parity` — nicht hand-geschrieben._
 
-**Scope:** 1 blocks · 2 topics · 2 work items · 2 questions · 1 phases · 1 phase items
+**Umfang dieses Memos:** 1 Kapitel · 2 gestellte und beantwortete Fragen · 1 PRDs · 1 Phasen (P0–P0) · 2 Topics (1 registriert) · 2 Work-Items (0 lebendig) · 1 Phasen-Items. Gerechnet, nicht behauptet — `memo revision parity`.
 
 | Feld | Wert |
 | --- | --- |

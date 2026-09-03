@@ -44,7 +44,7 @@
 // Class architecture per node-class-architecture: static-only, object params, object returns,
 // private-by-default, NO SILENT DEFAULTS (every missing argument fails loud), no for/while loops.
 
-import { existsSync, readdirSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 
 import { DatabaseSync } from '@dolthub/doltlite'
@@ -105,22 +105,40 @@ const HEAD_FIELDS = [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ]
         .filter( ( field ) => [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ].includes( field ) !== true ) )
 
 
-// The visible generation note + the scope line of the head (Memo 080, PRD-R2 / WI-025). Byte-identical to
-// RevisionAssembler (core): same wording, same label, same carrier order — a one-sided change fails the
-// hash-gated parity fixture. Both lines are a PURE function of the content rows: no clock, no commit hash,
-// and no count of `revision` / `provenance` / `history_journal` (those are written after the render, so
-// counting them would make the frozen body drift on the next verify).
-const GENERATED_NOTE = '_Generated from the memo database — not hand-written._'
+// The visible generation note + the scope line of the head (Memo 080, PRD-R2 / WI-025, Vollausbau).
+// Byte-identical to RevisionAssembler (core): same wording, same template, same figure order — a one-sided
+// change fails the hash-gated parity fixture. Both lines are a PURE function of the content rows: no clock,
+// no commit hash, and no count of `revision` / `provenance` / `history_journal` (those are written after
+// the render, so counting them would make the frozen body drift on the next verify).
+//
+// The note names SOURCE, PRODUCER and CHECK, and it is German — one language per artefact (Sprach-Matrix,
+// Denglish-Verbot), not one per line.
+const GENERATED_NOTE_PREFIX = '_Erzeugt aus der Memo-Datenbank `'
+const GENERATED_NOTE_SUFFIX = '` durch `memo revision assemble`, geprueft durch `memo revision parity` — nicht hand-geschrieben._'
 
-const SCOPE_LABEL = '**Scope:**'
+// The scope-line template — VENDORED, not imported: the viewer is a separate npm package and does not
+// depend on memo-cli, so the file lives twice and is held byte-identical by a parity test in both repos
+// (the same arrangement BlockSections and the body fixture already use). What must NOT exist twice is the
+// FORMAT: there is no format literal on either side, only this one JSON.
+const SCOPE_TEMPLATE_PATH = resolve( import.meta.dirname, '..', 'tests', 'fixtures', 'revision-scope-line-v1.json' )
 
-const SCOPE_CARRIERS = [
-    { key: 'blocks', table: 'block', where: null },
-    { key: 'topics', table: 'topic', where: null },
-    { key: 'work items', table: 'work_item', where: null },
-    { key: 'questions', table: 'question', where: null },
-    { key: 'phases', table: 'rollout_phase', where: "id != '__state__'" },
-    { key: 'phase items', table: 'rollout_work_item', where: null }
+const SCOPE_PRUEFER_KEY = 'node'
+
+// The NINE figures in the seven groups of the template, each with the carrier that can count it. `needs`
+// names COLUMNS, not only the table: `topic.status` and `work_item.disposition` were added to existing
+// tables and the schema knows no ALTER, so an older database carries the table WITHOUT the column —
+// counting through it threw "no such column" and took the whole render down. A missing column is the same
+// statement as a missing table here: the figure is "nicht ausweisbar", never a 0 and never an exception.
+const SCOPE_FIGURES = [
+    { key: 'chapters', table: 'block_chapter', column: 'DISTINCT chapter', needs: [ 'chapter' ], where: null },
+    { key: 'questions', table: 'question', column: '*', needs: [], where: null },
+    { key: 'prds', table: 'prd', column: '*', needs: [], where: null },
+    { key: 'phases', table: 'rollout_phase', column: '*', needs: [ 'id' ], where: "id != '__state__'" },
+    { key: 'topics', table: 'topic', column: '*', needs: [], where: null },
+    { key: 'registered', table: 'topic', column: '*', needs: [ 'status' ], where: "status = 'registered'" },
+    { key: 'wis', table: 'work_item', column: '*', needs: [], where: null },
+    { key: 'alive', table: 'work_item', column: '*', needs: [ 'status', 'disposition' ], where: "status = 'offen' AND ( disposition IS NULL OR disposition = 'behalten' )" },
+    { key: 'phase_items', table: 'rollout_work_item', column: '*', needs: [], where: null }
 ]
 
 
@@ -818,7 +836,7 @@ class DoltDbAssembler {
         const latestRevNo = DoltDbAssembler.#latestRevNo( { db } )
         const rows = HEAD_FIELDS
             .map( ( field ) => `| **${ field }** | ${ cell( DoltDbAssembler.#headValue( { field, memo, headRows, latestRevNo } ) ) } |` )
-        const lines = [ `# ${ cell( memo[ 'name' ] ) }`, '', GENERATED_NOTE, '', DoltDbAssembler.#scopeLine( { db } ), '', '| Feld | Wert |', '| --- | --- |' ]
+        const lines = [ `# ${ cell( memo[ 'name' ] ) }`, '', DoltDbAssembler.#generatedNote( { memo } ), '', DoltDbAssembler.#scopeLine( { db } ), '', '| Feld | Wert |', '| --- | --- |' ]
             .concat( rows )
             .concat( [ '' ] )
 
@@ -826,27 +844,81 @@ class DoltDbAssembler {
     }
 
 
-    // Byte-identical to RevisionAssembler.#scopeLine (core): `**Scope:** N blocks · N topics · …`, one
-    // figure per content carrier in the shared carrier order, each figure named WITH its carrier. Every
-    // count is #tableExists-guarded and degrades to 0, so an early hand-seeded db renders the same bytes the
-    // core renderer produces for the same state instead of throwing.
-    static #scopeLine( { db } ) {
-        const parts = SCOPE_CARRIERS
-            .map( ( carrier ) => `${ DoltDbAssembler.#countCarrier( { db, carrier } ) } ${ carrier[ 'key' ] }` )
+    // Byte-identical to RevisionAssembler.#generatedNote (core): the source is the per-memo database FILE
+    // NAME derived from the memo id (`M080` -> `memo-080.db`), so the note points at a file the reader can
+    // open. An id without a number yields the id itself — a stated fallback, never an invented file name.
+    static #generatedNote( { memo } ) {
+        const id = memo[ 'id' ] === null || memo[ 'id' ] === undefined ? '' : String( memo[ 'id' ] )
+        const digits = id.replace( /^\D+/, '' )
+        const source = digits.length > 0 ? `memo-${ digits }.db` : `memo-${ id }.db`
 
-        return `${ SCOPE_LABEL } ${ parts.join( ' · ' ) }`
+        return `${ GENERATED_NOTE_PREFIX }${ source }${ GENERATED_NOTE_SUFFIX }`
     }
 
 
-    // One carrier row count. `table` / `where` are internal literals from SCOPE_CARRIERS, never user input.
+    // Byte-identical to RevisionAssembler.#scopeLine (core): the NINE figures of the Umfangszeile in the
+    // seven groups of the SHARED template, each figure named WITH its carrier. Every count is
+    // column-guarded; a MISSING carrier renders the template's `nicht ausweisbar` wording and never a 0 —
+    // an invented number in a head that ASSERTS is exactly the vacuum this memo closes.
+    static #scopeLine( { db } ) {
+        const template = DoltDbAssembler.#scopeTemplate()
+        const figures = SCOPE_FIGURES
+            .reduce( ( acc, carrier ) => ( { ...acc, [ carrier[ 'key' ] ]: DoltDbAssembler.#countCarrier( { db, carrier } ) } ), {} )
+        const values = DoltDbAssembler.#scopeSlots( { template, figures } )
+        const groups = template[ 'groups' ]
+            .map( ( group ) => DoltDbAssembler.#fillSlots( { format: group[ 'format' ], values } ) )
+        const tail = DoltDbAssembler.#fillSlots( { format: template[ 'tail' ], values: { pruefer: template[ 'pruefer' ][ SCOPE_PRUEFER_KEY ] } } )
+
+        return `${ template[ 'label' ] } ${ groups.join( template[ 'separator' ] ) }${ tail }`
+    }
+
+
+    // The vendored template. Read on every render (never cached in a module variable), so a divergent copy
+    // is caught by the parity fixture instead of by a stale process.
+    static #scopeTemplate() {
+        return JSON.parse( readFileSync( SCOPE_TEMPLATE_PATH, 'utf8' ) )
+    }
+
+
+    // Mirror of RevisionAssembler.#scopeSlots: a figure without a carrier is `null` and becomes the
+    // template's `unavailable` wording — and so does every slot derived from it.
+    static #scopeSlots( { template, figures } ) {
+        const base = template[ 'figures' ]
+            .reduce( ( acc, key ) => ( { ...acc, [ key ]: typeof figures[ key ] === 'number' ? `${ figures[ key ] }` : template[ 'unavailable' ] } ), {} )
+        const derived = Object.entries( template[ 'derived' ] )
+            .reduce( ( acc, [ name, rule ] ) => {
+                const source = figures[ rule[ 'figure' ] ]
+
+                return { ...acc, [ name ]: typeof source === 'number' ? `${ source + rule[ 'offset' ] }` : template[ 'unavailable' ] }
+            }, {} )
+
+        return { ...base, ...derived }
+    }
+
+
+    // Mirror of RevisionAssembler.#fillSlots — an unknown slot fails loud rather than rendering `{prds}`.
+    static #fillSlots( { format, values } ) {
+        return format
+            .replace( /\{(\w+)\}/g, ( _, name ) => {
+                if( values[ name ] === undefined ) {
+                    throw new Error( `DoltDbAssembler: the scope-line template names the slot "{${ name }}" but no value was supplied — a rendered revision may not carry an unfilled placeholder` )
+                }
+
+                return values[ name ]
+            } )
+    }
+
+
+    // One carrier row count, or null when the carrier is absent. `table` / `column` / `where` are internal
+    // literals from SCOPE_FIGURES, never user input.
     static #countCarrier( { db, carrier } ) {
-        const { table, where } = carrier
-        if( DoltDbAssembler.#tableExists( { db, table } ) !== true ) {
-            return 0
+        const { table, column, needs, where } = carrier
+        if( DoltDbAssembler.#hasColumns( { db, table, columns: needs } ) !== true ) {
+            return null
         }
 
         const clause = where === null ? '' : ` WHERE ${ where }`
-        const row = DoltDbAssembler.#get( { db, sql: `SELECT count(*) AS n FROM ${ table }${ clause }` } )
+        const row = DoltDbAssembler.#get( { db, sql: `SELECT count(${ column }) AS n FROM ${ table }${ clause }` } )
 
         return row === null ? 0 : Number( row[ 'n' ] )
     }

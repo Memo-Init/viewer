@@ -85,14 +85,19 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
 
             const { markdown } = DoltDbAssembler.assembleFromDb( { dbPath } )
 
-            // the note is plain Markdown, not an HTML comment nobody sees while reading.
-            expect( markdown ).toContain( '_Generated from the memo database — not hand-written._' )
+            // the note is plain Markdown, not an HTML comment nobody sees while reading — and it names
+            // SOURCE, PRODUCER and CHECK, in the language of the artefact (Memo 080, PRD-R2 Vollausbau).
+            expect( markdown ).toContain( '_Erzeugt aus der Memo-Datenbank `memo-079.db` durch `memo revision assemble`, geprueft durch `memo revision parity` — nicht hand-geschrieben._' )
             expect( markdown ).not.toContain( '<!--' )
-            // one figure per carrier, each named WITH its carrier. This db carries 2 blocks + 2 work items and
-            // has NO topic / question / rollout table at all — a missing carrier counts 0, it never throws.
-            expect( markdown ).toContain( '**Scope:** 2 blocks · 0 topics · 2 work items · 0 questions · 0 phases · 0 phase items' )
+            // NINE figures in SEVEN groups. This db carries 2 work items and has NO topic / question /
+            // rollout / prd / block_chapter table at all — an absent carrier renders `nicht ausweisbar`,
+            // never an invented 0, and it never throws. `work_item` EXISTS but predates the `disposition`
+            // column, so `wis` is a real count while `lebendig` is not ausweisbar: the guard works at BOTH
+            // granularities.
+            expect( markdown ).toContain( '**Umfang dieses Memos:** nicht ausweisbar Kapitel · nicht ausweisbar gestellte und beantwortete Fragen · nicht ausweisbar PRDs · nicht ausweisbar Phasen (P0–Pnicht ausweisbar) · nicht ausweisbar Topics (nicht ausweisbar registriert) · 2 Work-Items (nicht ausweisbar lebendig) · nicht ausweisbar Phasen-Items. Gerechnet, nicht behauptet — `memo revision parity`.' )
+            expect( markdown ).not.toContain( '0 Kapitel' )
             // and the note stands ABOVE the head table, in the shared render order the core assembler fixes.
-            expect( markdown.indexOf( '_Generated from the memo database' ) ).toBeLessThan( markdown.indexOf( '| Feld | Wert |' ) )
+            expect( markdown.indexOf( '_Erzeugt aus der Memo-Datenbank' ) ).toBeLessThan( markdown.indexOf( '| Feld | Wert |' ) )
         } )
 
         it( 'renders block titles ORDER BY sort with their ids', () => {
@@ -431,11 +436,11 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
         const seedFullCanonical = ( { path } ) => {
             const db = new DatabaseSync( path )
             db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT, context TEXT )' )
-            db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT, disposition TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS block_tables ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, tsv TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS block_diagrams ( id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT )' )
-            db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT, status TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, depends_on TEXT, can_parallel_with TEXT, commit_hash TEXT, spillover TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, commit_hash TEXT, depends_on TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT )' )
@@ -454,6 +459,12 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             // table that feeds the mandatory `## Kontaminations-Metadaten` section.
             db.exec( 'CREATE TABLE IF NOT EXISTS block_section ( id TEXT PRIMARY KEY, block_id TEXT, name TEXT, body TEXT, sort INTEGER )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS sessions ( session_id TEXT PRIMARY KEY, memo_id TEXT, parent_session_id TEXT, role TEXT, model TEXT, started_at TEXT, tokens INTEGER, tool_calls INTEGER )' )
+            // Memo 080, PRD-R2 Vollausbau: the carriers of the NINE scope figures. `topic.status` and
+            // `work_item.disposition` are COLUMNS added to the two tables above; `block_chapter` and `prd`
+            // are whole tables. None of the four is rendered into the body — they exist so this seed
+            // reproduces the core seed's scope line byte for byte instead of reporting "nicht ausweisbar".
+            db.exec( 'CREATE TABLE IF NOT EXISTS block_chapter ( block_id TEXT, memo_id TEXT, chapter INTEGER, heading TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS prd ( prd_id TEXT PRIMARY KEY, memo_id TEXT, phase_id TEXT, chapter TEXT, title TEXT, category TEXT, prd_file TEXT, status TEXT, commit_hash TEXT )' )
 
             db.prepare( 'INSERT INTO memo ( id, name, memo_type, status, created_at, context ) VALUES ( ?, ?, ?, ?, ?, ? )' )
                 .run( 'M079', 'DB Traceability', 'strategy', 'finalized', '2026-08-20T00:00:00.000Z', 'Kontext Zeile eins.\nKontext Zeile zwei.' )
@@ -463,8 +474,10 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.prepare( 'INSERT INTO block_tables ( id, block_id, title, tsv ) VALUES ( ?, ?, ?, ? )' ).run( 'BT001', 'B001', 'Primitives', 'name\tstatus\ncommit\tok' )
             db.prepare( 'INSERT INTO block_diagrams ( id, block_id, title, kind, `source`, feed ) VALUES ( ?, ?, ?, ?, ?, ? )' )
                 .run( 'M1', 'B001', 'Flow', 'mermaid', 'graph TD{{#rows}}\n  {{name}} --> {{status}}{{/rows}}', 'BT001' )
-            db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block, origin ) VALUES ( ?, ?, ?, ?, ?, ? )' ).run( 'T01', 'M079', 'DB als SoT', 'P1', 'B001', 'init' )
-            db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block, origin ) VALUES ( ?, ?, ?, ?, ?, ? )' ).run( 'T02', 'M079', 'Traceability', 'P2', null, null )
+            db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block, origin, status ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' ).run( 'T01', 'M079', 'DB als SoT', 'P1', 'B001', 'init', 'registered' )
+            db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block, origin, status ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' ).run( 'T02', 'M079', 'Traceability', 'P2', null, null, null )
+            db.prepare( 'INSERT INTO block_chapter ( block_id, memo_id, chapter, heading ) VALUES ( ?, ?, ?, ? )' ).run( 'B001', 'M079', 13, 'Die erzeugte Revision' )
+            db.prepare( 'INSERT INTO prd ( prd_id, memo_id, phase_id, chapter, title ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'PRD-16', 'M079', 'P1', '13', 'Assembled revision' )
             db.prepare( 'INSERT INTO rollout_phase ( id, memo_id, name, status, depends_on, can_parallel_with, commit_hash, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
                 .run( '__state__', 'M079', null, null, null, null, null, '{"memo":"M079","branch":"MEMO-079"}' )
             db.prepare( 'INSERT INTO rollout_phase ( id, memo_id, name, status, depends_on, can_parallel_with, commit_hash, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
@@ -552,11 +565,13 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             // unrendered kinds of data appear in the viewer render exactly as in the frozen core revision.
             expect( markdown ).toContain( '| Feld | Wert |\n| --- | --- |\n| **Memo** | M079 |' )
             expect( markdown ).toContain( '| **Revision** | 01 |' )
-            // Memo 080, PRD-R2: the visible generation note + the scope line are part of the canonical bytes
-            // both renderers must reproduce; the six figures count content carriers ONLY (this db carries no
-            // `revision` / `provenance` / `history_journal` rows and the line must not depend on them anyway).
-            expect( markdown ).toContain( '_Generated from the memo database — not hand-written._' )
-            expect( markdown ).toContain( '**Scope:** 1 blocks · 2 topics · 2 work items · 2 questions · 1 phases · 1 phase items' )
+            // Memo 080, PRD-R2 Vollausbau: the visible generation note + the scope line are part of the
+            // canonical bytes both renderers must reproduce; the NINE figures count content carriers ONLY
+            // (this db carries no `revision` / `provenance` / `history_journal` rows and the line must not
+            // depend on them anyway). Both lines come out of the SHARED template, so a one-sided wording
+            // change fails here AND in the core.
+            expect( markdown ).toContain( '_Erzeugt aus der Memo-Datenbank `memo-079.db` durch `memo revision assemble`, geprueft durch `memo revision parity` — nicht hand-geschrieben._' )
+            expect( markdown ).toContain( '**Umfang dieses Memos:** 1 Kapitel · 2 gestellte und beantwortete Fragen · 1 PRDs · 1 Phasen (P0–P0) · 2 Topics (1 registriert) · 2 Work-Items (0 lebendig) · 1 Phasen-Items. Gerechnet, nicht behauptet — `memo revision parity`.' )
             expect( markdown ).toContain( '## Vorwort\n\nDiese Revision entsteht aus der Datenbank.' )
             expect( markdown ).toContain( '## Phase-Hints\n\n- P1 kann parallel zu P2 laufen.' )
             expect( markdown ).toContain( '## Snags\n\n| ID | Title | Status | Verdict | Disposition |' )
@@ -1130,11 +1145,16 @@ describe( 'DoltDbAssembler — external payload pointers (Memo 080, PRD-D5)', ()
             : 'id TEXT PRIMARY KEY, block_id TEXT, title TEXT, kind TEXT, `source` TEXT, feed TEXT'
 
         db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT, memo_type TEXT, status TEXT, created_at TEXT, context TEXT )' )
-        db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT, disposition TEXT )' )
         db.exec( 'CREATE TABLE IF NOT EXISTS block ( id TEXT PRIMARY KEY, title TEXT, sort INTEGER )' )
         db.exec( `CREATE TABLE IF NOT EXISTS block_tables ( ${ tableColumns } )` )
         db.exec( `CREATE TABLE IF NOT EXISTS block_diagrams ( ${ diagramColumns } )` )
-        db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT, status TEXT )' )
+        // Memo 080, PRD-R2 Vollausbau: the two remaining carriers of the nine scope figures. This helper
+        // states "the shape DoltSchema.apply leaves", so it must carry them — otherwise the viewer would
+        // render `nicht ausweisbar` where the core, which applies the real schema, renders a count.
+        db.exec( 'CREATE TABLE IF NOT EXISTS block_chapter ( block_id TEXT, memo_id TEXT, chapter INTEGER, heading TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS prd ( prd_id TEXT PRIMARY KEY, memo_id TEXT, phase_id TEXT, chapter TEXT, title TEXT, category TEXT, prd_file TEXT, status TEXT, commit_hash TEXT )' )
         db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, depends_on TEXT, can_parallel_with TEXT, commit_hash TEXT, spillover TEXT )' )
         db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, commit_hash TEXT, depends_on TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
         db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT )' )
@@ -1213,9 +1233,9 @@ describe( 'DoltDbAssembler — external payload pointers (Memo 080, PRD-D5)', ()
         expect( fixtureSha ).toBe( POINTER_MANIFEST[ 'sha256' ] )
         expect( Buffer.byteLength( POINTER_GOLDEN_BODY, 'utf8' ) ).toBe( POINTER_MANIFEST[ 'byteLength' ] )
         // Measured after the Vollausbau render change (Memo 080, PRD-R1): the fixture grew from 1320 to
-        // 1625 bytes because every block now carries its toolkit body and the document carries the
-        // contamination section. The figure is re-measured, never carried over.
-        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1625 )             // compared 1625 bytes, > 0
+        // 1859 bytes since the head note and the nine-figure Umfangszeile grew (Memo 080, PRD-R2
+        // Vollausbau). The figure is re-measured, never carried over.
+        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1859 )             // compared 1859 bytes, > 0
     } )
 
 

@@ -1,0 +1,41 @@
+{
+    "id": "revision-scope-line-v1",
+    "note": "THE ONE SOURCE OF THE UMFANGSZEILE (Memo 080, PRD-R2 Vollausbau / WI-025). Two regimes render this line while the transition lasts (F5=B): scripts/memo-revision-header.py from the flat stores and RevisionAssembler / DoltDbAssembler from the per-memo database. Two format strings would let the same figure be written two ways — that is the two-regime state this memo abolishes, not a transition. So the format lives HERE and both regimes read it; a second literal copy of `**Umfang dieses Memos:**` in Python or Node source is a defect a grep finds. It sits in the fixture folder because it is BOTH the production template and the cross-repo fixture: repos/viewer/tests/fixtures/revision-scope-line-v1.json is a byte-identical vendored copy (no import across the repo boundary), held by a parity test in both repos. Nine figures in seven groups, in the order the flat generator has always written them.",
+    "label": "**Umfang dieses Memos:**",
+    "separator": " · ",
+    "groups": [
+        { "id": "chapters", "format": "{chapters} Kapitel" },
+        { "id": "questions", "format": "{questions} gestellte und beantwortete Fragen" },
+        { "id": "prds", "format": "{prds} PRDs" },
+        { "id": "phases", "format": "{phases} Phasen (P0–P{phasesLast})" },
+        { "id": "topics", "format": "{topics} Topics ({registered} registriert)" },
+        { "id": "wis", "format": "{wis} Work-Items ({alive} lebendig)" },
+        { "id": "phaseItems", "format": "{phase_items} Phasen-Items" }
+    ],
+    "tail": ". Gerechnet, nicht behauptet — {pruefer}.",
+    "figures": [ "chapters", "questions", "prds", "phases", "topics", "registered", "wis", "alive", "phase_items" ],
+    "derived": {
+        "phasesLast": { "figure": "phases", "offset": -1 }
+    },
+    "unavailable": "nicht ausweisbar",
+    "prueferNote": "The ONLY slot whose value differs between the two regimes: each side names the checker that can reproduce ITS figures. Everything else must come out character-identical, and a test compares both sides on the same stock.",
+    "pruefer": {
+        "python": "`python3 scripts/memo-invariants.py` (Check C01)",
+        "node": "`memo revision parity`"
+    },
+    "example": {
+        "figures": {
+            "chapters": 40,
+            "questions": 29,
+            "prds": 90,
+            "phases": 11,
+            "topics": 215,
+            "registered": 203,
+            "wis": 705,
+            "alive": 512,
+            "phase_items": 103
+        },
+        "pruefer": "python",
+        "expected": "**Umfang dieses Memos:** 40 Kapitel · 29 gestellte und beantwortete Fragen · 90 PRDs · 11 Phasen (P0–P10) · 215 Topics (203 registriert) · 705 Work-Items (512 lebendig) · 103 Phasen-Items. Gerechnet, nicht behauptet — `python3 scripts/memo-invariants.py` (Check C01)."
+    }
+}

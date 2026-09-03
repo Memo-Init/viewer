@@ -1,8 +1,8 @@
 # Externe Payload-Referenz
 
-_Generated from the memo database — not hand-written._
+_Erzeugt aus der Memo-Datenbank `memo-080.db` durch `memo revision assemble`, geprueft durch `memo revision parity` — nicht hand-geschrieben._
 
-**Scope:** 1 blocks · 0 topics · 0 work items · 0 questions · 0 phases · 0 phase items
+**Umfang dieses Memos:** 0 Kapitel · 0 gestellte und beantwortete Fragen · 0 PRDs · 0 Phasen (P0–P-1) · 0 Topics (0 registriert) · 0 Work-Items (0 lebendig) · 0 Phasen-Items. Gerechnet, nicht behauptet — `memo revision parity`.
 
 | Feld | Wert |
 | --- | --- |

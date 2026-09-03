@@ -61,7 +61,12 @@ const ERROR_CODE_CATALOG = [
     // The figures of the PRD are NOT a substitute for that measurement: a severity raised against a
     // number nobody re-measured is a claim, not a gate.
     { 'code': 'WARN-020', 'severity': 'WARNING', 'theme': 'dokument-ebene', 'description': 'The document section sequence deviates from the declared document-level order (BlockSections.documentSections, REV-18 Z. 158-172)' },
-    { 'code': 'WARN-021', 'severity': 'WARNING', 'theme': 'header', 'description': 'A head field of the document level is missing (Typ, Aenderungen — REV-18 Z. 160; the MEMO-010 duty is a SUBSET of the form requirement, not its replacement)' }
+    { 'code': 'WARN-021', 'severity': 'WARNING', 'theme': 'header', 'description': 'A head field of the document level is missing (Typ, Aenderungen — REV-18 Z. 160; the MEMO-010 duty is a SUBSET of the form requirement, not its replacement)' },
+    // Memo 080, Kap 14 / WI-172 — the CROSS-revision counterpart of SR-13. SR-13 sees one file and
+    // flags the pointer that replaces content; WARN-011 sees two files and names what LEFT the
+    // document. Measured 2026-09-03 over the memo-080 revisions: REV-01 -> REV-02 lost the
+    // `User-Auftrag` block in 8 of 9 compared chapters, REV-17 -> REV-18 in 0 of 25.
+    { 'code': 'WARN-011', 'severity': 'WARNING', 'theme': 'standalone-continuity', 'description': 'A chapter lost substance against the predecessor revision — a dropped User-Auftrag block, a chapter shrunk below half its non-empty lines, or a fallen evidence-marker balance (Memo 080 Kap 14: a revision carries its whole content itself)' }
 ]
 
 
@@ -268,6 +273,102 @@ class MemoValidator {
     }
 
 
+    static checkStandaloneContinuity( { current, previous } ) {
+        // Memo 080, Kap 14 / WI-172 (F23=A) — non-blocking viewer-lint (WARN-011), built like
+        // checkQuestionContinuity above. A revision carries its whole content itself; when a chapter
+        // survives into the next revision but its substance does not, the diff shows green while the
+        // document lost information. This compares a revision against its predecessor over the
+        // chapters BOTH carry and reports three findings:
+        //   1. chapters that lost their `User-Auftrag` block — the hard indicator, because that block
+        //      is the verbatim user wording every later fidelity audit compares against,
+        //   2. chapters below HALF their previous non-empty line count,
+        //   3. the evidence-marker balance ([FAKT]/[ANNAHME]/[VERMUTUNG]) over the same chapters.
+        //
+        // `comparedChapters` rides in EVERY result. A verdict without a comparison basis is not a
+        // pass: when nothing (or less than half of the predecessor's chapters) could be matched, the
+        // only finding is exactly that — measured on REV-02 -> REV-03, where all headings were
+        // renamed and a naive check would have reported "0 losses, all green" over 0 chapters.
+        // Never blocks, never throws.
+        const struct = { 'warnings': [], 'comparedChapters': 0 }
+
+        if( typeof current !== 'string' || typeof previous !== 'string' ) {
+            const { message } = MemoValidator.#buildMessage( {
+                'code': 'WARN-011',
+                'feldPfad': 'Kapitel',
+                'description': 'no comparison basis: no predecessor revision was handed in (compared 0 chapters)'
+            } )
+            struct[ 'warnings' ].push( message )
+
+            return struct
+        }
+
+        const previousChapters = MemoValidator.#numberedChapters( { doc: previous } )
+        const currentChapters = MemoValidator.#numberedChapters( { doc: current } )
+        const currentByKey = new Map( currentChapters.map( ( chapter ) => [ chapter[ 'key' ], chapter ] ) )
+        const shared = previousChapters.filter( ( chapter ) => currentByKey.has( chapter[ 'key' ] ) === true )
+
+        struct[ 'comparedChapters' ] = shared.length
+
+        // The basis gate runs FIRST. Below half of the predecessor's chapters it is its OWN finding
+        // and rides ALONGSIDE the substantive ones — the losses that WERE found stay reported, they
+        // just carry the note that they rest on a thin basis (REV-01 -> REV-02: 8 losses over 9 of 19
+        // chapters). At ZERO matched chapters it is the ONLY finding, because there is nothing else
+        // to compute and an empty warning list would read as a pass (REV-02 -> REV-03).
+        const required = Math.ceil( previousChapters.length / 2 )
+        if( shared.length < required || shared.length === 0 ) {
+            const { message } = MemoValidator.#buildMessage( {
+                'code': 'WARN-011',
+                'feldPfad': 'Kapitel',
+                'description': `no sufficient comparison basis: ${ shared.length } of ${ previousChapters.length } predecessor chapters matched (${ currentChapters.length } chapters in this revision) — headings were renamed or renumbered, so a "no losses" verdict would rest on nothing`
+            } )
+            struct[ 'warnings' ].push( message )
+        }
+
+        if( shared.length === 0 ) { return struct }
+
+        const lostAuftrag = shared.filter( ( chapter ) => {
+            return chapter[ 'hasAuftrag' ] === true && currentByKey.get( chapter[ 'key' ] )[ 'hasAuftrag' ] === false
+        } )
+        const shrunk = shared.filter( ( chapter ) => {
+            const before = chapter[ 'nonEmptyLines' ]
+            const after = currentByKey.get( chapter[ 'key' ] )[ 'nonEmptyLines' ]
+
+            return before > 0 && after * 2 < before
+        } )
+        const evidenceBefore = shared.reduce( ( acc, chapter ) => acc + chapter[ 'evidenceMarks' ], 0 )
+        const evidenceAfter = shared.reduce( ( acc, chapter ) => acc + currentByKey.get( chapter[ 'key' ] )[ 'evidenceMarks' ], 0 )
+
+        if( lostAuftrag.length > 0 ) {
+            const { message } = MemoValidator.#buildMessage( {
+                'code': 'WARN-011',
+                'feldPfad': 'User-Auftrag',
+                'description': `${ lostAuftrag.length } of ${ shared.length } compared chapters lost their User-Auftrag block: ${ lostAuftrag.map( ( chapter ) => chapter[ 'title' ] ).join( ' | ' ) }`
+            } )
+            struct[ 'warnings' ].push( message )
+        }
+
+        if( shrunk.length > 0 ) {
+            const { message } = MemoValidator.#buildMessage( {
+                'code': 'WARN-011',
+                'feldPfad': 'Kapitel',
+                'description': `${ shrunk.length } of ${ shared.length } compared chapters shrank below half their non-empty lines: ${ shrunk.map( ( chapter ) => `${ chapter[ 'title' ] } (${ chapter[ 'nonEmptyLines' ] } -> ${ currentByKey.get( chapter[ 'key' ] )[ 'nonEmptyLines' ] })` ).join( ' | ' ) }`
+            } )
+            struct[ 'warnings' ].push( message )
+        }
+
+        if( evidenceAfter < evidenceBefore ) {
+            const { message } = MemoValidator.#buildMessage( {
+                'code': 'WARN-011',
+                'feldPfad': 'Evidenz',
+                'description': `evidence markers over the ${ shared.length } compared chapters fell from ${ evidenceBefore } to ${ evidenceAfter }`
+            } )
+            struct[ 'warnings' ].push( message )
+        }
+
+        return struct
+    }
+
+
     static getCatalog() {
         return { 'catalog': ERROR_CODE_CATALOG }
     }
@@ -317,6 +418,48 @@ class MemoValidator {
         // Memo 038 Kap 7: accept only the two known provenance values; default to 'user' so a
         // legacy answered entry (no answeredBy field) counts as a user answer (back-compat).
         return question[ 'answeredBy' ] === 'ai-on-behalf' ? 'ai-on-behalf' : 'user'
+    }
+
+
+    // #numberedChapters — split a revision into its NUMBERED body chapters (`## 3. Fehleranalyse …`).
+    // The `key` is the heading normalised the way the corpus demands it: the leading number and every
+    // `[Tag]` suffix are stripped, whitespace collapsed, case folded — so `## 3. X [Docs]` in one
+    // revision matches `## 4. X [Code]` in the next. Everything else (a renamed heading, an added
+    // "— vertieft" tail) is deliberately NOT matched: a renamed chapter is a different chapter, and
+    // pretending otherwise is what would silently shrink the comparison basis.
+    // Headings inside a fenced code block are ignored — a fenced example is not a chapter.
+    static #numberedChapters( { doc } ) {
+        const lines = doc.split( '\n' )
+        const { flags } = lines.reduce( ( acc, line ) => {
+            const isFence = /^\s*```/.test( line )
+
+            return { 'open': isFence === true ? ( acc[ 'open' ] !== true ) : acc[ 'open' ], 'flags': acc[ 'flags' ].concat( [ acc[ 'open' ] === true || isFence === true ] ) }
+        }, { 'open': false, 'flags': [] } )
+
+        const starts = lines.reduce( ( acc, line, index ) => {
+            if( flags[ index ] === true ) { return acc }
+            const heading = line.match( /^##\s+\d+\.\s*(.*)$/ )
+
+            return heading === null ? acc : acc.concat( [ { index, 'title': heading[ 1 ].trim() } ] )
+        }, [] )
+
+        return starts.map( ( start, position ) => {
+            const end = position + 1 < starts.length ? starts[ position + 1 ][ 'index' ] : lines.length
+            const body = lines.slice( start[ 'index' ], end )
+            const key = start[ 'title' ]
+                .replace( /\[[^\]]*\]/g, ' ' )
+                .replace( /\s+/g, ' ' )
+                .trim()
+                .toLowerCase()
+
+            return {
+                key,
+                'title': start[ 'title' ],
+                'hasAuftrag': body.some( ( line ) => /User-Auftrag/i.test( line ) === true ),
+                'nonEmptyLines': body.filter( ( line ) => line.trim().length > 0 ).length,
+                'evidenceMarks': body.reduce( ( acc, line ) => acc + ( line.match( /\[(?:FAKT|ANNAHME|VERMUTUNG)\]/g ) || [] ).length, 0 )
+            }
+        } )
     }
 
 

@@ -77,7 +77,9 @@ describe( 'MemoValidator document level — the catalogue (A14, A17)', () => {
         const { catalog } = MemoValidator.getCatalog()
         const added = catalog.filter( ( entry ) => [ 'WARN-020', 'WARN-021' ].includes( entry[ 'code' ] ) === true )
 
-        expect( catalog.length ).toBe( 21 )
+        // 22 since Memo 080 / PRD-R4 added WARN-011 (standalone-continuity) — additive, a WARNING,
+        // and it changes nothing about the two codes this case is actually about.
+        expect( catalog.length ).toBe( 22 )
         expect( added.length ).toBe( 2 )
         expect( added.map( ( entry ) => [ entry[ 'code' ], entry[ 'severity' ], entry[ 'theme' ] ] ) ).toEqual( [
             [ 'WARN-020', 'WARNING', 'dokument-ebene' ],

@@ -7997,6 +7997,22 @@
                 banner += '<br><span style="color:#8b949e;font-size:0.85em">' + diff.skippedUpdates.length + ' Update(s) uebersprungen: ' + skippedLabels.join( ', ' ) + '</span>'
             }
 
+            // PRD-R4 (Memo 080, Kap 14): the comparison banner answers "what disappeared?" — the
+            // question the green diff never asks. Three states that must not look alike:
+            //   continuity absent      -> nothing is said (an older server sends no such field)
+            //   warnings present       -> the comparison basis line + one line per warning
+            //   warnings empty         -> the comparison basis alone, so a clean verdict still
+            //                             states HOW MANY chapters it rests on
+            // Additive to the banner only; the document body and changedSections stay untouched.
+            if( diff.continuity ) {
+                var continuityWarnings = diff.continuity.warnings || []
+                banner += '<br><span style="color:#8b949e;font-size:0.85em">Vollstaendigkeit: '
+                    + escapeHtml( String( diff.continuity.comparedChapters ) ) + ' Kapitel verglichen</span>'
+                banner += continuityWarnings.map( function( w ) {
+                    return '<br><span style="color:#d29922;font-size:0.85em">' + escapeHtml( w ) + '</span>'
+                } ).join( '' )
+            }
+
             if( diff.changedSections && diff.changedSections.length > 0 ) {
                 banner += '<br>Geaenderte Kapitel: '
                 banner += diff.changedSections.map( function( s ) {

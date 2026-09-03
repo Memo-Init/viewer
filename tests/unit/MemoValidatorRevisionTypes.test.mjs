@@ -317,26 +317,29 @@ describe( 'MemoValidator revision types — the update schema (A4)', () => {
 
 describe( 'MemoValidator revision types — no new error code (A8)', () => {
     // PRD-V13 introduced NO code of its own and asserted the catalogue at 19. Memo 080 / PRD-R1
-    // Vollausbau adds exactly TWO — WARN-020 and WARN-021 — and the case is widened to 21 with the two
-    // named. That is the ONE test figure this PRD changes, and it changes it by naming the additions,
-    // never by relaxing the assertion to a length or a subset check. Every pre-existing code keeps its
-    // number, its severity and its theme; the second case below proves the severity half of that claim.
-    it( 'getCatalog() carries exactly 21 codes — the 19 of PRD-V13 plus the two new WARNINGs', () => {
+    // Vollausbau adds exactly TWO — WARN-020 and WARN-021 — and PRD-R4 adds exactly ONE more,
+    // WARN-011 (standalone-continuity), so the case reads 22 with all three named. That is the ONE
+    // test figure these PRDs change, and they change it by naming the additions, never by relaxing
+    // the assertion to a length or a subset check. Every pre-existing code keeps its number, its
+    // severity and its theme; the second case below proves the severity half of that claim.
+    const ADDED_SINCE_PRD_V13 = [ 'WARN-011', 'WARN-020', 'WARN-021' ]
+
+    it( 'getCatalog() carries exactly 22 codes — the 19 of PRD-V13 plus the three new WARNINGs', () => {
         const { catalog } = MemoValidator.getCatalog()
         const codes = catalog.map( ( entry ) => entry[ 'code' ] ).sort()
 
         expect( codes ).toEqual( [
             'INFO-010', 'MEMO-001', 'MEMO-002', 'MEMO-010', 'MEMO-020a', 'MEMO-020b', 'MEMO-020c',
             'MEMO-020d', 'MEMO-025', 'MEMO-030', 'MEMO-031', 'MEMO-032', 'MEMO-033', 'MEMO-040',
-            'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010', 'WARN-020', 'WARN-021'
+            'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010', 'WARN-011', 'WARN-020', 'WARN-021'
         ] )
     } )
 
 
-    it( 'no pre-existing severity changed — the two additions are WARNINGs and nothing else moved', () => {
+    it( 'no pre-existing severity changed — the three additions are WARNINGs and nothing else moved', () => {
         const { catalog } = MemoValidator.getCatalog()
         const severities = catalog
-            .filter( ( entry ) => [ 'WARN-020', 'WARN-021' ].includes( entry[ 'code' ] ) !== true )
+            .filter( ( entry ) => ADDED_SINCE_PRD_V13.includes( entry[ 'code' ] ) !== true )
             .map( ( entry ) => [ entry[ 'code' ], entry[ 'severity' ] ] )
             .sort( ( a, b ) => a[ 0 ].localeCompare( b[ 0 ] ) )
 
@@ -348,8 +351,8 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
             [ 'MEMO-033', 'ERROR' ], [ 'MEMO-040', 'ERROR' ], [ 'MEMO-050', 'ERROR' ], [ 'MEMO-060', 'ERROR' ],
             [ 'MEMO-070', 'ERROR' ], [ 'MEMO-080', 'ERROR' ], [ 'WARN-010', 'WARNING' ]
         ] )
-        expect( catalog.filter( ( entry ) => [ 'WARN-020', 'WARN-021' ].includes( entry[ 'code' ] ) ).map( ( entry ) => entry[ 'severity' ] ) )
-            .toEqual( [ 'WARNING', 'WARNING' ] )
+        expect( catalog.filter( ( entry ) => ADDED_SINCE_PRD_V13.includes( entry[ 'code' ] ) ).map( ( entry ) => entry[ 'severity' ] ) )
+            .toEqual( [ 'WARNING', 'WARNING', 'WARNING' ] )
     } )
 } )
 

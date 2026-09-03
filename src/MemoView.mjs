@@ -3721,6 +3721,8 @@ class MemoView {
                                             diffResult['currentFullFile'] = basename( currentFullPath )
                                             diffResult['previousContent'] = previousRaw
                                             diffResult['skippedUpdates'] = skippedUpdates
+                                            // Memo 080, PRD-R4: additive, exactly like previousContent above.
+                                            diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
                                             diff = diffResult
                                         } catch {
                                             // skip
@@ -3766,6 +3768,8 @@ class MemoView {
                                             diffResult['currentFullFile'] = basename( currentFullPath )
                                             diffResult['previousContent'] = previousRaw
                                             diffResult['skippedUpdates'] = skippedUpdates
+                                            // Memo 080, PRD-R4: additive, exactly like previousContent above.
+                                            diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
                                             diff = diffResult
                                         } catch {
                                             // skip
@@ -3815,6 +3819,8 @@ class MemoView {
                             diffResult['currentFullFile'] = basename( currentFullPath )
                             diffResult['previousContent'] = previousRaw
                             diffResult['skippedUpdates'] = skippedUpdates
+                            // Memo 080, PRD-R4: additive, exactly like previousContent above.
+                            diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
                             diff = diffResult
                         } catch {
                             // skip
@@ -3960,6 +3966,8 @@ class MemoView {
                     diffResult['currentFullFile'] = basename( currentFullPath )
                     diffResult['previousContent'] = previousRaw
                     diffResult['skippedUpdates'] = skippedUpdates
+                    // Memo 080, PRD-R4: additive, exactly like previousContent above.
+                    diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
                     diff = diffResult
                 } catch {
                     // Previous file not readable, skip diff
@@ -4003,6 +4011,34 @@ class MemoView {
             return { validation }
         } catch {
             return { 'validation': null }
+        }
+    }
+
+
+    // Memo 080, Kap 14 / WI-172 (PRD-R4): the CROSS-revision warning channel of the comparison.
+    // #computeValidation above judges ONE document; this helper judges the pair and answers the
+    // question the green diff does not ask — "what disappeared?". It runs both continuity checks:
+    //
+    //   WARN-011  checkStandaloneContinuity — chapters that lost their User-Auftrag block, shrank
+    //             below half their non-empty lines, or lost evidence markers.
+    //   WARN-010  checkQuestionContinuity — open questions that vanished without an answer. That
+    //             check existed since Memo 067 but had NO production caller (it was reachable only
+    //             from a unit test) while two spec chapters claimed the viewer surfaced it. It is
+    //             wired here in the same call, on the same data — the one-line carry-along that ends
+    //             a measured writer-without-caller instead of building a second dead channel.
+    //
+    // `comparedChapters` is passed through so the banner can state HOW MUCH was compared; a result
+    // without a comparison basis is not a pass. Defensively wrapped like #computeValidation: neither
+    // check throws by contract, and an unexpected error must never block content delivery — the
+    // continuity field then becomes null and the server keeps running.
+    static #computeContinuity( { currentContent, previousContent } ) {
+        try {
+            const standalone = MemoValidator.checkStandaloneContinuity( { 'current': currentContent, 'previous': previousContent } )
+            const questions = MemoValidator.checkQuestionContinuity( { 'current': currentContent, 'previous': previousContent } )
+
+            return { 'continuity': { 'warnings': standalone[ 'warnings' ].concat( questions[ 'warnings' ] ), 'comparedChapters': standalone[ 'comparedChapters' ] } }
+        } catch {
+            return { 'continuity': null }
         }
     }
 

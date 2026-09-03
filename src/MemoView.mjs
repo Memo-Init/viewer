@@ -25,6 +25,7 @@ import { UserInputCapture } from './UserInputCapture.mjs'
 import { RequirementsStore } from './RequirementsStore.mjs'
 import { AnnotationStore } from './AnnotationStore.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
+import { BlockSections } from './BlockSections.mjs'
 import { RevisionLogic } from './RevisionLogic.mjs'
 import { Config } from './data/config.mjs'
 
@@ -5619,15 +5620,24 @@ class MemoView {
     }
 
 
-    // PRD-015 (Memo 016 Kap 9, D6): a block's three structured body headings (### Problem-Beschreibung
-    // / Loesungsansatz / Offene Fragen below a block-meta fence — BlockMeta BODY_SECTIONS) are H3s
-    // that pollute the prose and claim heading anchors. This pure mirror of the inline isBlockBodyHeading
-    // decides whether a heading at a given level + text is such a body heading (level 3 + exact label).
+    // PRD-015 (Memo 016 Kap 9, D6): a block's structured body headings below a block-meta fence are
+    // H3s that pollute the prose and claim heading anchors. This pure mirror of the inline
+    // isBlockBodyHeading decides whether a heading at a given level + text is such a body heading.
+    //
+    // Memo 080, PRD-B1: the three hand-typed labels are gone; the decision comes from the ONE register
+    // (BlockSections). They had already drifted — the list carried the LEGACY alias
+    // "problem-beschreibung" instead of the canonical "faktenlage" and did not know "bewertung" at all,
+    // so a heading the parser treated as a block section stayed visible here. That is the trap named in
+    // Beleg 2.7 of REV-18, and it had already sprung.
+    //
+    // THE REACH IS UNCHANGED: still ONLY level 3, and the caller still applies it ONLY inside a
+    // .block-meta-card region. What grew is the set of names, which is the point. Because this class
+    // has no jsdom, this static is the TESTABLE mirror of the browser-side function of the same name in
+    // app.client.mjs — the parity test holds the two against each other and against the register.
     static isBlockBodyHeading( { level, text } ) {
-        const labels = [ 'problem-beschreibung', 'loesungsansatz', 'offene fragen' ]
-        const label = String( text == null ? '' : text ).trim().toLowerCase()
+        const { matched } = BlockSections.match( { text: String( text == null ? '' : text ) } )
 
-        return { isBlockBody: level === 3 && labels.indexOf( label ) !== -1 }
+        return { isBlockBody: level === 3 && matched === true }
     }
 
 

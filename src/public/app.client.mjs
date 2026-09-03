@@ -4900,10 +4900,23 @@
                     : ( ( block.requirementsPlus && block.requirementsPlus.length > 0 ) ? block.requirementsPlus : [] )
                 addSection( 'requirements', 'Effektive Requirements', reqs.length > 0 ? reqs.join( ', ' ) : '' )
             } else {
-                addSection( 'factual-account', 'Faktenlage', block.factualAccount )
-                addSection( 'assessment', 'Bewertung', block.assessment )
-                addSection( 'solution', 'Loesungsansatz', block.solution )
-                addSection( 'open-questions', 'Offene Fragen', block.openQuestions )
+                // Memo 080, PRD-B1: the detail rows follow the ONE register instead of the four
+                // hand-typed legacy names. The four ALWAYS stand (unchanged, "—" when empty), so a block
+                // authored before the toolkit looks exactly as it did; every OTHER writable section is
+                // added when it carries text. Without this the modal would have shown four dashes for a
+                // block written with ### Ist-Zustand — the parser would know the section and the display
+                // would not, which is the very drift this PRD closes. The list is kept on ONE line and
+                // LOCAL (the unit tests lift this function on its own, so it must close over nothing),
+                // and the parity test holds it against BlockSections field for field.
+                // Entry = [ registerField, dom-hook, label, mode ]. `always` are the four rows this modal
+                // has always shown (they keep rendering "—" when empty, so nothing that stood there
+                // disappears); `when-set` are the toolkit sections that only appear once authored.
+                var BLOCK_DETAIL_SECTIONS = [ [ 'userMandate', 'user-mandate', 'User-Auftrag', 'when-set' ], [ 'currentState', 'current-state', 'Ist-Zustand', 'when-set' ], [ 'targetState', 'target-state', 'Soll-Zustand', 'when-set' ], [ 'delimitation', 'delimitation', 'Abgrenzung', 'when-set' ], [ 'decision', 'decision', 'Entscheidung', 'when-set' ], [ 'measurement', 'measurement', 'Messung', 'when-set' ], [ 'example', 'example', 'Beispiel', 'when-set' ], [ 'risk', 'risk', 'Risiko', 'when-set' ], [ 'counterArgument', 'counter-argument', 'Gegenargument', 'when-set' ], [ 'openItems', 'open-items', 'Offene Punkte', 'when-set' ], [ 'factualAccount', 'factual-account', 'Faktenlage', 'always' ], [ 'assessment', 'assessment', 'Bewertung', 'always' ], [ 'solution', 'solution', 'Loesungsansatz', 'always' ], [ 'openQuestions', 'open-questions', 'Offene Fragen', 'always' ] ]
+                BLOCK_DETAIL_SECTIONS.forEach( function( entry ) {
+                    var value = block[ entry[ 0 ] ]
+                    if( entry[ 3 ] !== 'always' && !value ) { return }
+                    addSection( entry[ 1 ], entry[ 2 ], value )
+                } )
             }
 
             // B6: drilldown link Block -> resolved Requirements. The two views used to be fully
@@ -5620,10 +5633,11 @@
             applyMetatagChips()
             // PRD-001 (#16-18): Roh-Markdown der Frage-Sektionen ausblenden, Anchor behalten.
             hideRawQuestionBodies()
-            // PRD-015 (D6): hide a block's structured H3 body sections (### Problem-Beschreibung /
-            // Loesungsansatz / Offene Fragen below a block-meta card) so they neither show as raw
-            // prose H3s nor claim heading anchors. Runs after hideRawQuestionBodies (a block's own
-            // "### Offene Fragen" is already raw-question-hidden; this covers the other two).
+            // PRD-015 (D6): hide a block's structured H3 body sections below a block-meta card so they
+            // neither show as raw prose H3s nor claim heading anchors. Which H3 that is comes from the
+            // ONE register (Memo 080, PRD-B1 — BLOCK_BODY_HEADINGS below), no longer from three
+            // hand-typed names. Runs after hideRawQuestionBodies (a block's own "### Offene Fragen" is
+            // already raw-question-hidden; this covers the rest).
             hideBlockBodySections()
             // PRD-018 (Memo 072 Kap 13, F10=A): the deterministic Block↔Topic UI from the STORE.
             // resolveWikiLinks + wrapTablesCollapsible are pure sync DOM surgery; applyTopicPillsFromStore
@@ -6530,15 +6544,31 @@
             return out
         }
 
-        // PRD-015 (D6): the three structured block-body section headings that follow a block-meta
-        // fence (BlockMeta.BODY_SECTIONS). Mirrored here so the DOM can recognise an H3 that belongs
-        // to a block body (vs. a real prose H3) without re-parsing the source.
-        var BLOCK_BODY_HEADINGS = [ 'problem-beschreibung', 'loesungsansatz', 'offene fragen' ]
+        // PRD-015 (D6): the structured block-body section headings that follow a block-meta fence.
+        // Mirrored here so the DOM can recognise an H3 that belongs to a block body (vs. a real prose
+        // H3) without re-parsing the source.
+        //
+        // Memo 080, PRD-B1: this is no longer a hand-typed set of three. It is the label list of the
+        // ONE register (BlockSections.labels(), heading + alias, lower-cased, register order), kept on
+        // ONE line so the parity test can read it verbatim and hold it against the register and against
+        // MemoView.isBlockBodyHeading. It used to carry the LEGACY alias "problem-beschreibung" while
+        // the canonical name was already "faktenlage" — a drift that hid nothing here but would hide
+        // content the moment the parser renamed a section (Beleg 2.7).
+        var BLOCK_BODY_HEADINGS = [ 'user-auftrag', 'ist-zustand', 'soll-zustand', 'bewertung', 'abgrenzung', 'entscheidung', 'messung', 'beispiel', 'risiko', 'gegenargument', 'offene punkte', 'topics', 'work-items', 'prd-zuordnung', 'belege', 'faktenlage', 'problem-beschreibung', 'loesungsansatz', 'offene fragen' ]
+        // The two suffix forms the register accepts (": " 25x and " (" 1x in REV-18). Same list, same
+        // order as BlockSections SUFFIX_SEPARATORS — the parity test compares this line too, so the
+        // browser cannot decide differently from the server mirror.
+        var BLOCK_BODY_SUFFIXES = [ ': ', ' (' ]
 
         function isBlockBodyHeading( node ) {
             if( headingLevel( node ) !== 3 ) { return false }
             var label = ( node.textContent || '' ).trim().toLowerCase()
-            return BLOCK_BODY_HEADINGS.indexOf( label ) !== -1
+            return BLOCK_BODY_HEADINGS.some( function( heading ) {
+                if( label === heading ) { return true }
+                return BLOCK_BODY_SUFFIXES.some( function( separator ) {
+                    return label.indexOf( heading + separator ) === 0
+                } )
+            } )
         }
 
         // PRD-015 (D6): walk each block-meta card's body region — from the card to the next H2 or the
@@ -7724,8 +7754,8 @@
 
             headings.forEach( function( heading, idx ) {
                 // PRD-015 (D6/D11): skip headings the structure pass collapsed — block-body H3s
-                // (### Problem-Beschreibung/Loesungsansatz/Offene Fragen under a block-meta card) and
-                // raw-question/vorwort bodies. They are hidden in the prose, so they must not pollute
+                // (the toolkit headings of the BlockSections register under a block-meta card, Memo 080
+                // PRD-B1) and raw-question/vorwort bodies. They are hidden in the prose, so they must not pollute
                 // the TOC either. buildTOC always runs after applyContentStructure, so the classes
                 // are present by now.
                 if( heading.classList.contains( 'block-body-hidden' ) ) { return }

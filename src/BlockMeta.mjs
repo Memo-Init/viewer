@@ -27,22 +27,27 @@
 //
 // House style: static methods, object params/returns, no loops, no silent defaults.
 
+import { BlockSections } from './BlockSections.mjs'
+
+
 const FENCE = /```block-meta\s*\n([\s\S]*?)\n```/g
 const T_ID = /^T\d{3}$/
 const PRD_ID = /^PRD-\d{3}$/
 const B_ID = /^B\d{3}$/
 
-// PRD-003 (Memo 054 Kap 6) body sections: four canonical Markdown headings a Block carries below
-// its fence, aligned with the spec-primitive / core MemoBlock. Mapped to flat fields so the
-// downstream PRD derivation (Kap 8) can read them machine-readably without re-parsing prose.
-// `aliases` provides legacy heading names that still match (additive, no hard break for old memos):
-//   factualAccount: canonical "### Faktenlage", alias "### Problem-Beschreibung" (pre-054 memos).
-const BODY_SECTIONS = [
-    { field: 'factualAccount', heading: 'Faktenlage', aliases: [ 'Problem-Beschreibung' ] },
-    { field: 'assessment', heading: 'Bewertung', aliases: [] },
-    { field: 'solution', heading: 'Loesungsansatz', aliases: [] },
-    { field: 'openQuestions', heading: 'Offene Fragen', aliases: [] }
-]
+// Memo 080, PRD-B1: the parser no longer keeps a body-section list of its own. It reads the ONE
+// closed register (BlockSections) that the write path and the display side read too. The list it
+// used to carry was the pre-toolkit set of four and overlapped the toolkit of REV-18 Kap 2 in
+// exactly ONE heading ("Bewertung") — measured against REV-18: `Faktenlage` 0 hits, `Loesungsansatz`
+// 0, `Offene Fragen` 0, `Problem-Beschreibung` 0. The register covers all 146 of 146 third-level
+// headings of that document, including the 26 that carry a suffix ("Soll-Zustand: der Werkzeugkoffer").
+//
+// THE FOUR OLD FIELDS ARE UNCHANGED IN FORM AND MEANING — factualAccount (with its legacy alias
+// "Problem-Beschreibung"), assessment, solution and openQuestions stay flat fields on every parsed
+// block. The new writable fields are added NEXT to them; the four GENERATED sections are NOT
+// flattened, because `topics` would collide with the fence's own topics axis. They are reachable —
+// together with all the others — through the additive `sections` map.
+const WRITABLE_FIELDS = BlockSections.writableFields().fields
 
 
 class BlockMeta {
@@ -125,7 +130,20 @@ class BlockMeta {
         // (PRD-009), so a fence carrying strand:"x" produces NO strand field on the parsed block.
         // PRD-003 (Memo 054 Kap 6): `problem` renamed to `factualAccount`; `assessment` added as
         // the second section. Old "### Problem-Beschreibung" headings are accepted as alias.
-        return {
+        //
+        // Memo 080, PRD-B1: the flat body fields are taken FROM THE REGISTER (WRITABLE_FIELDS), so a
+        // section added there cannot be forgotten here — that is the very drift this PRD closes. The
+        // four old names are part of that list and keep their meaning; the ten new writable ones join
+        // them. `sections` carries ALL EIGHTEEN including the four generated ones, which are
+        // deliberately NOT flattened: a flat `topics` would overwrite the fence's own topics axis.
+        const flat = WRITABLE_FIELDS
+            .reduce( ( acc, field ) => {
+                acc[ field ] = body[ field ]
+
+                return acc
+            }, {} )
+
+        return Object.assign( flat, {
             ok: true,
             chapter,
             role,
@@ -137,16 +155,13 @@ class BlockMeta {
             prds: BlockMeta.#stringArray( { value: value.prds } ),
             requirements: BlockMeta.#stringArray( { value: value.requirements } ),
             requirementsPlus: BlockMeta.#stringArray( { value: value[ 'requirements+' ] } ),
-            factualAccount: body.factualAccount,
-            assessment: body.assessment,
-            solution: body.solution,
-            openQuestions: body.openQuestions,
+            sections: body,
             hasIdKey: Object.prototype.hasOwnProperty.call( value, 'id' ),
             hasPrdsKey: Object.prototype.hasOwnProperty.call( value, 'prds' ),
             hasTopicsKey: Object.prototype.hasOwnProperty.call( value, 'topics' ),
             hasRequirementsKey: Object.prototype.hasOwnProperty.call( value, 'requirements' ),
             hasChildrenKey: Object.prototype.hasOwnProperty.call( value, 'children' )
-        }
+        } )
     }
 
 
@@ -223,13 +238,18 @@ class BlockMeta {
     }
 
 
-    // PRD-003 (Memo 054 Kap 6): extract the four canonical body sections that follow a block-meta
-    // fence: ### Faktenlage (factualAccount), ### Bewertung (assessment), ### Loesungsansatz
-    // (solution), ### Offene Fragen (openQuestions). Legacy "### Problem-Beschreibung" is accepted
-    // as an alias for factualAccount so pre-054 memos keep working without any hard break.
+    // Memo 080, PRD-B1: extract the body sections that follow a block-meta fence, recognised through
+    // the ONE register (BlockSections.match) instead of a private list and a verbatim
+    // `headings.includes( text )`. A heading with a suffix — "### Soll-Zustand: der Werkzeugkoffer",
+    // 25 of 26 such headings in REV-18 — is therefore recognised as well; it used to fall through.
+    // Legacy "### Problem-Beschreibung" stays an accepted alias of factualAccount, so pre-054 memos
+    // keep working without any hard break.
+    //
     // The body region runs from the fence end to the next chapter ("## ") or the next block-meta
-    // fence, whichever comes first — sections are scoped to THIS block only. A missing section
-    // yields null (no silent default). Non-throwing.
+    // fence, whichever comes first — sections are scoped to THIS block only, UNCHANGED. A section's
+    // text still ends at the next third-level heading of ANY kind (a heading outside the register
+    // still terminates the section it follows). A missing section yields null (no silent default).
+    // The FIRST occurrence of a section wins, exactly as before. Non-throwing.
     static #bodySections( { doc, fenceEnd } ) {
         const after = doc.slice( fenceEnd )
         const nextChapter = after.search( /^##\s+/m )
@@ -243,18 +263,11 @@ class BlockMeta {
             .map( ( line, index ) => ( { line, index } ) )
             .filter( ( entry ) => /^###\s+/.test( entry.line ) )
 
-        const sectionFor = ( section ) => {
-            const headings = [ section.heading ].concat( section.aliases || [] )
-            const start = headingIndexes.find( ( entry ) => {
-                const text = entry.line.replace( /^###\s+/, '' ).trim()
+        const recognised = headingIndexes
+            .map( ( entry ) => ( { entry, match: BlockSections.match( { text: entry.line.replace( /^###\s+/, '' ).trim() } ) } ) )
+            .filter( ( candidate ) => candidate.match.matched === true )
 
-                return headings.includes( text )
-            } )
-
-            if( start === undefined ) {
-                return null
-            }
-
+        const bodyOf = ( { start } ) => {
             const next = headingIndexes.find( ( entry ) => entry.index > start.index )
             const end = next === undefined ? lines.length : next.index
             const text = lines.slice( start.index + 1, end ).join( '\n' ).trim()
@@ -262,8 +275,11 @@ class BlockMeta {
             return text.length === 0 ? null : text
         }
 
-        return BODY_SECTIONS.reduce( ( acc, section ) => {
-            acc[ section.field ] = sectionFor( section )
+        const { sections } = BlockSections.all()
+
+        return sections.reduce( ( acc, section ) => {
+            const hit = recognised.find( ( candidate ) => candidate.match.field === section.field )
+            acc[ section.field ] = hit === undefined ? null : bodyOf( { start: hit.entry } )
 
             return acc
         }, {} )

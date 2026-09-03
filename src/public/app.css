@@ -836,6 +836,46 @@
             opacity: 0.6;
         }
 
+        /* Memo 080, PRD-R5 (Kap 14, WI-171): the frame the removed-lines block needs — heading and
+           line-number column. .diff-removed above is untouched in colour and strike-through: the class
+           had existed since the first diff view and was simply never assigned to anything. What was
+           missing was never the look, it was the assignment. */
+        .diff-removed-block {
+            margin: 14px 0 22px 0;
+            padding-top: 8px;
+            border-top: 1px dashed var(--danger);
+        }
+
+        .diff-removed-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--danger);
+            margin-bottom: 6px;
+        }
+
+        .diff-removed-block .diff-removed {
+            display: flex;
+            gap: 10px;
+            margin: 2px 0;
+            padding-top: 1px;
+            padding-bottom: 1px;
+            font-size: 13px;
+            line-height: 1.45;
+        }
+
+        .diff-removed-no {
+            flex-shrink: 0;
+            min-width: 46px;
+            text-align: right;
+            color: var(--text-muted);
+            text-decoration: none;
+        }
+
+        .diff-removed-text {
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
         /* PRD-002 (#11): clear button look — background + stronger border/text
            (--surface-2/--surface-3 are not defined; existing bg-3/bg-4 tokens used). */
         /* PRD-007 (Memo 022 Kap 5): kleiner Diff-Button neben der Zone-1-Pill. Kein margin-left

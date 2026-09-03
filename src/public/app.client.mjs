@@ -7980,6 +7980,115 @@
             return result.trim()
         }
 
+        // Memo 080, PRD-R5 (Kap 14, WI-171): the PURE assignment of removed lines to the chapters of
+        // the CURRENT document, deliberately split off from the DOM insertion below — this is the part
+        // that could silently drop a line, and it is unit-testable without a browser. It DECLARES how
+        // many entries it placed (assignedCount) so the caller can hold that against
+        // comparison.removedCount instead of trusting that red simply "showed up".
+        //
+        // An entry becomes an orphan when it has NO chapter (it stood before the first "## " — 6 of the
+        // 43 removed lines in REV-17 -> REV-18 did) or when its chapter no longer exists in the current
+        // document (renamed, deleted). Orphans get a collecting block at the end of the document.
+        // NOTHING falls off the table: groups + orphans === removed.length, always.
+        function groupRemovedLines( removed, chapterSlugs ) {
+            var list = Array.isArray( removed ) ? removed : []
+            var known = new Set( Array.isArray( chapterSlugs ) ? chapterSlugs : [] )
+            var groups = []
+            var index = new Map()
+            var orphans = []
+
+            list.forEach( function( entry ) {
+                var chapter = ( entry && entry.chapter !== undefined ) ? entry.chapter : null
+                var slug = ( chapter === null ) ? null : slugify( chapter )
+
+                if( slug === null || slug === '' || !known.has( slug ) ) {
+                    orphans.push( entry )
+                    return
+                }
+                if( !index.has( slug ) ) {
+                    index.set( slug, { slug: slug, entries: [] } )
+                    groups.push( index.get( slug ) )
+                }
+                index.get( slug ).entries.push( entry )
+            } )
+
+            var placed = groups.reduce( function( sum, group ) { return sum + group.entries.length }, 0 )
+
+            return { groups: groups, orphans: orphans, assignedCount: placed + orphans.length }
+        }
+
+
+        // Memo 080, PRD-R5 (Kap 14, WI-171): the markup of ONE removed-lines block. A removed line is
+        // memo content, so it goes through escapeHtml and its line number through escapeAttr —
+        // masking is a duty here, not polish: this very function's neighbour needed exactly that fix
+        // once already for raw-interpolated filenames (PRD-012, Memo 076 WI-109).
+        //
+        // Every element is a div ON PURPOSE. The .diff-added pass selects p/li/h*/blockquote>p/td/th,
+        // and a block built only from divs cannot enter that selector — so showing deletions cannot
+        // disturb the marking of additions.
+        function removedBlockMarkup( title, entries ) {
+            var rows = entries.map( function( entry ) {
+                var lineNo = String( entry.previousLineNumber )
+
+                return '<div class="diff-removed" data-previous-line="' + escapeAttr( lineNo ) + '">'
+                    + '<span class="diff-removed-no">' + escapeHtml( lineNo ) + '</span>'
+                    + '<span class="diff-removed-text">' + escapeHtml( entry.line ) + '</span>'
+                    + '</div>'
+            } ).join( '' )
+
+            return '<div class="diff-removed-block">'
+                + '<div class="diff-removed-title">' + escapeHtml( title ) + '</div>'
+                + rows
+                + '</div>'
+        }
+
+
+        // Memo 080, PRD-R5 (Kap 14, WI-171): put the deleted lines into the DOCUMENT BODY, at the
+        // chapter they vanished from — at the END of that chapter's section, i.e. directly before the
+        // next h2. Chapter-less and vanished-chapter lines go into one collecting block at the very
+        // end. Returns what it inserted so the count can be checked, never assumed.
+        function renderRemovedBlocks( diff ) {
+            var removed = ( diff && Array.isArray( diff.removed ) ) ? diff.removed : []
+
+            if( removed.length === 0 ) { return { inserted: 0 } }
+
+            var headings = []
+            contentEl.querySelectorAll( 'h2' ).forEach( function( heading ) {
+                if( heading.closest( '.diff-banner' ) ) { return }
+                headings.push( heading )
+            } )
+
+            // PRD-015 (D5) again: the server chapter is a RAW memo string, the heading is RENDERED
+            // text. Both sides go through the SAME slugify, or Umlaut/Em-dash drift loses the match.
+            var slugs = headings.map( function( heading ) { return slugify( heading.textContent.trim() ) } )
+            var grouped = groupRemovedLines( removed, slugs )
+
+            var insertBlock = function( markup, before ) {
+                var holder = document.createElement( 'div' )
+                holder.innerHTML = markup
+                var block = holder.firstChild
+
+                if( before && before.parentNode ) { before.parentNode.insertBefore( block, before ) }
+                else { contentEl.appendChild( block ) }
+            }
+
+            grouped.groups.forEach( function( group ) {
+                var at = slugs.indexOf( group.slug )
+                var title = 'Aus diesem Kapitel entfernt (' + group.entries.length + ' Zeilen)'
+
+                insertBlock( removedBlockMarkup( title, group.entries ), headings[ at + 1 ] )
+            } )
+
+            if( grouped.orphans.length > 0 ) {
+                var tailTitle = 'Entfernt, ohne Kapitel im aktuellen Stand (' + grouped.orphans.length + ' Zeilen)'
+
+                insertBlock( removedBlockMarkup( tailTitle, grouped.orphans ), null )
+            }
+
+            return { inserted: grouped.assignedCount }
+        }
+
+
         function renderDiffView( content, diff ) {
             var banner = '<div class="diff-banner">'
             // PRD-012 (Memo 076 H8, WI-109): the filenames come from the filesystem and were
@@ -7990,6 +8099,24 @@
             } else {
                 banner += 'Vergleich mit: <strong>' + escapeHtml( diff.previousFile ) + '</strong>'
             }
+
+            // Memo 080, PRD-R5 (Kap 14, WI-171): the comparison verdict — ALWAYS, and BEFORE every
+            // conditional banner part below. Until now the view coloured additions only, so a deletion
+            // was invisible; and worse, a comparison WITHOUT a finding looked exactly like a comparison
+            // without a basis. The three states come from ONE implementation (MemoView.diffSummary) and
+            // travel inside the verdict, so no second copy lives over here to drift from it. The unit
+            // is never spelled out here either — it comes from comparison.mode, which is the single
+            // point a later entity comparison attaches to.
+            //   verdict / empty -> muted, the empty set states its comparison size and is NOT silence
+            //   missing-basis   -> carried as a DEFECT, never as reassurance
+            // A payload without a verdict IS the defect case: an unstated comparison basis is exactly
+            // what this must never look calm about.
+            var summary = ( diff.comparison && diff.comparison.summary )
+                ? diff.comparison.summary
+                : { state: 'missing-basis', text: 'Vergleichsgrundlage fehlt — dieser Befund traegt nicht' }
+            var summaryColor = summary.state === 'missing-basis' ? 'var(--danger)' : '#8b949e'
+            banner += '<br><span class="diff-comparison" data-state="' + escapeAttr( summary.state ) + '"'
+                + ' style="color:' + summaryColor + ';font-size:0.85em">' + escapeHtml( summary.text ) + '</span>'
 
             if( diff.skippedUpdates && diff.skippedUpdates.length > 0 ) {
                 // PRD-015 (D10): skipped-update names come from content -> escape before interpolating.
@@ -8122,6 +8249,11 @@
                     el.classList.add( 'diff-added' )
                 } )
             }
+
+            // Memo 080, PRD-R5 (Kap 14, WI-171): the deleted lines go in LAST — after the .diff-added
+            // pass has run — so that pass walks exactly the DOM it walked before this PRD existed.
+            // Showing what disappeared must not change what is marked as added.
+            renderRemovedBlocks( diff )
         }
 
         // PRD-V4 (Memo 080 Kap 16, WI-175): the decision core of interceptLinks, extracted as a pure

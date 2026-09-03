@@ -4655,16 +4655,103 @@ class MemoView {
     }
 
 
+    // Memo 080, PRD-R5 (Kap 14, WI-171): the private name the four diff-building sites call stays
+    // EXACTLY as it was — the whole body moved into the public `computeDiffResult` so the diff can be
+    // unit-tested against real content instead of against a re-implementation in a test file. A test
+    // that re-implements the logic it checks is a false pass waiting to happen.
     static #computeDiff( { currentContent, previousContent } ) {
+        return MemoView.computeDiffResult( { currentContent, previousContent } )
+    }
+
+
+    // Memo 080, PRD-R5 (Kap 14, WI-171): the ONE cleaning applied to a chapter heading. It used to be
+    // a local arrow inside #computeDiff, so the removed-lines chapter attribution would have needed a
+    // second copy — and two hand-maintained copies drift (the lesson of PRD-012/F3 in this repo). One
+    // function, two callers: `changedSections` (current side) and `diffComparison` (previous side).
+    static stripHeadingMarkdown( { text } ) {
+        const cleaned = String( text === null || text === undefined ? '' : text )
+            .replace( /`([^`]*)`/g, '$1' )
+            .replace( /\*\*([^*]*)\*\*/g, '$1' )
+            .replace( /\*([^*]*)\*/g, '$1' )
+            .trim()
+
+        return { cleaned }
+    }
+
+
+    // Memo 080, PRD-R5 (Kap 14, WI-171): the comparison VERDICT — the one thing the view renders.
+    //
+    // ONE declared basis, `non-empty-lines`. A blank line counts on NEITHER side: not in the basis
+    // (currentCount/previousCount) and not in the verdict (addedCount/removedCount/removed). A number
+    // computed on any other basis would be a mismeasurement with notice.
+    //
+    // KNOWN LIMIT — set membership, not position. A line that MOVED counts as neither added nor
+    // removed, which is exactly right for the loss question. A line whose FREQUENCY falls (three
+    // occurrences down to one) is still "present" to a set and is therefore NOT reported as removed.
+    // Measured 2026-09-03 against REV-17 -> REV-18 of memo 080: 0 affected strings — the limit is
+    // real but today consequence-free. It is named here instead of passed over in silence; moving to
+    // a positional comparison without a measured reason is deliberately out of scope (PRD-R5).
+    //
+    // Defensive like changedSectionMatch: a non-string side degrades to '' and therefore to
+    // currentCount/previousCount 0 — which diffSummary reports as the DEFECT state, never as a
+    // reassuring "0 geloeschte Zeilen".
+    static diffComparison( { currentContent, previousContent } ) {
+        const current = typeof currentContent === 'string' ? currentContent : ''
+        const previous = typeof previousContent === 'string' ? previousContent : ''
+        const currentLines = current.split( '\n' )
+        const previousLines = previous.split( '\n' )
+        const isBlank = ( line ) => line.trim().length === 0
+        const currentKept = currentLines.filter( ( line ) => !isBlank( line ) )
+        const previousKept = previousLines.filter( ( line ) => !isBlank( line ) )
+        const currentSet = new Set( currentKept )
+        const previousSet = new Set( previousKept )
+        const addedCount = currentKept.filter( ( line ) => !previousSet.has( line ) ).length
+
+        let chapter = null
+
+        const removed = previousLines
+            .map( ( line, index ) => {
+                const h2Match = line.match( /^#{2}\s+(.+)/ )
+
+                // A removed heading belongs to its OWN chapter — the chapter advances BEFORE the
+                // entry is built, so a deleted "## Kapitel 3" is filed under "Kapitel 3" and not
+                // under the chapter above it.
+                if( h2Match ) { chapter = MemoView.stripHeadingMarkdown( { text: h2Match[ 1 ] } ).cleaned }
+
+                return { line, 'previousLineNumber': index + 1, chapter }
+            } )
+            .filter( ( entry ) => !isBlank( entry[ 'line' ] ) )
+            .filter( ( entry ) => !currentSet.has( entry[ 'line' ] ) )
+
+        // The headless group (lines before the first "## ") is a group of its OWN, not a rounding
+        // error: in the REV-17 -> REV-18 measurement it held 6 of 43 removed lines. The sentinel
+        // cannot collide with a real title because every real key carries the `h:` prefix.
+        const removedSections = new Set( removed.map( ( entry ) => {
+            return entry[ 'chapter' ] === null ? 'none:' : `h:${ entry[ 'chapter' ] }`
+        } ) )
+
+        const comparison = {
+            'mode': 'lines',
+            'basis': 'non-empty-lines',
+            'currentCount': currentKept.length,
+            'previousCount': previousKept.length,
+            addedCount,
+            'removedCount': removed.length,
+            'removedSectionCount': removedSections.size
+        }
+
+        return { comparison, removed }
+    }
+
+
+    // Memo 080, PRD-R5 (Kap 14, WI-171): `#computeDiff` used to end here, and it computed
+    // a flat list of removed strings that was sent to the browser and read by NOBODY, so every
+    // deletion since the first diff view was invisible (43 in REV-17 -> REV-18 alone). That field is
+    // replaced by `removed` (line + previous line number + chapter) plus the `comparison` verdict.
+    static computeDiffResult( { currentContent, previousContent } ) {
         const currentLines = currentContent.split( '\n' )
         const previousLines = previousContent.split( '\n' )
-        const diffLines = []
         const previousSet = new Set( previousLines )
-        const currentSet = new Set( currentLines )
-
-        const maxLen = Math.max( currentLines.length, previousLines.length )
-        let ci = 0
-        let pi = 0
 
         const result = []
 
@@ -4677,24 +4764,15 @@ class MemoView {
                 }
             } )
 
-        const removedLines = previousLines
-            .filter( ( line ) => !currentSet.has( line ) )
-
         const changedSections = []
         let lastH2 = null
-
-        const stripMarkdown = ( text ) => text
-            .replace( /`([^`]*)`/g, '$1' )
-            .replace( /\*\*([^*]*)\*\*/g, '$1' )
-            .replace( /\*([^*]*)\*/g, '$1' )
-            .trim()
 
         result
             .forEach( ( entry ) => {
                 const h2Match = entry['line'].match( /^#{2}\s+(.+)/ )
 
                 if( h2Match ) {
-                    lastH2 = stripMarkdown( h2Match[1] )
+                    lastH2 = MemoView.stripHeadingMarkdown( { text: h2Match[1] } ).cleaned
                     return
                 }
 
@@ -4707,12 +4785,20 @@ class MemoView {
                 }
             } )
 
+        const { comparison, removed } = MemoView.diffComparison( { currentContent, previousContent } )
+
+        // The headline travels INSIDE the verdict so there is exactly one implementation of the
+        // three states. The client is a classic script and cannot import this class; a second,
+        // hand-maintained copy over there would drift (PRD-012/F3).
+        comparison[ 'summary' ] = MemoView.diffSummary( { comparison } )
+
         const diffResult = {
             'hasDiff': true,
             'previousFile': '',
             changedSections,
             'lines': result,
-            'removedLines': removedLines
+            comparison,
+            removed
         }
 
         return { diffResult }
@@ -5653,6 +5739,45 @@ class MemoView {
         const key = RevisionLogic.slugify( { text: headingText } ).slug
 
         return { matched: set.has( key ) }
+    }
+
+
+    // Memo 080, PRD-R5 (Kap 14, WI-171): the comparison headline, as a pure mirror in the same shape
+    // as changedSectionMatch — object in, object out, no disk, no model. THREE states that must never
+    // look alike, because a view that stays silent on the empty set cannot be told apart from a view
+    // that compared nothing:
+    //
+    //   verdict        N > 0 removed  -> "N geloeschte Zeilen, ueber M Zeilen verglichen (K im Vorgaenger)"
+    //   empty          N = 0 removed  -> the SAME sentence with N = 0. The empty set is a RESULT.
+    //                                    It never returns an empty string.
+    //   missing-basis  no side to compare, or an unreadable verdict -> a DEFECT message. Never
+    //                                    "0 geloeschte Zeilen" and never "keine Aenderungen".
+    //
+    // The unit comes from `mode`, never from a hard-coded word — that single field is where a later
+    // entity comparison attaches ("Eintraege" instead of "Zeilen"), with every number untouched. A
+    // mode this method does not know is a verdict it cannot label, and an unlabelled verdict does not
+    // carry: it lands in missing-basis rather than in a plausible-looking sentence.
+    static diffSummary( { comparison } ) {
+        const units = { 'lines': 'Zeilen', 'entities': 'Eintraege' }
+        const struct = { 'state': 'missing-basis', 'text': 'Vergleichsgrundlage fehlt — dieser Befund traegt nicht' }
+
+        if( comparison === null || typeof comparison !== 'object' ) { return struct }
+
+        const unit = units[ comparison[ 'mode' ] ]
+        const currentCount = comparison[ 'currentCount' ]
+        const previousCount = comparison[ 'previousCount' ]
+        const removedCount = comparison[ 'removedCount' ]
+        const readable = [ currentCount, previousCount, removedCount ]
+            .every( ( value ) => typeof value === 'number' && Number.isFinite( value ) === true )
+
+        if( unit === undefined ) { return struct }
+        if( readable === false ) { return struct }
+        if( currentCount === 0 || previousCount === 0 ) { return struct }
+
+        struct[ 'state' ] = removedCount === 0 ? 'empty' : 'verdict'
+        struct[ 'text' ] = `${ removedCount } geloeschte ${ unit }, ueber ${ currentCount } ${ unit } verglichen (${ previousCount } im Vorgaenger)`
+
+        return struct
     }
 
 

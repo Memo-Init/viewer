@@ -407,6 +407,11 @@
         // Fetched on content load + refreshed by the annotationList WS broadcast; rendered idempotently
         // by applyAnnotations() as <mark>/row-badges. Orphans (no anchor match) are surfaced, not dropped.
         let lastAnnotations = []
+        // PRD-V7 (Memo 080 Kap 16, T082): a chapter slug remembered across a revision switch. Clicking a
+        // chapter in an annotation's "eingearbeitet in"-back-reference navigates to the OTHER revision
+        // first; the anchor can only be resolved once that document has rendered, so the render pass
+        // (applyAnnotations) redeems and clears it. null = nothing pending.
+        let pendingChapterAnchor = null
         let pendingQuestionsScroll = false
         // PRD-016 (Memo 016, E8): no-op-skip guard. renderSidebar() does a full innerHTML rebuild
         // on every WS broadcast (flicker + CPU). We keep the signature of the data that produced
@@ -5953,44 +5958,75 @@
             return m ? String( parseInt( m[ 1 ], 10 ) ) : '?'
         }
 
-        // Build a small numbered badge for an annotation. Clicking opens the detail popup (.t-modal).
+        // PRD-V7 (Memo 080 Kap 16, T082): the display status of an annotation. Anything that is not the
+        // explicit 'eingearbeitet' reads as 'offen' — an old record without the field included.
+        function annotationStatus( ann ) {
+            return ( ann && ann.anmStatus === 'eingearbeitet' ) ? 'eingearbeitet' : 'offen'
+        }
+
+        // Build a small numbered badge for an annotation. PRD-V7: the badge is the FORWARD reference of
+        // the apparatus (like a footnote marker) — clicking jumps to #anm-ref-ANM-NNN instead of opening
+        // a second, read-only detail popup. preventDefault + stopPropagation stay: the badge may sit
+        // inside an <a> now that the linearization no longer skips links, and must never navigate.
         function annotationBadge( ann ) {
             var badge = document.createElement( 'span' )
-            badge.className = 'anm-badge'
+            var status = annotationStatus( ann )
+            badge.className = status === 'eingearbeitet' ? 'anm-badge anm-badge-done' : 'anm-badge'
             badge.setAttribute( 'data-anm', ann.id )
+            badge.setAttribute( 'data-anm-status', status )
             badge.textContent = annotationNumber( ann.id )
             badge.title = 'Anmerkung ' + annotationNumber( ann.id ) + ( ann.comment ? ( ': ' + ann.comment ) : '' )
             badge.addEventListener( 'click', function( e ) {
                 e.preventDefault()
                 e.stopPropagation()
-                showAnnotationDetail( ann )
+                jumpToApparatusEntry( ann.id )
             } )
 
             return badge
         }
 
+        // PRD-V7 (Memo 080 Kap 16, T082, Research-Befund C4): the SCOPE filter. The annotationList WS
+        // broadcast carries EVERY annotation of the memo (it is memo-scoped), so without this filter a
+        // revision would render the annotations of its sibling revisions — all of them unanchorable, all
+        // of them landing in the apparatus as false orphans. A research view sees only its own file's
+        // annotations, a revision view only that revision's. Anything that is neither shows none.
+        function annotationsInScope( list ) {
+            var items = Array.isArray( list ) ? list : []
+            if( currentResearchFile ) {
+                return items.filter( function( ann ) {
+                    return ann && ann.targetKind === 'research' && ann.researchFile === currentResearchFile
+                } )
+            }
+
+            var rev = currentRevisionId()
+            if( !rev ) { return [] }
+
+            return items.filter( function( ann ) {
+                return ann && ann.targetKind !== 'research' && ann.revisionId === rev
+            } )
+        }
+
         // The idempotent render pass. Runs from applyContentStructure on every render path. Each
-        // annotation is anchored; unanchored ones are surfaced fail-loud in an orphan list (r7 — never
-        // silently dropped). Skips content already carrying its mark/row (re-render safety).
+        // annotation in scope is anchored; unanchored ones are surfaced fail-loud (r7 — never silently
+        // dropped). Skips content already carrying its mark/row (re-render safety). PRD-V7: anchored AND
+        // unanchored go into ONE apparatus at the content end, so the sum of both groups always equals
+        // the number of annotations in scope; an annotation without an anchor object counts as orphan
+        // rather than disappearing between the two groups.
         function applyAnnotations() {
             if( !contentEl ) { return }
-            var list = Array.isArray( lastAnnotations ) ? lastAnnotations : []
+            var list = annotationsInScope( lastAnnotations )
 
-            // Idempotency: drop a stale orphan list before recomputing (marks/rows are re-added below;
-            // a full innerHTML re-render already wiped previous marks, so we only guard within a pass).
-            var staleOrphan = document.getElementById( 'anm-orphan-list' )
-            if( staleOrphan && staleOrphan.parentNode ) { staleOrphan.parentNode.removeChild( staleOrphan ) }
-
+            var anchored = []
             var orphans = []
             list.forEach( function( ann ) {
-                if( !ann || !ann.anchor ) { return }
-                var anchored = ann.anchor.type === 'table-row'
-                    ? anchorTableRow( ann )
-                    : anchorTextQuote( ann )
-                if( !anchored ) { orphans.push( ann ) }
+                var hit = ann.anchor
+                    ? ( ann.anchor.type === 'table-row' ? anchorTableRow( ann ) : anchorTextQuote( ann ) )
+                    : false
+                if( hit ) { anchored.push( ann ) } else { orphans.push( ann ) }
             } )
 
-            if( orphans.length > 0 ) { renderOrphanList( orphans ) }
+            renderAnnotationApparatus( { anchored: anchored, orphans: orphans } )
+            resolvePendingChapterAnchor()
         }
 
         // Collect forward element siblings until the next H2 (recursion, no while-loop).
@@ -6030,7 +6066,13 @@
             var exact = ann.anchor.exact || ''
             if( exact.length === 0 ) { return false }
 
-            var skip = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true, 'MARK': true }
+            // WI-176 (Memo 080 Kap 16, Beleg 16.7): 'A' and 'CODE' are GONE from the skip set. Skipping
+            // them made every selection that spans a link or inline code a permanent orphan — the reader
+            // marks a passage, the passage is silently unanchorable, and no marker exists that an
+            // apparatus could point at. 'PRE' stays: a code BLOCK is <pre><code>, so keeping PRE shields
+            // the block while inline <code> becomes reachable. 'MARK' stays so the pass does not recurse
+            // into the marks it just produced. SCRIPT/STYLE stay — they carry no reader-visible text.
+            var skip = { 'PRE': true, 'SCRIPT': true, 'STYLE': true, 'MARK': true }
             var scope = chapterScopeRoot( ann.anchor.chapterSlug )
 
             // Linearize: collect text nodes in document order with their cumulative offset into `full`.
@@ -6111,6 +6153,9 @@
                 var mark = document.createElement( 'mark' )
                 mark.className = 'anm-mark'
                 mark.setAttribute( 'data-anm', ann.id )
+                // PRD-V7: the FIRST mark of an annotation carries the id the apparatus jumps back to.
+                // Only the first — a range spanning several text nodes must not mint a duplicate id.
+                if( idx === 0 ) { mark.id = 'anm-mark-' + ann.id }
                 mark.textContent = middle
                 frag.appendChild( mark )
                 if( idx === overlapping.length - 1 ) { frag.appendChild( annotationBadge( ann ) ) }
@@ -6150,6 +6195,10 @@
             if( !match ) { return false }
 
             match.classList.add( 'anm-row' )
+            // PRD-V7: the marked row is the jump target of the apparatus back-link. An id is only minted
+            // when the row carries none yet — a second annotation on the SAME row keeps the first row id
+            // and is reached through the data-anm fallback in jumpToAnnotationMark (never a duplicate id).
+            if( !match.id ) { match.id = 'anm-mark-' + ann.id }
             match.setAttribute( 'data-row-key', rowKey || rowText.slice( 0, 40 ) )
             var host = match.querySelector( 'td, th' )
             if( host ) { host.appendChild( annotationBadge( ann ) ) }
@@ -6185,26 +6234,229 @@
             }
         }
 
-        // Fail-loud orphan list (r7): annotations whose anchor no longer matches (live-edited quote /
-        // renumbered row) are shown "nicht verankert", never dropped. Appended once at the content end.
-        function renderOrphanList( orphans ) {
-            if( !contentEl || orphans.length === 0 ) { return }
-            var box = document.createElement( 'div' )
-            box.id = 'anm-orphan-list'
-            box.className = 'anm-orphan-list'
+        // PRD-V7 (Memo 080 Kap 16, Soll-Zustand "Annotations-Referenzen"): the annotation apparatus —
+        // one reference section at the end of #content, the way a scientific paper carries its notes.
+        // It REPLACES the former orphan-only error box: anchored annotations form the main group, the
+        // unanchorable ones stay visible as their own "nicht verankert" group (r7 fail-loud, never
+        // dropped). The container is removed and rebuilt on every pass, so it is idempotent AND always
+        // ends up last — independent of the order in which the other post-render passes append.
+        function renderAnnotationApparatus( groups ) {
+            if( !contentEl ) { return }
+            var anchored = ( groups && Array.isArray( groups.anchored ) ) ? groups.anchored : []
+            var orphans = ( groups && Array.isArray( groups.orphans ) ) ? groups.orphans : []
+
+            var stale = document.getElementById( 'anm-apparatus' )
+            if( stale && stale.parentNode ) { stale.parentNode.removeChild( stale ) }
+            if( anchored.length === 0 && orphans.length === 0 ) { return }
+
+            var byId = function( a, b ) { return String( a.id ).localeCompare( String( b.id ) ) }
+            var box = document.createElement( 'section' )
+            box.id = 'anm-apparatus'
+            box.className = 'anm-apparatus'
+
             var title = document.createElement( 'div' )
-            title.className = 'anm-orphan-title'
-            title.textContent = 'Nicht verankerte Anmerkungen (' + orphans.length + ')'
+            title.className = 'anm-apparatus-title'
+            title.textContent = 'Anmerkungen (' + ( anchored.length + orphans.length ) + ')'
             box.appendChild( title )
-            orphans.forEach( function( ann ) {
-                var row = document.createElement( 'div' )
-                row.className = 'anm-orphan-item'
-                row.setAttribute( 'data-anm', ann.id )
-                var quote = ann.anchor && ann.anchor.exact ? ann.anchor.exact : ( ann.anchor && ann.anchor.rowKey ? ann.anchor.rowKey : '' )
-                row.textContent = 'Anmerkung ' + annotationNumber( ann.id ) + ' — „' + quote + '" · ' + ( ann.comment || '' )
-                box.appendChild( row )
+
+            var main = document.createElement( 'div' )
+            main.className = 'anm-apparatus-group'
+            main.setAttribute( 'data-anm-group', 'verankert' )
+            anchored.slice().sort( byId ).forEach( function( ann ) {
+                main.appendChild( annotationApparatusEntry( ann, { anchored: true } ) )
             } )
+            box.appendChild( main )
+
+            if( orphans.length > 0 ) {
+                var group = document.createElement( 'div' )
+                group.className = 'anm-apparatus-group'
+                group.setAttribute( 'data-anm-group', 'nicht-verankert' )
+                var groupTitle = document.createElement( 'div' )
+                groupTitle.className = 'anm-apparatus-title'
+                groupTitle.textContent = 'Nicht verankert (' + orphans.length + ')'
+                group.appendChild( groupTitle )
+                orphans.slice().sort( byId ).forEach( function( ann ) {
+                    group.appendChild( annotationApparatusEntry( ann, { anchored: false } ) )
+                } )
+                box.appendChild( group )
+            }
+
             contentEl.appendChild( box )
+        }
+
+
+        // One apparatus entry: head ("Anmerkung N" · status chip · back-jump, the latter only when the
+        // annotation actually has a mark to return to), the enriched reference line, the comment, and —
+        // once the annotation has been worked in — the back-reference to WHERE that happened. Built with
+        // DOM nodes and textContent, so memo text never reaches an innerHTML sink.
+        function annotationApparatusEntry( ann, options ) {
+            var isAnchored = ( options && options.anchored === true )
+            var status = annotationStatus( ann )
+
+            var item = document.createElement( 'div' )
+            item.id = 'anm-ref-' + ann.id
+            item.className = 'anm-ref-item'
+            item.setAttribute( 'data-anm', ann.id )
+            item.setAttribute( 'data-anm-status', status )
+
+            var head = document.createElement( 'div' )
+            head.className = 'anm-ref-head'
+            var label = document.createElement( 'strong' )
+            label.textContent = 'Anmerkung ' + annotationNumber( ann.id )
+            head.appendChild( label )
+
+            var chip = document.createElement( 'span' )
+            chip.className = status === 'eingearbeitet' ? 'anm-chip anm-chip-done' : 'anm-chip'
+            chip.setAttribute( 'data-anm-status', status )
+            chip.textContent = status
+            head.appendChild( chip )
+
+            if( isAnchored ) {
+                var back = document.createElement( 'button' )
+                back.type = 'button'
+                back.className = 'anm-ref-back'
+                back.setAttribute( 'data-anm-back', ann.id )
+                back.textContent = '↩'
+                back.title = 'Zurück zur markierten Stelle'
+                back.addEventListener( 'click', function( e ) {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    jumpToAnnotationMark( ann.id )
+                } )
+                head.appendChild( back )
+            }
+            item.appendChild( head )
+
+            var quote = document.createElement( 'div' )
+            quote.className = 'anm-ref-quote'
+            quote.textContent = annotationReference( ann.anchor )
+            item.appendChild( quote )
+
+            var comment = document.createElement( 'div' )
+            comment.className = 'anm-ref-comment'
+            comment.textContent = ann.comment ? ann.comment : ''
+            item.appendChild( comment )
+
+            if( ann.resolvedIn && ann.resolvedIn.revisionId ) {
+                item.appendChild( annotationResolvedLine( ann.resolvedIn ) )
+            }
+
+            return item
+        }
+
+
+        // The back-reference line of a worked-in annotation: "Eingearbeitet in REV-NN · Kapitel …", one
+        // clickable chapter per entry. Same revision -> in-page jump; another revision -> the existing
+        // WS navigate channel plus a remembered anchor (pendingChapterAnchor).
+        function annotationResolvedLine( resolvedIn ) {
+            var line = document.createElement( 'div' )
+            line.className = 'anm-ref-resolved'
+            var lead = document.createElement( 'span' )
+            lead.textContent = 'Eingearbeitet in ' + resolvedIn.revisionId + ': '
+            line.appendChild( lead )
+
+            var chapters = Array.isArray( resolvedIn.chapters ) ? resolvedIn.chapters : []
+            chapters.forEach( function( slug, idx ) {
+                if( idx > 0 ) { line.appendChild( document.createTextNode( ' · ' ) ) }
+                line.appendChild( buildResolvedChapterLink( resolvedIn.revisionId, slug ) )
+            } )
+
+            return line
+        }
+
+
+        function buildResolvedChapterLink( revisionId, slug ) {
+            var a = document.createElement( 'a' )
+            a.className = 'anm-ref-forward'
+            a.setAttribute( 'href', '#' )
+            a.setAttribute( 'data-anm-chapter', slug )
+            a.textContent = 'Kapitel ' + slug
+            a.addEventListener( 'click', function( e ) {
+                e.preventDefault()
+                e.stopPropagation()
+                jumpToResolvedChapter( revisionId, slug )
+            } )
+
+            return a
+        }
+
+
+        // A short highlight on the jump target so the reader sees WHERE they landed.
+        function flashAnnotationTarget( el ) {
+            if( !el || !el.classList ) { return }
+            el.classList.add( 'anm-flash' )
+            setTimeout( function() { el.classList.remove( 'anm-flash' ) }, 1200 )
+        }
+
+
+        function scrollToAnnotationTarget( el ) {
+            if( !el ) { return false }
+            if( el.scrollIntoView ) { el.scrollIntoView( { behavior: 'smooth', block: 'start' } ) }
+            flashAnnotationTarget( el )
+
+            return true
+        }
+
+
+        // Badge -> apparatus entry (the forward reference).
+        function jumpToApparatusEntry( id ) {
+            return scrollToAnnotationTarget( document.getElementById( 'anm-ref-' + id ) )
+        }
+
+
+        // Apparatus entry -> mark (the back reference). The data-anm fallback covers the case where the
+        // mark id was already taken by an earlier annotation on the same table row.
+        function jumpToAnnotationMark( id ) {
+            var target = document.getElementById( 'anm-mark-' + id )
+            if( !target && contentEl && contentEl.querySelector ) {
+                target = contentEl.querySelector( '[data-anm="' + cssEscapeAttr( id ) + '"]' )
+            }
+
+            return scrollToAnnotationTarget( target )
+        }
+
+
+        // The heading of a chapter slug: the rendered heading id first, then a slugify comparison over
+        // the H2s (a duplicate slug gets a "-N" suffix in the id, so the id lookup alone is not enough).
+        function scrollToChapterSlug( slug ) {
+            var target = slug ? document.getElementById( slug ) : null
+            if( !target && contentEl && contentEl.querySelectorAll ) {
+                contentEl.querySelectorAll( 'h2' ).forEach( function( h ) {
+                    if( target ) { return }
+                    if( slugify( ( h.textContent || '' ).trim() ) === slug ) { target = h }
+                } )
+            }
+
+            return scrollToAnnotationTarget( target )
+        }
+
+
+        // The forward jump of the back-reference. Same revision -> jump inside the page. Another
+        // revision -> remember the anchor, ask the server to navigate (the channel the wiki links
+        // already use), and let the next render pass redeem it.
+        function jumpToResolvedChapter( revisionId, slug ) {
+            if( revisionId && currentRevisionId() === revisionId ) {
+                return scrollToChapterSlug( slug )
+            }
+
+            pendingChapterAnchor = slug
+            if( currentWs ) {
+                currentWs.send( JSON.stringify( { type: 'navigate', path: revisionId + '.md' } ) )
+                window.scrollTo( 0, 0 )
+            }
+
+            return false
+        }
+
+
+        // Redeem a chapter anchor remembered across a revision switch — ONCE, then cleared, so a later
+        // render pass never scrolls the reader away again.
+        function resolvePendingChapterAnchor() {
+            if( !pendingChapterAnchor ) { return false }
+            var slug = pendingChapterAnchor
+            pendingChapterAnchor = null
+
+            return scrollToChapterSlug( slug )
         }
 
         // A minimal attribute-safe escaper for the data-anm selector (ANM-NNN is already safe; this
@@ -6372,27 +6624,11 @@
                 } )
         }
 
-        // Detail popup for an existing annotation badge — READ-ONLY (PRD-004 WI-125/126). The store is
-        // append-only (no update path), so the Save button is hidden and the textarea is readOnly; the
-        // still-failing "save" from the recycled CREATE modal is made structurally impossible. The title
-        // carries "Anmerkung N" and the quote shows the enriched reference (PRD-005 WI-124: chapter ·
-        // tableLabel · line).
-        function showAnnotationDetail( ann ) {
-            var modal = document.getElementById( 'annotation-modal' )
-            var titleEl = document.getElementById( 'anm-modal-title' )
-            var quoteEl = document.getElementById( 'anm-modal-quote' )
-            var commentEl = document.getElementById( 'anm-modal-comment' )
-            var saveBtn = document.getElementById( 'anm-modal-save' )
-            var errEl = document.getElementById( 'anm-modal-error' )
-            if( !modal ) { return }
-            pendingAnnotationAnchor = null
-            if( titleEl ) { titleEl.textContent = 'Anmerkung ' + annotationNumber( ann.id ) }
-            if( quoteEl ) { quoteEl.textContent = annotationReference( ann.anchor ) }
-            if( commentEl ) { commentEl.value = ann.comment || ''; commentEl.readOnly = true }
-            if( saveBtn ) { saveBtn.classList.add( 't-hidden' ) }
-            if( errEl ) { errEl.classList.add( 't-hidden' ); errEl.textContent = '' }
-            modal.classList.remove( 't-hidden' )
-        }
+        // PRD-V7 (Memo 080 Kap 16, T082): the read-only detail popup (former showAnnotationDetail,
+        // PRD-004 WI-125/126) is GONE. The apparatus entry shows the same fields and more — status,
+        // back-jump to the mark, back-reference to the place it was worked in — so a second read-only
+        // parallel path for the same record no longer exists. The AUTHORING path (openAnnotationModal /
+        // saveAnnotation) is untouched and remains the only owner of #annotation-modal.
 
         // Remove the hover gutter (and its host marker) from a row (PRD-004 WI-114).
         function removeRowGutter( tr ) {

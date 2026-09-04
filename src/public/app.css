@@ -3252,9 +3252,27 @@
         td.anm-gutter-host { position: relative; }
         .anm-row-gutter { position: absolute; top: 50%; right: 4px; transform: translateY(-50%); display: inline-flex; align-items: center; border: 1px solid var(--border, #30363d); background: var(--bg-2, #21262d); color: var(--text-2, #c9d1d9); border-radius: 6px; font-size: 11px; line-height: 1; padding: 0 5px; cursor: pointer; z-index: 1; }
         .anm-row-gutter:hover { border-color: var(--accent, #2ea043); color: var(--text-1, #f0f6fc); }
-        .anm-orphan-list { margin-top: 24px; padding: 10px 12px; border: 1px dashed #d29922; border-radius: 6px; background: rgba(210, 153, 34, .06); }
-        .anm-orphan-title { color: #d29922; font-weight: 700; margin-bottom: 6px; font-size: 13px; }
-        .anm-orphan-item { font-size: 12px; color: var(--text-2, #c9d1d9); padding: 2px 0; }
+        /* PRD-V7 (Memo 080 Kap 16, T082): the annotation apparatus REPLACES the orphan-only error box —
+           anchored entries first, the fail-loud "nicht verankert" group second. Reuses the existing
+           variables and the #d29922 annotation accent; no new overlay, no new colour world. */
+        .anm-apparatus { margin-top: 32px; padding: 12px 14px; border: 1px solid var(--border, #30363d); border-top: 2px solid #d29922; border-radius: 6px; background: var(--bg-2, #21262d); }
+        .anm-apparatus-title { color: #d29922; font-weight: 700; margin-bottom: 6px; font-size: 13px; }
+        .anm-apparatus-group { display: block; margin-top: 8px; }
+        .anm-apparatus-group[data-anm-group="nicht-verankert"] { border-top: 1px dashed #d29922; padding-top: 8px; }
+        .anm-apparatus-group > .anm-apparatus-title { font-size: 12px; font-weight: 600; }
+        .anm-ref-item { padding: 6px 0; border-top: 1px solid var(--border, #30363d); }
+        .anm-ref-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-1, #f0f6fc); }
+        .anm-ref-quote { font-size: 12px; color: var(--text-2, #c9d1d9); margin: 4px 0; padding-left: 8px; border-left: 3px solid #d29922; }
+        .anm-ref-comment { font-size: 13px; color: var(--text-1, #f0f6fc); white-space: pre-wrap; }
+        .anm-ref-resolved { margin-top: 4px; font-size: 12px; color: var(--text-2, #c9d1d9); }
+        .anm-ref-back { appearance: none; -webkit-appearance: none; border: 1px solid var(--border, #30363d); background: var(--bg-1, #0d1117); color: var(--text-2, #c9d1d9); border-radius: 6px; font-size: 11px; line-height: 1; padding: 2px 6px; cursor: pointer; }
+        .anm-ref-back:hover { border-color: #d29922; color: #d29922; }
+        .anm-ref-forward { color: #d29922; text-decoration: underline; cursor: pointer; }
+        .anm-chip { display: inline-flex; align-items: center; border: 1px solid var(--border, #30363d); border-radius: 8px; font-size: 10px; line-height: 1; padding: 2px 6px; color: var(--text-2, #c9d1d9); }
+        .anm-chip-done { border-color: #2ea043; color: #2ea043; }
+        .anm-badge-done { background: #2ea043; color: #0d1117; }
+        .anm-badge-done:hover { background: #3fb950; }
+        .anm-flash { outline: 2px solid #d29922; outline-offset: 2px; }
         .annotate-floating { position: absolute; z-index: 60; background: #d29922; color: #0d1117; border: none; border-radius: 6px; font-size: 12px; padding: 3px 10px; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.4); }
         .annotate-floating:hover { background: #e3b341; }
         .anm-quote { font-size: 13px; color: var(--text-2, #c9d1d9); margin-bottom: 10px; padding: 6px 8px; border-left: 3px solid #d29922; background: rgba(210, 153, 34, .06); }

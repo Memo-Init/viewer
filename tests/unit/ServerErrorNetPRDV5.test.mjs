@@ -278,13 +278,16 @@ describe( 'PRD-V5 Masche 2b — Verbindungs-Waechter (Antwort und Anfrage)', () 
     } )
 
 
-    it( 'ALLE 14 Aufrufstellen werten den Abbruch aus (14 Leser, 14 Wachen)', () => {
+    it( 'JEDE Aufrufstelle wertet den Abbruch aus — Leser und Wachen sind gleich viele (15 von 15)', () => {
         const readers = memoViewSource.match( /const \{ body, aborted \} = await readBody\( req \)/g ) || []
         const guards = memoViewSource.match( /if\( aborted === true \) \{ return \}/g ) || []
         const oldReaders = memoViewSource.match( /const \{ body \} = await readBody\( req \)/g ) || []
 
-        expect( readers.length ).toBe( 14 )
-        expect( guards.length ).toBe( 14 )
+        // Die Klasse: ein Leser OHNE Wache ist der Defekt, nicht eine bestimmte Zahl. Die Zaehlung
+        // steht daneben, damit ein stiller Wegfall aller Leser nicht als "0 === 0" gruen meldet.
+        // PRD-V7 (Memo 080 Kap 16) hat den 15. Leser gebracht: PATCH /api/annotations/<id>.
+        expect( readers.length ).toBe( guards.length )
+        expect( readers.length ).toBe( 15 )
         expect( oldReaders.length ).toBe( 0 )
     } )
 } )

@@ -2825,6 +2825,64 @@ class MemoView {
                 return
             }
 
+            // PRD-V7 (Memo 080 Kap 16, T082): set an annotation's status + back-reference. This is the
+            // ONLY write path for anmStatus/resolvedIn — the revision author never hand-edits the JSON.
+            // Same shape as the POST branch above: body -> registry (404) -> memo dir (422) -> store
+            // (422 with the store's own messages) -> annotationList broadcast -> 200 with the record.
+            if( url.startsWith( '/api/annotations/' ) && req.method === 'PATCH' ) {
+
+                const annotationId = url.slice( '/api/annotations/'.length )
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
+                let parsed
+
+                try {
+                    parsed = JSON.parse( body )
+                } catch {
+                    sendJson( res, 400, { 'error': 'Invalid JSON body' } )
+
+                    return
+                }
+
+                const documentId = parsed[ 'documentId' ]
+                const lookup = MemoView.#registry.getDocument( { documentId } )
+
+                if( !lookup[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': lookup[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                const location = MemoView.resolveMemoDir( { 'memoPath': lookup[ 'document' ][ 'memoPath' ] } )
+
+                if( !location[ 'status' ] ) {
+                    sendJson( res, 422, { 'error': 'Could not resolve the memo directory for this document' } )
+
+                    return
+                }
+
+                const result = await AnnotationStore.setStatus( {
+                    'id': annotationId,
+                    'anmStatus': parsed[ 'anmStatus' ],
+                    'resolvedIn': parsed[ 'resolvedIn' ],
+                    'memoDir': location[ 'memoDir' ]
+                } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 422, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                await MemoView.#broadcastAnnotationList( { documentId, 'memoDir': location[ 'memoDir' ] } )
+                sendJson( res, 200, { 'status': 'ok', 'id': result[ 'id' ], 'annotation': result[ 'item' ] } )
+
+                return
+            }
+
             if( url.startsWith( '/api/transcripts/' ) && req.method === 'DELETE' ) {
 
                 if( !MemoView.#transcriptRegistry ) {

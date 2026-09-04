@@ -20,6 +20,9 @@ const ANNOTATIONS_DIRNAME = '_annotations'
 const ANM_ID_PATTERN = /^ANM-\d{3}$/
 const ANCHOR_TYPES = [ 'text-quote', 'table-row' ]
 const ANM_STATUS_VALUES = [ 'offen', 'eingearbeitet' ]
+// PRD-V7 (Memo 080 Kap 16, T082): the back-reference `resolvedIn` names the revision an annotation was
+// worked into. Same shape as a revision id everywhere else in the viewer (REV-02, REV-18, REV-100).
+const ANM_RESOLVED_REVISION_PATTERN = /^REV-\d{2,}$/
 // Memo 079 PRD-24 (T059): an annotation now targets EITHER a discussed revision (the existing default)
 // OR a served research MD (`<memoDir>/context/research/*.md`). The research target reuses the identical
 // line-based anchor (text-quote/table-row + sourceLine) and the same ANM-NNN store — it only swaps the
@@ -58,6 +61,10 @@ class AnnotationStore {
             anchor: AnnotationStore.#normalizeAnchor( { anchor } ),
             comment,
             anmStatus: 'offen',
+            // PRD-V7 (Memo 080 Kap 16, T082): the back-reference is part of the schema from the start —
+            // an explicit null, never an absent field. A record written before PRD-V7 has no key at all;
+            // every reader treats that the same as null (a missing back-reference is simply not shown).
+            resolvedIn: null,
             createdAt: new Date().toISOString()
         }
 
@@ -125,7 +132,79 @@ class AnnotationStore {
     }
 
 
+    // PRD-V7 (Memo 080 Kap 16, T082): the ONLY write path for anmStatus + resolvedIn — the deterministic
+    // mirror of WorkItemStore.setStatus. Until now the store had no update path at all, so the status a
+    // revision author wanted to record could only be produced by hand-editing the JSON. Order is the same
+    // as in WorkItemStore: memo scope -> id -> value list -> back-reference -> read -> archive-then-write.
+    // `resolvedIn` is MANDATORY for 'eingearbeitet' (a worked-in annotation without a place is not an
+    // answer) and is CLEARED for 'offen' — no stale back-reference survives a reopen.
+    static async setStatus( { id, anmStatus, resolvedIn, memoDir } ) {
+        const scope = AnnotationStore.#requireMemoDir( { memoDir } )
+        if( scope.status !== true ) {
+            return { status: false, messages: scope.messages }
+        }
+
+        if( typeof id !== 'string' || ANM_ID_PATTERN.test( id ) !== true ) {
+            return { status: false, messages: [ `annotation id "${ id }" is not a valid ANM-NNN id` ] }
+        }
+
+        if( ANM_STATUS_VALUES.includes( anmStatus ) !== true ) {
+            return { status: false, messages: [ `anmStatus must be one of: ${ ANM_STATUS_VALUES.join( ', ' ) }` ] }
+        }
+
+        const resolved = AnnotationStore.#validateResolvedIn( { anmStatus, resolvedIn } )
+        if( resolved.status !== true ) {
+            return { status: false, messages: resolved.messages }
+        }
+
+        const dir = AnnotationStore.#itemsDir( { memoDir } )
+        const read = await AnnotationStore.#readItem( { dir, id } )
+        if( read.status !== true ) {
+            return { status: false, messages: read.messages }
+        }
+
+        const updated = { ...read.item, anmStatus, resolvedIn: resolved.value }
+        const path = await AnnotationStore.#archiveThenWrite( { dir, name: `${ id }.json`, record: updated } )
+
+        return { status: true, messages: [], id, path, item: updated }
+    }
+
+
     // ---- private ----
+
+    // PRD-V7: the back-reference contract. 'offen' clears the field (return value null). 'eingearbeitet'
+    // requires an object with a REV-NN revisionId and a NON-EMPTY chapters array of non-empty strings.
+    // No silent defaults — a missing or malformed back-reference is a rejection with a named message,
+    // never a written record with a half-filled field.
+    static #validateResolvedIn( { anmStatus, resolvedIn } ) {
+        if( anmStatus === 'offen' ) {
+            return { status: true, messages: [], value: null }
+        }
+
+        if( resolvedIn === null || typeof resolvedIn !== 'object' || Array.isArray( resolvedIn ) === true ) {
+            return { status: false, messages: [ 'resolvedIn: required object { revisionId, chapters } when anmStatus is "eingearbeitet"' ], value: null }
+        }
+
+        const messages = []
+        const revisionId = resolvedIn.revisionId
+        const chapters = resolvedIn.chapters
+
+        if( typeof revisionId !== 'string' || ANM_RESOLVED_REVISION_PATTERN.test( revisionId ) !== true ) {
+            messages.push( 'resolvedIn.revisionId: required REV-NN id of the revision it was worked into' )
+        }
+        if( Array.isArray( chapters ) !== true || chapters.length === 0 ) {
+            messages.push( 'resolvedIn.chapters: required non-empty array of chapter slugs' )
+        } else if( chapters.every( ( entry ) => typeof entry === 'string' && entry.trim().length > 0 ) !== true ) {
+            messages.push( 'resolvedIn.chapters: every entry must be a non-empty string' )
+        }
+
+        if( messages.length > 0 ) {
+            return { status: false, messages, value: null }
+        }
+
+        return { status: true, messages: [], value: { revisionId, chapters: chapters.map( ( entry ) => entry.trim() ) } }
+    }
+
 
     static #requireMemoDir( { memoDir } ) {
         if( typeof memoDir !== 'string' || memoDir.length === 0 ) {

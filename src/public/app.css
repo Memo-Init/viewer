@@ -2890,6 +2890,80 @@
             color: var(--text-muted, #8b949e);
         }
 
+        /* PRD-V6 (Memo 080 Kap 16, WI-177): the research entry point and the full view were UNSTYLED —
+           these six class names lived only in app.client.mjs, so the <button> fell back to the browser's
+           3D box (the same defect this file already documents for WI-119/WI-120). Colours come from the
+           existing tokens. NO new overlay, backdrop or position:fixed rule: #research-modal inherits
+           centering, dimming and z-index from the shared .t-modal rules above. */
+        #content .topic-research-line {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 4px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        #content .topic-research-label {
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        #content .research-open-link {
+            appearance: none;
+            -webkit-appearance: none;
+            background: none;
+            border: none;
+            padding: 0;
+            font-family: inherit;
+            font-size: inherit;
+            color: var(--accent);
+            border-bottom: 1px dotted var(--accent);
+            cursor: pointer;
+        }
+
+        #content .research-open-link:hover {
+            color: var(--accent-bright);
+            border-bottom-color: var(--accent-bright);
+        }
+
+        .research-view-bar {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 0 0 16px 0;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .research-back-link {
+            appearance: none;
+            -webkit-appearance: none;
+            background: none;
+            border: none;
+            padding: 0;
+            font-family: inherit;
+            font-size: 13px;
+            color: var(--accent);
+            cursor: pointer;
+        }
+
+        .research-back-link:hover { color: var(--accent-bright); }
+
+        .research-view-file {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        /* Research-specific overlay geometry only: a document needs a wider plate than a form popup,
+           and the body carries prose (block flow) instead of the stacked form rows of .t-modal-body. */
+        #research-modal .t-modal-content { width: 980px; }
+        #research-modal .t-modal-body { display: block; }
+        #research-modal .research-overlay-loading { color: var(--text-muted); }
+        #research-modal .research-overlay-error { color: var(--danger); }
+
         /* PRD-018 (WI-T013-7): [[wiki-link]] rendered as a navigable link, no longer literal text. */
         #content a.wiki-link {
             color: var(--accent);

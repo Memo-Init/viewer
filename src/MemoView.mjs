@@ -1660,6 +1660,22 @@ class MemoView {
             <div class="t-modal-body" id="block-modal-body"></div>
         </div>
     </div>
+    <!-- PRD-V6 (Memo 080 Kap 16, WI-177): research-doc overlay. A reference document is a DEEPER LEVEL
+         of the memo, so it opens OVER the prose instead of replacing it (#content is never touched).
+         REUSES the existing .t-modal / .t-modal-content / .t-modal-header / .t-modal-body classes like
+         the block popup above — NO new overlay/position:fixed CSS. "Vollansicht" bridges to the
+         annotatable full view (openResearchDoc, Memo 079 M3=A), which stays reachable. -->
+    <div id="research-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="research-modal-title">
+        <div class="t-modal-content">
+            <div class="t-modal-header">
+                <span class="t-title" id="research-modal-title">Research</span>
+                <span class="t-header-spacer"></span>
+                <button class="t-btn-secondary" id="research-modal-full" title="In der annotierbaren Vollansicht oeffnen">Vollansicht</button>
+                <button class="t-close" id="research-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
+            </div>
+            <div class="t-modal-body" id="research-modal-body"></div>
+        </div>
+    </div>
     <!-- PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): annotation modal. REUSES the existing .t-modal /
          .t-modal-content / .t-modal-header / .t-modal-body classes (centered flex overlay) exactly like
          the requirement + block popups above. NO new overlay CSS. Opened from a text selection or a

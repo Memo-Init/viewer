@@ -348,6 +348,12 @@
         // memoDir-relative path (else null). saveAnnotation reads it to POST targetKind:'research' +
         // researchFile instead of the revision default; it is cleared whenever a normal revision renders.
         let currentResearchFile = null
+        // PRD-V6 (Memo 080 Kap 16, WI-177): the memoDir-relative path shown in the #research-modal
+        // overlay (else null). Separate from currentResearchFile on purpose — the overlay is the
+        // LOOK-UP level and is NOT annotatable, so it must never make saveAnnotation post
+        // targetKind:'research'. The "Vollansicht" bridge reads it to hand the same file to
+        // openResearchDoc, which is where annotating still happens.
+        let researchOverlayFile = null
         // PRD-012 (Memo 011 Kap 4, F16=A): track the active documentId so the requirements view
         // can fetch /api/documents/<id>/requirements for the currently selected memo.
         let currentDocumentId = ''
@@ -6601,8 +6607,8 @@
             }
 
             // Memo 079 M3=A (T059): the research file(s) are no longer read-only text — each renders as a
-            // CLICKABLE link that opens the research MD as an annotatable view (openResearchDoc). The
-            // server annotation door (targetKind:'research') is finally reachable from the UI.
+            // CLICKABLE link that opens the research MD. Memo 080 PRD-V6 (WI-177) re-targets that click
+            // from the full-page view to the overlay; the annotatable view stays one click away.
             var uniqueResearch = uniqueList( research )
             if( uniqueResearch.length ) {
                 var researchRow = document.createElement( 'div' )
@@ -6617,8 +6623,11 @@
                     link.className = 'research-open-link'
                     link.setAttribute( 'data-research-file', file )
                     link.textContent = file
-                    link.title = 'Research-Dokument öffnen (annotierbar)'
-                    link.addEventListener( 'click', function() { openResearchDoc( file ) } )
+                    // PRD-V6 (Memo 080 Kap 16, WI-177): the entry point now opens the OVERLAY, so the
+                    // reading position in #content survives. The title drops the "annotierbar" promise —
+                    // annotating lives one click further, behind "Vollansicht" in the overlay header.
+                    link.title = 'Research-Dokument öffnen'
+                    link.addEventListener( 'click', function() { openResearchOverlay( file ) } )
                     researchRow.appendChild( link )
                 } )
                 wrap.appendChild( researchRow )
@@ -6665,6 +6674,108 @@
                 .catch( function() {
                     contentEl.innerHTML = '<p style="color:#f85149">Research-Dokument konnte nicht geladen werden: ' + escapeHtml( researchFile ) + '</p>'
                 } )
+        }
+
+
+        // PRD-V6 (Memo 080 Kap 16, WI-177): client PRE-check for an overlay-openable research path. It is
+        // a pre-check, NOT a replacement: MemoView.readResearchDoc stays the authoritative guard. Written
+        // as a CLASS rule rather than a list of the three known bad cases:
+        //   scheme    ANY uri scheme (http:, https:, file:, javascript:, data:, ...)  -> refused
+        //   absolute  starts with '/' or '\'  (filesystem root, UNC)                  -> refused
+        //   traversal ANY '..' SEGMENT, on either separator ('/' or '\')               -> refused
+        // A segment test, not a substring test — a file honestly named `a..b.md` is not a traversal.
+        function isResearchOverlayPath( researchFile ) {
+            if( typeof researchFile !== 'string' ) { return false }
+            var target = researchFile.trim()
+            if( target.length === 0 ) { return false }
+            if( /^[a-z][a-z0-9+.-]*:/i.test( target ) ) { return false }
+            if( target.charAt( 0 ) === '/' || target.charAt( 0 ) === '\\' ) { return false }
+
+            return target.split( /[\\/]/ ).indexOf( '..' ) === -1
+        }
+
+
+        // PRD-V6 (Memo 080 Kap 16, WI-177): open a research MD as an OVERLAY over the memo — the "tiefere
+        // Ebene" from the user brief. Same route as openResearchDoc, but the result lands in
+        // #research-modal-body, so #content (and with it the reading position) is never touched. The
+        // overlay is the LOOK-UP level and is deliberately not annotatable; "Vollansicht" bridges to
+        // openResearchDoc, which keeps the Memo 079 M3=A capability reachable.
+        function openResearchOverlay( researchFile ) {
+            if( !currentDocumentId ) { return }
+            if( !isResearchOverlayPath( researchFile ) ) { return }
+
+            var modal = document.getElementById( 'research-modal' )
+            var body = document.getElementById( 'research-modal-body' )
+            var titleEl = document.getElementById( 'research-modal-title' )
+            if( !modal || !body ) { return }
+
+            researchOverlayFile = researchFile
+            if( titleEl ) { titleEl.textContent = researchFile }
+            body.innerHTML = '<p class="research-overlay-loading">Wird geladen: ' + escapeHtml( researchFile ) + '</p>'
+            modal.classList.remove( 't-hidden' )
+
+            var qs = '/api/research-page?documentId=' + encodeURIComponent( currentDocumentId )
+                + '&file=' + encodeURIComponent( researchFile )
+
+            fetch( qs )
+                .then( function( res ) {
+                    if( !res.ok ) { throw new Error( 'HTTP ' + res.status ) }
+
+                    return res.json()
+                } )
+                .then( function( payload ) {
+                    body.innerHTML = marked.parse( ( payload && payload.content ) || '' )
+                    // Diagrams are collected document-wide, so an embedded diagram in the overlay renders too.
+                    renderAllDiagrams()
+                } )
+                .catch( function() {
+                    // Loud, inside the overlay: no silent failure and no navigation away from the memo.
+                    body.innerHTML = '<p class="research-overlay-error">Research-Dokument konnte nicht geladen werden: '
+                        + escapeHtml( researchFile ) + '</p>'
+                } )
+        }
+
+
+        function isResearchOverlayOpen() {
+            var modal = document.getElementById( 'research-modal' )
+
+            return !!( modal && !modal.classList.contains( 't-hidden' ) )
+        }
+
+
+        function closeResearchOverlay() {
+            var modal = document.getElementById( 'research-modal' )
+            var body = document.getElementById( 'research-modal-body' )
+            researchOverlayFile = null
+            if( body ) { body.innerHTML = '' }
+            if( modal ) { modal.classList.add( 't-hidden' ) }
+        }
+
+
+        // Close wiring after the shared .t-modal convention: close button, backdrop click, Escape.
+        var researchModalCloseBtn = document.getElementById( 'research-modal-close' )
+        if( researchModalCloseBtn ) { researchModalCloseBtn.addEventListener( 'click', closeResearchOverlay ) }
+
+        var researchModalEl = document.getElementById( 'research-modal' )
+        if( researchModalEl ) {
+            researchModalEl.addEventListener( 'click', function( ev ) {
+                if( ev.target === researchModalEl ) { closeResearchOverlay() }
+            } )
+        }
+
+        document.addEventListener( 'keydown', function( ev ) {
+            if( ev.key === 'Escape' && isResearchOverlayOpen() ) { closeResearchOverlay() }
+        } )
+
+        // The bridge to the annotatable full view. The file is read BEFORE closing, because
+        // closeResearchOverlay clears researchOverlayFile.
+        var researchModalFullBtn = document.getElementById( 'research-modal-full' )
+        if( researchModalFullBtn ) {
+            researchModalFullBtn.addEventListener( 'click', function() {
+                var file = researchOverlayFile
+                closeResearchOverlay()
+                if( file ) { openResearchDoc( file ) }
+            } )
         }
 
 
@@ -8414,6 +8525,18 @@
                     e.preventDefault()
 
                     if( decision.kind !== 'doc' ) { return }
+
+                    // PRD-V6 (Memo 080 Kap 16, WI-177): inside an open memo a document-relative .md link
+                    // is a DEEPER LEVEL of that memo, so it opens as an overlay instead of navigating the
+                    // whole viewer away. The fragment/query is dropped for the read — classifyLinkHref
+                    // decided 'doc' on exactly that stem. Without an open memo the navigate branch stays.
+                    var stem = decision.href.split( '#' )[ 0 ].split( '?' )[ 0 ]
+                    if( currentDocumentId && isResearchOverlayPath( stem ) ) {
+                        openResearchOverlay( stem )
+
+                        return
+                    }
+
                     if( !currentWs ) { return }
                     currentWs.send( JSON.stringify( { type: 'navigate', path: decision.href } ) )
                     window.scrollTo( 0, 0 )

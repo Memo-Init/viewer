@@ -375,6 +375,31 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
     } )
 
 
+    // The PERSISTED ordinal of a block section (`block_section.sort`). The viewer only READS that column
+    // (DoltDbAssembler orders by it), but it carries the register as a copy, so the ordinal has to be the
+    // same one on this side — a mirror that agreed on the headings and disagreed on the order would be the
+    // very drift M4 already produced once. It is DELIBERATELY NOT the register index: deriving it that way
+    // moved factualAccount from 0 to 11 while assessment moved from 1 to 3, which reverses the documented
+    // "facts before judgment" order (Memo 053 Kap 8) and disagrees with every row an older database holds.
+    it( 'the persisted ordinal keeps the established sections on their stored positions', () => {
+        const { fields } = BlockSections.sortOrder()
+        const writable = BlockSections.writableFields().fields
+
+        expect( fields.length ).toBeGreaterThan( 0 )
+        expect( fields.length ).toBe( writable.length )
+        expect( fields.slice().sort() ).toEqual( writable.slice().sort() )
+        expect( fields.slice( 0, 4 ) ).toEqual( [ 'factualAccount', 'assessment', 'solution', 'openQuestions' ] )
+
+        const ordinals = [ 'factualAccount', 'assessment', 'solution', 'openQuestions' ]
+            .map( ( field ) => BlockSections.sortOf( { field } ).sort )
+        expect( ordinals ).toEqual( [ 0, 1, 2, 3 ] )
+        // the counter-probe: register index and persisted ordinal are two different answers
+        expect( writable.indexOf( 'factualAccount' ) ).toBe( 11 )
+        expect( BlockSections.assertSortOrder() ).toEqual( { ok: true, checked: writable.length, established: 4 } )
+        expect( () => BlockSections.sortOf( { field: 'topics' } ) ).toThrow( /not a writable block section/ )
+    } )
+
+
     // ---- the two cross-boundary cases ----
     withCore( 'the viewer register and the core register are byte-identical below the header', async () => {
         const mirror = await import( CORE_REGISTER )

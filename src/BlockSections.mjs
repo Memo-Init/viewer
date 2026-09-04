@@ -83,6 +83,31 @@ const SECTIONS = [
 ]
 
 
+// The PERSISTED ordinal of a writable section — the value `block_section.sort` carries. It is
+// DELIBERATELY NOT the register index and must never become one again.
+//
+// THE REGRESSION THIS CLOSES, MEASURED: `sort` was derived as `BODY_SECTIONS.indexOf( name )`. The
+// moment this register widened that list from four names to fourteen, every ordinal moved. On a fresh
+// database the sections came out as currentState 1, assessment 3, factualAccount 11, solution 12,
+// openQuestions 13 — where the same four names had carried 0, 1, 2, 3 before. Two things broke at once:
+//   - the documented reading order "facts kept apart from judgment, facts first" (Memo 053 Kap 8, quoted
+//     at the `block_section` carrier in DoltSchema) was REVERSED, because Bewertung (3) now sorted ahead
+//     of Faktenlage (11);
+//   - a database written before the widening kept the old ordinals, so the order of one and the same
+//     memo depended on whether it had been re-projected since.
+//
+// THE ORDER BELOW IS ADDITIVE, exactly as the parser return is: the four established names keep the
+// ordinals they are ALREADY persisted with, the ten new writable ones follow behind them. That restores
+// the documented order and makes an old row and a freshly written row of the same section carry the
+// identical value — a database that mixes both is consistent by construction, with no migration and
+// without rewriting a single stored row.
+//
+// IT IS A READ ORDER, NEVER THE RENDER ORDER. The render iterates the register itself (BLOCK_SECTION_ORDER
+// in RevisionAssembler and its viewer mirror), which is grouped by kind. Those are two different questions
+// and one list had been answering both.
+const ESTABLISHED_SORT = [ 'factualAccount', 'assessment', 'solution', 'openQuestions' ]
+
+
 // The fixed section order of a revision DOCUMENT (REV-18, Z. 158-172). Kap 2 calls this table "the
 // checklist for the generation" — which database table feeds which section. The parenthetical detail
 // of the memo table is kept in this comment rather than in the section name, so the name stays a
@@ -155,6 +180,66 @@ class BlockSections {
             .map( ( entry ) => entry[ 'field' ] )
 
         return { fields }
+    }
+
+
+    // The order the writable sections are PERSISTED in (`block_section.sort`): the four established names
+    // first, in the documented reading order, then the remaining writable ones in register order. Pure,
+    // and a fresh list on every call so a caller can never reorder the order everyone else reads.
+    static sortOrder() {
+        const later = BlockSections.writableFields().fields
+            .filter( ( field ) => ESTABLISHED_SORT.includes( field ) !== true )
+        const fields = ESTABLISHED_SORT.concat( later )
+
+        return { fields }
+    }
+
+
+    // The ordinal ONE writable section is persisted with. An unknown or a `generated` field is a defect
+    // here, never ordinal -1: that is precisely what `indexOf` used to hand into the database without a
+    // word, and a negative position would sort ahead of every real section.
+    static sortOf( { field } ) {
+        if( typeof field !== 'string' || field.length === 0 ) {
+            throw new Error( 'BlockSections.sortOf: "field" is required (non-empty string)' )
+        }
+
+        const { fields } = BlockSections.sortOrder()
+        const sort = fields
+            .indexOf( field )
+        if( sort === -1 ) {
+            throw new Error( `BlockSections.sortOf: "${ field }" is not a writable block section — permitted: ${ fields.join( ', ' ) }` )
+        }
+
+        return { sort }
+    }
+
+
+    // The permutation gate over the persisted order. It states HOW MANY fields it compared, because a
+    // check that found nothing to compare has checked nothing. Every writable field must appear exactly
+    // once: a field that lost its ordinal would be written with a silent -1, a duplicated one would give
+    // two sections the same position, and an ESTABLISHED name that left the head would move an ordinal
+    // that is already stored in existing databases.
+    static assertSortOrder() {
+        const writable = BlockSections.writableFields().fields
+        const { fields } = BlockSections.sortOrder()
+
+        const missing = writable
+            .filter( ( field ) => fields.includes( field ) !== true )
+        const unknown = fields
+            .filter( ( field ) => writable.includes( field ) !== true )
+        const duplicated = fields
+            .filter( ( field, index ) => fields.indexOf( field ) !== index )
+        if( missing.length > 0 || unknown.length > 0 || duplicated.length > 0 ) {
+            throw new Error( `BlockSections.assertSortOrder: the persisted order is not a permutation of the ${ writable.length } writable fields — missing: ${ missing.join( ', ' ) || 'none' }; unknown: ${ unknown.join( ', ' ) || 'none' }; duplicated: ${ duplicated.join( ', ' ) || 'none' }` )
+        }
+
+        const moved = ESTABLISHED_SORT
+            .filter( ( field, index ) => fields[ index ] !== field )
+        if( moved.length > 0 ) {
+            throw new Error( `BlockSections.assertSortOrder: the established sections ${ moved.join( ', ' ) } left their stored ordinals — ${ ESTABLISHED_SORT.join( ', ' ) } are persisted as 0..${ ESTABLISHED_SORT.length - 1 } and moving them would reorder rows that are already in databases` )
+        }
+
+        return { ok: true, checked: fields.length, established: ESTABLISHED_SORT.length }
     }
 
 
@@ -282,6 +367,10 @@ class BlockSections {
 // LOAD-TIME GATE: an entry without a kind or without an aliases list breaks the import of this
 // module, not some later read. A half-declared section must never reach the parser or the write path.
 BlockSections.all()
+// LOAD-TIME GATE, second half: the persisted ordinal order must stay a permutation of the writable
+// fields with the four established names on their stored positions. Widening the register again must
+// break the import here, not silently move an ordinal that databases already carry.
+BlockSections.assertSortOrder()
 
 
-export { BlockSections, KINDS, WRITABLE_KINDS, SUFFIX_SEPARATORS }
+export { BlockSections, KINDS, WRITABLE_KINDS, SUFFIX_SEPARATORS, ESTABLISHED_SORT }

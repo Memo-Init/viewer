@@ -1121,13 +1121,17 @@ class MemoView {
     // block.json. Read-only, never writes. Returns { topics:[{id,title,blockId,chapter,workItemIds,
     // researchFile,dependsOn,status}], blocks:[{blockId,topicIds,tags}] }; an absent store yields the
     // empty shape rather than throwing (a memo with no store looks empty, not broken).
+    // PRD-V8 (Memo 080 Kap 16, T080): the THIRD corner of the same store — <memoDir>/_work-items/
+    // WI-###.json — is read here too. It is added ADDITIVELY: `topics` and `blocks` keep their shape
+    // and order, so the PRD-018 suite stays green without a single edit.
     static async readTopicStore( { memoDir } ) {
-        const empty = { 'topics': [], 'blocks': [] }
+        const empty = { 'topics': [], 'blocks': [], 'workItems': [] }
 
         if( typeof memoDir !== 'string' || memoDir.length === 0 ) { return empty }
 
         const topicsDir = resolve( memoDir, '_topics' )
         const blocksDir = resolve( memoDir, 'blocks' )
+        const workItemsDir = resolve( memoDir, '_work-items' )
 
         const topics = existsSync( topicsDir ) === true
             ? await MemoView.#readTopicFiles( { topicsDir } )
@@ -1135,8 +1139,11 @@ class MemoView {
         const blocks = existsSync( blocksDir ) === true
             ? await MemoView.#readBlockFiles( { blocksDir } )
             : []
+        const workItems = existsSync( workItemsDir ) === true
+            ? await MemoView.#readWorkItemFiles( { workItemsDir } )
+            : []
 
-        return { 'topics': topics, 'blocks': blocks }
+        return { 'topics': topics, 'blocks': blocks, 'workItems': workItems }
     }
 
 
@@ -1201,6 +1208,196 @@ class MemoView {
         return loaded
             .filter( ( b ) => b !== null )
             .sort( ( a, b ) => String( a[ 'blockId' ] ).localeCompare( String( b[ 'blockId' ] ) ) )
+    }
+
+
+    // PRD-V8 (Memo 080 Kap 16, T080, WI-203): load the canonical <memoDir>/_work-items/WI-###.json
+    // records — the corner of the store the viewer never read (the display had only the comma list of
+    // ids, no title, no status). Mirror of #readTopicFiles: canonical files ONLY (an archived
+    // WI-153.<stamp>.json does not match WI-\d{3}\.json), a broken file is dropped instead of losing
+    // the whole read, stable sort by id. `provenance` is ALWAYS a list — never null — and every entry
+    // is projected onto { path, lines } so the display never has to guess at a missing field.
+    static async #readWorkItemFiles( { workItemsDir } ) {
+        const entries = await readdir( workItemsDir ).catch( () => [] )
+        const files = entries.filter( ( name ) => /^WI-\d{3}\.json$/.test( name ) )
+        const loaded = await Promise.all( files.map( async ( name ) => {
+            const raw = await readFile( resolve( workItemsDir, name ), 'utf8' ).catch( () => null )
+
+            if( raw === null ) { return null }
+
+            try {
+                const w = JSON.parse( raw )
+                const provenance = Array.isArray( w[ 'provenance' ] ) ? w[ 'provenance' ] : []
+
+                return {
+                    'id': w[ 'id' ],
+                    'topicId': w[ 'topicId' ] == null ? null : w[ 'topicId' ],
+                    'title': typeof w[ 'title' ] === 'string' ? w[ 'title' ] : '',
+                    'status': typeof w[ 'status' ] === 'string' ? w[ 'status' ] : 'offen',
+                    'disposition': w[ 'disposition' ] == null ? null : w[ 'disposition' ],
+                    'dispositionNote': w[ 'dispositionNote' ] == null ? null : w[ 'dispositionNote' ],
+                    'group': w[ 'group' ] == null ? null : w[ 'group' ],
+                    'provenance': provenance.map( ( entry ) => ( {
+                        'path': ( entry != null && typeof entry[ 'path' ] === 'string' ) ? entry[ 'path' ] : '',
+                        'lines': ( entry != null && entry[ 'lines' ] != null ) ? String( entry[ 'lines' ] ) : null
+                    } ) )
+                }
+            } catch( e ) {
+                return null
+            }
+        } ) )
+
+        return loaded
+            .filter( ( w ) => w !== null )
+            .sort( ( a, b ) => String( a[ 'id' ] ).localeCompare( String( b[ 'id' ] ) ) )
+    }
+
+
+    // PRD-V8 (Memo 080 Kap 16, T080, WI-153 display half / WI-203): PUBLIC+PURE (the MemoView
+    // convention for testable statics) — fold the three store corners into (chapter, block) sections.
+    // ONE section per PAIR (chapter, block), not per block: five of the blocks in memo 080 stand over
+    // more than one chapter, and a naive "one section per block" would render those twice.
+    // The link runs over the ONE checked edge work_item.topicId -> topic.id -> topic.blockId
+    // (invariant C22). The BACK edge topic.workItemIds is deliberately NOT read as a second truth —
+    // if it disagrees, that is a finding for the invariants, not a silent repair in the display.
+    // A work item whose topic is unknown / carries no block / carries no chapter lands in `unbound`
+    // WITH a named reason instead of vanishing, so
+    // counts.workItemsInSections + counts.workItemsUnbound === counts.workItems holds BY CONSTRUCTION
+    // and not by accident of today's data. Reads no file and keeps no state.
+    static blockStoreSections( { topics, blocks, workItems } ) {
+        const topicList = Array.isArray( topics ) ? topics : []
+        const blockList = Array.isArray( blocks ) ? blocks : []
+        const itemList = Array.isArray( workItems ) ? workItems : []
+
+        const hasBlock = ( topic ) => typeof topic[ 'blockId' ] === 'string' && topic[ 'blockId' ].length > 0
+        const hasChapter = ( topic ) => typeof topic[ 'chapter' ] === 'string' && topic[ 'chapter' ].length > 0
+        const topicById = new Map( topicList.map( ( topic ) => [ String( topic[ 'id' ] ), topic ] ) )
+        const placeable = topicList.filter( ( topic ) => hasBlock( topic ) === true && hasChapter( topic ) === true )
+
+        // Every chapter a block touches, and how many topics it carries in total — the two numbers the
+        // cross-chapter hint needs ("1 von 2 Topics in diesem Kapitel · weitere in: …").
+        const chaptersOfBlock = placeable.reduce( ( acc, topic ) => {
+            const seen = acc.get( topic[ 'blockId' ] ) === undefined ? [] : acc.get( topic[ 'blockId' ] )
+            acc.set( topic[ 'blockId' ], seen.includes( topic[ 'chapter' ] ) === true ? seen : seen.concat( [ topic[ 'chapter' ] ] ) )
+
+            return acc
+        }, new Map() )
+        const topicsOfBlock = topicList
+            .filter( ( topic ) => hasBlock( topic ) === true )
+            .reduce( ( acc, topic ) => {
+                acc.set( topic[ 'blockId' ], ( acc.get( topic[ 'blockId' ] ) === undefined ? 0 : acc.get( topic[ 'blockId' ] ) ) + 1 )
+
+                return acc
+            }, new Map() )
+
+        const itemsByTopic = itemList.reduce( ( acc, item ) => {
+            const key = String( item[ 'topicId' ] )
+            acc.set( key, ( acc.get( key ) === undefined ? [] : acc.get( key ) ).concat( [ item ] ) )
+
+            return acc
+        }, new Map() )
+
+        const byId = ( a, b ) => String( a[ 'id' ] ).localeCompare( String( b[ 'id' ] ) )
+        const chapterOrdinal = ( chapter ) => {
+            const hit = String( chapter ).match( /^\s*(\d+)\b/ )
+
+            return hit === null ? Number.MAX_SAFE_INTEGER : Number( hit[ 1 ] )
+        }
+        const byChapter = ( a, b ) => {
+            const delta = chapterOrdinal( a ) - chapterOrdinal( b )
+
+            return delta === 0 ? String( a ).localeCompare( String( b ) ) : delta
+        }
+
+        const buckets = placeable.reduce( ( acc, topic ) => {
+            const key = JSON.stringify( [ topic[ 'chapter' ], topic[ 'blockId' ] ] )
+            const bucket = acc.get( key ) === undefined
+                ? { 'chapter': topic[ 'chapter' ], 'blockId': topic[ 'blockId' ], 'topics': [] }
+                : acc.get( key )
+            bucket[ 'topics' ] = bucket[ 'topics' ].concat( [ topic ] )
+            acc.set( key, bucket )
+
+            return acc
+        }, new Map() )
+
+        const sections = Array.from( buckets.values() )
+            .map( ( bucket ) => {
+                const sectionTopics = bucket[ 'topics' ]
+                    .map( ( topic ) => ( {
+                        'id': topic[ 'id' ],
+                        'title': typeof topic[ 'title' ] === 'string' ? topic[ 'title' ] : '',
+                        'status': typeof topic[ 'status' ] === 'string' ? topic[ 'status' ] : 'registered'
+                    } ) )
+                    .sort( byId )
+                const sectionItems = bucket[ 'topics' ]
+                    .reduce( ( acc, topic ) => acc.concat( itemsByTopic.get( String( topic[ 'id' ] ) ) === undefined ? [] : itemsByTopic.get( String( topic[ 'id' ] ) ) ), [] )
+                    .sort( byId )
+                const others = ( chaptersOfBlock.get( bucket[ 'blockId' ] ) === undefined ? [] : chaptersOfBlock.get( bucket[ 'blockId' ] ) )
+                    .filter( ( chapter ) => chapter !== bucket[ 'chapter' ] )
+                    .sort( byChapter )
+
+                return {
+                    'chapter': bucket[ 'chapter' ],
+                    'blockId': bucket[ 'blockId' ],
+                    'topics': sectionTopics,
+                    'workItems': sectionItems,
+                    'topicCountInBlock': topicsOfBlock.get( bucket[ 'blockId' ] ) === undefined ? 0 : topicsOfBlock.get( bucket[ 'blockId' ] ),
+                    'otherChapters': others
+                }
+            } )
+            .sort( ( a, b ) => {
+                const delta = byChapter( a[ 'chapter' ], b[ 'chapter' ] )
+
+                return delta === 0 ? String( a[ 'blockId' ] ).localeCompare( String( b[ 'blockId' ] ) ) : delta
+            } )
+
+        const unbound = itemList
+            .map( ( item ) => {
+                const topic = topicById.get( String( item[ 'topicId' ] ) )
+
+                if( topic === undefined ) { return MemoView.#unboundEntry( { 'item': item, 'reason': 'topic-unknown', 'topicStatus': null } ) }
+                if( hasBlock( topic ) !== true ) { return MemoView.#unboundEntry( { 'item': item, 'reason': 'topic-without-block', 'topicStatus': topic[ 'status' ] } ) }
+                if( hasChapter( topic ) !== true ) { return MemoView.#unboundEntry( { 'item': item, 'reason': 'topic-without-chapter', 'topicStatus': topic[ 'status' ] } ) }
+
+                return null
+            } )
+            .filter( ( entry ) => entry !== null )
+            .sort( byId )
+
+        const workItemsInSections = sections.reduce( ( acc, section ) => acc + section[ 'workItems' ].length, 0 )
+
+        return {
+            'sections': sections,
+            'unbound': unbound,
+            'counts': {
+                'topics': topicList.length,
+                'topicsWithBlock': topicList.filter( ( topic ) => hasBlock( topic ) === true ).length,
+                'workItems': itemList.length,
+                'workItemsInSections': workItemsInSections,
+                'workItemsUnbound': unbound.length,
+                'blocks': blockList.length,
+                'sections': sections.length
+            }
+        }
+    }
+
+
+    // PRD-V8: one row of the "no block binding" backlog — the read-only work-item view plus the two
+    // fields that say WHY it could not be placed. Kept as its own leaf so all three reasons emit the
+    // identical shape (the display must never meet a half-filled backlog row).
+    static #unboundEntry( { item, reason, topicStatus } ) {
+        return {
+            'id': item[ 'id' ],
+            'topicId': item[ 'topicId' ] == null ? null : item[ 'topicId' ],
+            'title': typeof item[ 'title' ] === 'string' ? item[ 'title' ] : '',
+            'status': typeof item[ 'status' ] === 'string' ? item[ 'status' ] : 'offen',
+            'disposition': item[ 'disposition' ] == null ? null : item[ 'disposition' ],
+            'dispositionNote': item[ 'dispositionNote' ] == null ? null : item[ 'dispositionNote' ],
+            'group': item[ 'group' ] == null ? null : item[ 'group' ],
+            'provenance': Array.isArray( item[ 'provenance' ] ) ? item[ 'provenance' ] : [],
+            'reason': reason,
+            'topicStatus': topicStatus == null ? null : topicStatus
+        }
     }
 
 
@@ -2052,6 +2249,10 @@ class MemoView {
             // <memoDir>/blocks/B###/block.json. MUST be matched BEFORE the generic /api/documents/<id>
             // GET below (the suffix is more specific; otherwise the generic route would swallow
             // "<id>/topics" as the id). Mirror of the /blocks + /requirements routes.
+            // PRD-V8 (Memo 080 Kap 16, T080): the route now carries the THIRD corner of the same store,
+            // <memoDir>/_work-items/WI-###.json, plus the derived (chapter, block) sections, the
+            // "no block binding" backlog and the seven counters. ADDITIVE — topics/blocks keep their
+            // shape, so an older reader of this route sees exactly what it saw before.
             if( url.startsWith( '/api/documents/' ) && url.endsWith( '/topics' ) && req.method === 'GET' ) {
 
                 const documentId = url.slice( '/api/documents/'.length, url.length - '/topics'.length )
@@ -2067,14 +2268,19 @@ class MemoView {
                 const location = MemoView.resolveMemoDir( { 'memoPath': doc[ 'memoPath' ] } )
 
                 if( !location[ 'status' ] ) {
-                    sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'topics': [], 'blocks': [] } )
+                    // PRD-V8: the no-memoDir path speaks the SAME shape as a real read — the empty view
+                    // comes out of blockStoreSections itself, so the seven counters can never drift
+                    // apart from the ones a filled store emits.
+                    const emptyView = MemoView.blockStoreSections( { 'topics': [], 'blocks': [], 'workItems': [] } )
+                    sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'topics': [], 'blocks': [], 'workItems': [], 'sections': emptyView[ 'sections' ], 'unbound': emptyView[ 'unbound' ], 'counts': emptyView[ 'counts' ] } )
 
                     return
                 }
 
                 const store = await MemoView.readTopicStore( { 'memoDir': location[ 'memoDir' ] } )
+                const view = MemoView.blockStoreSections( { 'topics': store[ 'topics' ], 'blocks': store[ 'blocks' ], 'workItems': store[ 'workItems' ] } )
 
-                sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'topics': store[ 'topics' ], 'blocks': store[ 'blocks' ] } )
+                sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'topics': store[ 'topics' ], 'blocks': store[ 'blocks' ], 'workItems': store[ 'workItems' ], 'sections': view[ 'sections' ], 'unbound': view[ 'unbound' ], 'counts': view[ 'counts' ] } )
 
                 return
             }

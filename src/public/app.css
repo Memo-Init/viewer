@@ -2890,6 +2890,41 @@
             color: var(--text-muted, #8b949e);
         }
 
+        /* PRD-V8 (Memo 080 Kap 16, T080, WI-153/WI-203): the block-bound Topics/Work-Items tables under
+           a chapter heading, plus the unplaceable backlog and the count line at the document end. Same
+           register as the cross-link line above (mono, 11px, muted) — no new colour world, no new
+           collapsible mechanics: .block-store-section rides on the existing .table-collapsible rules. */
+        #content .block-store-wrap {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            margin: 0 0 12px 0;
+        }
+
+        #content .block-store-section {
+            margin: 4px 0;
+        }
+
+        #content .block-store-note {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-muted, #8b949e);
+        }
+
+        #content .block-store-count {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-muted, #8b949e);
+            padding-top: 4px;
+        }
+
+        #content .block-store-unbound {
+            display: block;
+            margin: 24px 0 0 0;
+            padding-top: 12px;
+            border-top: 1px solid var(--border, #333);
+        }
+
         /* PRD-V6 (Memo 080 Kap 16, WI-177): the research entry point and the full view were UNSTYLED —
            these six class names lived only in app.client.mjs, so the <button> fell back to the browser's
            3D box (the same defect this file already documents for WI-119/WI-120). Colours come from the

@@ -6753,7 +6753,13 @@
             }
 
             var topics = ( payload && Array.isArray( payload.topics ) ) ? payload.topics : []
-            if( topics.length === 0 ) { return }
+            // PRD-V8 (Memo 080 Kap 16, T080): the same payload now carries the (chapter, block)
+            // sections, the unplaceable backlog and the seven counters. The early exit stays an exit
+            // for a document WITHOUT a store — it must not swallow a store that has sections.
+            var sections = ( payload && Array.isArray( payload.sections ) ) ? payload.sections : []
+            var unbound = ( payload && Array.isArray( payload.unbound ) ) ? payload.unbound : []
+            var counts = ( payload && payload.counts ) ? payload.counts : null
+            if( topics.length === 0 && sections.length === 0 && unbound.length === 0 ) { return }
 
             var headings = contentEl.querySelectorAll( 'h2' )
             var byHeading = []
@@ -6772,6 +6778,28 @@
             byHeading.forEach( function( entry ) {
                 injectTopicPillHeader( entry.heading, entry.topics )
             } )
+
+            // PRD-V8: the pill header is the short overview, the tables below are its unfolding. The
+            // sections are grouped onto their heading with the SAME matcher the pills use, so a chapter
+            // the pills could not place gets no orphan table either.
+            var sectionsByHeading = []
+            sections.forEach( function( section ) {
+                if( !section || typeof section.chapter !== 'string' || section.chapter.length === 0 ) { return }
+                var heading = matchChapterHeading( headings, section.chapter )
+                if( !heading ) { return }
+                var entry = sectionsByHeading.find( function( e ) { return e.heading === heading } )
+                if( !entry ) {
+                    entry = { heading: heading, sections: [] }
+                    sectionsByHeading.push( entry )
+                }
+                entry.sections.push( section )
+            } )
+
+            sectionsByHeading.forEach( function( entry ) {
+                injectBlockStoreSections( entry.heading, entry.sections )
+            } )
+
+            injectUnboundWorkItems( { unbound: unbound, counts: counts } )
         }
 
 
@@ -6870,6 +6898,202 @@
             }
 
             heading.parentNode.insertBefore( wrap, heading.nextSibling )
+        }
+
+
+        // PRD-V8 (Memo 080 Kap 16, T080, WI-203): unfold one chapter's blocks under the pill header —
+        // a Topics table and a Work-Items table PER BLOCK, so a work item is read where it belongs
+        // instead of as a bare comma list of ids. Idempotent: a chapter whose pill header is already
+        // followed by a .block-store-wrap is left alone, so a second render pass adds no second table.
+        // Returns the number of sections injected (0 when it skipped) so a caller can state how much
+        // it drew.
+        function injectBlockStoreSections( heading, sections ) {
+            if( !heading || !Array.isArray( sections ) || sections.length === 0 ) { return 0 }
+
+            var pill = heading.nextElementSibling
+            var anchor = ( pill && pill.classList && pill.classList.contains( 'topic-pill-header' ) ) ? pill : heading
+            var after = anchor.nextElementSibling
+            if( after && after.classList && after.classList.contains( 'block-store-wrap' ) ) { return 0 }
+
+            // The seam to the generator half (PRD-R3): a chapter that already carries its OWN
+            // "Work-Items" heading gets a one-line pointer instead of a second table.
+            var carriesOwn = chapterCarriesOwnWorkItems( heading )
+            var wrap = document.createElement( 'div' )
+            wrap.className = 'block-store-wrap'
+
+            sections.forEach( function( section ) {
+                var items = Array.isArray( section.workItems ) ? section.workItems : []
+                var sectionTopics = Array.isArray( section.topics ) ? section.topics : []
+                var topicRows = sectionTopics.map( function( topic ) {
+                    var mine = items.filter( function( item ) { return item.topicId === topic.id } )
+
+                    return [ topic.id, topic.title, topic.status, mine.map( function( item ) { return item.id } ).join( ', ' ) ]
+                } )
+                wrap.appendChild( buildStoreTable( {
+                    label: 'Topics',
+                    blockId: section.blockId,
+                    columns: [ 'Topic', 'Titel', 'Status', 'Work-Items' ],
+                    rows: topicRows
+                } ) )
+
+                var others = Array.isArray( section.otherChapters ) ? section.otherChapters : []
+                if( others.length > 0 ) {
+                    var note = document.createElement( 'div' )
+                    note.className = 'block-store-note'
+                    note.textContent = section.blockId + ' · ' + sectionTopics.length + ' von ' + section.topicCountInBlock
+                        + ' Topics in diesem Kapitel · weitere in: ' + others.join( ', ' )
+                    wrap.appendChild( note )
+                }
+
+                // A block without work items in this chapter gets no work-item section at all — the same
+                // treatment the generator path gives it. There is nothing to suppress and nothing to say.
+                if( items.length === 0 ) { return }
+
+                if( carriesOwn ) {
+                    var seam = document.createElement( 'div' )
+                    seam.className = 'block-store-note'
+                    seam.textContent = 'Work-Items: im Dokument enthalten'
+                    wrap.appendChild( seam )
+
+                    return
+                }
+
+                var itemRows = items.map( function( item ) {
+                    return [ item.id, item.topicId, item.title, item.status, formatProvenance( item.provenance ), item.group ]
+                } )
+                wrap.appendChild( buildStoreTable( {
+                    label: 'Work-Items',
+                    blockId: section.blockId,
+                    columns: [ 'WI', 'Topic', 'Titel', 'Status', 'Herkunft', 'Gruppe' ],
+                    rows: itemRows
+                } ) )
+            } )
+
+            anchor.parentNode.insertBefore( wrap, anchor.nextSibling )
+
+            return sections.length
+        }
+
+
+        // PRD-V8: build ONE collapsible store table. The <details class="table-collapsible" open> is
+        // built here by hand on purpose: wrapTablesCollapsible() runs synchronously during the render
+        // pass, while this injection happens after the async store read — the wrapper is long past.
+        // Every cell goes through textContent, never innerHTML, so a title carrying < or & shows up
+        // literally instead of being executed as markup.
+        function buildStoreTable( spec ) {
+            var label = spec.label
+            var blockId = spec.blockId
+            var columns = Array.isArray( spec.columns ) ? spec.columns : []
+            var rows = Array.isArray( spec.rows ) ? spec.rows : []
+
+            var details = document.createElement( 'details' )
+            details.className = 'table-collapsible block-store-section'
+            details.setAttribute( 'open', '' )
+
+            var summary = document.createElement( 'summary' )
+            summary.className = 'table-collapsible-summary'
+            summary.textContent = ( typeof blockId === 'string' && blockId.length > 0 ) ? label + ' — ' + blockId : label
+            details.appendChild( summary )
+
+            var table = document.createElement( 'table' )
+            var thead = document.createElement( 'thead' )
+            var headRow = document.createElement( 'tr' )
+            columns.forEach( function( name ) {
+                var th = document.createElement( 'th' )
+                th.textContent = name
+                headRow.appendChild( th )
+            } )
+            thead.appendChild( headRow )
+            table.appendChild( thead )
+
+            var tbody = document.createElement( 'tbody' )
+            rows.forEach( function( row ) {
+                var tr = document.createElement( 'tr' )
+                row.forEach( function( cell ) {
+                    var td = document.createElement( 'td' )
+                    td.textContent = ( cell === null || cell === undefined ) ? '' : String( cell )
+                    tr.appendChild( td )
+                } )
+                tbody.appendChild( tr )
+            } )
+            table.appendChild( tbody )
+            details.appendChild( table )
+
+            return details
+        }
+
+
+        // PRD-V8 (In-Scope 10, the seam to PRD-R3): does this chapter already carry its OWN Work-Items
+        // heading, written by the generator into the revision? Walks the siblings after the chapter
+        // heading up to the next H2 — bounded recursion, no loop (Memo standard).
+        function chapterCarriesOwnWorkItems( heading ) {
+            var scan = function( node ) {
+                if( !node ) { return false }
+                var level = headingLevel( node )
+                if( level > 0 && level <= 2 ) { return false }
+                if( level > 2 && ( node.textContent || '' ).trim().indexOf( 'Work-Items' ) === 0 ) { return true }
+
+                return scan( node.nextElementSibling )
+            }
+
+            return scan( heading.nextElementSibling )
+        }
+
+
+        // PRD-V8 (US-3): the backlog after the last chapter — every work item that could NOT be placed,
+        // with the reason, plus the count line that says how much was compared. The count line appears
+        // ALWAYS, also with an empty backlog: it is the visible proof that a comparison happened. A
+        // silently missing backlog would be exactly the loss this display is meant to prevent.
+        function injectUnboundWorkItems( spec ) {
+            var counts = spec.counts
+            if( !counts ) { return 0 }
+            if( contentEl.querySelector( '.block-store-unbound' ) ) { return 0 }
+
+            var unbound = Array.isArray( spec.unbound ) ? spec.unbound : []
+            var wrap = document.createElement( 'section' )
+            wrap.className = 'block-store-unbound'
+
+            if( unbound.length > 0 ) {
+                var rows = unbound.map( function( item ) {
+                    var reason = item.topicStatus ? item.reason + ' (' + item.topicStatus + ')' : item.reason
+
+                    return [ item.id, item.topicId, item.title, item.status, formatProvenance( item.provenance ), item.group, reason ]
+                } )
+                wrap.appendChild( buildStoreTable( {
+                    label: 'Work-Items ohne Block-Bindung (' + unbound.length + ')',
+                    blockId: null,
+                    columns: [ 'WI', 'Topic', 'Titel', 'Status', 'Herkunft', 'Gruppe', 'Grund' ],
+                    rows: rows
+                } ) )
+            }
+
+            var line = document.createElement( 'div' )
+            line.className = 'block-store-count'
+            line.textContent = counts.workItems + ' Work-Items · ' + counts.blocks + ' Blöcke · '
+                + counts.workItemsInSections + ' im Block · ' + counts.workItemsUnbound + ' ohne Bindung'
+            wrap.appendChild( line )
+
+            contentEl.appendChild( wrap )
+
+            return unbound.length
+        }
+
+
+        // PRD-V8: render a work item's provenance as "pfad:zeilen", several joined by " · ". An entry
+        // without a line span shows the path alone; an entry without a path is dropped rather than
+        // printed as a bare colon.
+        function formatProvenance( provenance ) {
+            if( !Array.isArray( provenance ) ) { return '' }
+
+            return provenance
+                .map( function( entry ) {
+                    if( !entry || typeof entry.path !== 'string' || entry.path.length === 0 ) { return '' }
+                    var lines = ( entry.lines === null || entry.lines === undefined ) ? '' : String( entry.lines )
+
+                    return lines.length === 0 ? entry.path : entry.path + ':' + lines
+                } )
+                .filter( function( text ) { return text.length > 0 } )
+                .join( ' · ' )
         }
 
 

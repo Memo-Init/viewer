@@ -118,17 +118,24 @@ describe( 'Memo 072 PRD-018 — Topic/Block store reader (route data source)', (
         } )
 
 
+        // PRD-V8 (Memo 080 Kap 16, T080): readTopicStore gained a THIRD corner — workItems. Both
+        // assertions below were EXACT-SHAPE pins on a two-key object, so the additive key made them
+        // red. The census was updated, the check was NOT weakened: it is still an exact equality, now
+        // on the three-key shape the store really has. What they assert — "an empty store looks empty
+        // and does not throw" — is unchanged. BlockStoreSectionsPRDV8.test.mjs additionally holds the
+        // CLASS (the empty shape carries the same key set as a filled read), so a fourth corner can
+        // no longer drift past a pinned census unnoticed.
         it( 'yields the empty shape (not a throw) for a memo with no store', async () => {
             const empty = join( root, 'no-store-memo' )
             await mkdir( empty, { recursive: true } )
             const store = await MemoView.readTopicStore( { memoDir: empty } )
 
-            expect( store ).toEqual( { topics: [], blocks: [] } )
+            expect( store ).toEqual( { topics: [], blocks: [], workItems: [] } )
         } )
 
 
         it( 'is empty-safe for a missing memoDir argument', async () => {
-            expect( await MemoView.readTopicStore( { memoDir: '' } ) ).toEqual( { topics: [], blocks: [] } )
+            expect( await MemoView.readTopicStore( { memoDir: '' } ) ).toEqual( { topics: [], blocks: [], workItems: [] } )
         } )
     } )
 } )

@@ -1538,3 +1538,320 @@ describe( 'DoltDbAssembler — anchored tables and diagrams per block (Memo 080,
             .toThrow( /B001\.d2.*erfunden/ )
     } )
 } )
+
+
+// ── Memo 080, PRD-V2 (WI-102) — der Knowledge-Graph als Anzeige-Ende des Tracers ─────────────────────
+//
+// The server builds the diagram SOURCE from four tables; the client's existing diagram registry draws it.
+// The edge the user asked for ("welches Topic steckt in welchem PRD") runs over the work-item bridge.
+//
+// EVERY CASE STATES HOW MUCH IT COMPARED (rows read, nodes drawn, edges drawn) — a check without a
+// comparison base counts as red, not green (lesson deterministic-gates-can-be-vacuum-green).
+describe( 'DoltDbAssembler.readKnowledgeGraph (Memo 080, PRD-V2 / WI-102)', () => {
+    const repoTmpRoot = join( process.cwd(), '.test-tmp' )
+    let memoDir = ''
+    let dbPath = ''
+
+
+    // The four tables the graph reads, in the shape DoltSchema creates them (only the read columns plus
+    // one spillover each, so the SELECT list is exercised against a realistic row).
+    const createGraphTables = ( { db } ) => {
+        db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS work_item ( id TEXT PRIMARY KEY, topic TEXT, title TEXT, status TEXT, grp TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, spillover TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
+    }
+
+    // 2 topics · 3 work items · 1 phase (plus the reserved __state__ row) · 2 rollout rows.
+    const seedGraph = ( { path } ) => {
+        const db = new DatabaseSync( path )
+        createGraphTables( { db } )
+
+        const topic = db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block ) VALUES ( ?, ?, ?, ?, ? )' )
+        topic.run( 'T015', 'M080', 'Visualisierung Topics/WIs/PRDs', 'P0', 'B015' )
+        topic.run( 'T034', 'M080', 'Rohtabellen-Ansicht', 'P0', 'B034' )
+
+        const workItem = db.prepare( 'INSERT INTO work_item ( id, topic, title, status, grp ) VALUES ( ?, ?, ?, ?, ? )' )
+        workItem.run( 'WI-101', 'T034', 'Rohtabellen bauen', 'offen', 'schaufenster' )
+        workItem.run( 'WI-102', 'T015', 'Graph Stufe 1 bauen', 'offen', 'schaufenster' )
+        workItem.run( 'WI-999', 'T-gibt-es-nicht', 'Verweis ins Leere', 'offen', 'schaufenster' )
+
+        const phase = db.prepare( 'INSERT INTO rollout_phase ( id, memo_id, name, status, spillover ) VALUES ( ?, ?, ?, ?, ? )' )
+        phase.run( 'phase-9', 'M080', 'Das Schaufenster', 'open', '{}' )
+        phase.run( '__state__', 'M080', null, null, '{"memo":"M080"}' )
+
+        const prd = db.prepare( 'INSERT INTO rollout_work_item ( id, phase_id, title, status, target, wi_type, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' )
+        prd.run( 'WI-102', 'phase-9', 'PRD-V2 Knowledge-Graph', 'open', null, 'prd', '{}' )
+        prd.run( 'PRD-V1', 'phase-9', 'Rohtabellen-Ansicht', 'done', 'WI-101', 'prd', '{}' )
+
+        db.close()
+    }
+
+
+    beforeEach( () => {
+        mkdirSync( repoTmpRoot, { recursive: true } )
+        memoDir = mkdtempSync( join( repoTmpRoot, 'memo-080-graph-' ) )
+        dbPath = resolve( memoDir, 'memo-080.db' )
+    } )
+
+    afterEach( () => {
+        rmSync( memoDir, { recursive: true, force: true } )
+    } )
+
+
+    it( 'draws one node per read row — 8 nodes out of 2+3+1+2 rows, the __state__ sentinel is NOT one', () => {
+        seedGraph( { path: dbPath } )
+
+        const { mermaid, counts, empty } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+        const nodeLines = mermaid.split( '\n' ).filter( ( line ) => /^\s{4}[A-Za-z0-9_]+\["/.test( line ) === true )
+
+        expect( empty ).toBe( false )
+        expect( counts[ 'topics' ] ).toBe( 2 )
+        expect( counts[ 'workItems' ] ).toBe( 3 )
+        expect( counts[ 'phases' ] ).toBe( 1 )                       // the reserved __state__ row is excluded
+        expect( counts[ 'prds' ] ).toBe( 2 )
+        // node count == sum of the four row counts: 8 compared against 8 — no node without a read row
+        expect( nodeLines.length ).toBe( counts[ 'topics' ] + counts[ 'workItems' ] + counts[ 'phases' ] + counts[ 'prds' ] )
+        expect( nodeLines.length ).toBe( 8 )
+        expect( mermaid ).toContain( 'flowchart LR' )
+        expect( mermaid.indexOf( '__state__' ) ).toBe( -1 )
+    } )
+
+
+    it( 'draws the Topic→PRD edge over the work-item bridge — via id AND via target, 2 of 2 rollout rows', () => {
+        seedGraph( { path: dbPath } )
+
+        const { mermaid, counts } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+
+        // bridge over rollout_work_item.id: WI-102 is a work item, its topic is T015
+        expect( mermaid ).toContain( 'T_T015 --> R_WI_2d_102' )
+        // bridge over rollout_work_item.target: PRD-V1 targets WI-101, whose topic is T034
+        expect( mermaid ).toContain( 'T_T034 --> R_PRD_2d_V1' )
+        expect( counts[ 'edgesTopicPrd' ] ).toBe( 2 )
+    } )
+
+
+    it( 'draws Topic→Work-Item and Phase→PRD, one per row with a RESOLVABLE reference (2 of 3 · 2 of 2)', () => {
+        seedGraph( { path: dbPath } )
+
+        const { mermaid, counts, warnings } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+        const edgeLines = mermaid.split( '\n' ).filter( ( line ) => line.indexOf( ' --> ' ) !== -1 )
+
+        expect( mermaid ).toContain( 'T_T015 --> W_WI_2d_102' )
+        expect( mermaid ).toContain( 'T_T034 --> W_WI_2d_101' )
+        expect( mermaid ).toContain( 'P_phase_2d_9 --> R_WI_2d_102' )
+        expect( mermaid ).toContain( 'P_phase_2d_9 --> R_PRD_2d_V1' )
+        expect( counts[ 'edgesTopicWorkItem' ] ).toBe( 2 )           // WI-999 points at a topic that does not exist
+        expect( counts[ 'edgesPhasePrd' ] ).toBe( 2 )
+        // 6 edge lines total = 2 + 2 + 2; nothing is drawn that no count covers
+        expect( edgeLines.length ).toBe( counts[ 'edgesTopicWorkItem' ] + counts[ 'edgesPhasePrd' ] + counts[ 'edgesTopicPrd' ] )
+        expect( edgeLines.length ).toBe( 6 )
+        // the reference into nothing is NAMED, not silently dropped
+        expect( warnings.filter( ( text ) => text.indexOf( 'Work-Item-Zeile' ) !== -1 ).length ).toBe( 1 )
+    } )
+
+
+    it( 'invents no node: every id in an edge line is also a declared node (12 endpoints checked)', () => {
+        seedGraph( { path: dbPath } )
+
+        const { mermaid } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+        const lines = mermaid.split( '\n' )
+        const declared = lines
+            .filter( ( line ) => /^\s{4}[A-Za-z0-9_]+\["/.test( line ) === true )
+            .map( ( line ) => line.trim().split( '[' )[ 0 ] )
+        const endpoints = lines
+            .filter( ( line ) => line.indexOf( ' --> ' ) !== -1 )
+            .reduce( ( acc, line ) => acc.concat( line.trim().split( ' --> ' ) ), [] )
+
+        expect( endpoints.length ).toBe( 12 )                        // 6 edges × 2 endpoints compared
+        expect( endpoints.filter( ( id ) => declared.includes( id ) !== true ) ).toEqual( [] )
+    } )
+
+
+    it( 'assigns every node to the class of its kind — 4 classDef lines, 4 class lines, 8 members', () => {
+        seedGraph( { path: dbPath } )
+
+        const { mermaid } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+        const classDefs = mermaid.split( '\n' ).filter( ( line ) => line.trim().startsWith( 'classDef ' ) === true )
+        const classLines = mermaid.split( '\n' ).filter( ( line ) => line.trim().startsWith( 'class ' ) === true )
+        const members = classLines
+            .reduce( ( acc, line ) => acc.concat( line.trim().split( ' ' )[ 1 ].split( ',' ) ), [] )
+
+        expect( classDefs.length ).toBe( 4 )
+        expect( classLines.length ).toBe( 4 )
+        expect( members.length ).toBe( 8 )                           // every one of the 8 nodes carries a class
+    } )
+
+
+    it( 'a doubled reference produces ONE edge, not two (2 rollout rows, 1 deduped edge)', () => {
+        seedGraph( { path: dbPath } )
+        const db = new DatabaseSync( dbPath )
+        // both rollout rows now bridge onto the SAME topic — the pair T015→R must not appear twice
+        db.prepare( 'UPDATE rollout_work_item SET target = ? WHERE id = ?' ).run( 'WI-102', 'PRD-V1' )
+        db.prepare( 'UPDATE rollout_work_item SET id = ? WHERE id = ?' ).run( 'PRD-V1b', 'PRD-V1' )
+        db.close()
+
+        const { mermaid, counts } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+        const doubled = mermaid.split( '\n' ).filter( ( line ) => line.trim() === 'T_T015 --> R_WI_2d_102' )
+
+        expect( doubled.length ).toBe( 1 )
+        expect( counts[ 'edgesTopicPrd' ] ).toBe( 2 )                // T015→WI-102 and T015→PRD-V1b: 2 distinct pairs
+    } )
+
+
+    it( 'a database WITHOUT the four tables reads as seven zeros and does NOT throw', () => {
+        const db = new DatabaseSync( dbPath )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT )' )
+        db.close()
+
+        const { mermaid, counts, empty, reason } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+
+        expect( Object.keys( counts ).length ).toBe( 7 )             // all seven figures present, none missing
+        expect( Object.values( counts ).filter( ( value ) => value !== 0 ) ).toEqual( [] )
+        expect( mermaid ).toBe( null )
+        expect( empty ).toBe( true )
+        expect( reason ).toBe( 'empty-db' )
+    } )
+
+
+    it( 'an EMPTY database says so in plain words instead of handing over an empty canvas', () => {
+        const db = new DatabaseSync( dbPath )
+        createGraphTables( { db } )
+        db.close()
+
+        const { mermaid, counts, empty, warnings } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+
+        expect( empty ).toBe( true )
+        expect( mermaid ).toBe( null )
+        expect( counts[ 'topics' ] ).toBe( 0 )
+        expect( warnings.length ).toBe( 1 )
+        expect( warnings[ 0 ] ).toContain( '0 Knoten und 0 Kanten verglichen' )
+    } )
+
+
+    it( 'topics AND prds present but NO Topic→PRD edge is reported as an anomaly (2 topics, 1 PRD, 0 edges)', () => {
+        const db = new DatabaseSync( dbPath )
+        createGraphTables( { db } )
+        db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 'T015', 'M080', 'Visualisierung', 'P0', 'B015' )
+        db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 'T034', 'M080', 'Rohtabellen', 'P0', 'B034' )
+        db.prepare( 'INSERT INTO rollout_work_item ( id, phase_id, title, status, target, wi_type, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' )
+            .run( 'PRD-V2', null, 'Ohne Bruecke', 'open', null, 'prd', '{}' )
+        db.close()
+
+        const { counts, empty, warnings } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+
+        expect( empty ).toBe( false )
+        expect( counts[ 'topics' ] ).toBe( 2 )
+        expect( counts[ 'prds' ] ).toBe( 1 )
+        expect( counts[ 'edgesTopicPrd' ] ).toBe( 0 )
+        expect( warnings.filter( ( text ) => text.indexOf( 'keine einzige Topic-zu-PRD-Kante' ) !== -1 ).length ).toBe( 1 )
+    } )
+
+
+    it( 'a MISSING side of the Topic→PRD edge is named too (2 topics, 0 PRD rows — 0 edges is unavoidable)', () => {
+        const db = new DatabaseSync( dbPath )
+        createGraphTables( { db } )
+        db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 'T015', 'M080', 'Visualisierung', 'P0', 'B015' )
+        db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 'T034', 'M080', 'Rohtabellen', 'P0', 'B034' )
+        db.close()
+
+        const { counts, empty, warnings } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+
+        expect( empty ).toBe( false )
+        expect( counts[ 'topics' ] ).toBe( 2 )
+        expect( counts[ 'prds' ] ).toBe( 0 )
+        // "nothing to connect" and "does not connect" are DIFFERENT findings — 1 of each branch fires
+        expect( warnings.filter( ( text ) => text.indexOf( 'eine Seite der Topic-zu-PRD-Kante fehlt ganz' ) !== -1 ).length ).toBe( 1 )
+        expect( warnings.filter( ( text ) => text.indexOf( 'keine einzige Topic-zu-PRD-Kante' ) !== -1 ).length ).toBe( 0 )
+    } )
+
+
+    it( 'a title with a quote, brackets and a line break yields a VALID quoted label (5 raw glyphs checked)', () => {
+        const db = new DatabaseSync( dbPath )
+        createGraphTables( { db } )
+        db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block ) VALUES ( ?, ?, ?, ?, ? )' )
+            .run( 'T015', 'M080', 'Er sagte "Graph [Stufe 1]"\nund meinte #das hier', 'P0', 'B015' )
+        db.close()
+
+        const { mermaid } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+        const nodeLine = mermaid.split( '\n' ).find( ( line ) => line.trim().startsWith( 'T_T015[' ) === true )
+        const label = nodeLine.slice( nodeLine.indexOf( '["' ) + 2, nodeLine.lastIndexOf( '"]' ) )
+
+        // the label sits inside quotes and carries none of the five raw glyphs that break the source
+        expect( nodeLine.trim().startsWith( 'T_T015["' ) ).toBe( true )
+        expect( nodeLine.trim().endsWith( '"]' ) ).toBe( true )
+        expect( [ '"', '[', ']', '\n', '\r' ].filter( ( glyph ) => label.indexOf( glyph ) !== -1 ) ).toEqual( [] )
+        // the text is preserved as mermaid entities, not deleted
+        expect( label ).toContain( '#quot;' )
+        expect( label ).toContain( '#91;Stufe 1#93;' )
+        expect( label ).toContain( '#35;das hier' )
+    } )
+
+
+    it( 'node ids carry only [A-Za-z0-9_] and two DIFFERENT database ids never collide (3 ids compared)', () => {
+        const db = new DatabaseSync( dbPath )
+        createGraphTables( { db } )
+        const topic = db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block ) VALUES ( ?, ?, ?, ?, ? )' )
+        topic.run( 'T-1', 'M080', 'Mit Bindestrich', 'P0', 'B001' )
+        topic.run( 'T_1', 'M080', 'Mit Unterstrich', 'P0', 'B002' )
+        topic.run( 'T 1', 'M080', 'Mit Leerzeichen', 'P0', 'B003' )
+        db.close()
+
+        const { mermaid, counts } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
+        const ids = mermaid.split( '\n' )
+            .filter( ( line ) => /^\s{4}[A-Za-z0-9_]+\["/.test( line ) === true )
+            .map( ( line ) => line.trim().split( '[' )[ 0 ] )
+
+        expect( counts[ 'topics' ] ).toBe( 3 )
+        expect( ids.length ).toBe( 3 )
+        expect( new Set( ids ).size ).toBe( 3 )                      // 3 distinct ids out of 3 rows
+        expect( ids.filter( ( id ) => /^[A-Za-z0-9_]+$/.test( id ) !== true ) ).toEqual( [] )
+    } )
+
+
+    it( 'a missing / empty dbPath fails LOUD and names the leaf — no silent default', () => {
+        expect( () => DoltDbAssembler.readKnowledgeGraph( {} ) ).toThrow( /readKnowledgeGraph: "dbPath" is required/ )
+        expect( () => DoltDbAssembler.readKnowledgeGraph( { dbPath: '' } ) ).toThrow( /readKnowledgeGraph: "dbPath" is required/ )
+        expect( () => DoltDbAssembler.readKnowledgeGraph( { dbPath: resolve( memoDir, 'gibt-es-nicht.db' ) } ) )
+            .toThrow( /readKnowledgeGraph.*does not exist/ )
+    } )
+
+
+    it( 'the handle the leaf uses is READ-ONLY: the same open refuses a write', () => {
+        seedGraph( { path: dbPath } )
+
+        const readOnly = new DatabaseSync( dbPath, { readOnly: true } )
+        try {
+            expect( () => readOnly.prepare( "INSERT INTO topic ( id, title ) VALUES ( 'T999', 'geschrieben' )" ).run() ).toThrow()
+        } finally {
+            readOnly.close()
+        }
+
+        // and the graph read itself left the row count untouched — 2 topics before, 2 after
+        expect( DoltDbAssembler.readKnowledgeGraph( { dbPath } )[ 'counts' ][ 'topics' ] ).toBe( 2 )
+    } )
+
+
+    it( 'all four queries are FIXED literals — no table or column name is interpolated (4 of 4)', () => {
+        const source = readFileSync( resolve( import.meta.dirname, 'DoltDbAssembler.mjs' ), 'utf-8' )
+        const start = source.indexOf( 'const GRAPH_SOURCES = [' )
+        const end = source.indexOf( ']', source.indexOf( "'table': 'rollout_work_item'" ) )
+        const region = source.slice( start, end )
+        const literals = [
+            'SELECT id, title, phase, block FROM topic ORDER BY id',
+            'SELECT id, topic, title, status FROM work_item ORDER BY id',
+            "SELECT id, name, status FROM rollout_phase WHERE id != '__state__' ORDER BY id",
+            'SELECT id, phase_id, title, status, target, wi_type FROM rollout_work_item ORDER BY phase_id, id'
+        ]
+
+        expect( start ).toBeGreaterThan( -1 )
+        expect( literals.length ).toBe( 4 )
+        expect( literals.filter( ( sql ) => region.indexOf( sql ) === -1 ) ).toEqual( [] )
+        // no template interpolation anywhere in the declared source list
+        expect( region.indexOf( '${' ) ).toBe( -1 )
+    } )
+} )

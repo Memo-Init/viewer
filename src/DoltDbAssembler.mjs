@@ -219,6 +219,94 @@ const truncateCell = ( value ) => {
 }
 
 
+// Memo 080, PRD-V2 (WI-102) — the KNOWLEDGE GRAPH, stage 1. The four tables the graph is built from, each
+// with the FIXED select it is read with. This list is the only place a table or column of this surface is
+// named: no name is ever assembled from a caller argument, so nothing from a request can reach the SQL
+// (US-4). `kind` is both the node-id prefix and the mermaid class of that node kind.
+const GRAPH_SOURCES = [
+    { 'key': 'topics', 'kind': 'T', 'table': 'topic', 'sql': 'SELECT id, title, phase, block FROM topic ORDER BY id' },
+    { 'key': 'workItems', 'kind': 'W', 'table': 'work_item', 'sql': 'SELECT id, topic, title, status FROM work_item ORDER BY id' },
+    { 'key': 'phases', 'kind': 'P', 'table': 'rollout_phase', 'sql': "SELECT id, name, status FROM rollout_phase WHERE id != '__state__' ORDER BY id" },
+    { 'key': 'prds', 'kind': 'R', 'table': 'rollout_work_item', 'sql': 'SELECT id, phase_id, title, status, target, wi_type FROM rollout_work_item ORDER BY phase_id, id' }
+]
+
+
+// The four node kinds with their mermaid class. Colours only — no interaction, no click handler: the
+// existing renderer runs with securityLevel 'strict', which is left untouched by this stage (F13 / WI-103).
+const GRAPH_CLASS_DEFS = [
+    { 'kind': 'T', 'name': 'graphTopic', 'style': 'fill:#1f3a5f,stroke:#4a90d9,color:#e6f0fa' },
+    { 'kind': 'W', 'name': 'graphWorkItem', 'style': 'fill:#24402b,stroke:#5aa75a,color:#e8f5e8' },
+    { 'kind': 'P', 'name': 'graphPhase', 'style': 'fill:#4a3a1f,stroke:#c9a227,color:#faf3e0' },
+    { 'kind': 'R', 'name': 'graphPrd', 'style': 'fill:#3f2b4a,stroke:#9b6ad9,color:#f2e8fa' }
+]
+
+
+// The seven figures every graph answer carries. Declared once so the leaf, the empty answer and the route
+// all speak the SAME shape — a field can not go missing on one path only.
+const GRAPH_COUNT_KEYS = [ 'topics', 'workItems', 'phases', 'prds', 'edgesTopicWorkItem', 'edgesPhasePrd', 'edgesTopicPrd' ]
+
+
+// Is this column value a usable reference? An unset reference (null / empty / whitespace) is NOT an edge —
+// it is simply no statement, and it is never guessed into one.
+const hasGraphRef = ( value ) => {
+    return value !== null && value !== undefined && String( value ).trim().length > 0
+}
+
+
+// A mermaid node id derived from a database id. INJECTIVE by construction: an alphanumeric character
+// stays, EVERY other code point becomes `_<hex>_`, and the kind prefix separates the four node kinds. The
+// naive rule ("replace anything unusual with _") would collapse `T-1` and `T_1` onto the same node — the
+// whole CLASS of collisions is closed here, not the one reported case. The result carries [A-Za-z0-9_] only.
+const graphNodeId = ( { kind, id } ) => {
+    const encoded = Array.from( id === null || id === undefined ? '' : String( id ) )
+        .map( ( char ) => /^[A-Za-z0-9]$/.test( char ) === true ? char : `_${ char.codePointAt( 0 ).toString( 16 ) }_` )
+        .join( '' )
+
+    return `${ kind }_${ encoded }`
+}
+
+
+// Escaping for a QUOTED mermaid label. `#` goes FIRST so a literal hash in a title can never form one of
+// the entity codes the later rules emit. Every remaining glyph that ends a label or opens a second node
+// shape becomes its numeric entity, which mermaid decodes back to the original character — the title keeps
+// its meaning instead of being mangled. Again the CLASS, not the case: quote, all four bracket kinds,
+// angle brackets, pipe and backtick. The existing `cell` helper above is for Markdown tables and covers
+// none of these, which is why the graph carries its own.
+const GRAPH_LABEL_ESCAPES = [
+    [ /#/g, '#35;' ],
+    [ /"/g, '#quot;' ],
+    [ /\[/g, '#91;' ],
+    [ /\]/g, '#93;' ],
+    [ /\{/g, '#123;' ],
+    [ /\}/g, '#125;' ],
+    [ /</g, '#60;' ],
+    [ />/g, '#62;' ],
+    [ /\|/g, '#124;' ],
+    [ /`/g, '#96;' ]
+]
+
+
+// A line break ends a mermaid node statement, so line breaks and tabs collapse to a single space BEFORE
+// the entity escaping runs.
+const graphLabel = ( value ) => {
+    const text = ( value === null || value === undefined ? '' : String( value ) )
+        .replace( /[\r\n\t]+/g, ' ' )
+        .trim()
+
+    return GRAPH_LABEL_ESCAPES
+        .reduce( ( acc, entry ) => acc.replace( entry[ 0 ], entry[ 1 ] ), text )
+}
+
+
+// `<id> · <title>` — a row without a title renders its id alone rather than a dangling separator.
+const graphNodeLabel = ( { id, title } ) => {
+    const head = graphLabel( id )
+    const tail = graphLabel( title )
+
+    return tail.length === 0 ? head : `${ head } · ${ tail }`
+}
+
+
 class DoltDbAssembler {
     static assembleFromDb( { dbPath } ) {
         if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
@@ -577,7 +665,232 @@ class DoltDbAssembler {
     }
 
 
+    // The seven graph figures, all zero (Memo 080, PRD-V2 / WI-102). PUBLIC + pure so the route can answer
+    // "this memo has no database" in the SAME shape a real read produces — the count shape exists once, and
+    // a field can not go missing on the no-database path only.
+    static emptyGraphCounts() {
+        const counts = GRAPH_COUNT_KEYS
+            .reduce( ( acc, key ) => Object.assign( acc, { [ key ]: 0 } ), {} )
+
+        return counts
+    }
+
+
+    // Memo 080, PRD-V2 (WI-102) — the KNOWLEDGE GRAPH of one memo, stage 1: the server builds the diagram
+    // SOURCE deterministically from four tables, the client's EXISTING diagram registry draws it. No new
+    // display building block, no new dependency, no second drawing path.
+    //
+    // The edge the user asked for — "welches Topic steckt in welchem PRD" — has no column of its own. It is
+    // built over the WORK-ITEM BRIDGE: a rollout row whose `id` or `target` names a work_item inherits that
+    // work item's `topic`. Where the bridge does not close, NO edge is invented.
+    //
+    // Every node has a read row behind it, and every edge has BOTH of its endpoints among those nodes — so
+    // mermaid's implicit "a node named by an edge springs into existence" can never add a node the database
+    // does not carry. A reference that points nowhere is not dropped in silence: it is counted and named in
+    // `warnings` (Oelstand-Regel — a value at the edge of the accepted range is itself the finding).
+    //
+    // Returns { mermaid, counts, empty, warnings, reason }. `mermaid` is null exactly when `empty` is true.
+    // `counts` always carries all seven figures so the view can state HOW MUCH it compared, instead of an
+    // empty canvas that would equally mean "nothing in the database" and "the read failed".
+    //
+    // Read-only open, close in `finally`; every table guarded by #tableExists, so an early database that
+    // lacks these tables reads as all-zero instead of throwing.
+    static readKnowledgeGraph( { dbPath } ) {
+        if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.readKnowledgeGraph: "dbPath" is required (non-empty string)' )
+        }
+        if( existsSync( dbPath ) !== true ) {
+            throw new Error( `DoltDbAssembler.readKnowledgeGraph: "${ dbPath }" does not exist — cannot read the knowledge graph` )
+        }
+
+        const db = DoltDbAssembler.#open( { dbPath } )
+        try {
+            const rows = GRAPH_SOURCES
+                .reduce( ( acc, source ) => {
+                    const read = DoltDbAssembler.#tableExists( { db, 'table': source[ 'table' ] } ) === true
+                        ? DoltDbAssembler.#all( { db, 'sql': source[ 'sql' ] } )
+                        : []
+
+                    return Object.assign( acc, { [ source[ 'key' ] ]: read } )
+                }, {} )
+
+            return DoltDbAssembler.#buildKnowledgeGraph( { rows } )
+        } finally {
+            db.close()
+        }
+    }
+
+
     // ---- private ----
+
+    // The PURE part of readKnowledgeGraph: rows in, { mermaid, counts, empty, warnings, reason } out. Split
+    // out so the reading and the graph rule are separable, and so the whole edge logic is one place.
+    static #buildKnowledgeGraph( { rows } ) {
+        const topics = rows[ 'topics' ]
+        const workItems = rows[ 'workItems' ]
+        const phases = rows[ 'phases' ]
+        const prds = rows[ 'prds' ]
+
+        const topicIds = new Set( topics.map( ( row ) => String( row[ 'id' ] ) ) )
+        const phaseIds = new Set( phases.map( ( row ) => String( row[ 'id' ] ) ) )
+        const workItemById = new Map( workItems.map( ( row ) => [ String( row[ 'id' ] ), row ] ) )
+
+        const nodes = []
+            .concat( topics.map( ( row ) => ( { 'kind': 'T', 'id': graphNodeId( { 'kind': 'T', 'id': row[ 'id' ] } ), 'label': graphNodeLabel( { 'id': row[ 'id' ], 'title': row[ 'title' ] } ) } ) ) )
+            .concat( workItems.map( ( row ) => ( { 'kind': 'W', 'id': graphNodeId( { 'kind': 'W', 'id': row[ 'id' ] } ), 'label': graphNodeLabel( { 'id': row[ 'id' ], 'title': row[ 'title' ] } ) } ) ) )
+            .concat( phases.map( ( row ) => ( { 'kind': 'P', 'id': graphNodeId( { 'kind': 'P', 'id': row[ 'id' ] } ), 'label': graphNodeLabel( { 'id': row[ 'id' ], 'title': row[ 'name' ] } ) } ) ) )
+            .concat( prds.map( ( row ) => ( { 'kind': 'R', 'id': graphNodeId( { 'kind': 'R', 'id': row[ 'id' ] } ), 'label': graphNodeLabel( { 'id': row[ 'id' ], 'title': row[ 'title' ] } ) } ) ) )
+
+        // Topic -> Work-Item, straight from work_item.topic.
+        const topicWorkItemRefs = workItems
+            .filter( ( row ) => hasGraphRef( row[ 'topic' ] ) === true )
+        const topicWorkItemEdges = DoltDbAssembler.#dedupeEdges( {
+            'edges': topicWorkItemRefs
+                .filter( ( row ) => topicIds.has( String( row[ 'topic' ] ).trim() ) === true )
+                .map( ( row ) => ( {
+                    'from': graphNodeId( { 'kind': 'T', 'id': String( row[ 'topic' ] ).trim() } ),
+                    'to': graphNodeId( { 'kind': 'W', 'id': row[ 'id' ] } )
+                } ) )
+        } )
+
+        // Phase -> PRD, straight from rollout_work_item.phase_id.
+        const phasePrdRefs = prds
+            .filter( ( row ) => hasGraphRef( row[ 'phase_id' ] ) === true )
+        const phasePrdEdges = DoltDbAssembler.#dedupeEdges( {
+            'edges': phasePrdRefs
+                .filter( ( row ) => phaseIds.has( String( row[ 'phase_id' ] ).trim() ) === true )
+                .map( ( row ) => ( {
+                    'from': graphNodeId( { 'kind': 'P', 'id': String( row[ 'phase_id' ] ).trim() } ),
+                    'to': graphNodeId( { 'kind': 'R', 'id': row[ 'id' ] } )
+                } ) )
+        } )
+
+        // Topic -> PRD over the work-item bridge: `id` first, `target` second. A rollout row that names no
+        // known work item, or a work item that carries no known topic, yields NOTHING — never a guess.
+        const topicPrdEdges = DoltDbAssembler.#dedupeEdges( {
+            'edges': prds
+                .map( ( row ) => {
+                    const bridge = [ row[ 'id' ], row[ 'target' ] ]
+                        .filter( ( candidate ) => hasGraphRef( candidate ) === true )
+                        .map( ( candidate ) => workItemById.get( String( candidate ).trim() ) )
+                        .find( ( found ) => found !== undefined && hasGraphRef( found[ 'topic' ] ) === true && topicIds.has( String( found[ 'topic' ] ).trim() ) === true )
+
+                    return bridge === undefined
+                        ? null
+                        : {
+                            'from': graphNodeId( { 'kind': 'T', 'id': String( bridge[ 'topic' ] ).trim() } ),
+                            'to': graphNodeId( { 'kind': 'R', 'id': row[ 'id' ] } )
+                        }
+                } )
+                .filter( ( edge ) => edge !== null )
+        } )
+
+        const counts = {
+            'topics': topics.length,
+            'workItems': workItems.length,
+            'phases': phases.length,
+            'prds': prds.length,
+            'edgesTopicWorkItem': topicWorkItemEdges.length,
+            'edgesPhasePrd': phasePrdEdges.length,
+            'edgesTopicPrd': topicPrdEdges.length
+        }
+        const empty = topics.length === 0 && workItems.length === 0 && phases.length === 0 && prds.length === 0
+        const warnings = DoltDbAssembler.#graphWarnings( {
+            counts, empty,
+            'danglingTopicRefs': topicWorkItemRefs.length - topicWorkItemEdges.length,
+            'danglingPhaseRefs': phasePrdRefs.length - phasePrdEdges.length
+        } )
+
+        if( empty === true ) {
+            return { 'mermaid': null, counts, 'empty': true, warnings, 'reason': 'empty-db' }
+        }
+
+        const edges = [].concat( topicWorkItemEdges ).concat( phasePrdEdges ).concat( topicPrdEdges )
+        const mermaid = DoltDbAssembler.#renderGraphSource( { nodes, edges } )
+
+        return { mermaid, counts, 'empty': false, warnings, 'reason': null }
+    }
+
+
+    // Drop a repeated reference: a doubled bridge produces ONE edge, not two. The pair is the key, so two
+    // different pairs are never folded together.
+    static #dedupeEdges( { edges } ) {
+        const seen = new Set()
+
+        return edges
+            .filter( ( edge ) => {
+                const key = `${ edge[ 'from' ] }-->${ edge[ 'to' ] }`
+
+                if( seen.has( key ) === true ) {
+                    return false
+                }
+                seen.add( key )
+
+                return true
+            } )
+    }
+
+
+    // The honest findings about THIS graph. Every branch names the measured figures, so a reader can tell
+    // "nothing is there" from "something is there but does not connect" — the two cases an empty canvas
+    // would render identically.
+    static #graphWarnings( { counts, empty, danglingTopicRefs, danglingPhaseRefs } ) {
+        const emptyWarning = empty === true
+            ? [ 'Keine Zeilen in topic, work_item, rollout_phase und rollout_work_item — 0 Knoten und 0 Kanten verglichen.' ]
+            : []
+        const unlinkedWarning = empty !== true && counts[ 'topics' ] > 0 && counts[ 'prds' ] > 0 && counts[ 'edgesTopicPrd' ] === 0
+            ? [ `Auffaellig: ${ counts[ 'topics' ] } Topics und ${ counts[ 'prds' ] } PRDs gelesen, aber keine einzige Topic-zu-PRD-Kante — die Work-Item-Bruecke traegt nicht.` ]
+            : []
+        // The same rule one step earlier: if ONE end of the requested Topic->PRD edge has no rows at all,
+        // an edge count of zero is arithmetically unavoidable and would otherwise look like a clean result.
+        // Naming it keeps "there is nothing to connect" apart from "it does not connect" — the two cases a
+        // bare zero would render identically.
+        const missingSideWarning = empty !== true
+            && ( counts[ 'topics' ] === 0 || counts[ 'prds' ] === 0 )
+            && ( counts[ 'topics' ] > 0 || counts[ 'prds' ] > 0 )
+            ? [ `Auffaellig: ${ counts[ 'topics' ] } Topics und ${ counts[ 'prds' ] } PRD-Zeilen gelesen — eine Seite der Topic-zu-PRD-Kante fehlt ganz, sie kann derzeit gar nicht entstehen.` ]
+            : []
+        const danglingTopicWarning = danglingTopicRefs > 0
+            ? [ `Auffaellig: ${ danglingTopicRefs } Work-Item-Zeile(n) verweisen auf ein Topic, das nicht in der Tabelle topic steht — die Kante wird nicht gezeichnet.` ]
+            : []
+        const danglingPhaseWarning = danglingPhaseRefs > 0
+            ? [ `Auffaellig: ${ danglingPhaseRefs } Rollout-Zeile(n) verweisen auf eine Phase, die nicht in der Tabelle rollout_phase steht — die Kante wird nicht gezeichnet.` ]
+            : []
+
+        return [].concat( emptyWarning ).concat( unlinkedWarning ).concat( missingSideWarning )
+            .concat( danglingTopicWarning ).concat( danglingPhaseWarning )
+    }
+
+
+    // The diagram source: `flowchart LR`, one line per node, one line per edge, the four classDef lines and
+    // a class assignment per kind that actually has nodes. Nothing else — the source is a pure function of
+    // the read rows, so the same database always produces the same drawing.
+    static #renderGraphSource( { nodes, edges } ) {
+        const classDefLines = GRAPH_CLASS_DEFS
+            .map( ( entry ) => `    classDef ${ entry[ 'name' ] } ${ entry[ 'style' ] }` )
+        const nodeLines = nodes
+            .map( ( node ) => `    ${ node[ 'id' ] }["${ node[ 'label' ] }"]` )
+        const edgeLines = edges
+            .map( ( edge ) => `    ${ edge[ 'from' ] } --> ${ edge[ 'to' ] }` )
+        const classLines = GRAPH_CLASS_DEFS
+            .map( ( entry ) => {
+                const members = nodes
+                    .filter( ( node ) => node[ 'kind' ] === entry[ 'kind' ] )
+                    .map( ( node ) => node[ 'id' ] )
+
+                return members.length === 0 ? null : `    class ${ members.join( ',' ) } ${ entry[ 'name' ] }`
+            } )
+            .filter( ( line ) => line !== null )
+
+        return [ 'flowchart LR' ]
+            .concat( classDefLines )
+            .concat( nodeLines )
+            .concat( edgeLines )
+            .concat( classLines )
+            .join( '\n' )
+    }
+
+
 
     static #open( { dbPath } ) {
         // The viewer only reads — open read-only so the schaufenster can never mutate the DB.

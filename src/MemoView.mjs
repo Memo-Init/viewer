@@ -2098,6 +2098,64 @@ class MemoView {
                 return
             }
 
+            // PRD-V2 (Memo 080, Kap 15 — Das Schaufenster / WI-102): the READ-ONLY knowledge graph of one
+            // memo — topics, work items, phases and PRDs as nodes, plus the edge the user asked for
+            // ("welches Topic steckt in welchem PRD") over the work-item bridge. MUST be matched BEFORE the
+            // generic /api/documents/<id> GET below (the suffix is more specific; otherwise the generic
+            // route would swallow "<id>/graph" as the id). Mirror of the /topics + /blocks + /annotations
+            // routes, and GET-only: the branch calls nothing but DoltDbAssembler.readKnowledgeGraph, which
+            // opens the database read-only — the single-writer rule (F4=A) stays intact.
+            // Answers: unknown memo → 404 with the registry's own message; a memo WITHOUT a per-memo
+            // database → 200 with mermaid:null, seven zeros and reason 'no-db' (an honest reason, never a
+            // crash and never a silent empty body); a read failure → 503 with the real message, the server
+            // stays alive.
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/graph' ) && req.method === 'GET' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/graph'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                let resolved = null
+
+                try {
+                    resolved = MemoView.resolveMemoDbPath( { 'memoPath': result[ 'document' ][ 'memoPath' ] } )
+                } catch( error ) {
+                    sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
+
+                    return
+                }
+
+                if( resolved[ 'status' ] !== true ) {
+                    sendJson( res, 200, {
+                        'status': 'ok', 'documentId': documentId, 'mermaid': null,
+                        'counts': DoltDbAssembler.emptyGraphCounts(), 'empty': true,
+                        'warnings': [ `Dieses Memo führt keine Datenbank — es gibt nichts zu zeichnen (${ resolved[ 'message' ] })` ],
+                        'reason': 'no-db'
+                    } )
+
+                    return
+                }
+
+                try {
+                    const graph = DoltDbAssembler.readKnowledgeGraph( { 'dbPath': resolved[ 'dbPath' ] } )
+
+                    sendJson( res, 200, {
+                        'status': 'ok', 'documentId': documentId, 'mermaid': graph[ 'mermaid' ],
+                        'counts': graph[ 'counts' ], 'empty': graph[ 'empty' ],
+                        'warnings': graph[ 'warnings' ], 'reason': graph[ 'reason' ]
+                    } )
+                } catch( error ) {
+                    sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
+                }
+
+                return
+            }
+
             if( url.startsWith( '/api/documents/' ) && req.method === 'GET' ) {
 
                 const documentId = url.slice( '/api/documents/'.length )

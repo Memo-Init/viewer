@@ -182,8 +182,10 @@ class RevisionLogic {
     // PRD-009 (Memo 016 Kap 7, F4/E6): the view-mode state machine for the #content area. Prose is
     // home; requirements/blocks are non-destructive panels. Requesting the active non-prose view
     // toggles BACK to prose (E6/F4). `render` is false only for a no-op prose-on-prose click.
+    // PRD-V2 (Memo 080, Kap 15 / WI-102): `graph` is the third panel and joins the SAME contract — it is
+    // added to the known list, not given a second state machine.
     static nextViewState( { current, requested } ) {
-        const known = [ 'prose', 'requirements', 'blocks' ]
+        const known = [ 'prose', 'requirements', 'blocks', 'graph' ]
         const safeCurrent = known.indexOf( current ) !== -1 ? current : 'prose'
         const safeRequested = known.indexOf( requested ) !== -1 ? requested : 'prose'
 

@@ -1076,6 +1076,9 @@
             z1Line1 += '<button id="req-view-toggle" title="Requirements anzeigen">Requirements</button>'
             // PRD-010 (Memo 014 Kap 2): Block-Ansicht oeffnen (Block-Overlay, read-only). Muster req-view-toggle.
             z1Line1 += '<button id="block-view-toggle" title="Blöcke anzeigen">Blöcke</button>'
+            // PRD-V2 (Memo 080 Kap 15, WI-102): Graph-Ansicht oeffnen (Knowledge-Graph aus der Datenbank,
+            // read-only). Muster block-view-toggle — gleiche Aufbau-Stelle, gleicher Vertrag.
+            z1Line1 += '<button id="graph-view-toggle" title="Knowledge-Graph anzeigen">Graph</button>'
             // PRD-002 (Memo 076, Phase 1, WI-046/049/050): the instance chip. Rendered when a CC instance
             // is registered for THIS memo number (activeInstances, zero-padded match) OR the viewed
             // revision is logged in (loggedIn — the previously computed-but-unrendered flag, WI-049). The
@@ -1256,6 +1259,15 @@
             if( blockViewToggle ) {
                 blockViewToggle.addEventListener( 'click', function() {
                     loadBlockView( currentDocumentId )
+                } )
+            }
+
+            // PRD-V2 (Memo 080 Kap 15, WI-102): rebind the Graph-view toggle (re-created on each header
+            // render). Opens the read-only knowledge graph of the active memo.
+            var graphViewToggle = document.getElementById( 'graph-view-toggle' )
+            if( graphViewToggle ) {
+                graphViewToggle.addEventListener( 'click', function() {
+                    loadGraphView( currentDocumentId )
                 } )
             }
 
@@ -4538,8 +4550,10 @@
         // PRD-009 (Memo 016 Kap 7, F4/E6): inline mirror of MemoView.nextViewState. Prose is the
         // home view; requesting the active non-prose view again toggles back to prose, a different
         // view switches. Returns { view, render } so a toggle knows whether to fetch+rebuild.
+        // PRD-V2 (Memo 080, Kap 15 / WI-102): the Graph panel joins the SAME contract — one more entry
+        // in the known list, no second state machine. Mirrors RevisionLogic.nextViewState.
         function nextViewState( current, requested ) {
-            var known = [ 'prose', 'requirements', 'blocks' ]
+            var known = [ 'prose', 'requirements', 'blocks', 'graph' ]
             var safeCurrent = known.indexOf( current ) !== -1 ? current : 'prose'
             var safeRequested = known.indexOf( requested ) !== -1 ? requested : 'prose'
             if( safeRequested === 'prose' ) {
@@ -4565,6 +4579,8 @@
         function syncContentViewToggles() {
             var reqBtn = document.getElementById( 'req-view-toggle' )
             var blockBtn = document.getElementById( 'block-view-toggle' )
+            // PRD-V2 (Memo 080 Kap 15, WI-102): the Graph toggle is carried the same way as the two above.
+            var graphBtn = document.getElementById( 'graph-view-toggle' )
             if( reqBtn ) {
                 if( currentContentView === 'requirements' ) { reqBtn.classList.add( 'active' ) }
                 else { reqBtn.classList.remove( 'active' ) }
@@ -4572,6 +4588,10 @@
             if( blockBtn ) {
                 if( currentContentView === 'blocks' ) { blockBtn.classList.add( 'active' ) }
                 else { blockBtn.classList.remove( 'active' ) }
+            }
+            if( graphBtn ) {
+                if( currentContentView === 'graph' ) { graphBtn.classList.add( 'active' ) }
+                else { graphBtn.classList.remove( 'active' ) }
             }
         }
 
@@ -4995,6 +5015,102 @@
                 syncContentViewToggles()
             } catch( err ) {
                 renderViewError( contentTarget, 'Blöcke konnten nicht geladen werden.' )
+                syncContentViewToggles()
+            }
+        }
+
+        // PRD-V2 (Memo 080 Kap 15, WI-102): render the knowledge graph answer into #content. The head
+        // line ALWAYS states how much was compared (nodes per kind, edges per kind) — an empty drawing
+        // area could equally mean "nothing in the database" and "the read failed", so the numbers, the
+        // warnings and the explicit empty message carry that difference (Oelstand-Regel).
+        // The drawing itself goes through the EXISTING diagram registry: a div.mermaid with the source in
+        // data-src plus one renderAllDiagrams() call — no second renderer, no new display building block.
+        function renderGraphView( payload, contentTarget ) {
+            contentTarget.textContent = ''
+            var counts = ( payload && payload.counts ) ? payload.counts : {}
+            var num = function( value ) { return ( typeof value === 'number' ) ? String( value ) : '?' }
+
+            var wrap = document.createElement( 'div' )
+            wrap.className = 'graph-view'
+            wrap.setAttribute( 'data-graph-view', payload && payload.empty === true ? 'empty' : 'graph' )
+
+            var head = document.createElement( 'div' )
+            head.className = 'graph-counts'
+            head.setAttribute( 'data-graph-counts', '1' )
+            head.textContent = 'Topics ' + num( counts.topics )
+                + ' · Work-Items ' + num( counts.workItems )
+                + ' · Phasen ' + num( counts.phases )
+                + ' · PRDs ' + num( counts.prds )
+                + ' — Kanten: Topic→Work-Item ' + num( counts.edgesTopicWorkItem )
+                + ' · Phase→PRD ' + num( counts.edgesPhasePrd )
+                + ' · Topic→PRD ' + num( counts.edgesTopicPrd )
+            wrap.appendChild( head )
+
+            var warnings = ( payload && payload.warnings && payload.warnings.length ) ? payload.warnings : []
+            warnings.forEach( function( text ) {
+                var note = document.createElement( 'div' )
+                note.className = 'graph-warning'
+                note.setAttribute( 'data-graph-warning', '1' )
+                note.textContent = text
+                wrap.appendChild( note )
+            } )
+
+            if( !payload || payload.empty === true || !payload.mermaid ) {
+                var emptyBox = document.createElement( 'div' )
+                emptyBox.className = 'graph-empty'
+                emptyBox.setAttribute( 'data-graph-empty', '1' )
+                emptyBox.textContent = 'Kein Graph gezeichnet — die gemessenen Zahlen stehen in der Zeile darüber.'
+                wrap.appendChild( emptyBox )
+                contentTarget.appendChild( wrap )
+
+                return wrap
+            }
+
+            var box = document.createElement( 'div' )
+            box.className = 'mermaid'
+            box.setAttribute( 'data-src', payload.mermaid )
+            wrap.appendChild( box )
+            contentTarget.appendChild( wrap )
+            renderAllDiagrams()
+
+            return wrap
+        }
+
+        // PRD-V2 (Memo 080 Kap 15, WI-102): fetch the knowledge graph for the active memo and render it
+        // into #content. Read-only: GET /api/documents/<id>/graph. Same nextViewState contract as
+        // loadRequirementsView / loadBlockView — pressing Graph while Graph is open returns home to prose.
+        async function loadGraphView( documentId ) {
+            // Same belt-and-suspenders guard as the two panels above: a memo overlay never loads over
+            // the clients/specs surface.
+            if( currentMode !== 'memos' ) { return }
+            var contentTarget = document.getElementById( 'content' )
+            if( !documentId || !contentTarget ) { return }
+
+            var step = nextViewState( currentContentView, 'graph' )
+            currentContentView = step.view
+            if( step.view === 'prose' ) {
+                renderProseContent( false )
+                syncContentViewToggles()
+
+                return
+            }
+
+            try {
+                var resp = await fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/graph' )
+                var payload = await resp.json()
+                // B11/F9: a non-200 or an error envelope is SHOWN with the REAL server message via the
+                // shared error-state, never swallowed into a generic line.
+                if( !resp.ok || ( payload && payload.error ) ) {
+                    var graphMsg = ( payload && payload.error ) ? payload.error : ( 'HTTP ' + resp.status )
+                    renderViewError( contentTarget, 'Graph konnte nicht geladen werden: ' + graphMsg )
+                    syncContentViewToggles()
+
+                    return
+                }
+                renderGraphView( payload, contentTarget )
+                syncContentViewToggles()
+            } catch( err ) {
+                renderViewError( contentTarget, 'Graph konnte nicht geladen werden.' )
                 syncContentViewToggles()
             }
         }

@@ -246,6 +246,26 @@ const GRAPH_CLASS_DEFS = [
 const GRAPH_COUNT_KEYS = [ 'topics', 'workItems', 'phases', 'prds', 'edgesTopicWorkItem', 'edgesPhasePrd', 'edgesTopicPrd' ]
 
 
+// Memo 080, PRD-V2 rework — the diagram source carries a SIZE BUDGET, enforced on the producing side.
+// Measured cause: mermaid does not fail loudly on an oversize source. Above `maxTextSize` characters
+// (11.4.1 ships 50000 as the default, read back from mermaidAPI.getConfig() in real Chromium) the renderer
+// THROWS THE SOURCE AWAY and resolves with a one-node placeholder tile "Maximum text size in diagram
+// exceeded" — so the caller believes it drew what it asked for. The real inventory of memo 080 produced
+// 53362 characters (102 topics · 223 work items · 221 edges): over the limit, and the view stated
+// "325 Knoten / 221 Kanten" above that placeholder.
+// The budget lies BELOW the limit the client declares (app.client.mjs MERMAID_MAX_TEXT_SIZE), with headroom,
+// so no source that leaves this leaf can reach the substitution path. It is a function of the budget, not of
+// today's 53362 — whatever the inventory grows to, the source either fits or the answer says that it does not.
+const GRAPH_SOURCE_BUDGET = 45000
+
+
+// The condensation ladder, walked from the widest cap down: the FIRST cap whose rendered source fits the
+// budget wins. `null` = no cap (the full title), a number = the title truncated to that many characters,
+// `0` = the identifier alone. Nodes and edges are NEVER dropped — the STRUCTURE stays complete, only the
+// labels get shorter, and the step that was taken is named in `warnings` with its measured figures.
+const GRAPH_LABEL_CAPS = [ null, 96, 72, 56, 40, 28, 16, 0 ]
+
+
 // Is this column value a usable reference? An unset reference (null / empty / whitespace) is NOT an edge —
 // it is simply no statement, and it is never guessed into one.
 const hasGraphRef = ( value ) => {
@@ -299,9 +319,16 @@ const graphLabel = ( value ) => {
 
 
 // `<id> · <title>` — a row without a title renders its id alone rather than a dangling separator.
-const graphNodeLabel = ( { id, title } ) => {
+// `cap` is the condensation step (see GRAPH_LABEL_CAPS): `null` keeps the full title, `0` drops it, and a
+// number truncates it. The cut runs on the RAW title, BEFORE the entity escaping — cutting afterwards could
+// slice one of the `#quot;` codes in two and hand mermaid a broken label (same rule as the error-box cap).
+const graphNodeLabel = ( { id, title, cap } ) => {
     const head = graphLabel( id )
-    const tail = graphLabel( title )
+    const raw = ( title === null || title === undefined ? '' : String( title ) )
+    const kept = cap === 0
+        ? ''
+        : ( cap === null || cap === undefined || raw.length <= cap ? raw : `${ raw.slice( 0, cap ) }…` )
+    const tail = graphLabel( kept )
 
     return tail.length === 0 ? head : `${ head } · ${ tail }`
 }
@@ -676,6 +703,14 @@ class DoltDbAssembler {
     }
 
 
+    // The size facts of a graph that has no source at all (no database, empty database). PUBLIC + pure for
+    // the same reason as emptyGraphCounts: the `source` shape exists ONCE, so no answer path can leave a
+    // field out. `budget` is the single place the client's declared mermaid limit is mirrored against.
+    static emptyGraphSourceFacts() {
+        return { 'chars': 0, 'fullChars': 0, 'budget': GRAPH_SOURCE_BUDGET, 'labelCap': null, 'condensed': false, 'nodes': 0, 'edges': 0 }
+    }
+
+
     // Memo 080, PRD-V2 (WI-102) — the KNOWLEDGE GRAPH of one memo, stage 1: the server builds the diagram
     // SOURCE deterministically from four tables, the client's EXISTING diagram registry draws it. No new
     // display building block, no new dependency, no second drawing path.
@@ -735,11 +770,14 @@ class DoltDbAssembler {
         const phaseIds = new Set( phases.map( ( row ) => String( row[ 'id' ] ) ) )
         const workItemById = new Map( workItems.map( ( row ) => [ String( row[ 'id' ] ), row ] ) )
 
+        // A node carries the RAW identifier and title, not a finished label: the label is built per
+        // condensation step in #renderGraphSource, so the same node set can be rendered at several label
+        // widths without reading the database twice.
         const nodes = []
-            .concat( topics.map( ( row ) => ( { 'kind': 'T', 'id': graphNodeId( { 'kind': 'T', 'id': row[ 'id' ] } ), 'label': graphNodeLabel( { 'id': row[ 'id' ], 'title': row[ 'title' ] } ) } ) ) )
-            .concat( workItems.map( ( row ) => ( { 'kind': 'W', 'id': graphNodeId( { 'kind': 'W', 'id': row[ 'id' ] } ), 'label': graphNodeLabel( { 'id': row[ 'id' ], 'title': row[ 'title' ] } ) } ) ) )
-            .concat( phases.map( ( row ) => ( { 'kind': 'P', 'id': graphNodeId( { 'kind': 'P', 'id': row[ 'id' ] } ), 'label': graphNodeLabel( { 'id': row[ 'id' ], 'title': row[ 'name' ] } ) } ) ) )
-            .concat( prds.map( ( row ) => ( { 'kind': 'R', 'id': graphNodeId( { 'kind': 'R', 'id': row[ 'id' ] } ), 'label': graphNodeLabel( { 'id': row[ 'id' ], 'title': row[ 'title' ] } ) } ) ) )
+            .concat( topics.map( ( row ) => ( { 'kind': 'T', 'id': graphNodeId( { 'kind': 'T', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ] } ) ) )
+            .concat( workItems.map( ( row ) => ( { 'kind': 'W', 'id': graphNodeId( { 'kind': 'W', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ] } ) ) )
+            .concat( phases.map( ( row ) => ( { 'kind': 'P', 'id': graphNodeId( { 'kind': 'P', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'name' ] } ) ) )
+            .concat( prds.map( ( row ) => ( { 'kind': 'R', 'id': graphNodeId( { 'kind': 'R', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ] } ) ) )
 
         // Topic -> Work-Item, straight from work_item.topic.
         const topicWorkItemRefs = workItems
@@ -795,20 +833,73 @@ class DoltDbAssembler {
             'edgesTopicPrd': topicPrdEdges.length
         }
         const empty = topics.length === 0 && workItems.length === 0 && phases.length === 0 && prds.length === 0
-        const warnings = DoltDbAssembler.#graphWarnings( {
-            counts, empty,
-            'danglingTopicRefs': topicWorkItemRefs.length - topicWorkItemEdges.length,
-            'danglingPhaseRefs': phasePrdRefs.length - phasePrdEdges.length
-        } )
 
         if( empty === true ) {
-            return { 'mermaid': null, counts, 'empty': true, warnings, 'reason': 'empty-db' }
+            const emptyWarnings = DoltDbAssembler.#graphWarnings( {
+                counts, empty, 'danglingTopicRefs': 0, 'danglingPhaseRefs': 0,
+                'source': DoltDbAssembler.emptyGraphSourceFacts()
+            } )
+
+            return {
+                'mermaid': null, counts, 'empty': true, 'warnings': emptyWarnings, 'reason': 'empty-db',
+                'source': DoltDbAssembler.emptyGraphSourceFacts()
+            }
         }
 
         const edges = [].concat( topicWorkItemEdges ).concat( phasePrdEdges ).concat( topicPrdEdges )
-        const mermaid = DoltDbAssembler.#renderGraphSource( { nodes, edges } )
+        const fitted = DoltDbAssembler.#fitGraphSource( { nodes, edges } )
+        const warnings = DoltDbAssembler.#graphWarnings( {
+            counts, empty,
+            'danglingTopicRefs': topicWorkItemRefs.length - topicWorkItemEdges.length,
+            'danglingPhaseRefs': phasePrdRefs.length - phasePrdEdges.length,
+            'source': fitted[ 'source' ]
+        } )
 
-        return { mermaid, counts, 'empty': false, warnings, 'reason': null }
+        return {
+            'mermaid': fitted[ 'mermaid' ], counts, 'empty': false, warnings,
+            'reason': fitted[ 'mermaid' ] === null ? 'source-too-large' : null,
+            'source': fitted[ 'source' ]
+        }
+    }
+
+
+    // Fit the diagram source into GRAPH_SOURCE_BUDGET. The full-width source is rendered and measured first;
+    // only when it is over budget is the condensation ladder walked, and the FIRST cap that fits wins. The
+    // reduce short-circuits on the first hit, so a graph that fits at full width is rendered exactly once.
+    // Nothing is dropped: every node and every edge is in every attempt, only the label width changes. If
+    // even bare identifiers stay over budget, `mermaid` is null and the caller reports that honestly — an
+    // oversize source is NEVER handed to the renderer, because the renderer would silently substitute a
+    // placeholder for it and the view would claim a drawing that never happened.
+    static #fitGraphSource( { nodes, edges } ) {
+        const full = DoltDbAssembler.#renderGraphSource( { nodes, edges, 'cap': null } )
+        const fullChars = full.length
+
+        const fitted = full.length <= GRAPH_SOURCE_BUDGET
+            ? { 'mermaid': full, 'cap': null, 'chars': full.length }
+            : GRAPH_LABEL_CAPS
+                .filter( ( cap ) => cap !== null )
+                .reduce( ( acc, cap ) => {
+                    if( acc !== null ) {
+                        return acc
+                    }
+                    const source = DoltDbAssembler.#renderGraphSource( { nodes, edges, cap } )
+
+                    return source.length <= GRAPH_SOURCE_BUDGET
+                        ? { 'mermaid': source, cap, 'chars': source.length }
+                        : null
+                }, null )
+
+        const facts = {
+            'chars': fitted === null ? fullChars : fitted[ 'chars' ],
+            'fullChars': fullChars,
+            'budget': GRAPH_SOURCE_BUDGET,
+            'labelCap': fitted === null ? null : fitted[ 'cap' ],
+            'condensed': fitted !== null && fitted[ 'cap' ] !== null,
+            'nodes': nodes.length,
+            'edges': edges.length
+        }
+
+        return { 'mermaid': fitted === null ? null : fitted[ 'mermaid' ], 'source': facts }
     }
 
 
@@ -834,7 +925,7 @@ class DoltDbAssembler {
     // The honest findings about THIS graph. Every branch names the measured figures, so a reader can tell
     // "nothing is there" from "something is there but does not connect" — the two cases an empty canvas
     // would render identically.
-    static #graphWarnings( { counts, empty, danglingTopicRefs, danglingPhaseRefs } ) {
+    static #graphWarnings( { counts, empty, danglingTopicRefs, danglingPhaseRefs, source } ) {
         const emptyWarning = empty === true
             ? [ 'Keine Zeilen in topic, work_item, rollout_phase und rollout_work_item — 0 Knoten und 0 Kanten verglichen.' ]
             : []
@@ -856,20 +947,33 @@ class DoltDbAssembler {
         const danglingPhaseWarning = danglingPhaseRefs > 0
             ? [ `Auffaellig: ${ danglingPhaseRefs } Rollout-Zeile(n) verweisen auf eine Phase, die nicht in der Tabelle rollout_phase steht — die Kante wird nicht gezeichnet.` ]
             : []
+        // The size findings. All three name the measured characters against the budget, because "the drawing
+        // is complete" and "the labels were shortened to make it fit" look identical on the canvas — and the
+        // near-edge case is itself the finding, not something to wave through (Oelstand-Regel).
+        const tooLargeWarning = source[ 'chars' ] > source[ 'budget' ]
+            ? [ `Nicht gezeichnet: die Quelle bleibt mit ${ source[ 'chars' ] } Zeichen ueber dem Budget von ${ source[ 'budget' ] } — auch mit reinen Kennungen als Beschriftung sind ${ source[ 'nodes' ] } Knoten und ${ source[ 'edges' ] } Kanten zu gross fuer den Zeichner.` ]
+            : []
+        const condensedWarning = source[ 'condensed' ] === true
+            ? [ `Beschriftungen auf ${ source[ 'labelCap' ] } Zeichen gekuerzt: die volle Quelle waere ${ source[ 'fullChars' ] } Zeichen lang, das Budget liegt bei ${ source[ 'budget' ] }. Alle ${ source[ 'nodes' ] } Knoten und ${ source[ 'edges' ] } Kanten sind gezeichnet, nur die Titel sind beschnitten.` ]
+            : []
+        const nearEdgeWarning = source[ 'condensed' ] !== true && source[ 'chars' ] <= source[ 'budget' ] && source[ 'chars' ] > Math.floor( source[ 'budget' ] * 0.9 )
+            ? [ `Auffaellig: die Quelle liegt mit ${ source[ 'chars' ] } Zeichen dicht unter dem Budget von ${ source[ 'budget' ] } — der naechste Zuwachs im Bestand kuerzt die Beschriftungen.` ]
+            : []
 
         return [].concat( emptyWarning ).concat( unlinkedWarning ).concat( missingSideWarning )
             .concat( danglingTopicWarning ).concat( danglingPhaseWarning )
+            .concat( tooLargeWarning ).concat( condensedWarning ).concat( nearEdgeWarning )
     }
 
 
     // The diagram source: `flowchart LR`, one line per node, one line per edge, the four classDef lines and
     // a class assignment per kind that actually has nodes. Nothing else — the source is a pure function of
-    // the read rows, so the same database always produces the same drawing.
-    static #renderGraphSource( { nodes, edges } ) {
+    // the read rows AND the label cap, so the same database at the same cap always produces the same drawing.
+    static #renderGraphSource( { nodes, edges, cap } ) {
         const classDefLines = GRAPH_CLASS_DEFS
             .map( ( entry ) => `    classDef ${ entry[ 'name' ] } ${ entry[ 'style' ] }` )
         const nodeLines = nodes
-            .map( ( node ) => `    ${ node[ 'id' ] }["${ node[ 'label' ] }"]` )
+            .map( ( node ) => `    ${ node[ 'id' ] }["${ graphNodeLabel( { 'id': node[ 'rawId' ], 'title': node[ 'rawTitle' ], cap } ) }"]` )
         const edgeLines = edges
             .map( ( edge ) => `    ${ edge[ 'from' ] } --> ${ edge[ 'to' ] }` )
         const classLines = GRAPH_CLASS_DEFS

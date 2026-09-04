@@ -2357,7 +2357,7 @@ class MemoView {
                         'status': 'ok', 'documentId': documentId, 'mermaid': null,
                         'counts': DoltDbAssembler.emptyGraphCounts(), 'empty': true,
                         'warnings': [ `Dieses Memo führt keine Datenbank — es gibt nichts zu zeichnen (${ resolved[ 'message' ] })` ],
-                        'reason': 'no-db'
+                        'reason': 'no-db', 'source': DoltDbAssembler.emptyGraphSourceFacts()
                     } )
 
                     return
@@ -2369,7 +2369,8 @@ class MemoView {
                     sendJson( res, 200, {
                         'status': 'ok', 'documentId': documentId, 'mermaid': graph[ 'mermaid' ],
                         'counts': graph[ 'counts' ], 'empty': graph[ 'empty' ],
-                        'warnings': graph[ 'warnings' ], 'reason': graph[ 'reason' ]
+                        'warnings': graph[ 'warnings' ], 'reason': graph[ 'reason' ],
+                        'source': graph[ 'source' ]
                     } )
                 } catch( error ) {
                     sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )

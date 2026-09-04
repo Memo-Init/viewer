@@ -1,3 +1,14 @@
+        // Memo 080, PRD-V2 rework: the source-length limit is DECLARED here instead of being inherited as an
+        // invisible library default. Measured in real Chromium against the pinned mermaid@11.4.1 CDN build:
+        // getConfig().maxTextSize is 50000, and a source above it is NOT rejected — mermaid discards it and
+        // resolves with a one-node placeholder tile, which is why an oversize graph looked like a success.
+        // The server's graph budget (DoltDbAssembler GRAPH_SOURCE_BUDGET) sits BELOW this number, and the
+        // renderer entry below measures every source against it before and after drawing.
+        var MERMAID_MAX_TEXT_SIZE = 50000
+        // mermaid's own substitution text. Its presence in a RESULT that is absent from the SOURCE is the
+        // proof that the library replaced the diagram instead of drawing it.
+        var MERMAID_OVERSIZE_MARKER = 'Maximum text size in diagram exceeded'
+
         mermaid.initialize({
             startOnLoad: false,
             theme: 'default',
@@ -5,7 +16,8 @@
             // instead of trusting it — the rendered SVG is set via el.innerHTML, so a 'loose' diagram
             // was a stored-content injection surface. Strict keeps the error-fallback path intact
             // (buildMermaidErrorHtml escapes its own output).
-            securityLevel: 'strict'
+            securityLevel: 'strict',
+            maxTextSize: MERMAID_MAX_TEXT_SIZE
         })
 
         const renderer = new marked.Renderer()
@@ -565,6 +577,32 @@
                 + '</div><pre class="mermaid-error-source">' + safeOriginal + '</pre>'
         }
 
+        // Memo 080, PRD-V2 rework: a RESOLVED render promise is NOT proof of a drawing. Measured against the
+        // pinned mermaid@11.4.1 build in real Chromium: a source above maxTextSize does not reject — the
+        // library throws the source away, resolves with a one-node placeholder tile and keeps every marker a
+        // caller might test for (`error-icon` / `error-text` live in the injected CSS of EVERY flowchart, so
+        // they prove nothing). The failure was therefore silent, and the graph view printed a success count
+        // line above an error tile.
+        // Both ends are checked, and the CLASS is closed rather than the reported case: the source is measured
+        // against the limit we declared BEFORE the call (so the message can name the real figures and the
+        // renderer is not even asked), and the returned SVG is checked for mermaid's own substitution marker
+        // AFTER it (so a limit that drifts from the library default is still caught). A diagram that legitimately
+        // contains the marker in its own source is not mistaken for a failure.
+        // Returns the reason as a string, or null when the result really is the requested diagram.
+        function mermaidDrawFailure( spec, svg ) {
+            var source = String( spec == null ? '' : spec )
+            if( source.length > MERMAID_MAX_TEXT_SIZE ) {
+                return 'Die Diagramm-Quelle ist ' + source.length + ' Zeichen lang, die Grenze liegt bei '
+                    + MERMAID_MAX_TEXT_SIZE + ' — mermaid zeichnet darüber nur eine Platzhalter-Kachel.'
+            }
+            if( typeof svg === 'string' && svg.indexOf( MERMAID_OVERSIZE_MARKER ) !== -1 && source.indexOf( MERMAID_OVERSIZE_MARKER ) === -1 ) {
+                return 'mermaid hat die Quelle (' + source.length + ' Zeichen) durch die Platzhalter-Kachel "'
+                    + MERMAID_OVERSIZE_MARKER + '" ersetzt, statt sie zu zeichnen.'
+            }
+
+            return null
+        }
+
         // Memo 020 Kap 6 (pt 1): remote-data guard for Vega-Lite specs — the single biggest risk
         // reducer. A spec may only carry INLINE data (data.values / data.sequence). findUrlKey walks
         // the parsed spec and reports the first `url` key at ANY depth (data loaders, image-mark
@@ -624,13 +662,38 @@
         // no new callsite — that is the "kein Quellcode-Churn pro Diagramm"-Constraint resolved.
         // Invariant: each key K has selector '.K', so renderer.code can derive the div class
         // from the registry key and renderAllDiagrams can find it again by selector.
+        // Memo 080, PRD-V2 rework: every render hook now ANSWERS whether it drew. The hook returns a promise
+        // for { ok, error, el }, so a caller (the graph view) can put a failure on screen instead of leaving a
+        // success headline above an error tile. A failure is still shown in place through the existing error
+        // fallback — the return value adds the report, it does not replace the rendering contract.
         var diagramRegistry = {
             mermaid: {
                 selector: '.mermaid',
                 render: function( spec, el ) {
-                    mermaid.render( 'mermaid-' + Math.random().toString( 36 ).slice( 2 ), spec )
-                        .then( function( result ) { el.innerHTML = result.svg } )
-                        .catch( function( err ) { el.innerHTML = buildMermaidErrorHtml( err, spec ) } )
+                    var tooBig = mermaidDrawFailure( spec, null )
+                    if( tooBig !== null ) {
+                        el.innerHTML = buildMermaidErrorHtml( new Error( tooBig ), spec )
+
+                        return Promise.resolve( { ok: false, error: tooBig, el: el } )
+                    }
+
+                    return mermaid.render( 'mermaid-' + Math.random().toString( 36 ).slice( 2 ), spec )
+                        .then( function( result ) {
+                            var substituted = mermaidDrawFailure( spec, result.svg )
+                            if( substituted !== null ) {
+                                el.innerHTML = buildMermaidErrorHtml( new Error( substituted ), spec )
+
+                                return { ok: false, error: substituted, el: el }
+                            }
+                            el.innerHTML = result.svg
+
+                            return { ok: true, error: null, el: el }
+                        } )
+                        .catch( function( err ) {
+                            el.innerHTML = buildMermaidErrorHtml( err, spec )
+
+                            return { ok: false, error: ( err && err.message ) ? err.message : String( err ), el: el }
+                        } )
                 }
             },
             // Memo 020 Kap 3/6: the scientific renderer. The spec is validated (remote data
@@ -644,14 +707,22 @@
                     var check = validateVegaSpec( spec )
                     if( !check.ok ) {
                         el.innerHTML = buildVegaErrorHtml( check.reason, spec )
-                        return
+
+                        return Promise.resolve( { ok: false, error: check.reason, el: el } )
                     }
-                    vegaEmbed( el, check.spec, {
+
+                    return vegaEmbed( el, check.spec, {
                         actions: false,
                         ast: true,
                         renderer: 'svg',
                         loader: { http: { credentials: 'omit' } }
-                    } ).catch( function( err ) { el.innerHTML = buildVegaErrorHtml( err, spec ) } )
+                    } )
+                        .then( function() { return { ok: true, error: null, el: el } } )
+                        .catch( function( err ) {
+                            el.innerHTML = buildVegaErrorHtml( err, spec )
+
+                            return { ok: false, error: ( err && err.message ) ? err.message : String( err ), el: el }
+                        } )
                 }
             }
         }
@@ -664,7 +735,12 @@
         // root cause of the "No diagram type detected" second-pass error. A per-element renderedSrc
         // guard skips an element whose source has not changed, so a repeated pass (rapid WS broadcasts)
         // is a no-op instead of a re-render/flicker. Fallback to textContent guards against legacy DOM.
+        // Memo 080, PRD-V2 rework: the pass now RETURNS a promise for one { ok, error, el } outcome per
+        // rendered element. Callers that only want the drawing ignore it exactly as before; the graph view
+        // uses it to replace a false success headline with the real failure. A hook that answers nothing
+        // (a legacy or injected registry) counts as drawn, so the pass never invents a failure.
         function renderAllDiagrams() {
+            var outcomes = []
             Object.keys( diagramRegistry ).forEach( function( lang ) {
                 var entry = diagramRegistry[ lang ]
                 document.querySelectorAll( entry.selector ).forEach( function( el ) {
@@ -676,13 +752,24 @@
                     // vegaEmbed undefined) used to abort the whole pass and leave every remaining
                     // diagram unrendered. Isolate each element so one failure only marks its own box.
                     try {
-                        entry.render( spec, el )
+                        var answered = entry.render( spec, el )
+                        outcomes.push( Promise.resolve( answered === undefined ? { ok: true, error: null, el: el } : answered )
+                            .then( function( status ) {
+                                // A failed element is unmarked again so a later pass may retry it, the same
+                                // way the synchronous failure below has always done.
+                                if( status && status.ok === false ) { el.dataset.renderedSrc = '' }
+
+                                return status
+                            } ) )
                     } catch ( err ) {
                         el.dataset.renderedSrc = ''
                         el.innerHTML = '<div class="diagram-error">Diagramm konnte nicht gerendert werden.</div>'
+                        outcomes.push( Promise.resolve( { ok: false, error: ( err && err.message ) ? err.message : String( err ), el: el } ) )
                     }
                 } )
             } )
+
+            return Promise.all( outcomes )
         }
 
         // Memo 020 Kap 4: a node sits "inside a diagram" if it matches ANY registered diagram
@@ -5045,16 +5132,17 @@
             wrap.className = 'graph-view'
             wrap.setAttribute( 'data-graph-view', payload && payload.empty === true ? 'empty' : 'graph' )
 
-            var head = document.createElement( 'div' )
-            head.className = 'graph-counts'
-            head.setAttribute( 'data-graph-counts', '1' )
-            head.textContent = 'Topics ' + num( counts.topics )
+            var headText = 'Topics ' + num( counts.topics )
                 + ' · Work-Items ' + num( counts.workItems )
                 + ' · Phasen ' + num( counts.phases )
                 + ' · PRDs ' + num( counts.prds )
                 + ' — Kanten: Topic→Work-Item ' + num( counts.edgesTopicWorkItem )
                 + ' · Phase→PRD ' + num( counts.edgesPhasePrd )
                 + ' · Topic→PRD ' + num( counts.edgesTopicPrd )
+            var head = document.createElement( 'div' )
+            head.className = 'graph-counts'
+            head.setAttribute( 'data-graph-counts', '1' )
+            head.textContent = headText
             wrap.appendChild( head )
 
             var warnings = ( payload && payload.warnings && payload.warnings.length ) ? payload.warnings : []
@@ -5082,7 +5170,18 @@
             box.setAttribute( 'data-src', payload.mermaid )
             wrap.appendChild( box )
             contentTarget.appendChild( wrap )
+            // Memo 080, PRD-V2 rework: the count line may only stand over a drawing that REALLY happened.
+            // The renderer resolves even when it silently replaced an oversize source with a placeholder
+            // tile, so the head line used to claim "325 Knoten / 221 Kanten" above an error tile — exactly
+            // the silent failure US-2 exists against. The render outcome decides: a failed drawing puts the
+            // whole view into the SHARED error state, with the renderer's real message AND the measured
+            // figures, instead of a success headline above a failure.
             renderAllDiagrams()
+                .then( function( outcomes ) {
+                    var failed = outcomes.filter( function( status ) { return status && status.ok === false && status.el === box } )
+                    if( failed.length === 0 ) { return }
+                    renderViewError( contentTarget, 'Graph konnte nicht gezeichnet werden: ' + failed[ 0 ].error + ' — gemessen: ' + headText )
+                } )
 
             return wrap
         }

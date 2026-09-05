@@ -248,7 +248,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
         it( 'returns { open:0, answered:0 } when the db has no question table', () => {
             seedDb( { path: dbPath } )
 
-            expect( DoltDbAssembler.readOpenQuestionCounts( { dbPath } ) ).toEqual( { open: 0, answered: 0 } )
+            expect( DoltDbAssembler.readOpenQuestionCounts( { dbPath } ) ).toEqual( { open: 0, answered: 0, deferred: 0 } )
         } )
 
         it( 'counts open vs answered rows from the question table', () => {
@@ -260,7 +260,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status ) VALUES ( ?, ?, ?, ?, ? )' ).run( 'F3', 'M079', 'Alt?', 'info', 'answered' )
             db.close()
 
-            expect( DoltDbAssembler.readOpenQuestionCounts( { dbPath } ) ).toEqual( { open: 2, answered: 1 } )
+            expect( DoltDbAssembler.readOpenQuestionCounts( { dbPath } ) ).toEqual( { open: 2, answered: 1, deferred: 0 } )
         } )
 
         it( 'fails loud on a missing db path and a missing argument', () => {
@@ -335,7 +335,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             seedDb( { path: dbPath } )
 
             expect( DoltDbAssembler.readQuestionAnswerState( { dbPath } ) )
-                .toEqual( { open: 0, answered: 0, total: 0, allAnswered: false } )
+                .toEqual( { open: 0, answered: 0, deferred: 0, total: 0, allAnswered: false } )
         } )
 
         it( 'without any answer record it mirrors the status-based counts (no behavior change)', () => {
@@ -347,7 +347,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             ] } )
 
             expect( DoltDbAssembler.readQuestionAnswerState( { dbPath } ) )
-                .toEqual( { open: 2, answered: 1, total: 3, allAnswered: false } )
+                .toEqual( { open: 2, answered: 1, deferred: 0, total: 3, allAnswered: false } )
         } )
 
         it( 'folds answer records onto OPEN questions — all open questions covered => allAnswered', () => {
@@ -359,7 +359,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             seedAnswers( { path: dbPath, answers: [ { questionId: 'F1' }, { questionId: 'F2' } ] } )
 
             expect( DoltDbAssembler.readQuestionAnswerState( { dbPath } ) )
-                .toEqual( { open: 0, answered: 2, total: 2, allAnswered: true } )
+                .toEqual( { open: 0, answered: 2, deferred: 0, total: 2, allAnswered: true } )
         } )
 
         it( 'is additive+deduped: a record for an already-answered question does NOT double-count, a record for an open question clears it', () => {
@@ -374,7 +374,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             seedAnswers( { path: dbPath, answers: [ { questionId: 'F1' }, { questionId: 'F3' } ] } )
 
             expect( DoltDbAssembler.readQuestionAnswerState( { dbPath } ) )
-                .toEqual( { open: 1, answered: 2, total: 3, allAnswered: false } )
+                .toEqual( { open: 1, answered: 2, deferred: 0, total: 3, allAnswered: false } )
         } )
 
         it( 'fails loud on a missing db path and a missing argument', () => {
@@ -451,7 +451,11 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT, origin TEXT, status TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, depends_on TEXT, can_parallel_with TEXT, commit_hash TEXT, spillover TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, commit_hash TEXT, depends_on TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
-            db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT )' )
+            // Memo 080, PRD-F1: the canonical seed carries the WIDENED question shape (the five lifecycle
+            // columns), because the golden really renders all three changed blocks — the two provenance
+            // subsections, the two context lines and the `## Zurueckgestellte Fragen` section. The narrow
+            // shape stays in the other seeds of this file; that is what proves the additive degrade.
+            db.exec( 'CREATE TABLE IF NOT EXISTS question ( id TEXT PRIMARY KEY, memo_id TEXT, text TEXT, kind TEXT, status TEXT, title TEXT, background TEXT, typ TEXT, ai_recommendation TEXT, replaced_by_id TEXT, status_reason TEXT, answered_in_rev TEXT, answered_by TEXT, note TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS question_option ( question_id TEXT, opt_key TEXT, label TEXT, kind TEXT, sort INTEGER )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS research ( r_no INTEGER PRIMARY KEY, memo_id TEXT, title TEXT, kind TEXT, path TEXT )' )
             db.exec( 'CREATE TABLE IF NOT EXISTS research_topics ( r_no INTEGER, topic_id TEXT )' )
@@ -499,15 +503,23 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
                 .run( 'P1', 'M079', 'Backbone', 'done', null, null, null, '{"__ord":0}' )
             db.prepare( 'INSERT INTO rollout_work_item ( id, phase_id, title, status, commit_hash, depends_on, target, wi_type, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
                 .run( 'PRD-01', 'P1', 'adapter', 'done', null, null, 'core', 'code', '{"__ord":0}' )
-            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status, title, background, typ, ai_recommendation ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
-                .run( 'F1', 'M079', 'Soll die DB die SoT sein?', 'info', 'open', 'DB als Source of Truth', 'Kap 5: die Datenbank traegt die Wahrheit.', 'single', 'A' )
-            db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status, title, background, typ, ai_recommendation ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
-                .run( 'F2', 'M079', 'Wie werden Phasen normalisiert?', 'info', 'answered', 'Phasen-Normalisierung', 'Rollout-State liegt normalisiert in der DB.', 'single', 'A' )
+            // The FIVE canonical questions — one per lifecycle state plus one per provenance group. The row
+            // values are identical to the core seedCanonical set, which is what makes the golden a
+            // cross-repo comparison instead of two documents that merely happen to look alike.
+            const insertQuestion = db.prepare( 'INSERT INTO question ( id, memo_id, text, kind, status, title, background, typ, ai_recommendation, replaced_by_id, status_reason, answered_in_rev, answered_by, note ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
+            insertQuestion.run( 'F1', 'M079', 'Soll die DB die SoT sein?', 'info', 'open', 'DB als Source of Truth', 'Kap 5: die Datenbank traegt die Wahrheit.', 'single', 'A', null, null, null, null, null )
+            insertQuestion.run( 'F2', 'M079', 'Wie werden Phasen normalisiert?', 'info', 'answered', 'Phasen-Normalisierung', 'Rollout-State liegt normalisiert in der DB.', 'single', 'A', null, null, 'REV-02', 'user', 'Muendliche Aussage uebersteuert die Widget-Auswahl' )
+            insertQuestion.run( 'F3', 'M079', 'Wie wird die Herkunft gefuehrt?', 'info', 'answered', 'Antwort-Herkunft', 'Kap 18: wer geantwortet hat, ist Teil des Records.', 'single', 'A', null, null, 'REV-03', 'ai-on-behalf', null )
+            insertQuestion.run( 'F4', 'M079', 'Braucht der Zaehler eine dritte Zahl?', 'info', 'irrelevant', 'Zaehler-Frage', 'Kap 18: nichts verschwindet still.', 'single', 'A', null, 'die Messung in Kap 25 hat sie beantwortet', null, null, null )
+            insertQuestion.run( 'F5', 'M079', 'Alte Fassung der SoT-Frage?', 'info', 'replaced', 'Abgeloeste Fassung', 'Kap 18: die Genealogie ist eine Kante.', 'single', 'A', 'F1', 'F1 stellt dieselbe Entscheidung praeziser', null, null, null )
             const insertOption = db.prepare( 'INSERT INTO question_option ( question_id, opt_key, label, kind, sort ) VALUES ( ?, ?, ?, ?, ? )' )
             insertOption.run( 'F1', 'A', 'Ja — die DB ist die SoT', 'option', 0 )
             insertOption.run( 'F1', 'B', 'Nein — die Files bleiben SoT', 'option', 1 )
             insertOption.run( 'F2', 'A', 'Aus rollout/state.json projizieren', 'option', 0 )
             insertOption.run( 'F2', 'B', 'Manuell in der DB pflegen', 'option', 1 )
+            insertOption.run( 'F3', 'A', 'Zwei Unter-Abschnitte', 'option', 0 )
+            insertOption.run( 'F4', 'A', 'Ja', 'option', 0 )
+            insertOption.run( 'F5', 'A', 'Ja', 'option', 0 )
             // the memo-local Research register — rows IDENTICAL to what the core MemoContentStore.setResearch
             // writer produces from seedCanonical, so the ## Research render is byte-identical across both repos.
             const insertResearch = db.prepare( 'INSERT INTO research ( r_no, memo_id, title, kind, path ) VALUES ( ?, ?, ?, ?, ? )' )
@@ -586,7 +598,7 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             // depend on them anyway). Both lines come out of the SHARED template, so a one-sided wording
             // change fails here AND in the core.
             expect( markdown ).toContain( '_Erzeugt aus der Memo-Datenbank `memo-079.db` durch `memo revision assemble`, geprueft durch `memo revision parity` — nicht hand-geschrieben._' )
-            expect( markdown ).toContain( '**Umfang dieses Memos:** 1 Kapitel · 2 gestellte und beantwortete Fragen · 1 PRDs · 1 Phasen (P0–P0) · 2 Topics (1 registriert) · 2 Work-Items (0 lebendig) · 1 Phasen-Items. Gerechnet, nicht behauptet — `memo revision parity`.' )
+            expect( markdown ).toContain( '**Umfang dieses Memos:** 1 Kapitel · 5 gestellte und beantwortete Fragen · 1 PRDs · 1 Phasen (P0–P0) · 2 Topics (1 registriert) · 2 Work-Items (0 lebendig) · 1 Phasen-Items. Gerechnet, nicht behauptet — `memo revision parity`.' )
             expect( markdown ).toContain( '## Vorwort\n\nDiese Revision entsteht aus der Datenbank.' )
             expect( markdown ).toContain( '## Phase-Hints\n\n- P1 kann parallel zu P2 laufen.' )
             expect( markdown ).toContain( '## Snags\n\n| ID | Title | Status | Verdict | Disposition |' )

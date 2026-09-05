@@ -2,7 +2,7 @@
 
 _Erzeugt aus der Memo-Datenbank `memo-079.db` durch `memo revision assemble`, geprueft durch `memo revision parity` — nicht hand-geschrieben._
 
-**Umfang dieses Memos:** 1 Kapitel · 2 gestellte und beantwortete Fragen · 1 PRDs · 1 Phasen (P0–P0) · 2 Topics (1 registriert) · 2 Work-Items (0 lebendig) · 1 Phasen-Items. Gerechnet, nicht behauptet — `memo revision parity`.
+**Umfang dieses Memos:** 1 Kapitel · 5 gestellte und beantwortete Fragen · 1 PRDs · 1 Phasen (P0–P0) · 2 Topics (1 registriert) · 2 Work-Items (0 lebendig) · 1 Phasen-Items. Gerechnet, nicht behauptet — `memo revision parity`.
 
 | Feld | Wert |
 | --- | --- |
@@ -99,12 +99,25 @@ Diese Revision entsteht aus der Datenbank.
 
 ## Beantwortete Fragen
 
+### Vom User beantwortet
+
 ### F2 — Phasen-Normalisierung
 
 - **Frage (Original):** Wie werden Phasen normalisiert?
 - **AI-Empfehlung war:** A
 - **User-Entscheidung:** A — Aus rollout/state.json projizieren
 - **Wortlaut:** A — Normalisierung laeuft aus rollout/state.json.
+- **Beantwortet in:** REV-02
+- **Anmerkung:** Muendliche Aussage uebersteuert die Widget-Auswahl
+
+### Von der KI im Namen des Users beantwortet
+
+### F3 — Antwort-Herkunft
+
+- **Frage (Original):** Wie wird die Herkunft gefuehrt?
+- **AI-Empfehlung war:** A
+- **User-Entscheidung:** —
+- **Beantwortet in:** REV-03
 
 ## Phasen
 
@@ -157,6 +170,20 @@ Ein Traeger fehlt erst dann auf, wenn er gerendert werden soll.
 | R1 | doltlite Machbarkeit | wave-2 | T01 | context/research/2026-08-19--doltlite-machbarkeit.md |
 | R2 | Memo-Korpus | wave-2 | T01, T02 |  |
 
+## Zurueckgestellte Fragen
+
+### F4 — Zaehler-Frage
+
+- **Frage (Original):** Braucht der Zaehler eine dritte Zahl?
+- **Zurueckgestellt:** irrelevant
+- **Begruendung:** die Messung in Kap 25 hat sie beantwortet
+
+### F5 — Abgeloeste Fassung
+
+- **Frage (Original):** Alte Fassung der SoT-Frage?
+- **Zurueckgestellt:** ersetzt durch F1
+- **Begruendung:** F1 stellt dieselbe Entscheidung praeziser
+
 ## Fragen
 
 ```questions-json
@@ -180,7 +207,13 @@ Ein Traeger fehlt erst dann auf, wenn er gerendert werden soll.
         "kind": "option"
       }
     ],
-    "answered": false
+    "answered": false,
+    "status": "open",
+    "statusReason": null,
+    "replacedBy": null,
+    "answeredBy": null,
+    "answeredInRev": null,
+    "note": null
   },
   {
     "id": "F2",
@@ -201,7 +234,79 @@ Ein Traeger fehlt erst dann auf, wenn er gerendert werden soll.
         "kind": "option"
       }
     ],
-    "answered": true
+    "answered": true,
+    "status": "answered",
+    "statusReason": null,
+    "replacedBy": null,
+    "answeredBy": "user",
+    "answeredInRev": "REV-02",
+    "note": "Muendliche Aussage uebersteuert die Widget-Auswahl"
+  },
+  {
+    "id": "F3",
+    "title": "Antwort-Herkunft",
+    "hintergrund": "Kap 18: wer geantwortet hat, ist Teil des Records.",
+    "frage": "Wie wird die Herkunft gefuehrt?",
+    "aiRecommendation": "A",
+    "typ": "single",
+    "options": [
+      {
+        "key": "A",
+        "label": "Zwei Unter-Abschnitte",
+        "kind": "option"
+      }
+    ],
+    "answered": true,
+    "status": "answered",
+    "statusReason": null,
+    "replacedBy": null,
+    "answeredBy": "ai-on-behalf",
+    "answeredInRev": "REV-03",
+    "note": null
+  },
+  {
+    "id": "F4",
+    "title": "Zaehler-Frage",
+    "hintergrund": "Kap 18: nichts verschwindet still.",
+    "frage": "Braucht der Zaehler eine dritte Zahl?",
+    "aiRecommendation": "A",
+    "typ": "single",
+    "options": [
+      {
+        "key": "A",
+        "label": "Ja",
+        "kind": "option"
+      }
+    ],
+    "answered": false,
+    "status": "irrelevant",
+    "statusReason": "die Messung in Kap 25 hat sie beantwortet",
+    "replacedBy": null,
+    "answeredBy": null,
+    "answeredInRev": null,
+    "note": null
+  },
+  {
+    "id": "F5",
+    "title": "Abgeloeste Fassung",
+    "hintergrund": "Kap 18: die Genealogie ist eine Kante.",
+    "frage": "Alte Fassung der SoT-Frage?",
+    "aiRecommendation": "A",
+    "typ": "single",
+    "options": [
+      {
+        "key": "A",
+        "label": "Ja",
+        "kind": "option"
+      }
+    ],
+    "answered": false,
+    "status": "replaced",
+    "statusReason": "F1 stellt dieselbe Entscheidung praeziser",
+    "replacedBy": "F1",
+    "answeredBy": null,
+    "answeredInRev": null,
+    "note": null
   }
 ]
 ```

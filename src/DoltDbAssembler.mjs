@@ -165,10 +165,23 @@ const DOCUMENT_SECTIONS = [
     { section: 'Work Items', level: 'collective', render: [ 'workItems' ], movedBy: 'PRD-R3 (P0, WI-153) verlagert die Work-Items in den Block und entfernt diese Sammel-Tabelle (F24=A)' },
     { section: 'Topics', level: 'collective', render: [ 'topics' ], movedBy: 'PRD-R3 (P0) fuellt den erzeugten Block-Abschnitt `### Topics`; bis dahin steht das Register hier' },
     { section: 'Research', level: 'collective', render: [ 'research' ], movedBy: 'PRD-R3 (P0) fuellt den erzeugten Beleg-Abschnitt des Blocks, in den das Research-Register gehoert' },
+    { section: 'Zurueckgestellte Fragen', level: 'collective', render: [ 'deferredQuestions' ], movedBy: 'PRD-F1 (P10, WI-076) legt diesen Abschnitt an; die zwoelf Pflicht-Positionen der Dokument-Ebene (REV-18 Z. 158-172) bleiben unveraendert, weil der Abschnitt BEDINGT ist — er erscheint nur bei zurueckgestelltem Bestand und steht deshalb hinter ihnen, neben "Beantwortete Fragen" und nie darin' },
     { section: 'Fragen', level: 'collective', render: [ 'questionsJson' ], movedBy: 'PRD-R1 (P0, WI-059) haelt diesen maschinenlesbaren Fragen-Zaun auf Dokument-Ebene — die Dokument-Ebene fuehrt nur die beiden LESBAREN Fragen-Abschnitte, und kein PRD dieses Rollouts verlagert den Zaun in einen Block' },
     { section: 'Snags', level: 'collective', render: [ 'snags' ], movedBy: 'PRD-R1 (P0, WI-061) hat diesen Abschnitt angelegt und haelt ihn auf Dokument-Ebene — kein PRD dieses Rollouts verlagert ihn in einen Block' },
     { section: 'Goals', level: 'collective', render: [ 'goals' ], movedBy: 'PRD-R1 (P0, WI-061) hat diesen Abschnitt angelegt und haelt ihn auf Dokument-Ebene — die Ziel-Tafel ist projekt-global, nicht kapitel-lokal' },
     { section: 'Maintenance', level: 'collective', render: [ 'maintenance' ], movedBy: 'PRD-R1 (P0, WI-061) hat diesen Abschnitt angelegt und haelt ihn auf Dokument-Ebene — die Wartungs-Tafel ist repo-global, nicht kapitel-lokal' }
+]
+
+
+// The two RETIRED question states and the two provenance groups of the answered section (Memo 080,
+// PRD-F1 / WI-076) — byte-identical twins of the RevisionAssembler (core) copies. The group headings are
+// the ones DocumentRegistry.#mapAnsweredProvenance recognises, so what this renderer writes is what that
+// parser reads back.
+const DEFERRED_STATUS = [ 'irrelevant', 'replaced' ]
+
+const ANSWERED_PROVENANCE_GROUPS = [
+    { value: 'user', heading: 'Vom User beantwortet' },
+    { value: 'ai-on-behalf', heading: 'Von der KI im Namen des Users beantwortet' }
 ]
 
 
@@ -455,8 +468,10 @@ class DoltDbAssembler {
     }
 
 
-    // Read the open/answered question counts of a per-memo database (Memo 079 FIX B). The pure
-    // `question`-table counter (open = rows WHERE status='open'; answered = every other row). Since
+    // Read the open/answered/deferred question counts of a per-memo database (Memo 079 FIX B). The pure
+    // `question`-table counter. Memo 080, PRD-F1: "every other row is answered" was the SAME defect the
+    // richer reader above carried — a retired question was reported as a decision that was never taken —
+    // so this baseline gets the third figure from the same declared retired set. Since
     // PRD-22 #4 the DocumentRegistry badge path reads the richer readQuestionAnswerState (which folds in
     // the user_input_answers records); this leaf is the status-only baseline it builds on and remains a
     // tested public API. A MISSING `question` table (hand-seeded / early db) reads as { open:0,
@@ -472,15 +487,17 @@ class DoltDbAssembler {
         const db = DoltDbAssembler.#open( { dbPath } )
         try {
             if( DoltDbAssembler.#tableExists( { db, table: 'question' } ) !== true ) {
-                return { open: 0, answered: 0 }
+                return { open: 0, answered: 0, deferred: 0 }
             }
 
             const openRow = DoltDbAssembler.#get( { db, sql: "SELECT count( * ) AS n FROM question WHERE status = 'open'" } )
             const totalRow = DoltDbAssembler.#get( { db, sql: 'SELECT count( * ) AS n FROM question' } )
+            const deferredRow = DoltDbAssembler.#get( { db, sql: `SELECT count( * ) AS n FROM question WHERE status IN ( ${ DEFERRED_STATUS.map( ( status ) => `'${ status }'` ).join( ', ' ) } )` } )
             const open = openRow === null ? 0 : Number( openRow[ 'n' ] )
             const total = totalRow === null ? 0 : Number( totalRow[ 'n' ] )
+            const deferred = deferredRow === null ? 0 : Number( deferredRow[ 'n' ] )
 
-            return { open, answered: total - open }
+            return { open, answered: total - open - deferred, deferred }
         } finally {
             db.close()
         }
@@ -546,12 +563,19 @@ class DoltDbAssembler {
         const db = DoltDbAssembler.#open( { dbPath } )
         try {
             if( DoltDbAssembler.#tableExists( { db, table: 'question' } ) !== true ) {
-                return { open: 0, answered: 0, total: 0, allAnswered: false }
+                return { open: 0, answered: 0, deferred: 0, total: 0, allAnswered: false }
             }
 
             const openRows = DoltDbAssembler.#all( { db, sql: "SELECT id FROM question WHERE status = 'open'" } )
             const totalRow = DoltDbAssembler.#get( { db, sql: 'SELECT count( * ) AS n FROM question' } )
             const total = totalRow === null ? 0 : Number( totalRow[ 'n' ] )
+
+            // Memo 080, PRD-F1 / WI-076: the RETIRED stock is its own figure. Before this it fell into
+            // `answered` (everything that was not open counted as answered), which stated a decision that
+            // was never taken. The `IN` list is the declared retired set, so a database that predates the
+            // lifecycle simply reports 0 here and every other figure is exactly what it was.
+            const deferredRow = DoltDbAssembler.#get( { db, sql: `SELECT count( * ) AS n FROM question WHERE status IN ( ${ DEFERRED_STATUS.map( ( status ) => `'${ status }'` ).join( ', ' ) } )` } )
+            const deferred = deferredRow === null ? 0 : Number( deferredRow[ 'n' ] )
 
             const openIds = openRows
                 .map( ( row ) => normalizeQuestionId( row[ 'id' ] ) )
@@ -566,10 +590,10 @@ class DoltDbAssembler {
                 .filter( ( id ) => id.length === 0 || answeredSet.has( id ) !== true )
             const open = openWithoutRecord.length
             const cleared = openIds.length - open
-            const answered = ( total - openIds.length ) + cleared
+            const answered = ( total - openIds.length - deferred ) + cleared
             const allAnswered = total > 0 && open === 0
 
-            return { open, answered, total, allAnswered }
+            return { open, answered, deferred, total, allAnswered }
         } finally {
             db.close()
         }
@@ -1398,6 +1422,7 @@ class DoltDbAssembler {
             vorwort: DoltDbAssembler.#renderProse( { sections, heading: 'Vorwort' } ),
             openQuestions: DoltDbAssembler.#renderOpenQuestions( { questions } ),
             answeredQuestions: DoltDbAssembler.#renderAnsweredQuestions( { questions, questionOptions, answers } ),
+            deferredQuestions: DoltDbAssembler.#renderDeferredQuestions( { questions } ),
             // ONE document-level position, TWO renderers — the position binds a LIST of handles, exactly
             // as the core plan does, so no `.concat()` chain composes the body order on either side.
             phases: DoltDbAssembler.#renderPhases( { phases, phaseWorkItems } ),
@@ -1983,8 +2008,13 @@ class DoltDbAssembler {
 
 
     // Build ONE canonical questions-json entry from a `question` row + its `question_option` children. Field
-    // order is fixed (id, title, hintergrund, frage, aiRecommendation, typ, options, answered). MUST stay
-    // byte-identical to RevisionAssembler.#questionEntry (core).
+    // order is fixed (id, title, hintergrund, frage, aiRecommendation, typ, options, answered, then the six
+    // lifecycle fields). MUST stay byte-identical to RevisionAssembler.#questionEntry (core).
+    //
+    // THE FENCE CARRIES THE LIFECYCLE (Memo 080, PRD-F1 / WI-076). The core projection reads this fence back
+    // with a delete-then-insert, so a field the fence does not emit is destroyed on the next run: a question
+    // retired as `irrelevant` used to come back as plain `open` with its reason and its edge gone. `answered`
+    // STAYS (every older reader keys on it) and `status` stands beside it as the four-value axis.
     static #questionEntry( { row, questionOptions } ) {
         const options = questionOptions
             .filter( ( option ) => option[ 'question_id' ] === row[ 'id' ] )
@@ -2002,8 +2032,24 @@ class DoltDbAssembler {
             aiRecommendation: DoltDbAssembler.#strOrNull( { value: row[ 'ai_recommendation' ] } ),
             typ: DoltDbAssembler.#strOrNull( { value: row[ 'typ' ] } ),
             options,
-            answered: row[ 'status' ] === 'answered'
+            answered: row[ 'status' ] === 'answered',
+            status: DoltDbAssembler.#questionStatus( { row } ),
+            statusReason: DoltDbAssembler.#strOrNull( { value: row[ 'status_reason' ] } ),
+            replacedBy: DoltDbAssembler.#strOrNull( { value: row[ 'replaced_by_id' ] } ),
+            answeredBy: DoltDbAssembler.#strOrNull( { value: row[ 'answered_by' ] } ),
+            answeredInRev: DoltDbAssembler.#strOrNull( { value: row[ 'answered_in_rev' ] } ),
+            note: DoltDbAssembler.#strOrNull( { value: row[ 'note' ] } )
         }
+    }
+
+
+    // Byte-identical to RevisionAssembler.#questionStatus (core): the status a row carries, degraded to
+    // 'open' when the column is absent or empty. It is NEVER reconstructed from the boolean `answered` —
+    // that would turn every retired question back into an open one, the exact loss the field prevents.
+    static #questionStatus( { row } ) {
+        const value = row[ 'status' ]
+
+        return typeof value === 'string' && value.length > 0 ? value : 'open'
     }
 
 
@@ -2054,6 +2100,11 @@ class DoltDbAssembler {
     // (the question's `ai_recommendation`) vs `**User-Entscheidung:** Y` (the durable `user_input_answers`
     // record — chosen option + verbatim). Answered questions are filtered from the SAME authored-order read as
     // `## Offene Fragen`. Empty degrades to `_keine beantworteten Fragen_`.
+    //
+    // SPLIT BY PROVENANCE (Memo 080, PRD-F1 / WI-076): the stock is grouped under the two `###` subsection
+    // headings the FILE parser already reads (DocumentRegistry.#mapAnsweredProvenance), so a DB-first memo
+    // no longer renders every answer as an anonymous block that the parser folds into its 'user' default. A
+    // group is written only when it holds something, in the fixed order user-then-ai.
     static #renderAnsweredQuestions( { questions, questionOptions, answers } ) {
         const heading = [ '## Beantwortete Fragen', '' ]
         const answered = questions
@@ -2062,11 +2113,76 @@ class DoltDbAssembler {
             return heading.concat( [ '_keine beantworteten Fragen_', '' ] )
         }
 
-        const sections = answered
-            .map( ( row ) => DoltDbAssembler.#answeredEntry( { row, questionOptions, answers } ) )
+        const sections = ANSWERED_PROVENANCE_GROUPS
+            .map( ( group ) => ( {
+                group,
+                rows: answered.filter( ( row ) => DoltDbAssembler.#answeredByOf( { row } ) === group[ 'value' ] )
+            } ) )
+            .filter( ( entry ) => entry[ 'rows' ].length > 0 )
+            .map( ( entry ) => [ `### ${ entry[ 'group' ][ 'heading' ] }`, '' ]
+                .concat( entry[ 'rows' ]
+                    .map( ( row ) => DoltDbAssembler.#answeredEntry( { row, questionOptions, answers } ) )
+                    .reduce( ( acc, part ) => acc.concat( part ), [] ) ) )
             .reduce( ( acc, part ) => acc.concat( part ), [] )
 
         return heading.concat( sections )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#answeredByOf (core): the provenance of one answered row, degraded
+    // to 'user' on an absent column or an unknown value — the same rule DocumentRegistry.#normalizeAnsweredBy
+    // applies, so the degrade is one statement on both sides rather than two opinions.
+    static #answeredByOf( { row } ) {
+        const value = row[ 'answered_by' ]
+
+        return value === 'ai-on-behalf' ? 'ai-on-behalf' : 'user'
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderDeferredQuestions (core) — the `## Zurueckgestellte Fragen`
+    // section (REV-18 Kap 18: "eigener Abschnitt statt Durchstreichen"). Striking through is styling and
+    // styling carries no reason, so each entry states its mark and its reason on lines of its own. It stands
+    // BESIDE `## Beantwortete Fragen`, never inside it: the answered section is the decision record. On an
+    // empty stock the section is omitted entirely — no heading, no placeholder body.
+    static #renderDeferredQuestions( { questions } ) {
+        const deferred = questions
+            .filter( ( row ) => DEFERRED_STATUS.includes( row[ 'status' ] ) === true )
+        if( deferred.length === 0 ) {
+            return []
+        }
+
+        const sections = deferred
+            .map( ( row ) => DoltDbAssembler.#deferredEntry( { row } ) )
+            .reduce( ( acc, part ) => acc.concat( part ), [] )
+
+        return [ '## Zurueckgestellte Fragen', '' ].concat( sections )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#deferredEntry (core).
+    static #deferredEntry( { row } ) {
+        const reason = row[ 'status_reason' ]
+
+        return [
+            `### ${ cell( row[ 'id' ] ) } — ${ DoltDbAssembler.#answeredTitle( { row } ) }`,
+            '',
+            `- **Frage (Original):** ${ cell( row[ 'text' ] ) }`,
+            `- **Zurueckgestellt:** ${ DoltDbAssembler.#deferredMark( { row } ) }`,
+            `- **Begruendung:** ${ typeof reason === 'string' && reason.length > 0 ? cell( reason ) : '—' }`,
+            ''
+        ]
+    }
+
+
+    // Byte-identical to RevisionAssembler.#deferredMark (core).
+    static #deferredMark( { row } ) {
+        if( row[ 'status' ] !== 'replaced' ) {
+            return cell( row[ 'status' ] )
+        }
+
+        const target = row[ 'replaced_by_id' ]
+
+        return typeof target === 'string' && target.length > 0 ? `ersetzt durch ${ cell( target ) }` : 'ersetzt'
     }
 
 
@@ -2085,7 +2201,21 @@ class DoltDbAssembler {
 
         return base
             .concat( DoltDbAssembler.#answeredWortlaut( { record } ) )
+            .concat( DoltDbAssembler.#answeredContext( { row } ) )
             .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#answeredContext (core) — the two OPTIONAL context lines of an
+    // answered block: in WHICH revision the decision fell and WHICH remark belongs to it. Emitted only when
+    // the column holds something, exactly the rule #answeredWortlaut follows.
+    static #answeredContext( { row } ) {
+        return [
+            { label: 'Beantwortet in', value: row[ 'answered_in_rev' ] },
+            { label: 'Anmerkung', value: row[ 'note' ] }
+        ]
+            .filter( ( entry ) => typeof entry[ 'value' ] === 'string' && entry[ 'value' ].length > 0 )
+            .map( ( entry ) => `- **${ entry[ 'label' ] }:** ${ cell( entry[ 'value' ] ) }` )
     }
 
 

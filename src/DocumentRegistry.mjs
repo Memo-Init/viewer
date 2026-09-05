@@ -30,6 +30,16 @@ const REVISION_STATUS_DEFAULT = 'offen'
 // still reacts within a blink.
 const DB_WATCH_DEBOUNCE_MS = 150
 
+// PRD-F1 (Memo 080, Kap 18 / WI-076): the CLOSED question status list and the two RETIRED states of it.
+// The vocabulary is owned by the WRITE side (memo-cli MemoContentStore, which refuses anything outside it);
+// the viewer is a separate npm package and cannot import across the repo boundary, so this is a declared
+// twin — held against its origin by the hash-gated render fixture the two renderers share. `reframed` is
+// deliberately absent: it is an EVENT (question_event), never a status, because a re-formulated question
+// keeps its F-number and stays `open`.
+const QUESTION_STATUS = [ 'open', 'answered', 'irrelevant', 'replaced' ]
+
+const DEFERRED_QUESTION_STATUS = [ 'irrelevant', 'replaced' ]
+
 
 class DocumentRegistry {
     #documents = new Map()
@@ -737,7 +747,7 @@ class DocumentRegistry {
     // of staying 'offen' forever (forensics b5). Keeps parseQuestions' json+markdown counting intact:
     // that is the file-parse path for the 383 legacy memos, untouched here.
     static #deriveDbQuestionCounts( { memoPath } ) {
-        const struct = { 'isDb': false, 'questions': { 'open': 0, 'answered': 0 }, 'allAnswered': false }
+        const struct = { 'isDb': false, 'questions': { 'open': 0, 'answered': 0, 'deferred': 0 }, 'allAnswered': false }
 
         if( typeof memoPath !== 'string' || memoPath.length === 0 ) {
             return struct
@@ -755,15 +765,15 @@ class DocumentRegistry {
             struct[ 'isDb' ] = true
 
             const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
-            const { open, answered, allAnswered } = DoltDbAssembler.readQuestionAnswerState( { dbPath } )
-            struct[ 'questions' ] = { 'open': open, 'answered': answered }
+            const { open, answered, deferred, allAnswered } = DoltDbAssembler.readQuestionAnswerState( { dbPath } )
+            struct[ 'questions' ] = { 'open': open, 'answered': answered, 'deferred': deferred }
             struct[ 'allAnswered' ] = allAnswered
 
             return struct
         } catch( error ) {
             console.warn( `DocumentRegistry.#deriveDbQuestionCounts: db question read failed for "${ memoDir }" — file parse fallback (${ error.message })` )
 
-            return { 'isDb': false, 'questions': { 'open': 0, 'answered': 0 }, 'allAnswered': false }
+            return { 'isDb': false, 'questions': { 'open': 0, 'answered': 0, 'deferred': 0 }, 'allAnswered': false }
         }
     }
 
@@ -856,8 +866,13 @@ class DocumentRegistry {
     }
 
 
+    // THE THIRD FIGURE (Memo 080, PRD-F1 / WI-076). The counter carried two numbers, so a question that was
+    // retired as `irrelevant` or `replaced` simply left the "offen" figure and appeared nowhere — a silent
+    // difference between what was parsed and what was shown, which is the one thing the count/parse rule
+    // (PRD-001, Memo 024) forbids. `openCount` therefore counts `status === 'open'` instead of "not
+    // answered", and the retired stock gets a figure of its own, so the three add up to what was parsed.
     static parseQuestions( { content } ) {
-        const struct = { 'openCount': 0, 'answeredCount': 0 }
+        const struct = { 'openCount': 0, 'answeredCount': 0, 'deferredCount': 0 }
 
         if( typeof content !== 'string' || content.length === 0 ) {
             return struct
@@ -872,7 +887,10 @@ class DocumentRegistry {
             const list = Array.isArray( jsonQuestions ) ? jsonQuestions : []
             const jsonAnswered = list
                 .filter( ( q ) => q !== null && typeof q === 'object' && q[ 'answered' ] === true )
-            struct[ 'openCount' ] = list.length - jsonAnswered.length
+            const jsonDeferred = list
+                .filter( ( q ) => q !== null && typeof q === 'object' && DEFERRED_QUESTION_STATUS.includes( q[ 'status' ] ) === true )
+            struct[ 'deferredCount' ] = jsonDeferred.length
+            struct[ 'openCount' ] = list.length - jsonAnswered.length - jsonDeferred.length
 
             // PRD-P1-01 (Memo 075, WI-006): the json path used to be EXCLUSIVE — a revision that moves
             // its answered questions out of the json block into the `## Beantwortete Fragen` markdown
@@ -895,9 +913,11 @@ class DocumentRegistry {
 
         const { sectionLines: openLines } = DocumentRegistry.#extractSection( { content, 'heading': 'Offene Fragen' } )
         const { sectionLines: answeredLines } = DocumentRegistry.#extractSection( { content, 'heading': 'Beantwortete Fragen' } )
+        const { sectionLines: deferredLines } = DocumentRegistry.#extractSection( { content, 'heading': 'Zurueckgestellte Fragen' } )
 
         struct[ 'openCount' ] = DocumentRegistry.#countEntries( { sectionLines: openLines } )
         struct[ 'answeredCount' ] = DocumentRegistry.#countEntries( { sectionLines: answeredLines } )
+        struct[ 'deferredCount' ] = DocumentRegistry.#countEntries( { sectionLines: deferredLines } )
 
         return struct
     }
@@ -1119,6 +1139,15 @@ class DocumentRegistry {
         // an 'ai-on-behalf' answer never satisfies the all-answered gate on its own.
         const { answeredBy } = DocumentRegistry.#normalizeAnsweredBy( { value: safe[ 'answeredBy' ] } )
 
+        // Memo 080, PRD-F1 / WI-076: the lifecycle fields the assembled fence now carries. `status` is the
+        // four-value axis the widget filter and the counter key on; an UNKNOWN value degrades to the
+        // boolean-derived reading rather than throwing — the viewer never refuses to render a document, and
+        // the closed list is enforced where it is written (MemoContentStore.#assertStatus), not here.
+        const answered = safe[ 'answered' ] === true
+        const status = QUESTION_STATUS.includes( safe[ 'status' ] ) === true
+            ? safe[ 'status' ]
+            : ( answered === true ? 'answered' : 'open' )
+
         const question = {
             'id': typeof safe[ 'id' ] === 'string' ? safe[ 'id' ] : '',
             'title': typeof safe[ 'title' ] === 'string' ? safe[ 'title' ] : '',
@@ -1129,8 +1158,13 @@ class DocumentRegistry {
             'options': optionsWithDefaults,
             preselected,
             'allowCustomEntries': typ === 'multi',
-            'answered': safe[ 'answered' ] === true,
-            answeredBy
+            answered,
+            answeredBy,
+            status,
+            'statusReason': DocumentRegistry.#readAliased( { safe, names: [ 'statusReason', 'status_reason' ] } ).value,
+            'replacedBy': DocumentRegistry.#readAliased( { safe, names: [ 'replacedBy', 'replaced_by', 'replaced_by_id' ] } ).value,
+            'answeredInRev': DocumentRegistry.#readAliased( { safe, names: [ 'answeredInRev', 'answered_in_rev' ] } ).value,
+            'note': DocumentRegistry.#readAliased( { safe, names: [ 'note' ] } ).value
         }
 
         return { question }
@@ -1355,7 +1389,13 @@ class DocumentRegistry {
             preselected,
             'allowCustomEntries': typ === 'multi',
             answered,
-            answeredBy
+            answeredBy,
+            // Memo 080, PRD-F1 / WI-076: the markdown path carries the SAME `status` key the json path
+            // carries, so the widget filter has one axis to read instead of two. A markdown block can only
+            // be one of the two ACTIVE states — the retired stock lives under its own `## Zurueckgestellte
+            // Fragen` heading, which this schema walk deliberately does not collect, so a retired question
+            // reaches no widget on this path either.
+            'status': answered === true ? 'answered' : 'open'
         }
 
         // Memo 038 Kap 7 (P1c): only carry the decision pair when actually present, so open
@@ -2006,7 +2046,7 @@ class DocumentRegistry {
         // so the queue join (MemoView.#markAnsweredRevisions) can drop the revision from the queue.
         const { isDb: isDbQuestions, questions: dbQuestions, allAnswered: dbAllAnswered } = DocumentRegistry.#deriveDbQuestionCounts( { memoPath: doc[ 'memoPath' ] } )
 
-        let questions = { 'open': 0, 'answered': 0 }
+        let questions = { 'open': 0, 'answered': 0, 'deferred': 0 }
 
         if( isDbQuestions === true ) {
             questions = dbQuestions
@@ -2016,9 +2056,9 @@ class DocumentRegistry {
             try {
                 const content = await readFile( fullPath, 'utf-8' )
                 const parsed = DocumentRegistry.parseQuestions( { content } )
-                questions = { 'open': parsed[ 'openCount' ], 'answered': parsed[ 'answeredCount' ] }
+                questions = { 'open': parsed[ 'openCount' ], 'answered': parsed[ 'answeredCount' ], 'deferred': parsed[ 'deferredCount' ] }
             } catch {
-                questions = { 'open': 0, 'answered': 0 }
+                questions = { 'open': 0, 'answered': 0, 'deferred': 0 }
             }
         }
 

@@ -114,7 +114,7 @@ describe( 'Answer records drop a revision from the queue — Memo 079 PRD-22 #4'
 
         // The counts reflect the folded answer records (open=0), and the revision is out of the queue.
         const { document } = registry.getDocument( { documentId: 'proj--079-all-answered' } )
-        expect( document.questions ).toEqual( { open: 0, answered: 2 } )
+        expect( document.questions ).toEqual( { open: 0, answered: 2, deferred: 0 } )
         expect( document.answerRecordsComplete ).toBe( true )
         expect( queueMemoNames( { registry } ) ).toEqual( [] )
     } )
@@ -126,7 +126,7 @@ describe( 'Answer records drop a revision from the queue — Memo 079 PRD-22 #4'
         await registry.addDocument( { projectId: 'proj', memoPath: revDir } )
 
         const { document } = registry.getDocument( { documentId: 'proj--079-partial' } )
-        expect( document.questions ).toEqual( { open: 1, answered: 1 } )
+        expect( document.questions ).toEqual( { open: 1, answered: 1, deferred: 0 } )
         expect( document.answerRecordsComplete ).toBe( false )
         expect( queueMemoNames( { registry } ) ).toEqual( [ '079-partial' ] )
     } )
@@ -143,7 +143,7 @@ describe( 'Answer records drop a revision from the queue — Memo 079 PRD-22 #4'
         await registry.addDocument( { projectId: 'proj', memoPath: revDir } )
 
         const { document } = registry.getDocument( { documentId: 'proj--079-dedup' } )
-        expect( document.questions ).toEqual( { open: 1, answered: 2 } )
+        expect( document.questions ).toEqual( { open: 1, answered: 2, deferred: 0 } )
         expect( document.answerRecordsComplete ).toBe( false )
         expect( queueMemoNames( { registry } ) ).toEqual( [ '079-dedup' ] )
     } )

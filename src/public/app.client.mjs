@@ -500,14 +500,19 @@
 
         // PRD-003: single normalization path for question counts (sidebar + sticky read
         // the same numbers, no divergent "0 offen" fallback on differing data).
+        // PRD-F1 (Memo 080, Kap 18): a THIRD figure. A question that is retired (irrelevant / ersetzt)
+        // used to leave "offen" and appear nowhere — a silent difference between the parsed stock and the
+        // shown one. It now changes column instead of vanishing, and the label states it whenever it is
+        // non-zero (a constant "· 0 zurueckgestellt" on every memo would be noise, not information).
         function normalizeQuestions( questions ) {
-            var q = questions || { open: 0, answered: 0 }
-            return { open: q.open || 0, answered: q.answered || 0 }
+            var q = questions || { open: 0, answered: 0, deferred: 0 }
+            return { open: q.open || 0, answered: q.answered || 0, deferred: q.deferred || 0 }
         }
 
         function questionsLabel( questions ) {
             var q = normalizeQuestions( questions )
-            return q.answered + ' beantwortet · ' + q.open + ' offen'
+            var base = q.answered + ' beantwortet · ' + q.open + ' offen'
+            return q.deferred > 0 ? base + ' · ' + q.deferred + ' zurückgestellt' : base
         }
 
         // PRD-015 + PRD-016: sticky header showing memo name + current revision + read-only status badge.
@@ -7660,8 +7665,11 @@
             }
             container.innerHTML = ''
 
-            // Only OPEN questions get an interactive widget.
-            var open = ( schema || [] ).filter( function( q ) { return q && q.answered === false } )
+            // Only OPEN questions get an interactive widget. PRD-F1 (Memo 080, Kap 18): the filter reads
+            // `status`, not `!answered` — a question retired as irrelevant/ersetzt is not answered either,
+            // so the old test handed it a widget and it kept collecting answers nobody would ever read.
+            // `status` is set on BOTH parse paths (json fence and markdown blocks), so this is one axis.
+            var open = ( schema || [] ).filter( function( q ) { return q && q.status === 'open' } )
 
             // Anchor the widgets directly under the "Offene Fragen" section (Phase 4),
             // or at the end of the content if that anchor is missing.

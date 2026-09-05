@@ -2894,7 +2894,7 @@ class MemoView {
                     'documentKind': doc['documentKind'] || 'memo',
                     'status': doc['status'],
                     'memoStatus': doc['memoStatus'] || 'Entwurf',
-                    'questions': doc['questions'] || { 'open': 0, 'answered': 0 },
+                    'questions': doc['questions'] || { 'open': 0, 'answered': 0, 'deferred': 0 },
                     'selectedRevision': doc['selectedRevision'],
                     'revisionCount': revisions.length,
                     'revisions': revisions

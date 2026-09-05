@@ -1,0 +1,676 @@
+// EventChannelSunsetPRDV10.test.mjs — the event road as a NAMED transition, and the gate that ends it
+// (Memo 080, Kap 19, PRD-V10, WI-207).
+//
+// Two blocks, two jobs.
+//
+// BEHAVIOUR (A1-A5, A10, A11) runs the REAL shell script against a throwaway node:http server on
+// 127.0.0.1 with port 0 (assigned by the OS). Three gaps of the old script are closed here and each is
+// measured, not asserted from the outside: arming and waiting are ONE action (a forgotten arm used to
+// become a silent forever-wait), a failing arm ends the process LOUDLY instead of waiting for a flag
+// that can never arrive, and the wait has a ceiling instead of outliving its session.
+//
+// A note on how "never entered the wait loop" is proven: the flag file is placed on disk BEFORE the
+// failing run starts. The loop consumes a flag it finds (one-shot cleanup), so a flag that is still
+// there afterwards is machine proof that the loop was never reached — stronger than measuring a
+// runtime, which only says "fast".
+//
+// SUNSET (A6-A9, A12) is the point of this PRD. Something built as a transition tends to stay, so the
+// transition gets a machine-enforced end: `detectLongRunningWait( { source } )` reads the marker
+// `LONG_RUNNING_WAIT_LIVE` that PRD-V9 sets in src/MemoView.mjs after ITS first flight was green. From
+// that day on this suite is RED while any entry of the sunset list still exists, and the failure names
+// the entries. The gate is measured on a POSITIVE case here (spoofed source), because a gate that was
+// only ever run against today's emptiness is presumed green, not proven green.
+//
+// Every check says WHAT it compared (path + hit count). A check that finds no comparison basis FAILS —
+// an empty comparison field is a finding, never a pass. The one place where an unreadable file is not a
+// failure is the sibling repo repos/core: CI checks this repo out ALONE, so that place is reported as
+// UNJUDGED and the run states how many places it could judge.
+import { describe, it, expect } from '@jest/globals'
+import { createServer } from 'node:http'
+import { execFile } from 'node:child_process'
+import { mkdtemp, rm, writeFile, readFile, access } from 'node:fs/promises'
+import { existsSync, readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
+
+
+const execFileP = promisify( execFile )
+const here = dirname( fileURLToPath( import.meta.url ) )
+const SELF = fileURLToPath( import.meta.url )
+const VIEWER_ROOT = resolve( here, '..', '..' )
+const SCRIPT = join( VIEWER_ROOT, 'scripts', 'session-wake-arm.sh' )
+const MEMOVIEW_SRC = join( VIEWER_ROOT, 'src', 'MemoView.mjs' )
+const REVERSE_CHANNEL_TEST = join( VIEWER_ROOT, 'tests', 'unit', 'ReverseChannelWakePRD031.test.mjs' )
+const PHASE3_TEST = join( VIEWER_ROOT, 'tests', 'unit', 'Phase3ViewerFeatures.test.mjs' )
+// Sibling repo — present in the workbench, ABSENT in CI. Read through an existsSync guard, never assumed.
+const CORE_SKILL = resolve( VIEWER_ROOT, '..', 'core', 'skills', 'memo', 'memo-revision-execute', 'SKILL.md' )
+
+const NEXT_PREFIX = 'NEXT: bash repos/viewer/scripts/session-wake-arm.sh'
+
+
+const wait = ( ms ) => new Promise( ( done ) => setTimeout( done, ms ) )
+
+
+const exists = async ( path ) => {
+    try {
+        await access( path )
+
+        return true
+    } catch {
+        return false
+    }
+}
+
+
+// The script is a long-running process on the happy path, so the runner never assumes an exit code of
+// zero and never throws: it hands back code + output so a test can compare BOTH.
+const runScript = async ( { args, env } ) => {
+    const startedAt = Date.now()
+
+    try {
+        const done = await execFileP( 'bash', [ SCRIPT ].concat( args ), { 'env': env } )
+
+        return { 'code': 0, 'stdout': done.stdout, 'stderr': done.stderr, 'elapsedMs': Date.now() - startedAt }
+    } catch( error ) {
+        return {
+            'code': error.code === undefined ? -1 : error.code,
+            'stdout': String( error.stdout ),
+            'stderr': String( error.stderr ),
+            'elapsedMs': Date.now() - startedAt
+        }
+    }
+}
+
+
+// A throwaway arm endpoint. Port 0 → the OS picks a free port, so parallel test files never collide.
+const startArmServer = async ( { statusCode } ) => {
+    const received = []
+    const server = createServer( ( req, res ) => {
+        const chunks = []
+
+        req.on( 'data', ( chunk ) => { chunks.push( chunk ) } )
+        req.on( 'end', () => {
+            received.push( { 'method': req.method, 'url': req.url, 'body': Buffer.concat( chunks ).toString( 'utf-8' ) } )
+            res.writeHead( statusCode, { 'Content-Type': 'application/json' } )
+            res.end( JSON.stringify( { 'status': 'ok' } ) )
+        } )
+    } )
+
+    await new Promise( ( ready ) => { server.listen( 0, '127.0.0.1', ready ) } )
+
+    const port = server.address().port
+
+    return {
+        'url': `http://127.0.0.1:${ port }`,
+        'port': port,
+        'received': received,
+        'stop': () => new Promise( ( done ) => { server.close( done ) } )
+    }
+}
+
+
+const makeEnv = ( { dir, url, extra } ) => {
+    return { ...process.env, 'WAKE_DIR': dir, 'MEMOVIEW_URL': url, 'WAKE_MAX_WAIT': '30', ...extra }
+}
+
+
+const waitUntil = async ( { probe, timeoutMs } ) => {
+    const deadline = Date.now() + timeoutMs
+    const attempt = async () => {
+        if( probe() === true ) { return true }
+        if( Date.now() > deadline ) { return false }
+
+        await wait( 25 )
+
+        return attempt()
+    }
+
+    return attempt()
+}
+
+
+const lastLine = ( { stdout } ) => {
+    const lines = stdout.split( '\n' ).filter( ( line ) => line.trim().length > 0 )
+
+    return lines.length === 0 ? '' : lines[ lines.length - 1 ]
+}
+
+
+// ---------------------------------------------------------------------------------------------------
+// The sunset gate — pure functions, so the positive case can be measured long before it arrives.
+// ---------------------------------------------------------------------------------------------------
+
+// A6/A8: true only when the marker is present AND set to true. An empty or non-string source is NOT
+// "false" — it is a missing comparison basis and therefore an error.
+const detectLongRunningWait = ( { source } ) => {
+    if( typeof source !== 'string' || source.length === 0 ) {
+        throw new Error( 'no comparison basis — detectLongRunningWait needs a non-empty source string' )
+    }
+
+    return /LONG_RUNNING_WAIT_LIVE\s*=\s*true\b/.test( source )
+}
+
+
+// One straight road, no early exit: "the file is not there" is a measured OUTCOME of this reading, not
+// a reason to leave. A pattern-less entry counts its own existence as its single hit.
+const readOne = ( { path, pattern } ) => {
+    const found = existsSync( path )
+    const text = found === true ? readFileSync( path, 'utf-8' ) : ''
+    const matched = pattern === null || found !== true ? null : text.match( pattern )
+    const existenceHits = found === true ? 1 : 0
+    const patternHits = matched === null ? 0 : matched.length
+
+    return { path, found, 'hits': pattern === null ? existenceHits : patternHits, 'chars': text.length }
+}
+
+
+// One measurement shape for all four sunset entries — an entry is a LIST of paths and an optional
+// pattern, so "the file is gone" and "the reference is gone" are the same question asked twice.
+const measurePlace = ( { id, label, paths, pattern, crossRepo } ) => {
+    const readings = paths.map( ( path ) => readOne( { path, pattern } ) )
+    const hits = readings.reduce( ( sum, reading ) => sum + reading.hits, 0 )
+    const chars = readings.reduce( ( sum, reading ) => sum + reading.chars, 0 )
+    const anyFile = readings.some( ( reading ) => reading.found === true )
+    // A cross-repo path that is simply not checked out cannot be judged in either direction.
+    const judged = crossRepo === false || anyFile === true
+
+    return { id, label, paths, readings, hits, chars, judged, 'present': hits > 0 }
+}
+
+
+const sunsetPlaces = () => {
+    return [
+        {
+            'id': 1,
+            'label': 'repos/viewer/scripts/session-wake-arm.sh',
+            'paths': [ SCRIPT ],
+            'pattern': null,
+            'crossRepo': false
+        },
+        {
+            'id': 2,
+            'label': 'repos/core .../memo-revision-execute/SKILL.md — rule 8 + workflow step 11',
+            'paths': [ CORE_SKILL ],
+            'pattern': /session-wake-arm\.sh/g,
+            'crossRepo': true
+        },
+        {
+            'id': 3,
+            'label': 'repos/viewer/tests/unit/EventChannelSunsetPRDV10.test.mjs',
+            'paths': [ SELF ],
+            'pattern': null,
+            'crossRepo': false
+        },
+        {
+            'id': 4,
+            'label': 'script parts of ReverseChannelWakePRD031.test.mjs + Phase3ViewerFeatures.test.mjs',
+            'paths': [ REVERSE_CHANNEL_TEST, PHASE3_TEST ],
+            'pattern': /session-wake-arm\.sh/g,
+            'crossRepo': false
+        }
+    ].map( ( place ) => measurePlace( place ) )
+}
+
+
+const nameThem = ( { places } ) => places.map( ( place ) => `#${ place.id } ${ place.label }` ).join( ' | ' )
+
+
+// The sibling repo is present in the workbench and ABSENT in CI, so this read has to be able to come
+// back with "not checked out" as a NAMED outcome. An early return would count the unreadable case as a
+// pass and hide it behind "# skipped 0".
+const readCoreSkill = () => {
+    const skipped = existsSync( CORE_SKILL ) !== true
+    const text = skipped === true ? '' : readFileSync( CORE_SKILL, 'utf-8' )
+
+    return {
+        skipped,
+        'chars': text.length,
+        'scriptHits': text.split( 'session-wake-arm.sh' ).length - 1,
+        'marker': text.includes( 'LONG_RUNNING_WAIT_LIVE' )
+    }
+}
+
+
+// A7/A9: one verdict function, both directions. Marker not set → the transition must be COMPLETE.
+// Marker set → the transition must be GONE, and the message names what is left.
+const evaluateSunset = ( { live, places } ) => {
+    const judged = places.filter( ( place ) => place.judged === true )
+    const unjudged = places.filter( ( place ) => place.judged !== true )
+    const leftovers = judged.filter( ( place ) => place.present === true )
+    const missing = judged.filter( ( place ) => place.present === false )
+    const base = { live, 'judgedCount': judged.length, 'unjudgedCount': unjudged.length, leftovers, missing, unjudged }
+
+    if( judged.length === 0 ) {
+        return { ...base, 'status': false, 'message': 'no comparison basis — not a single sunset place could be read' }
+    }
+
+    if( live === true ) {
+        return leftovers.length === 0
+            ? { ...base, 'status': true, 'message': `sunset done — ${ judged.length } places compared, none left` }
+            : {
+                ...base,
+                'status': false,
+                'message': `LONG_RUNNING_WAIT_LIVE is set — remove the transition. Still present (${ leftovers.length } of ${ judged.length } places compared): ${ nameThem( { 'places': leftovers } ) }`
+            }
+    }
+
+    return missing.length === 0
+        ? { ...base, 'status': true, 'message': `transition intact — ${ judged.length } places compared, all present` }
+        : {
+            ...base,
+            'status': false,
+            'message': `the marker is not set, so the transition must be COMPLETE. Missing (${ missing.length } of ${ judged.length } places compared): ${ nameThem( { 'places': missing } ) }`
+        }
+}
+
+
+// ---------------------------------------------------------------------------------------------------
+describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (real shell script)', () => {
+
+    it( 'A1: two arguments send EXACTLY ONE arm POST, and it happens BEFORE the wait loop', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10a-' ) )
+        const arm = await startArmServer( { 'statusCode': 200 } )
+        const flag = join( dir, 'a1.flag' )
+
+        const pending = runScript( { 'args': [ 'a1', 'T-a1' ], 'env': makeEnv( { dir, 'url': arm.url, 'extra': {} } ) } )
+        const armed = await waitUntil( { 'probe': () => arm.received.length > 0, 'timeoutMs': 8000 } )
+
+        // The flag is written only AFTER the arm was observed — so a WOKEN below proves the loop ran
+        // after the arming, not instead of it.
+        expect( armed ).toBe( true )
+        expect( await exists( flag ) ).toBe( false )
+
+        await writeFile( flag, 'T-a1' )
+
+        const result = await pending
+
+        expect( arm.received.length ).toBe( 1 )
+        expect( arm.received[ 0 ][ 'method' ] ).toBe( 'POST' )
+        expect( arm.received[ 0 ][ 'url' ] ).toBe( '/api/session/a1/arm' )
+        expect( JSON.parse( arm.received[ 0 ][ 'body' ] ) ).toEqual( { 'transcriptId': 'T-a1' } )
+        expect( result.stdout ).toContain( 'WOKEN a1 T-a1' )
+        expect( result.code ).toBe( 0 )
+
+        await arm.stop()
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'A2: a NON-2xx arm answers ARM-FAILED / code 3 and never enters the loop (untouched flag proves it)', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10b-' ) )
+        const arm = await startArmServer( { 'statusCode': 500 } )
+        const flag = join( dir, 'a2.flag' )
+
+        // A flag that IS there: the loop would consume it instantly (one-shot). It survives → no loop.
+        await writeFile( flag, 'T-a2' )
+
+        const result = await runScript( { 'args': [ 'a2', 'T-a2' ], 'env': makeEnv( { dir, 'url': arm.url, 'extra': {} } ) } )
+
+        expect( result.stdout ).toContain( 'ARM-FAILED a2' )
+        expect( result.code ).toBe( 3 )
+        expect( result.stdout ).not.toContain( 'WOKEN' )
+        expect( result.stdout ).not.toContain( NEXT_PREFIX )
+        expect( await exists( flag ) ).toBe( true )
+        expect( arm.received.length ).toBe( 1 )
+
+        await arm.stop()
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'A2: a CLOSED port fails the same way — the class, not the case (2 failure modes compared)', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10c-' ) )
+        const arm = await startArmServer( { 'statusCode': 200 } )
+        const closedUrl = arm.url
+
+        await arm.stop()
+
+        const flag = join( dir, 'a2b.flag' )
+
+        await writeFile( flag, 'T-a2b' )
+
+        const result = await runScript( { 'args': [ 'a2b', 'T-a2b' ], 'env': makeEnv( { dir, 'url': closedUrl, 'extra': {} } ) } )
+
+        expect( result.stdout ).toContain( 'ARM-FAILED a2b' )
+        expect( result.code ).toBe( 3 )
+        expect( await exists( flag ) ).toBe( true )
+
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'A3: ONE argument stays unchanged — no network call, no NEXT, payload echoed, flag consumed', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10d-' ) )
+        const arm = await startArmServer( { 'statusCode': 200 } )
+        const flag = join( dir, 'a3.flag' )
+
+        await writeFile( flag, 'T-a3-payload' )
+
+        const result = await runScript( { 'args': [ 'a3' ], 'env': makeEnv( { dir, 'url': arm.url, 'extra': {} } ) } )
+
+        expect( result.code ).toBe( 0 )
+        expect( result.stdout ).toContain( 'WOKEN a3 T-a3-payload' )
+        expect( result.stdout ).not.toContain( 'NEXT' )
+        expect( await exists( flag ) ).toBe( false )
+        // The url was handed in and pointed at a LIVE server — zero requests is a measurement, not a guess.
+        expect( arm.received.length ).toBe( 0 )
+
+        await arm.stop()
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'A3: ONE argument with an EMPTY flag keeps the historical "WOKEN <id>" form', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10e-' ) )
+        const flag = join( dir, 'a3b.flag' )
+
+        await writeFile( flag, '' )
+
+        const result = await runScript( { 'args': [ 'a3b' ], 'env': makeEnv( { dir, 'url': 'http://127.0.0.1:1', 'extra': {} } ) } )
+
+        expect( result.code ).toBe( 0 )
+        expect( lastLine( { 'stdout': result.stdout } ) ).toBe( 'WOKEN a3b' )
+
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'A4: the LAST line is the full restart command with two arguments, and absent with one (2 runs compared)', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10f-' ) )
+        const arm = await startArmServer( { 'statusCode': 200 } )
+        const twoFlag = join( dir, 'a4.flag' )
+        const oneFlag = join( dir, 'a4one.flag' )
+
+        await writeFile( twoFlag, 'T-a4' )
+        await writeFile( oneFlag, 'T-a4' )
+
+        const two = await runScript( { 'args': [ 'a4', 'T-a4' ], 'env': makeEnv( { dir, 'url': arm.url, 'extra': {} } ) } )
+        const one = await runScript( { 'args': [ 'a4one' ], 'env': makeEnv( { dir, 'url': arm.url, 'extra': {} } ) } )
+
+        expect( lastLine( { 'stdout': two.stdout } ) ).toBe( `${ NEXT_PREFIX } a4 T-a4` )
+        expect( one.stdout ).not.toContain( 'NEXT' )
+        expect( one.stdout.split( '\n' ).filter( ( line ) => line.startsWith( 'NEXT' ) ).length ).toBe( 0 )
+
+        await arm.stop()
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'A5: WAKE_MAX_WAIT=1 without a flag ends as WAIT-EXPIRED / code 4 + NEXT, and leaves no process', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10g-' ) )
+        const arm = await startArmServer( { 'statusCode': 200 } )
+        const sessionId = `a5-${ process.pid }`
+
+        const result = await runScript( {
+            'args': [ sessionId, 'T-a5' ],
+            'env': makeEnv( { dir, 'url': arm.url, 'extra': { 'WAKE_MAX_WAIT': '1' } } )
+        } )
+
+        expect( result.stdout ).toContain( `WAIT-EXPIRED ${ sessionId }` )
+        expect( result.code ).toBe( 4 )
+        expect( lastLine( { 'stdout': result.stdout } ) ).toBe( `${ NEXT_PREFIX } ${ sessionId } T-a5` )
+        expect( result.elapsedMs ).toBeLessThan( 3000 )
+
+        // Counter-probe scoped to THIS run's session id: a machine-wide count would measure other
+        // people's watchers, and the leak this asserts is our own. The bracket around the first letter
+        // keeps the probe out of its OWN result — measured: without it the count was 2 (the `bash -c`
+        // and the `grep`, both carrying the pattern in their argv), which would have been a phantom leak.
+        const probe = await execFileP( 'bash', [ '-c', `ps -Ao args= | grep -c "[s]ession-wake-arm.sh ${ sessionId }" || true` ] )
+
+        expect( probe.stdout.trim() ).toBe( '0' )
+
+        await arm.stop()
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'A10: the background-tasks guard is FIRST — no arm call, no wait, message unchanged', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10h-' ) )
+        const arm = await startArmServer( { 'statusCode': 200 } )
+
+        const result = await runScript( {
+            'args': [ 'a10', 'T-a10' ],
+            'env': makeEnv( { dir, 'url': arm.url, 'extra': { 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': '1' } } )
+        } )
+
+        expect( result.code ).toBe( 0 )
+        expect( result.stdout ).toContain( 'background tasks disabled' )
+        expect( result.stdout ).not.toContain( 'WOKEN' )
+        expect( result.stdout ).not.toContain( 'NEXT' )
+        expect( arm.received.length ).toBe( 0 )
+
+        await arm.stop()
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'A10: the guard also holds for "true" and still makes no network call (2 spellings compared)', async () => {
+        const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10i-' ) )
+        const arm = await startArmServer( { 'statusCode': 200 } )
+
+        const result = await runScript( {
+            'args': [ 'a10b', 'T-a10b' ],
+            'env': makeEnv( { dir, 'url': arm.url, 'extra': { 'CLAUDE_CODE_DISABLE_BACKGROUND_TASKS': 'true' } } )
+        } )
+
+        expect( result.code ).toBe( 0 )
+        expect( result.stdout ).toContain( 'background tasks disabled' )
+        expect( arm.received.length ).toBe( 0 )
+
+        await arm.stop()
+        await rm( dir, { 'recursive': true, 'force': true } )
+    }, 30000 )
+
+    it( 'usage without a sessionId still exits 2 and names both arguments', async () => {
+        const result = await runScript( { 'args': [], 'env': { ...process.env } } )
+
+        expect( result.code ).toBe( 2 )
+        expect( result.stderr ).toContain( 'usage: session-wake-arm.sh <sessionId> [transcriptId]' )
+    }, 30000 )
+} )
+
+
+describe( 'PRD-V10 source shape — loopback only, transitional header, house style (A11, A12, A15)', () => {
+
+    const scriptSource = () => {
+        const text = readFileSync( SCRIPT, 'utf-8' )
+
+        expect( text.length ).toBeGreaterThan( 0 )
+
+        return text
+    }
+
+    const codeLines = () => {
+        return scriptSource()
+            .split( '\n' )
+            .filter( ( line ) => line.trim().startsWith( '#' ) !== true )
+            .filter( ( line ) => line.trim().length > 0 )
+    }
+
+    it( 'A11: only loopback addresses appear, and none of them binds or listens (4 patterns compared)', () => {
+        const source = scriptSource()
+        const lines = codeLines()
+        const foreign = source.match( /https?:\/\/(?!127\.0\.0\.1)[A-Za-z0-9._-]+/g )
+        const listeners = lines.filter( ( line ) => /(^|\s)(nc|ncat|socat)\s|--listen|http\.server|listen\(/.test( line ) )
+
+        expect( source.includes( '0.0.0.0' ) ).toBe( false )
+        expect( foreign ).toBe( null )
+        expect( source.includes( 'http://127.0.0.1:3333' ) ).toBe( true )
+        expect( listeners.length ).toBe( 0 )
+        expect( lines.length ).toBeGreaterThan( 20 )
+    } )
+
+    it( 'A12: the header names successor, sunset marker, sunset test and the sunset list (7 phrases compared)', () => {
+        const header = scriptSource().split( 'set -u' )[ 0 ]
+        const phrases = [
+            'TRANSITIONAL',
+            'PRD-V9',
+            'LONG_RUNNING_WAIT_LIVE',
+            'tests/unit/EventChannelSunsetPRDV10.test.mjs',
+            'Sunset list',
+            'memo-revision-execute/SKILL.md',
+            'ReverseChannelWakePRD031.test.mjs'
+        ]
+        const missing = phrases.filter( ( phrase ) => header.includes( phrase ) !== true )
+
+        expect( header.length ).toBeGreaterThan( 500 )
+        expect( missing ).toEqual( [] )
+    } )
+
+    it( 'A15: set -u stays, the loop stays an until-loop, and no code line uses while (2 counts compared)', () => {
+        const lines = codeLines()
+        const whileLoops = lines.filter( ( line ) => /^\s*while\s/.test( line ) )
+        const untilLoops = lines.filter( ( line ) => /^\s*until\s/.test( line ) )
+
+        expect( lines.filter( ( line ) => line.trim() === 'set -u' ).length ).toBe( 1 )
+        expect( whileLoops.length ).toBe( 0 )
+        expect( untilLoops.length ).toBe( 1 )
+    } )
+
+    it( 'WAKE_DIR is a TEST seam only — the server side has no such override (2 sides compared)', () => {
+        const script = scriptSource()
+        const server = readFileSync( MEMOVIEW_SRC, 'utf-8' )
+
+        expect( server.length ).toBeGreaterThan( 1000 )
+        // The script may be pointed at a throwaway dir; the SERVER writes to a constant. Measured in the
+        // first e2e run: overriding WAKE_DIR there produced WAIT-EXPIRED while the server reported
+        // "woke 1 armed session[s]" — the two were looking at different directories. Whoever drives the
+        // REAL server must leave the default alone, and this pair of counts says why.
+        expect( script.includes( 'WAKE_DIR="${WAKE_DIR:-' ) ).toBe( true )
+        expect( server.includes( "process.env[ 'WAKE_DIR' ]" ) ).toBe( false )
+        expect( server.includes( 'const WAKE_DIR = join( tmpdir(), \'memo-view-wake\' )' ) ).toBe( true )
+    } )
+
+    it( 'the three named ends and their exit codes exist in the script, each exactly once (3 compared)', () => {
+        const source = scriptSource()
+        const counted = [ 'WOKEN $SESSION_ID', 'ARM-FAILED $SESSION_ID', 'WAIT-EXPIRED $SESSION_ID' ]
+            .map( ( needle ) => ( { needle, 'hits': source.split( needle ).length - 1 } ) )
+
+        expect( counted.filter( ( entry ) => entry.hits === 0 ) ).toEqual( [] )
+        expect( source.includes( 'exit 3' ) ).toBe( true )
+        expect( source.includes( 'exit 4' ) ).toBe( true )
+        // ONE home for the restart line — a second spelling would drift on the first edit.
+        expect( source.split( 'NEXT_LINE="NEXT: bash' ).length - 1 ).toBe( 1 )
+    } )
+} )
+
+
+describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6-A9)', () => {
+
+    it( 'A6: the marker is read in all three shapes — set, set to false, absent (3 samples compared)', () => {
+        const samples = [
+            { 'label': 'set', 'source': "const LONG_RUNNING_WAIT_LIVE = true\nexport { LONG_RUNNING_WAIT_LIVE }\n", 'expected': true },
+            { 'label': 'false', 'source': "const LONG_RUNNING_WAIT_LIVE = false\nexport { LONG_RUNNING_WAIT_LIVE }\n", 'expected': false },
+            { 'label': 'absent', 'source': "const SOMETHING_ELSE = true\nexport { SOMETHING_ELSE }\n", 'expected': false }
+        ]
+        const wrong = samples.filter( ( sample ) => detectLongRunningWait( { 'source': sample.source } ) !== sample.expected )
+
+        expect( samples.length ).toBe( 3 )
+        expect( wrong.map( ( sample ) => sample.label ) ).toEqual( [] )
+    } )
+
+    it( 'A8: an EMPTY or non-string source FAILS loudly — a missing basis is never a quiet false (3 inputs)', () => {
+        const bad = [ '', null, undefined ]
+        const survived = bad.filter( ( source ) => {
+            try {
+                detectLongRunningWait( { source } )
+
+                return true
+            } catch {
+                return false
+            }
+        } )
+
+        expect( survived ).toEqual( [] )
+        expect( () => detectLongRunningWait( { 'source': '' } ) ).toThrow( /no comparison basis/ )
+    } )
+
+    it( 'A7: against the REAL src/MemoView.mjs the marker is NOT set today (1 file, 0 hits)', () => {
+        expect( existsSync( MEMOVIEW_SRC ) ).toBe( true )
+
+        const source = readFileSync( MEMOVIEW_SRC, 'utf-8' )
+        const hits = source.split( 'LONG_RUNNING_WAIT_LIVE' ).length - 1
+
+        expect( source.length ).toBeGreaterThan( 1000 )
+        expect( hits ).toBe( 0 )
+        expect( detectLongRunningWait( { source } ) ).toBe( false )
+    } )
+
+    it( 'A7: the marker being unset means the transition must be COMPLETE — every readable place present', () => {
+        const places = sunsetPlaces()
+        const verdict = evaluateSunset( { 'live': false, 'places': places } )
+
+        // Say what was compared, and never pass on an empty comparison field.
+        expect( places.length ).toBe( 4 )
+        expect( verdict.judgedCount ).toBeGreaterThanOrEqual( 3 )
+        expect( places.filter( ( place ) => place.judged === true && place.chars === 0 ) ).toEqual( [] )
+        expect( verdict.status ).toBe( true )
+        expect( verdict.missing ).toEqual( [] )
+    } )
+
+    it( 'A7: the running SOP rule names the script — out of repo is a NAMED skip, never a pass', () => {
+        const reading = readCoreSkill()
+        const inRepoJudged = sunsetPlaces().filter( ( place ) => place.judged === true ).length
+
+        // Whatever the sibling repo does, the three in-repo places must have been compared — the skip
+        // may never shrink the comparison to nothing.
+        expect( inRepoJudged ).toBeGreaterThanOrEqual( 3 )
+        expect( reading.skipped === true || reading.chars > 1000 ).toBe( true )
+        expect( reading.skipped === true || reading.scriptHits >= 2 ).toBe( true )
+        expect( reading.skipped === true || reading.marker === true ).toBe( true )
+    } )
+
+    it( 'A9: a source WITH the marker turns the gate red and NAMES every remaining place', () => {
+        const spoofed = "// spoofed for the gate probe\nconst LONG_RUNNING_WAIT_LIVE = true\n"
+        const live = detectLongRunningWait( { 'source': spoofed } )
+        const places = sunsetPlaces()
+        const verdict = evaluateSunset( { live, 'places': places } )
+
+        expect( live ).toBe( true )
+        expect( verdict.status ).toBe( false )
+        expect( verdict.leftovers.length ).toBe( verdict.judgedCount )
+        expect( verdict.message ).toContain( 'LONG_RUNNING_WAIT_LIVE is set' )
+        expect( verdict.message ).toContain( 'session-wake-arm.sh' )
+        expect( verdict.message ).toContain( 'EventChannelSunsetPRDV10.test.mjs' )
+        expect( verdict.message ).toContain( 'ReverseChannelWakePRD031.test.mjs' )
+        expect( verdict.message ).toContain( `of ${ verdict.judgedCount } places compared` )
+    } )
+
+    it( 'A9: with the marker set and every place gone the gate goes green again (4 places compared)', () => {
+        const gone = sunsetPlaces().map( ( place ) => ( { ...place, 'hits': 0, 'present': false } ) )
+        const verdict = evaluateSunset( { 'live': true, 'places': gone } )
+
+        expect( gone.length ).toBe( 4 )
+        expect( verdict.status ).toBe( true )
+        expect( verdict.message ).toContain( 'sunset done' )
+    } )
+
+    it( 'A8: a verdict with NOTHING to compare is a FAILURE, not an empty green', () => {
+        const verdict = evaluateSunset( { 'live': false, 'places': [] } )
+
+        expect( verdict.status ).toBe( false )
+        expect( verdict.judgedCount ).toBe( 0 )
+        expect( verdict.message ).toContain( 'no comparison basis' )
+    } )
+
+    it( 'A8: an unreadable cross-repo place is reported as UNJUDGED, never as removed', () => {
+        const missingCrossRepo = measurePlace( {
+            'id': 2,
+            'label': 'a sibling repo that is not checked out',
+            'paths': [ join( VIEWER_ROOT, 'no-such-sibling', 'SKILL.md' ) ],
+            'pattern': /session-wake-arm\.sh/g,
+            'crossRepo': true
+        } )
+        const inRepoGone = measurePlace( {
+            'id': 1,
+            'label': 'an in-repo file that is really gone',
+            'paths': [ join( VIEWER_ROOT, 'no-such-file.sh' ) ],
+            'pattern': null,
+            'crossRepo': false
+        } )
+
+        expect( missingCrossRepo.judged ).toBe( false )
+        expect( inRepoGone.judged ).toBe( true )
+        expect( inRepoGone.present ).toBe( false )
+
+        const verdict = evaluateSunset( { 'live': false, 'places': [ missingCrossRepo, inRepoGone ] } )
+
+        expect( verdict.unjudgedCount ).toBe( 1 )
+        expect( verdict.judgedCount ).toBe( 1 )
+        expect( verdict.status ).toBe( false )
+    } )
+} )

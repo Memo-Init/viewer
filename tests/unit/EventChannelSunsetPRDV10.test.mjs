@@ -21,14 +21,28 @@
 // the entries. The gate is measured on a POSITIVE case here (spoofed source), because a gate that was
 // only ever run against today's emptiness is presumed green, not proven green.
 //
+// THE GATE FOLLOWS THE REAL MARKER, IN BOTH DIRECTIONS (Memo 080, PRD-V10 rework).
+// It did not. The direction was hard-wired — `live: false` in the verdict case and `hits === 0` against
+// the real source — so sunset day, the ONE day this gate exists for, was the one day it could not work.
+// Measured on a throwaway copy with the marker set: the whole red output was `Expected: 0 / Received: 2`
+// (a count, no name), and with the script already deleted the gate answered "the marker is not set, so
+// the transition must be COMPLETE. Missing: repos/viewer/scripts/session-wake-arm.sh" — it demanded the
+// restoration of the very file whose removal it orders, while the marker was set. Two rules follow:
+//   1. `REAL_MARKER` is read from src/MemoView.mjs at load time and every direction-bound claim hangs
+//      off it. Nothing in this file hard-wires a direction any more.
+//   2. Where the gate is red, the MESSAGE is the compared value (`expect( outcome ).toBe( 'GREEN' )`),
+//      so jest prints the names instead of a bare count. A gate that only counts is the finding.
+// Claims that can only hold WHILE the transition is intact live behind `withTransition`, in the same
+// `existsSync( … ) ? it : it.skip` spelling — visible in the skip tally, never a quiet pass.
+//
 // Every check says WHAT it compared (path + hit count). A check that finds no comparison basis FAILS —
 // an empty comparison field is a finding, never a pass. The one place where an unreadable file is not a
 // failure is the sibling repo repos/core: CI checks this repo out ALONE, so that place is reported as
 // UNJUDGED and the run states how many places it could judge.
 //
 // Everything that can only be answered WITH the sibling repo therefore lives in cases registered through
-// `withCore` (the house spelling `existsSync( … ) ? it : it.skip`), and their titles carry the count they
-// could compare. A run without the sibling repo is thus distinguishable from a run with it in jest's own
+// `withLiveCore` (the house spelling `existsSync( … ) ? it : it.skip`), and their titles carry the count
+// they could compare. A run without the sibling repo is thus distinguishable from a run with it in jest's own
 // tally — never a hard failure (CI would be red for a reason that is not the code) and never a quiet pass.
 // The same rule holds for LABELS: they are anchored to the repo they belong to, never to a directory
 // above the checkout, whose name differs between the workbench and CI.
@@ -55,11 +69,12 @@ const CORE_ROOT = resolve( VIEWER_ROOT, '..', 'core' )
 const CORE_SKILL = join( CORE_ROOT, 'skills', 'memo', 'memo-revision-execute', 'SKILL.md' )
 const SCRIPT_REF = /session-wake-arm\.sh/g
 
-// The ONE gate for every claim whose basis is the sibling repo. `it.skip` keeps the case in the report
-// and in the skipped tally, and the note names the comparison set it did or did not have — so "ran with a
-// basis" and "ran without one" are two different, readable outcomes instead of the same green.
+// The basis for every claim that needs the sibling repo. `it.skip` keeps the case in the report and in
+// the skipped tally, and the note names the comparison set it did or did not have — so "ran with a
+// basis" and "ran without one" are two different, readable outcomes instead of the same green. The gate
+// itself is `withLiveCore` below: every one of those claims is ALSO direction-bound, so the two
+// conditions are spelled as one constant rather than as an early `return` inside the case.
 const CORE_READABLE = existsSync( CORE_ROOT )
-const withCore = CORE_READABLE === true ? it : it.skip
 const CROSS_REPO_NOTE = CORE_READABLE === true
     ? '1 of 1 cross-repo root judged'
     : 'SKIPPED, no comparison basis — repos/core is not checked out, 0 of 1 cross-repo roots judged'
@@ -176,6 +191,61 @@ const detectLongRunningWait = ( { source } ) => {
     }
 
     return /LONG_RUNNING_WAIT_LIVE\s*=\s*true\b/.test( source )
+}
+
+
+// The ONE reading of the real marker, taken once at load time. Every direction-bound claim below hangs
+// off this — a hard-wired direction is how this gate came to demand back the file it orders removed.
+// src/MemoView.mjs is an IN-REPO file, so this read carries NO guard on purpose: not being able to read
+// it is a defect of this repo, and the only thing added over a bare read is the sentence that names it.
+const readRealMarker = () => {
+    const source = readFileSync( MEMOVIEW_SRC, 'utf-8' )
+
+    if( source.length === 0 ) {
+        throw new Error( `no comparison basis — ${ MEMOVIEW_SRC } holds 0 chars` )
+    }
+
+    return {
+        'path': MEMOVIEW_SRC,
+        source,
+        'chars': source.length,
+        'hits': source.split( 'LONG_RUNNING_WAIT_LIVE' ).length - 1,
+        'live': detectLongRunningWait( { source } )
+    }
+}
+
+
+const REAL_MARKER = readRealMarker()
+
+// The transition-intact gate. Claims like "the SOP still names the script" or "the walk finds four
+// carriers" are true only while the marker is unset; after it is set the very same facts are the
+// defect. `it.skip` keeps them in the report with the direction that was measured.
+const withTransition = REAL_MARKER.live === false ? it : it.skip
+const TRANSITION_NOTE = REAL_MARKER.live === false
+    ? 'marker unset, transition intact'
+    : 'SKIPPED, the marker is SET — these facts are the leftovers now, see the sunset verdict'
+
+// Two conditions, one gate — a claim that needs the sibling repo AND an intact transition. Spelled as
+// one constant instead of an early `return` inside the case, so a skip stays a skip in jest's tally.
+const withLiveCore = CORE_READABLE === true && REAL_MARKER.live === false ? it : it.skip
+
+// The script is the first entry of the sunset list, so a run in which it is already gone is a real
+// state, not a broken checkout. Its absence is judged in ONE place — the sunset verdict, which names
+// it as a missing required anchor while the marker is unset — instead of by ten ENOENT failures.
+const SCRIPT_PRESENT = existsSync( SCRIPT )
+const withScript = SCRIPT_PRESENT === true ? it : it.skip
+const SCRIPT_NOTE = SCRIPT_PRESENT === true
+    ? '1 of 1 script present'
+    : 'SKIPPED, no script to run — 0 of 1 present, judged by the sunset verdict'
+
+// Same channel as the cross-repo note above: jest swallows a passing suite's console block, so a
+// missing basis goes to stderr, which reaches the CI log unconditionally.
+if( REAL_MARKER.live !== false ) {
+    process.stderr.write( `  NOTE EventChannelSunsetPRDV10: ${ TRANSITION_NOTE } — ${ REAL_MARKER.path }\n` )
+}
+
+if( SCRIPT_PRESENT !== true ) {
+    process.stderr.write( `  SKIP EventChannelSunsetPRDV10: ${ SCRIPT_NOTE } — ${ SCRIPT }\n` )
 }
 
 
@@ -330,6 +400,10 @@ const sunsetPlaces = () => {
 
 const nameThem = ( { places } ) => places.map( ( place ) => place.label ).join( ' | ' )
 
+// The red message hands over the search, not only its result: whoever reads it can re-derive the list
+// on the spot, including files written after this run. Same command as the script header (A12).
+const REPRODUCE = `grep -rl ${ SCRIPT_NAME } repos/viewer repos/core --exclude-dir=node_modules`
+
 
 // The sibling repo is present in the workbench and ABSENT in CI, so this read has to be able to come
 // back with "not checked out" as a NAMED outcome. An early return would count the unreadable case as a
@@ -376,7 +450,7 @@ const evaluateSunset = ( { live, places } ) => {
             : {
                 ...base,
                 'status': false,
-                'message': `LONG_RUNNING_WAIT_LIVE is set — remove the transition. Still present (${ leftovers.length } of ${ judged.length } places compared): ${ nameThem( { 'places': leftovers } ) }`
+                'message': `LONG_RUNNING_WAIT_LIVE is set — remove the transition. Still present (${ leftovers.length } of ${ judged.length } places compared): ${ nameThem( { 'places': leftovers } ) } · this file goes with them, it is the last step · re-derive: ${ REPRODUCE }`
             }
     }
 
@@ -391,9 +465,9 @@ const evaluateSunset = ( { live, places } ) => {
 
 
 // ---------------------------------------------------------------------------------------------------
-describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (real shell script)', () => {
+describe( `PRD-V10 behaviour — arming, loud failure, ceiling, restart line (real shell script, ${ SCRIPT_NOTE })`, () => {
 
-    it( 'A1: two arguments send EXACTLY ONE arm POST, and it happens BEFORE the wait loop', async () => {
+    withScript( 'A1: two arguments send EXACTLY ONE arm POST, and it happens BEFORE the wait loop', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10a-' ) )
         const arm = await startArmServer( { 'statusCode': 200 } )
         const flag = join( dir, 'a1.flag' )
@@ -421,7 +495,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'A2: a NON-2xx arm answers ARM-FAILED / code 3 and never enters the loop (untouched flag proves it)', async () => {
+    withScript( 'A2: a NON-2xx arm answers ARM-FAILED / code 3 and never enters the loop (untouched flag proves it)', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10b-' ) )
         const arm = await startArmServer( { 'statusCode': 500 } )
         const flag = join( dir, 'a2.flag' )
@@ -442,7 +516,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'A2: a CLOSED port fails the same way — the class, not the case (2 failure modes compared)', async () => {
+    withScript( 'A2: a CLOSED port fails the same way — the class, not the case (2 failure modes compared)', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10c-' ) )
         const arm = await startArmServer( { 'statusCode': 200 } )
         const closedUrl = arm.url
@@ -462,7 +536,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'A3: ONE argument stays unchanged — no network call, no NEXT, payload echoed, flag consumed', async () => {
+    withScript( 'A3: ONE argument stays unchanged — no network call, no NEXT, payload echoed, flag consumed', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10d-' ) )
         const arm = await startArmServer( { 'statusCode': 200 } )
         const flag = join( dir, 'a3.flag' )
@@ -482,7 +556,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'A3: ONE argument with an EMPTY flag keeps the historical "WOKEN <id>" form', async () => {
+    withScript( 'A3: ONE argument with an EMPTY flag keeps the historical "WOKEN <id>" form', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10e-' ) )
         const flag = join( dir, 'a3b.flag' )
 
@@ -496,7 +570,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'A4: the LAST line is the full restart command with two arguments, and absent with one (2 runs compared)', async () => {
+    withScript( 'A4: the LAST line is the full restart command with two arguments, and absent with one (2 runs compared)', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10f-' ) )
         const arm = await startArmServer( { 'statusCode': 200 } )
         const twoFlag = join( dir, 'a4.flag' )
@@ -516,7 +590,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'A5: WAKE_MAX_WAIT=1 without a flag ends as WAIT-EXPIRED / code 4 + NEXT, and leaves no process', async () => {
+    withScript( 'A5: WAKE_MAX_WAIT=1 without a flag ends as WAIT-EXPIRED / code 4 + NEXT, and leaves no process', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10g-' ) )
         const arm = await startArmServer( { 'statusCode': 200 } )
         const sessionId = `a5-${ process.pid }`
@@ -543,7 +617,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'A10: the background-tasks guard is FIRST — no arm call, no wait, message unchanged', async () => {
+    withScript( 'A10: the background-tasks guard is FIRST — no arm call, no wait, message unchanged', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10h-' ) )
         const arm = await startArmServer( { 'statusCode': 200 } )
 
@@ -562,7 +636,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'A10: the guard also holds for "true" and still makes no network call (2 spellings compared)', async () => {
+    withScript( 'A10: the guard also holds for "true" and still makes no network call (2 spellings compared)', async () => {
         const dir = await mkdtemp( join( tmpdir(), 'memo-view-wake-v10i-' ) )
         const arm = await startArmServer( { 'statusCode': 200 } )
 
@@ -579,7 +653,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
         await rm( dir, { 'recursive': true, 'force': true } )
     }, 30000 )
 
-    it( 'usage without a sessionId still exits 2 and names both arguments', async () => {
+    withScript( 'usage without a sessionId still exits 2 and names both arguments', async () => {
         const result = await runScript( { 'args': [], 'env': { ...process.env } } )
 
         expect( result.code ).toBe( 2 )
@@ -588,7 +662,7 @@ describe( 'PRD-V10 behaviour — arming, loud failure, ceiling, restart line (re
 } )
 
 
-describe( 'PRD-V10 source shape — loopback only, transitional header, house style (A11, A12, A15)', () => {
+describe( `PRD-V10 source shape — loopback only, transitional header, house style (A11, A12, A15, ${ SCRIPT_NOTE })`, () => {
 
     const scriptSource = () => {
         const text = readFileSync( SCRIPT, 'utf-8' )
@@ -605,7 +679,7 @@ describe( 'PRD-V10 source shape — loopback only, transitional header, house st
             .filter( ( line ) => line.trim().length > 0 )
     }
 
-    it( 'A11: only loopback addresses appear, and none of them binds or listens (4 patterns compared)', () => {
+    withScript( 'A11: only loopback addresses appear, and none of them binds or listens (4 patterns compared)', () => {
         const source = scriptSource()
         const lines = codeLines()
         const foreign = source.match( /https?:\/\/(?!127\.0\.0\.1)[A-Za-z0-9._-]+/g )
@@ -618,7 +692,7 @@ describe( 'PRD-V10 source shape — loopback only, transitional header, house st
         expect( lines.length ).toBeGreaterThan( 20 )
     } )
 
-    it( 'A12: the header names successor, marker, sunset test and HOW to reproduce the list (7 phrases)', () => {
+    withScript( 'A12: the header names successor, marker, sunset test and HOW to reproduce the list (7 phrases)', () => {
         const header = scriptSource().split( 'set -u' )[ 0 ]
         // The header names the SEARCH, not a copy of its result. A copied enumeration in a comment is the
         // very drift this PRD's close-out removed: it was right on the day it was written and wrong two
@@ -638,7 +712,7 @@ describe( 'PRD-V10 source shape — loopback only, transitional header, house st
         expect( missing ).toEqual( [] )
     } )
 
-    it( 'A15: set -u stays, the loop stays an until-loop, and no code line uses while (2 counts compared)', () => {
+    withScript( 'A15: set -u stays, the loop stays an until-loop, and no code line uses while (2 counts compared)', () => {
         const lines = codeLines()
         const whileLoops = lines.filter( ( line ) => /^\s*while\s/.test( line ) )
         const untilLoops = lines.filter( ( line ) => /^\s*until\s/.test( line ) )
@@ -648,7 +722,7 @@ describe( 'PRD-V10 source shape — loopback only, transitional header, house st
         expect( untilLoops.length ).toBe( 1 )
     } )
 
-    it( 'WAKE_DIR is a TEST seam only — the server side has no such override (2 sides compared)', () => {
+    withScript( 'WAKE_DIR is a TEST seam only — the server side has no such override (2 sides compared)', () => {
         const script = scriptSource()
         const server = readFileSync( MEMOVIEW_SRC, 'utf-8' )
 
@@ -662,7 +736,7 @@ describe( 'PRD-V10 source shape — loopback only, transitional header, house st
         expect( server.includes( 'const WAKE_DIR = join( tmpdir(), \'memo-view-wake\' )' ) ).toBe( true )
     } )
 
-    it( 'the three named ends and their exit codes exist in the script, each exactly once (3 compared)', () => {
+    withScript( 'the three named ends and their exit codes exist in the script, each exactly once (3 compared)', () => {
         const source = scriptSource()
         const counted = [ 'WOKEN $SESSION_ID', 'ARM-FAILED $SESSION_ID', 'WAIT-EXPIRED $SESSION_ID' ]
             .map( ( needle ) => ( { needle, 'hits': source.split( needle ).length - 1 } ) )
@@ -706,34 +780,57 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( () => detectLongRunningWait( { 'source': '' } ) ).toThrow( /no comparison basis/ )
     } )
 
-    it( 'A7: against the REAL src/MemoView.mjs the marker is NOT set today (1 file, 0 hits)', () => {
-        expect( existsSync( MEMOVIEW_SRC ) ).toBe( true )
+    it( `A7: the REAL src/MemoView.mjs is the basis and two independent readings agree (1 file, ${ REAL_MARKER.hits } hits)`, () => {
+        // The direction is MEASURED here, never assumed — and by two mechanisms that fail differently:
+        // the gate's regex, and a split on the marker name that only accepts a real assignment. A single
+        // reading would be an assumption; `=== true` in some later comparison must not read as "set".
+        const assignments = REAL_MARKER.source
+            .split( 'LONG_RUNNING_WAIT_LIVE' )
+            .slice( 1 )
+            .filter( ( rest ) => rest.trimStart().startsWith( '= true' ) === true )
 
-        const source = readFileSync( MEMOVIEW_SRC, 'utf-8' )
-        const hits = source.split( 'LONG_RUNNING_WAIT_LIVE' ).length - 1
-
-        expect( source.length ).toBeGreaterThan( 1000 )
-        expect( hits ).toBe( 0 )
-        expect( detectLongRunningWait( { source } ) ).toBe( false )
+        expect( REAL_MARKER.path ).toBe( MEMOVIEW_SRC )
+        expect( REAL_MARKER.chars ).toBeGreaterThan( 1000 )
+        expect( detectLongRunningWait( { 'source': REAL_MARKER.source } ) ).toBe( assignments.length > 0 )
+        expect( REAL_MARKER.live ).toBe( assignments.length > 0 )
     } )
 
-    it( 'A7: the marker being unset means the transition must be COMPLETE — every required anchor present', () => {
-        const { places, scanned, rootsRead, discoveredCount } = sunsetPlaces()
-        const verdict = evaluateSunset( { 'live': false, 'places': places } )
+    // A7 + A9 on the road that really fires. This case used to hard-wire `live: false`, which made the
+    // gate demand back the deleted script on the very day its removal was ordered — and the only red
+    // line sunset day produced was a bare `Expected: 0 / Received: 2`. Both halves are fixed here: the
+    // direction comes from the real marker, and the compared VALUE is the message, so the names of the
+    // remaining places are what jest prints.
+    it( `A7/A9: the gate follows the REAL marker and the failure NAMES every place left (marker live=${ REAL_MARKER.live })`, () => {
+        const { places, scanned, rootsRead, rootsDeclared } = sunsetPlaces()
+        const verdict = evaluateSunset( { 'live': REAL_MARKER.live, 'places': places } )
+        const outcome = verdict.status === true ? 'GREEN' : verdict.message
 
-        // Say what was compared, and never pass on an empty comparison field: a walk that scanned no file
-        // or found no carrier is a broken walk, not an empty green.
+        // Say what was compared, and never pass on an empty comparison field: a walk that scanned no
+        // file is a broken walk, not an empty green. What may NOT be demanded here is a fixed number of
+        // carriers — after the sunset there are none left, and that is the goal, not a defect.
+        expect( rootsDeclared ).toBe( 2 )
         expect( rootsRead ).toBeGreaterThanOrEqual( 1 )
         expect( scanned ).toBeGreaterThan( 100 )
+        expect( verdict.judgedCount ).toBeGreaterThanOrEqual( 2 )
+        expect( places.filter( ( place ) => place.present === true && place.chars === 0 ) ).toEqual( [] )
+        expect( outcome ).toBe( 'GREEN' )
+    } )
+
+    withTransition( `A7: while the transition is intact every required anchor is present (${ TRANSITION_NOTE })`, () => {
+        const { places, discoveredCount } = sunsetPlaces()
+        const verdict = evaluateSunset( { 'live': false, 'places': places } )
+        const outcome = verdict.status === true ? 'GREEN' : verdict.message
+
+        // The floors belong in THIS direction only: while the marker is unset the walk must find the
+        // carriers it was built to find. They are the counter-probe against a silently shrinking search.
         expect( discoveredCount ).toBeGreaterThanOrEqual( 3 )
         expect( verdict.requiredCount ).toBeGreaterThanOrEqual( 2 )
         expect( verdict.judgedCount ).toBeGreaterThanOrEqual( 5 )
-        expect( places.filter( ( place ) => place.judged === true && place.chars === 0 ) ).toEqual( [] )
-        expect( verdict.status ).toBe( true )
         expect( verdict.missing ).toEqual( [] )
+        expect( outcome ).toBe( 'GREEN' )
     } )
 
-    it( 'the walk FINDS the in-repo carrier the copied list never had (1 named path, 4 labels compared)', () => {
+    withTransition( `the walk FINDS the in-repo carrier the copied list never had (1 named path, 4 labels, ${ TRANSITION_NOTE })`, () => {
         const { places } = sunsetPlaces()
         const labels = places.map( ( place ) => place.label )
 
@@ -751,19 +848,28 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( labels ).toContain( 'repos/viewer/tests/unit/Phase3ViewerFeatures.test.mjs' )
     } )
 
-    it( 'the in-repo half is compared in FULL even when the sibling repo is absent (4 places minimum)', () => {
+    it( 'the in-repo half is compared in FULL even when the sibling repo is absent (2 places minimum)', () => {
         const { places } = sunsetPlaces()
         const judged = places.filter( ( place ) => place.judged === true ).length
         const unjudged = places.filter( ( place ) => place.judged !== true )
 
         // Whatever the sibling repo does, the in-repo places must have been compared — the skip may
         // never shrink the comparison to nothing. And an unjudged place can only ever be a cross-repo
-        // one: an in-repo file that cannot be read is a failure, not an excuse.
-        expect( judged ).toBeGreaterThanOrEqual( 4 )
+        // one: an in-repo file that cannot be read is a failure, not an excuse. The floor is the two
+        // in-repo ANCHORS, which exist as questions in both directions; the carriers on top of them are
+        // counted in the transition-intact case, because after the sunset there are none.
+        expect( judged ).toBeGreaterThanOrEqual( 2 )
         expect( unjudged.filter( ( place ) => place.label.startsWith( 'repos/core/' ) !== true ) ).toEqual( [] )
     } )
 
-    withCore( `A7: the running SOP rule in repos/core names the script (${ CROSS_REPO_NOTE })`, () => {
+    withTransition( `the in-repo half carries its four carriers while the transition lives (${ TRANSITION_NOTE })`, () => {
+        const { places } = sunsetPlaces()
+        const judged = places.filter( ( place ) => place.judged === true ).length
+
+        expect( judged ).toBeGreaterThanOrEqual( 4 )
+    } )
+
+    withLiveCore( `A7: the running SOP rule in repos/core names the script (${ CROSS_REPO_NOTE }, ${ TRANSITION_NOTE })`, () => {
         const reading = readCoreSkill()
 
         expect( reading.skipped ).toBe( false )
@@ -772,7 +878,7 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( reading.marker ).toBe( true )
     } )
 
-    withCore( `the walk FINDS the cross-repo carrier and NAMES it in the red verdict (${ CROSS_REPO_NOTE })`, () => {
+    withLiveCore( `the walk FINDS the cross-repo carrier and NAMES it in the red verdict (${ CROSS_REPO_NOTE }, ${ TRANSITION_NOTE })`, () => {
         const { places } = sunsetPlaces()
         const late = 'repos/core/tests/event-channel-sop-rule8.test.mjs'
         const found = places.find( ( place ) => place.label === late )
@@ -784,7 +890,7 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( verdict.message ).toContain( 'event-channel-sop-rule8.test.mjs' )
     } )
 
-    it( 'A9: a source WITH the marker turns the gate red and NAMES every remaining place', () => {
+    withTransition( `A9: a spoofed source WITH the marker turns the gate red and NAMES every remaining place (${ TRANSITION_NOTE })`, () => {
         const spoofed = "// spoofed for the gate probe\nconst LONG_RUNNING_WAIT_LIVE = true\n"
         const live = detectLongRunningWait( { 'source': spoofed } )
         const { places } = sunsetPlaces()
@@ -800,12 +906,39 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( verdict.message ).toContain( `of ${ verdict.judgedCount } places compared` )
     } )
 
-    it( 'A9: with the marker set and every place gone the gate goes green again', () => {
+    // The naming property, proven WITHOUT the tree: the message has to carry every leftover label even
+    // when the walk finds nothing at all. The spoofed-source case above measures the real carriers while
+    // they exist; this one keeps the property measured on the day they do not.
+    it( 'A9: the red message names EVERY leftover, one label per place (3 synthetic places compared)', () => {
+        const synthetic = [ 'alpha.sh', 'beta.md', 'gamma.test.mjs' ]
+            .map( ( label, index ) => ( {
+                'id': label,
+                label,
+                'paths': [ label ],
+                'readings': [],
+                'hits': index + 1,
+                'chars': 10,
+                'judged': true,
+                'required': false,
+                'present': true
+            } ) )
+        const verdict = evaluateSunset( { 'live': true, 'places': synthetic } )
+        const unnamed = synthetic.filter( ( place ) => verdict.message.includes( place.label ) !== true )
+
+        expect( verdict.status ).toBe( false )
+        expect( unnamed ).toEqual( [] )
+        expect( verdict.message ).toContain( '3 of 3 places compared' )
+        expect( verdict.message ).toContain( REPRODUCE )
+    } )
+
+    it( 'A9: with the marker set and every place gone the gate goes green again (3 anchors minimum)', () => {
         const { places } = sunsetPlaces()
         const gone = places.map( ( place ) => ( { ...place, 'hits': 0, 'present': false } ) )
         const verdict = evaluateSunset( { 'live': true, 'places': gone } )
 
-        expect( gone.length ).toBeGreaterThanOrEqual( 5 )
+        // The three REQUIRED anchors are questions, not files — they are asked in both directions, so
+        // this floor holds before and after the sunset. Carriers on top of them are counted elsewhere.
+        expect( gone.length ).toBeGreaterThanOrEqual( 3 )
         expect( verdict.status ).toBe( true )
         expect( verdict.message ).toContain( 'sunset done' )
     } )
@@ -859,10 +992,13 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
             'crossRepo': false,
             'required': false
         } )
+        // The present anchor is THIS file: it is a required anchor of the list and it necessarily
+        // exists while it is running — so the case measures the two kinds against each other in both
+        // directions, instead of borrowing a file the sunset is allowed to delete.
         const anchorPresent = measurePlace( {
-            'id': 'script',
-            'label': labelOf( { 'path': SCRIPT } ),
-            'paths': [ SCRIPT ],
+            'id': 'sunset-test',
+            'label': labelOf( { 'path': SELF } ),
+            'paths': [ SELF ],
             'pattern': null,
             'crossRepo': false,
             'required': true

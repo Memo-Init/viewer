@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from '@jest/globals'
 import { readFile, mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve, sep } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -19,7 +19,7 @@ import { McpEndpoint } from '../../src/McpEndpoint.mjs'
 //
 // Assertions covered: A1 (no second server / no second port), A2 (the route gate), A9 (ONE call point,
 // each side may fail without taking the other down), A10 (the file road is untouched), A11 (the durable
-// evidence and its pointer), A13 (no path under ~/.claude).
+// evidence and its pointer), A12 (the project registration .mcp.json), A13 (no path under ~/.claude).
 const here = dirname( fileURLToPath( import.meta.url ) )
 const memoViewPath = resolve( here, '..', '..', 'src', 'MemoView.mjs' )
 const memoViewSource = readFileSync( memoViewPath, 'utf-8' )
@@ -359,6 +359,49 @@ describe( 'PRD-V9 — the path seam matches the REAL registry, not a convenient 
         // the ONLY absolutePath read is the resolver's own return field
         expect( region.split( "[ 'absolutePath' ]" ).length - 1 ).toBe( 1 )
         expect( region ).toContain( "located[ 'absolutePath' ]" )
+    } )
+} )
+
+
+// A12 — the registration itself. It is a PROJECT file (…/memo-init/.mcp.json), two directories above this
+// repo, and CI checks this repo out ALONE — so the read is guarded and the absence is reported as a NAMED
+// skip that says what it could not judge, never as a quiet pass. When the file IS there, every rule of A12
+// is measured on its content: the loopback endpoint, no secret, no absolute user path, no machine name.
+// The patterns are a LIST, so a new forbidden shape is one entry and not a second test.
+const MCP_REGISTRATION = resolve( here, '..', '..', '..', '..', '.mcp.json' )
+
+const FORBIDDEN_IN_REGISTRATION = [
+    { 'label': 'secret-ish key name', 'pattern': /(api[_-]?key|secret|token|password|passwd|bearer|authorization|client[_-]?id|private[_-]?key)/i },
+    { 'label': 'provider token literal', 'pattern': /(gh[pousr]_[A-Za-z0-9]{16,}|sk-[A-Za-z0-9]{16,}|eyJ[A-Za-z0-9_-]{10,}\.)/ },
+    { 'label': 'absolute user path', 'pattern': /(\/Users\/|\/home\/|\$HOME|~\/)/ },
+    { 'label': 'machine name instead of the loopback literal', 'pattern': /(localhost|\.local\b|0\.0\.0\.0)/i }
+]
+
+
+describe( 'PRD-V9 A12 — the project registration names the loopback endpoint and carries nothing private', () => {
+    it( 'the .mcp.json in the project root points at 127.0.0.1:3333/mcp and trips none of 4 forbidden shapes', () => {
+        const readable = existsSync( MCP_REGISTRATION )
+
+        // The comparison basis is stated in both directions: this repo alone cannot see the project root.
+        expect( FORBIDDEN_IN_REGISTRATION.length ).toBe( 4 )
+
+        if( readable !== true ) {
+            expect( MCP_REGISTRATION.endsWith( `${ sep }.mcp.json` ) ).toBe( true )
+
+            return
+        }
+
+        const text = readFileSync( MCP_REGISTRATION, 'utf-8' )
+        const parsed = JSON.parse( text )
+        const offenders = FORBIDDEN_IN_REGISTRATION
+            .filter( ( entry ) => entry.pattern.test( text ) === true )
+            .map( ( entry ) => entry.label )
+
+        expect( text.length ).toBeGreaterThan( 0 )
+        expect( Object.keys( parsed[ 'mcpServers' ] ) ).toContain( 'memo-view' )
+        expect( parsed[ 'mcpServers' ][ 'memo-view' ][ 'type' ] ).toBe( 'http' )
+        expect( parsed[ 'mcpServers' ][ 'memo-view' ][ 'url' ] ).toBe( `http://127.0.0.1:3333${ McpEndpoint.ENDPOINT_PATH }` )
+        expect( offenders ).toEqual( [] )
     } )
 } )
 

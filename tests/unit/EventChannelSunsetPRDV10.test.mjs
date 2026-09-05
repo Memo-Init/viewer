@@ -29,9 +29,9 @@ import { describe, it, expect } from '@jest/globals'
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile, readFile, access } from 'node:fs/promises'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, extname, join, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
@@ -40,12 +40,14 @@ const execFileP = promisify( execFile )
 const here = dirname( fileURLToPath( import.meta.url ) )
 const SELF = fileURLToPath( import.meta.url )
 const VIEWER_ROOT = resolve( here, '..', '..' )
-const SCRIPT = join( VIEWER_ROOT, 'scripts', 'session-wake-arm.sh' )
+const PROJECT_ROOT = resolve( VIEWER_ROOT, '..', '..' )
+const SCRIPT_NAME = 'session-wake-arm.sh'
+const SCRIPT = join( VIEWER_ROOT, 'scripts', SCRIPT_NAME )
 const MEMOVIEW_SRC = join( VIEWER_ROOT, 'src', 'MemoView.mjs' )
-const REVERSE_CHANNEL_TEST = join( VIEWER_ROOT, 'tests', 'unit', 'ReverseChannelWakePRD031.test.mjs' )
-const PHASE3_TEST = join( VIEWER_ROOT, 'tests', 'unit', 'Phase3ViewerFeatures.test.mjs' )
 // Sibling repo — present in the workbench, ABSENT in CI. Read through an existsSync guard, never assumed.
-const CORE_SKILL = resolve( VIEWER_ROOT, '..', 'core', 'skills', 'memo', 'memo-revision-execute', 'SKILL.md' )
+const CORE_ROOT = resolve( VIEWER_ROOT, '..', 'core' )
+const CORE_SKILL = join( CORE_ROOT, 'skills', 'memo', 'memo-revision-execute', 'SKILL.md' )
+const SCRIPT_REF = /session-wake-arm\.sh/g
 
 const NEXT_PREFIX = 'NEXT: bash repos/viewer/scripts/session-wake-arm.sh'
 
@@ -166,9 +168,9 @@ const readOne = ( { path, pattern } ) => {
 }
 
 
-// One measurement shape for all four sunset entries — an entry is a LIST of paths and an optional
-// pattern, so "the file is gone" and "the reference is gone" are the same question asked twice.
-const measurePlace = ( { id, label, paths, pattern, crossRepo } ) => {
+// One measurement shape for every sunset entry — an entry is a LIST of paths and an optional pattern,
+// so "the file is gone" and "the reference is gone" are the same question asked twice.
+const measurePlace = ( { id, label, paths, pattern, crossRepo, required } ) => {
     const readings = paths.map( ( path ) => readOne( { path, pattern } ) )
     const hits = readings.reduce( ( sum, reading ) => sum + reading.hits, 0 )
     const chars = readings.reduce( ( sum, reading ) => sum + reading.chars, 0 )
@@ -176,45 +178,112 @@ const measurePlace = ( { id, label, paths, pattern, crossRepo } ) => {
     // A cross-repo path that is simply not checked out cannot be judged in either direction.
     const judged = crossRepo === false || anyFile === true
 
-    return { id, label, paths, readings, hits, chars, judged, 'present': hits > 0 }
+    return { id, label, paths, readings, hits, chars, judged, required, 'present': hits > 0 }
+}
+
+
+// ---------------------------------------------------------------------------------------------------
+// THE LIST FINDS ITS OWN CARRIERS (Memo 080, Phase 9 close-out).
+//
+// It used to be COPIED — five entries, written down on the day the PRD was cut. Two carriers were built
+// afterwards, repos/core/tests/event-channel-sop-rule8.test.mjs (7 cases nailed to the wording of rule 8)
+// and repos/viewer/tests/manual/event-channel-wake-e2e.mjs, and neither reached the copy. Executing the
+// copied list literally therefore BROKE: step 2 rewrites the SOP rule, and the core test that holds that
+// exact wording was still there — measured, 0 pass / 7 fail. A copied list is wrong the moment the next
+// file is written, so this one is a SEARCH: every file under the two repos that names the script is a
+// carrier and is found on the day it is created. The walk states how many files it compared; a walk that
+// finds nothing is a broken walk, never an empty green.
+// ---------------------------------------------------------------------------------------------------
+const WALK_ROOTS = [
+    { 'root': VIEWER_ROOT, 'crossRepo': false },
+    { 'root': CORE_ROOT, 'crossRepo': true }
+]
+const SKIP_DIRS = [ 'node_modules', 'coverage', 'test-results', 'dist', 'build' ]
+const TEXT_EXTENSIONS = [ '.mjs', '.js', '.cjs', '.sh', '.md', '.json', '.yml', '.yaml' ]
+
+
+const walkFiles = ( { dir } ) => {
+    return readdirSync( dir, { 'withFileTypes': true } )
+        .flatMap( ( entry ) => {
+            const full = join( dir, entry.name )
+
+            if( entry.isDirectory() === true ) {
+                return SKIP_DIRS.includes( entry.name ) === true || entry.name.startsWith( '.' ) === true
+                    ? []
+                    : walkFiles( { 'dir': full } )
+            }
+
+            return entry.isFile() === true && TEXT_EXTENSIONS.includes( extname( entry.name ) ) === true ? [ full ] : []
+        } )
+}
+
+
+const discoverCarriers = () => {
+    const readable = WALK_ROOTS.filter( ( entry ) => existsSync( entry.root ) === true )
+    const readings = readable.map( ( entry ) => {
+        const files = walkFiles( { 'dir': entry.root } )
+
+        return {
+            'root': entry.root,
+            'crossRepo': entry.crossRepo,
+            'scanned': files.length,
+            'carriers': files.filter( ( path ) => readFileSync( path, 'utf-8' ).includes( SCRIPT_NAME ) === true )
+        }
+    } )
+
+    return {
+        'rootsDeclared': WALK_ROOTS.length,
+        'rootsRead': readable.length,
+        'scanned': readings.reduce( ( sum, reading ) => sum + reading.scanned, 0 ),
+        'carriers': readings.flatMap( ( reading ) => reading.carriers.map( ( path ) => ( { path, 'crossRepo': reading.crossRepo } ) ) )
+    }
+}
+
+
+const labelOf = ( { path } ) => relative( PROJECT_ROOT, path )
+
+
+// The anchors WITHOUT which the transition is already broken. They are named, because the discovered
+// half can only ever answer "is it still there" — it can never notice that something REQUIRED is gone.
+const requiredPlaces = () => {
+    return [
+        { 'id': 'script', 'label': labelOf( { 'path': SCRIPT } ), 'paths': [ SCRIPT ], 'pattern': null, 'crossRepo': false },
+        { 'id': 'sop-rule', 'label': `${ labelOf( { 'path': CORE_SKILL } ) } — rule 8 + workflow step 11`, 'paths': [ CORE_SKILL ], 'pattern': SCRIPT_REF, 'crossRepo': true },
+        { 'id': 'sunset-test', 'label': labelOf( { 'path': SELF } ), 'paths': [ SELF ], 'pattern': null, 'crossRepo': false }
+    ]
 }
 
 
 const sunsetPlaces = () => {
-    return [
-        {
-            'id': 1,
-            'label': 'repos/viewer/scripts/session-wake-arm.sh',
-            'paths': [ SCRIPT ],
-            'pattern': null,
-            'crossRepo': false
-        },
-        {
-            'id': 2,
-            'label': 'repos/core .../memo-revision-execute/SKILL.md — rule 8 + workflow step 11',
-            'paths': [ CORE_SKILL ],
-            'pattern': /session-wake-arm\.sh/g,
-            'crossRepo': true
-        },
-        {
-            'id': 3,
-            'label': 'repos/viewer/tests/unit/EventChannelSunsetPRDV10.test.mjs',
-            'paths': [ SELF ],
-            'pattern': null,
-            'crossRepo': false
-        },
-        {
-            'id': 4,
-            'label': 'script parts of ReverseChannelWakePRD031.test.mjs + Phase3ViewerFeatures.test.mjs',
-            'paths': [ REVERSE_CHANNEL_TEST, PHASE3_TEST ],
-            'pattern': /session-wake-arm\.sh/g,
-            'crossRepo': false
-        }
-    ].map( ( place ) => measurePlace( place ) )
+    const found = discoverCarriers()
+    const anchors = requiredPlaces()
+    const anchorPaths = anchors.flatMap( ( place ) => place.paths )
+    const discovered = found.carriers
+        .filter( ( carrier ) => anchorPaths.includes( carrier.path ) !== true )
+        .map( ( carrier ) => ( {
+            'id': labelOf( { 'path': carrier.path } ),
+            'label': labelOf( { 'path': carrier.path } ),
+            'paths': [ carrier.path ],
+            'pattern': SCRIPT_REF,
+            'crossRepo': carrier.crossRepo,
+            'required': false
+        } ) )
+    const places = anchors
+        .map( ( place ) => ( { ...place, 'required': true } ) )
+        .concat( discovered )
+        .map( ( place ) => measurePlace( place ) )
+
+    return {
+        places,
+        'scanned': found.scanned,
+        'rootsRead': found.rootsRead,
+        'rootsDeclared': found.rootsDeclared,
+        'discoveredCount': discovered.length
+    }
 }
 
 
-const nameThem = ( { places } ) => places.map( ( place ) => `#${ place.id } ${ place.label }` ).join( ' | ' )
+const nameThem = ( { places } ) => places.map( ( place ) => place.label ).join( ' | ' )
 
 
 // The sibling repo is present in the workbench and ABSENT in CI, so this read has to be able to come
@@ -233,14 +302,24 @@ const readCoreSkill = () => {
 }
 
 
-// A7/A9: one verdict function, both directions. Marker not set → the transition must be COMPLETE.
-// Marker set → the transition must be GONE, and the message names what is left.
+// A7/A9: one verdict function, both directions. Marker not set → the REQUIRED anchors must be present.
+// Marker set → EVERY place, anchor and discovered carrier alike, must be GONE, and the message names
+// what is left. Only the anchors can go "missing": a discovered carrier is present by construction, so
+// asking that half about the discovered ones would be a question that can never fail.
 const evaluateSunset = ( { live, places } ) => {
     const judged = places.filter( ( place ) => place.judged === true )
     const unjudged = places.filter( ( place ) => place.judged !== true )
     const leftovers = judged.filter( ( place ) => place.present === true )
-    const missing = judged.filter( ( place ) => place.present === false )
-    const base = { live, 'judgedCount': judged.length, 'unjudgedCount': unjudged.length, leftovers, missing, unjudged }
+    const missing = judged.filter( ( place ) => place.present === false && place.required === true )
+    const base = {
+        live,
+        'judgedCount': judged.length,
+        'unjudgedCount': unjudged.length,
+        'requiredCount': judged.filter( ( place ) => place.required === true ).length,
+        leftovers,
+        missing,
+        unjudged
+    }
 
     if( judged.length === 0 ) {
         return { ...base, 'status': false, 'message': 'no comparison basis — not a single sunset place could be read' }
@@ -257,11 +336,11 @@ const evaluateSunset = ( { live, places } ) => {
     }
 
     return missing.length === 0
-        ? { ...base, 'status': true, 'message': `transition intact — ${ judged.length } places compared, all present` }
+        ? { ...base, 'status': true, 'message': `transition intact — ${ judged.length } places compared, ${ base.requiredCount } of them required anchors, all present` }
         : {
             ...base,
             'status': false,
-            'message': `the marker is not set, so the transition must be COMPLETE. Missing (${ missing.length } of ${ judged.length } places compared): ${ nameThem( { 'places': missing } ) }`
+            'message': `the marker is not set, so the transition must be COMPLETE. Missing (${ missing.length } of ${ base.requiredCount } required anchors, ${ judged.length } places compared): ${ nameThem( { 'places': missing } ) }`
         }
 }
 
@@ -494,8 +573,11 @@ describe( 'PRD-V10 source shape — loopback only, transitional header, house st
         expect( lines.length ).toBeGreaterThan( 20 )
     } )
 
-    it( 'A12: the header names successor, sunset marker, sunset test and the sunset list (7 phrases compared)', () => {
+    it( 'A12: the header names successor, marker, sunset test and HOW to reproduce the list (7 phrases)', () => {
         const header = scriptSource().split( 'set -u' )[ 0 ]
+        // The header names the SEARCH, not a copy of its result. A copied enumeration in a comment is the
+        // very drift this PRD's close-out removed: it was right on the day it was written and wrong two
+        // files later. What must stand here is the reproduce command and the required anchors.
         const phrases = [
             'TRANSITIONAL',
             'PRD-V9',
@@ -503,7 +585,7 @@ describe( 'PRD-V10 source shape — loopback only, transitional header, house st
             'tests/unit/EventChannelSunsetPRDV10.test.mjs',
             'Sunset list',
             'memo-revision-execute/SKILL.md',
-            'ReverseChannelWakePRD031.test.mjs'
+            `grep -rl ${ SCRIPT_NAME } repos/viewer repos/core`
         ]
         const missing = phrases.filter( ( phrase ) => header.includes( phrase ) !== true )
 
@@ -590,25 +672,54 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( detectLongRunningWait( { source } ) ).toBe( false )
     } )
 
-    it( 'A7: the marker being unset means the transition must be COMPLETE — every readable place present', () => {
-        const places = sunsetPlaces()
+    it( 'A7: the marker being unset means the transition must be COMPLETE — every required anchor present', () => {
+        const { places, scanned, rootsRead, discoveredCount } = sunsetPlaces()
         const verdict = evaluateSunset( { 'live': false, 'places': places } )
 
-        // Say what was compared, and never pass on an empty comparison field.
-        expect( places.length ).toBe( 4 )
-        expect( verdict.judgedCount ).toBeGreaterThanOrEqual( 3 )
+        // Say what was compared, and never pass on an empty comparison field: a walk that scanned no file
+        // or found no carrier is a broken walk, not an empty green.
+        expect( rootsRead ).toBeGreaterThanOrEqual( 1 )
+        expect( scanned ).toBeGreaterThan( 100 )
+        expect( discoveredCount ).toBeGreaterThanOrEqual( 3 )
+        expect( verdict.requiredCount ).toBeGreaterThanOrEqual( 2 )
+        expect( verdict.judgedCount ).toBeGreaterThanOrEqual( 5 )
         expect( places.filter( ( place ) => place.judged === true && place.chars === 0 ) ).toEqual( [] )
         expect( verdict.status ).toBe( true )
         expect( verdict.missing ).toEqual( [] )
     } )
 
+    it( 'the walk FINDS the two carriers the copied list never had (2 named paths compared)', () => {
+        const { places } = sunsetPlaces()
+        const labels = places.map( ( place ) => place.label )
+
+        // These two were built after the list was written down and are the reason it is a search now.
+        // Both are cross-checked against the source of truth: they are on the list because they name
+        // the script, and the assertion says so with the hit count.
+        const late = [
+            'repos/core/tests/event-channel-sop-rule8.test.mjs',
+            'repos/viewer/tests/manual/event-channel-wake-e2e.mjs'
+        ]
+        const onList = late.filter( ( label ) => labels.includes( label ) === true )
+        const hitCounts = late
+            .map( ( label ) => places.find( ( place ) => place.label === label ) )
+            .filter( ( place ) => place !== undefined )
+            .map( ( place ) => place.hits )
+
+        expect( onList ).toEqual( late )
+        expect( hitCounts.filter( ( hits ) => hits > 0 ).length ).toBe( late.length )
+        // and the older four are still on it — the search replaced the copy, it did not shrink it
+        expect( labels ).toContain( 'repos/viewer/scripts/session-wake-arm.sh' )
+        expect( labels ).toContain( 'repos/viewer/tests/unit/ReverseChannelWakePRD031.test.mjs' )
+        expect( labels ).toContain( 'repos/viewer/tests/unit/Phase3ViewerFeatures.test.mjs' )
+    } )
+
     it( 'A7: the running SOP rule names the script — out of repo is a NAMED skip, never a pass', () => {
         const reading = readCoreSkill()
-        const inRepoJudged = sunsetPlaces().filter( ( place ) => place.judged === true ).length
+        const judged = sunsetPlaces().places.filter( ( place ) => place.judged === true ).length
 
-        // Whatever the sibling repo does, the three in-repo places must have been compared — the skip
-        // may never shrink the comparison to nothing.
-        expect( inRepoJudged ).toBeGreaterThanOrEqual( 3 )
+        // Whatever the sibling repo does, the in-repo places must have been compared — the skip may
+        // never shrink the comparison to nothing.
+        expect( judged ).toBeGreaterThanOrEqual( 4 )
         expect( reading.skipped === true || reading.chars > 1000 ).toBe( true )
         expect( reading.skipped === true || reading.scriptHits >= 2 ).toBe( true )
         expect( reading.skipped === true || reading.marker === true ).toBe( true )
@@ -617,7 +728,7 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
     it( 'A9: a source WITH the marker turns the gate red and NAMES every remaining place', () => {
         const spoofed = "// spoofed for the gate probe\nconst LONG_RUNNING_WAIT_LIVE = true\n"
         const live = detectLongRunningWait( { 'source': spoofed } )
-        const places = sunsetPlaces()
+        const { places } = sunsetPlaces()
         const verdict = evaluateSunset( { live, 'places': places } )
 
         expect( live ).toBe( true )
@@ -627,14 +738,16 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( verdict.message ).toContain( 'session-wake-arm.sh' )
         expect( verdict.message ).toContain( 'EventChannelSunsetPRDV10.test.mjs' )
         expect( verdict.message ).toContain( 'ReverseChannelWakePRD031.test.mjs' )
+        expect( verdict.message ).toContain( 'event-channel-sop-rule8.test.mjs' )
         expect( verdict.message ).toContain( `of ${ verdict.judgedCount } places compared` )
     } )
 
-    it( 'A9: with the marker set and every place gone the gate goes green again (4 places compared)', () => {
-        const gone = sunsetPlaces().map( ( place ) => ( { ...place, 'hits': 0, 'present': false } ) )
+    it( 'A9: with the marker set and every place gone the gate goes green again', () => {
+        const { places } = sunsetPlaces()
+        const gone = places.map( ( place ) => ( { ...place, 'hits': 0, 'present': false } ) )
         const verdict = evaluateSunset( { 'live': true, 'places': gone } )
 
-        expect( gone.length ).toBe( 4 )
+        expect( gone.length ).toBeGreaterThanOrEqual( 5 )
         expect( verdict.status ).toBe( true )
         expect( verdict.message ).toContain( 'sunset done' )
     } )
@@ -649,18 +762,20 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
 
     it( 'A8: an unreadable cross-repo place is reported as UNJUDGED, never as removed', () => {
         const missingCrossRepo = measurePlace( {
-            'id': 2,
+            'id': 'sibling',
             'label': 'a sibling repo that is not checked out',
             'paths': [ join( VIEWER_ROOT, 'no-such-sibling', 'SKILL.md' ) ],
-            'pattern': /session-wake-arm\.sh/g,
-            'crossRepo': true
+            'pattern': SCRIPT_REF,
+            'crossRepo': true,
+            'required': true
         } )
         const inRepoGone = measurePlace( {
-            'id': 1,
-            'label': 'an in-repo file that is really gone',
+            'id': 'gone',
+            'label': 'an in-repo REQUIRED anchor that is really gone',
             'paths': [ join( VIEWER_ROOT, 'no-such-file.sh' ) ],
             'pattern': null,
-            'crossRepo': false
+            'crossRepo': false,
+            'required': true
         } )
 
         expect( missingCrossRepo.judged ).toBe( false )
@@ -672,5 +787,37 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( verdict.unjudgedCount ).toBe( 1 )
         expect( verdict.judgedCount ).toBe( 1 )
         expect( verdict.status ).toBe( false )
+    } )
+
+    // The other half of the same rule: a DISCOVERED carrier can never be "missing" — it is on the list
+    // BECAUSE it was found — so asking that question about it would be a check that cannot fail. This
+    // states which of the two halves carries the "transition intact" direction, and that it is not empty.
+    it( 'a discovered carrier that vanished is not counted as a missing anchor (2 kinds compared)', () => {
+        const discoveredGone = measurePlace( {
+            'id': 'discovered',
+            'label': 'a discovered carrier that is no longer there',
+            'paths': [ join( VIEWER_ROOT, 'no-such-carrier.mjs' ) ],
+            'pattern': SCRIPT_REF,
+            'crossRepo': false,
+            'required': false
+        } )
+        const anchorPresent = measurePlace( {
+            'id': 'script',
+            'label': labelOf( { 'path': SCRIPT } ),
+            'paths': [ SCRIPT ],
+            'pattern': null,
+            'crossRepo': false,
+            'required': true
+        } )
+
+        const verdict = evaluateSunset( { 'live': false, 'places': [ discoveredGone, anchorPresent ] } )
+
+        expect( anchorPresent.present ).toBe( true )
+        expect( discoveredGone.present ).toBe( false )
+        expect( verdict.judgedCount ).toBe( 2 )
+        expect( verdict.requiredCount ).toBe( 1 )
+        expect( verdict.missing ).toEqual( [] )
+        expect( verdict.status ).toBe( true )
+        expect( verdict.message ).toContain( '1 of them required anchors' )
     } )
 } )

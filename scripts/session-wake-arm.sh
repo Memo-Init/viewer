@@ -18,16 +18,32 @@
 #   Sunset test     tests/unit/EventChannelSunsetPRDV10.test.mjs. It turns `npm test` RED on the day
 #                   the marker is set while any sunset-list entry below still exists, so the
 #                   transition cannot be kept silently.
-#   Sunset list     what has to disappear once the marker is set:
+#   Sunset list     DISCOVERED, never copied. A list written down on the day a transition is cut is
+#                   wrong the moment the next file is written — this one was: two carriers were built
+#                   after it (a core-side rule test and the viewer-side e2e handrail) and neither
+#                   reached the copy, so following the list literally left a test nailed to wording
+#                   the list had just told you to delete. The list is therefore the ANSWER TO A
+#                   SEARCH: every file under repos/viewer and repos/core that names this script is a
+#                   carrier of the transition and goes with it. Reproduce it with
+#                     grep -rl session-wake-arm.sh repos/viewer repos/core --exclude-dir=node_modules
+#                   The sunset test walks exactly those two trees itself, states how many files it
+#                   compared, and fails when the walk finds nothing.
+#
+#                   Three of them are REQUIRED anchors — without them the transition is already
+#                   broken, so the test checks their presence by name and not only their absence:
 #                     1. this file
 #                     2. repos/core/skills/memo/memo-revision-execute/SKILL.md — rule 8 and workflow
-#                        step 11 rewritten onto the PRD-V9 road, script references removed
+#                        step 11 rewritten onto the PRD-V9 road, script references removed. The core
+#                        test that holds that wording (repos/core/tests/event-channel-sop-rule8.test.mjs)
+#                        is a carrier too and goes in the same step, not after it
 #                     3. tests/unit/EventChannelSunsetPRDV10.test.mjs — the guard leaves with what
 #                        it guards
-#                     4. the script parts of tests/unit/ReverseChannelWakePRD031.test.mjs and
-#                        tests/unit/Phase3ViewerFeatures.test.mjs — the route and flag assertions
-#                        in those files stay
-#                     5. the route and flag surface (/api/session/<id>/arm, /api/session/armed,
+#                   In the discovered carriers that stay as FILES (ReverseChannelWakePRD031.test.mjs,
+#                   Phase3ViewerFeatures.test.mjs) only the script parts go; the route and flag
+#                   assertions in them stay.
+#
+#                   One place a name search cannot find, so it stays written down:
+#                     4. the route and flag surface (/api/session/<id>/arm, /api/session/armed,
 #                        /api/session/<id>/wake, writeWakeFlag, armSession, getArmedSessions,
 #                        WAKE_DIR) ONLY if a full-text search shows no other caller — today the
 #                        "Abschliessen" button calls them itself, so this check belongs to the

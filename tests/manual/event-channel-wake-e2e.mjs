@@ -24,6 +24,13 @@
 // ausgewiesen und der Knopfdruck ueber dieselbe Route gefahren, die der Knopf ruft — mit Vermerk.
 //
 // Lauf: MEMOVIEW_NO_BROWSER=1 node tests/manual/event-channel-wake-e2e.mjs  → 0 bei Erfolg, 1 bei Fehler.
+//
+// UEBERGANG — DIESER HANDLAUF GEHT MIT DEM SKRIPT (Memo 080, Phase 9, Abschluss).
+// Er faehrt das Skript `scripts/session-wake-arm.sh` und ist damit ein Traeger des Uebergangs: wird das
+// Skript beim Ablauf entfernt, hat dieser Handlauf nichts mehr zu fahren. Er steht deshalb auf der
+// Ablauf-Liste — gefunden, nicht abgeschrieben: das Sunset-Gate
+// (tests/unit/EventChannelSunsetPRDV10.test.mjs) durchsucht beide Repos nach jeder Datei, die das
+// Skript nennt, statt eine Liste zu fuehren, die am Tag ihrer Niederschrift richtig war.
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'

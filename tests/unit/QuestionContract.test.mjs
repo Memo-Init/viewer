@@ -106,8 +106,11 @@ describe( 'Memo 041 Teil B — QuestionContract is the one render contract', () 
     } )
 
 
-    it( 'exposes the four valid option kinds', () => {
-        expect( VALID_OPTION_KINDS ).toEqual( [ 'option', 'custom', 'topic', 'reframe' ] )
+    it( 'exposes the five valid option kinds', () => {
+        // Memo 080, PRD-F2 (Kap 18): `reoption` joins as the fifth — the injected default for "the
+        // question is fine, the ANSWER OPTIONS go past the decision". Like reframe it is a non-'option'
+        // kind, so it changes neither the render minimum nor the preselection.
+        expect( VALID_OPTION_KINDS ).toEqual( [ 'option', 'custom', 'topic', 'reframe', 'reoption' ] )
     } )
 
 

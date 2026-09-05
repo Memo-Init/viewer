@@ -7648,6 +7648,30 @@
         // applying the delta. Every later Shift+Up/Down then steps normally.
         var questionNav = { active: -1, optionFocus: -1, lane: 'option', questions: [], state: [], fertig: false, footerFocus: -1, engaged: false }
 
+        // Memo 080 (Kap 18, PRD-F2): THE RE-FORMULATION KINDS AND THEIR FREE-TEXT ROWS. `reframe` says the
+        // QUESTION is wrong (Memo 059), `reoption` says the ANSWER OPTIONS go past the decision — the case
+        // the user named as the recurring one. Two turns, two prompts, ONE mechanism: the row build, the
+        // reveal-on-selection, the harvest-before-submit and the answer join all read this list. Hanging a
+        // second `if` beside the first is exactly how the four places drift apart, and a harvest that knows
+        // one row while the reveal knows two silently drops what the user typed.
+        var REFORMULATION_KINDS = [
+            { kind: 'reframe', attribute: 'data-reframe-row', placeholder: 'Wie sollte die Frage richtig lauten?' },
+            { kind: 'reoption', attribute: 'data-reoption-row', placeholder: 'Was stimmt an den Antwortmoeglichkeiten nicht?' }
+        ]
+
+        // Which re-formulation kinds a question really offers, in the order the option list carries them.
+        function reformulationRowsOf( optionList ) {
+            var list = optionList || []
+
+            return REFORMULATION_KINDS
+                .map( function( entry ) {
+                    var idx = list.findIndex( function( o ) { return o && o.kind === entry.kind } )
+
+                    return { kind: entry.kind, attribute: entry.attribute, placeholder: entry.placeholder, idx: idx }
+                } )
+                .filter( function( entry ) { return entry.idx !== -1 } )
+        }
+
         function escHtml( str ) {
             return String( str || '' )
                 .replace( /&/g, '&amp;' )
@@ -8060,24 +8084,25 @@
             }
 
             // Custom-entry input. Multi-select gets it as "+ eigener Eintrag" (allowCustomEntries).
-            // Memo 079 PRD-24: a single-select ALSO gets a free-text row when the injected "Frage neu
-            // formulieren" (reframe) option is present — hidden until reframe is actually selected — so
-            // the user can type HOW the question should read. buildAnswerText folds that reformulation
-            // in; refreshOptionMarkers reveals/hides the row as reframe is (de)selected.
-            var reframeIdx = optionList.findIndex( function( o ) { return o && o.kind === 'reframe' } )
-            var reframeOnly = !q.allowCustomEntries && reframeIdx !== -1
-            if( q.allowCustomEntries || reframeOnly ) {
+            // Memo 079 PRD-24 / Memo 080 PRD-F2: a single-select ALSO gets a free-text row per injected
+            // RE-FORMULATION option — "Frage neu formulieren" (reframe) and "Antwortmoeglichkeiten neu
+            // formulieren" (reoption) — each hidden until its own option is actually selected, so the user
+            // can type HOW the question should read, or WHAT is wrong with the answer options.
+            // buildAnswerText folds the typed text in; refreshOptionMarkers reveals/hides each row as its
+            // option is (de)selected. The rows come from REFORMULATION_KINDS, never from a per-kind branch.
+            var reformulationRows = reformulationRowsOf( optionList )
+            var buildFreeTextRow = function( spec ) {
                 var customRow = document.createElement( 'div' )
                 customRow.className = 'qw-custom-row'
-                if( reframeOnly ) {
-                    customRow.setAttribute( 'data-reframe-row', '1' )
-                    // Only visible while the reframe option is selected (no free-text clutter otherwise).
-                    if( questionNav.state[ qIdx ].selected.indexOf( reframeIdx ) === -1 ) { customRow.style.display = 'none' }
+                if( spec !== null ) {
+                    customRow.setAttribute( spec.attribute, '1' )
+                    // Only visible while the owning option is selected (no free-text clutter otherwise).
+                    if( questionNav.state[ qIdx ].selected.indexOf( spec.idx ) === -1 ) { customRow.style.display = 'none' }
                 }
                 var input = document.createElement( 'input' )
                 input.type = 'text'
                 input.className = 'qw-custom-input'
-                input.placeholder = reframeOnly ? 'Wie sollte die Frage richtig lauten?' : '+ eigener Eintrag'
+                input.placeholder = spec !== null ? spec.placeholder : '+ eigener Eintrag'
                 input.addEventListener( 'keydown', function( ev ) {
                     // Let text input flow normally — never hijack typing here.
                     ev.stopPropagation()
@@ -8097,9 +8122,14 @@
                 // Memo 079 reframe-freetext-click-loss: the reformulation was committed ONLY on Enter, so
                 // typing it and clicking "Hinzufügen" (or opening the answer popup) — both of which blur the
                 // input BEFORE reading st.custom — silently dropped the typed text. Commit on blur too.
-                input.addEventListener( 'blur', function() { harvestReframeInput( qIdx ) } )
+                input.addEventListener( 'blur', function() { harvestReformulationInputs( qIdx ) } )
                 customRow.appendChild( input )
                 body.appendChild( customRow )
+            }
+            if( q.allowCustomEntries ) {
+                buildFreeTextRow( null )
+            } else {
+                reformulationRows.forEach( buildFreeTextRow )
             }
 
             // Topic chips for carousel left/right navigation (F15).
@@ -8206,14 +8236,14 @@
                         : ( isSel ? '☑︎' : '☐︎' )
                 }
             } )
-            // Memo 079 PRD-24: reveal the reframe reformulation free-text row only while the
-            // "Frage neu formulieren" option is selected (single-select has no free-text otherwise).
-            var reframeRow = card.querySelector( '.qw-custom-row[data-reframe-row="1"]' )
-            if( reframeRow ) {
-                var reframeIdx = ( q.options || [] ).findIndex( function( o ) { return o && o.kind === 'reframe' } )
-                var reframeOn = reframeIdx !== -1 && st.selected.indexOf( reframeIdx ) !== -1
-                reframeRow.style.display = reframeOn ? '' : 'none'
-            }
+            // Memo 079 PRD-24 / Memo 080 PRD-F2: reveal each re-formulation free-text row only while ITS
+            // own option is selected (single-select has no free-text otherwise). One loop over the kind
+            // list, so a new kind is revealed by the same code that builds and harvests it.
+            reformulationRowsOf( q.options ).forEach( function( entry ) {
+                var row = card.querySelector( '.qw-custom-row[' + entry.attribute + '="1"]' )
+                if( !row ) { return }
+                row.style.display = st.selected.indexOf( entry.idx ) !== -1 ? '' : 'none'
+            } )
         }
 
         function renderQuestionFocus() {
@@ -8284,14 +8314,16 @@
 
             st.custom.forEach( function( c ) { parts.push( c ) } )
 
-            // Memo 079 PRD-24: a single-select reframe answer carries the reformulation as a custom
-            // entry — join "Frage neu formulieren" + the reformulation so the single-select "first
-            // part only" rule does not silently drop the typed reformulation.
-            var isReframeAnswer = q.typ === 'single' && st.selected.some( function( optIdx ) {
+            // Memo 079 PRD-24 / Memo 080 PRD-F2: a single-select RE-FORMULATION answer carries the typed
+            // text as a custom entry — join the option label + that text so the single-select "first part
+            // only" rule does not silently drop it. The kind list decides, so the reoption turn keeps its
+            // "was stimmt nicht" exactly as the reframe turn keeps its new wording.
+            var reformulationKinds = REFORMULATION_KINDS.map( function( entry ) { return entry.kind } )
+            var isReformulationAnswer = q.typ === 'single' && st.selected.some( function( optIdx ) {
                 var opt = q.options[ optIdx ]
-                return opt && opt.kind === 'reframe'
+                return opt && reformulationKinds.indexOf( opt.kind ) !== -1
             } )
-            var answerLine = ( q.typ === 'multi' || isReframeAnswer ) ? parts.join( '; ' ) : ( parts[ 0 ] || '' )
+            var answerLine = ( q.typ === 'multi' || isReformulationAnswer ) ? parts.join( '; ' ) : ( parts[ 0 ] || '' )
             // Markdown form unchanged from the previous modal flow: "## Antwort auf {id} — {title}"
             // + answer line, multi joined by "; ".
             var text = '## Antwort auf ' + q.id + ' — ' + q.title + '\n\n' + answerLine + '\n'
@@ -8320,22 +8352,34 @@
             }
         }
 
-        // Memo 079 reframe-freetext-click-loss: fold the LIVE reframe reformulation input into st.custom
-        // (deduped) before any reader consumes st.custom. The reformulation used to be committed ONLY on
-        // Enter (keydown), so a user who typed it and clicked "Hinzufügen" — or opened the answer popup —
-        // lost the text (buildAnswerText / the popup prefill read st.custom while the value still sat in the
-        // input). Mirrors the Enter handler's push + clear + added-reset; only the reframe row is harvested.
-        function harvestReframeInput( qIdx ) {
+        // Memo 079 reframe-freetext-click-loss: fold the LIVE re-formulation input into st.custom (deduped)
+        // before any reader consumes st.custom. The reformulation used to be committed ONLY on Enter
+        // (keydown), so a user who typed it and clicked "Hinzufügen" — or opened the answer popup — lost the
+        // text (buildAnswerText / the popup prefill read st.custom while the value still sat in the input).
+        // Mirrors the Enter handler's push + clear + added-reset.
+        //
+        // Memo 080 PRD-F2: it harvests EVERY re-formulation row, not only the reframe one. A harvest that knows
+        // one row while the card builds two is the same silent drop one kind further on — the defect this
+        // function exists to close, re-opened by the next kind.
+        function harvestReformulationInputs( qIdx ) {
             var st = questionNav.state[ qIdx ]
             if( !st ) { return }
             var card = document.querySelector( '#question-widgets .qw-card[data-qidx="' + qIdx + '"]' )
             if( !card ) { return }
-            var input = card.querySelector( '.qw-custom-row[data-reframe-row="1"] .qw-custom-input' )
-            if( !input ) { return }
-            var value = String( input.value || '' ).trim()
-            if( value.length === 0 ) { return }
-            if( st.custom.indexOf( value ) === -1 ) { st.custom.push( value ) }
-            input.value = ''
+            var harvested = REFORMULATION_KINDS
+                .map( function( entry ) { return card.querySelector( '.qw-custom-row[' + entry.attribute + '="1"] .qw-custom-input' ) } )
+                // DISTINCT nodes, and the value is read ONCE per node: clearing an input and then reading
+                // it again would harvest an empty string as if it were a second answer.
+                .filter( function( input, idx, all ) { return input !== null && all.indexOf( input ) === idx } )
+                .map( function( input ) { return { input: input, value: String( input.value || '' ).trim() } } )
+                .filter( function( entry ) { return entry.value.length > 0 } )
+                .map( function( entry ) {
+                    if( st.custom.indexOf( entry.value ) === -1 ) { st.custom.push( entry.value ) }
+                    entry.input.value = ''
+
+                    return entry.value
+                } )
+            if( harvested.length === 0 ) { return }
             if( st.added ) {
                 st.added = false
                 st.addedText = null
@@ -8361,7 +8405,7 @@
 
             // Memo 079 reframe-freetext-click-loss: harvest a typed-but-not-Entered reformulation before
             // buildAnswerText reads st.custom, so clicking "Hinzufügen" never drops it.
-            harvestReframeInput( qIdx )
+            harvestReformulationInputs( qIdx )
 
             // PRD-006 (AC-09): re-adding after the selection changed simply overwrites
             // st.addedText with the freshly built answer — answers stay changeable.

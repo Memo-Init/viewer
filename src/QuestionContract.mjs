@@ -13,13 +13,17 @@
 
 
 // The only option.kind values the renderer understands. `option` is an author-supplied answer
-// choice; `custom`/`topic`/`reframe` are the three defaults the parser injects (ablehnen / Über
-// das Topic springen / Frage neu formulieren). `reframe` (Memo 059, F3) marks that the question
-// rests on a FALSE PREMISE, so it is a discussion turn — re-formulate the question — not a decision
-// record; like `custom`/`topic` it is a NON-'option' kind and therefore does NOT count toward
-// isRenderable's two-real-option minimum. Anything else is a defect — it makes the option vanish
-// from the card (MEMO-033).
-const VALID_OPTION_KINDS = [ 'option', 'custom', 'topic', 'reframe' ]
+// choice; `custom`/`topic`/`reframe`/`reoption` are the four defaults the parser injects (ablehnen /
+// Über das Topic springen / Frage neu formulieren / Antwortmoeglichkeiten neu formulieren).
+// `reframe` (Memo 059, F3) marks that the question rests on a FALSE PREMISE, so it is a discussion
+// turn — re-formulate the question — not a decision record. `reoption` (Memo 080, PRD-F2, Kap 18) is
+// its sibling for the case the user named as the recurring one: the question is fine, the ANSWER
+// OPTIONS go past the decision. Two kinds and not one flag, because the two carry different
+// discards — the wording versus the whole option set — and the journal gates them differently.
+// Like `custom`/`topic` both are NON-'option' kinds and therefore do NOT count toward isRenderable's
+// two-real-option minimum, and #resolvePreselected never pre-selects one. Anything else is a defect —
+// it makes the option vanish from the card (MEMO-033).
+const VALID_OPTION_KINDS = [ 'option', 'custom', 'topic', 'reframe', 'reoption' ]
 
 
 // EXACT logic mirror of isQuestionCleanParse (src/public/app.client.mjs). Returns true only when

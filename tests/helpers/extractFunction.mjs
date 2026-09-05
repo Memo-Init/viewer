@@ -53,21 +53,12 @@ function regexMayStart( prev ) {
 // version only knew about quotes, so a regex such as /"/g or /`+/ flipped it into a phantom string —
 // escapeHtml and escapeAttr could not be lifted out at all (the generated factory failed to parse).
 // Functions without a regex or a comment are sliced exactly as before.
-function sliceFunctionBody( source, name ) {
-    const marker = 'function ' + name + '('
-    const found = source.indexOf( marker )
-    if( found === -1 ) { throw new Error( 'function not found: ' + name ) }
-
-    // PRD-V5 (Memo 080 Kap 16): keep the `async` keyword. Slicing from `function` alone produced a
-    // SYNC declaration whose body still contained `await` — a syntax error, so an async client
-    // function could not be lifted at all. Additive to the V4 comment/regex-aware scanner below.
-    const isAsync = source.slice( Math.max( 0, found - 6 ), found ) === 'async '
-    const start = isAsync ? found - 6 : found
-
-    const braceStart = source.indexOf( '{', start )
-    if( braceStart === -1 ) { throw new Error( 'no body for: ' + name ) }
-
-    const body = source.slice( braceStart )
+// PRD-F2 (Memo 080 Kap 18): the scanner is its OWN function now, because a second lift needs it. It
+// walks a slice that STARTS at an opening bracket and returns the index of the matching closing one,
+// skipping strings, comments and regex literals on the way. It counts `{`, `[` and `(` alike: a function
+// body balances its braces regardless of the other two, and an array-of-objects literal needs both.
+// Having one scanner is the point — a second copy would drift the moment one of them learns something.
+function findBalancedEnd( body ) {
     const seed = { mode: 'code', quote: '', escaped: false, skip: false, inClass: false, depth: 0, prev: '', end: -1 }
     const state = body
         .split( '' )
@@ -139,8 +130,8 @@ function sliceFunctionBody( source, name ) {
 
                 return acc
             }
-            if( ch === '{' ) { acc.depth += 1 }
-            if( ch === '}' ) {
+            if( ch === '{' || ch === '[' || ch === '(' ) { acc.depth += 1 }
+            if( ch === '}' || ch === ']' || ch === ')' ) {
                 acc.depth -= 1
                 if( acc.depth === 0 ) { acc.end = idx }
             }
@@ -149,18 +140,72 @@ function sliceFunctionBody( source, name ) {
             return acc
         }, seed )
 
-    if( state.end === -1 ) { throw new Error( 'unbalanced braces for: ' + name ) }
-
-    return source.slice( start, braceStart + state.end + 1 )
+    return { end: state.end }
 }
 
 
-async function extractFunctions( names ) {
+function sliceFunctionBody( source, name ) {
+    const marker = 'function ' + name + '('
+    const found = source.indexOf( marker )
+    if( found === -1 ) { throw new Error( 'function not found: ' + name ) }
+
+    // PRD-V5 (Memo 080 Kap 16): keep the `async` keyword. Slicing from `function` alone produced a
+    // SYNC declaration whose body still contained `await` — a syntax error, so an async client
+    // function could not be lifted at all. Additive to the V4 comment/regex-aware scanner below.
+    const isAsync = source.slice( Math.max( 0, found - 6 ), found ) === 'async '
+    const start = isAsync ? found - 6 : found
+
+    const braceStart = source.indexOf( '{', start )
+    if( braceStart === -1 ) { throw new Error( 'no body for: ' + name ) }
+
+    const body = source.slice( braceStart )
+    const { end } = findBalancedEnd( body )
+
+    if( end === -1 ) { throw new Error( 'unbalanced braces for: ' + name ) }
+
+    return source.slice( start, braceStart + end + 1 )
+}
+
+
+// PRD-F2 (Memo 080 Kap 18): lift a module-scope `var NAME = <literal>` out of the same client script.
+// A lifted function that reads a module-scope list (REFORMULATION_KINDS) would otherwise resolve it
+// against globalThis, and the test would have to declare its own copy of that list — a copy that keeps
+// the test green exactly when the production list grows and the function under test starts behaving
+// differently. Lifting the real declaration is the difference between testing the code and testing a
+// replica of it.
+function sliceDeclaration( source, name ) {
+    const marker = 'var ' + name + ' = '
+    const found = source.indexOf( marker )
+    if( found === -1 ) { throw new Error( 'declaration not found: ' + name ) }
+
+    const valueStart = found + marker.length
+    const opener = [ source.indexOf( '[', valueStart ), source.indexOf( '{', valueStart ) ]
+        .filter( ( index ) => index !== -1 )
+        .sort( ( a, b ) => a - b )
+    if( opener.length === 0 || opener[ 0 ] !== valueStart ) { throw new Error( 'declaration is not a bracketed literal: ' + name ) }
+
+    const { end } = findBalancedEnd( source.slice( opener[ 0 ] ) )
+    if( end === -1 ) { throw new Error( 'unbalanced literal for: ' + name ) }
+
+    return source.slice( found, opener[ 0 ] + end + 1 )
+}
+
+
+// `declarations` (optional, PRD-F2) names module-scope `var` literals to lift ALONGSIDE the functions,
+// so the lifted functions close over the real ones lexically instead of resolving them against
+// globalThis. Omitted => the previous behaviour, byte for byte.
+async function extractFunctions( names, declarations ) {
     const script = await readEmittedScript()
+    const lifted = ( Array.isArray( declarations ) === true ? declarations : [] )
+        .map( ( name ) => sliceDeclaration( script, name ) )
+        .join( '\n\n' )
     const decls = names
         .map( ( name ) => sliceFunctionBody( script, name ) )
         .join( '\n\n' )
-    const factory = new Function( decls + '\nreturn { ' + names.join( ', ' ) + ' }' )
+    const source = [ lifted, decls ]
+        .filter( ( part ) => part.length > 0 )
+        .join( '\n\n' )
+    const factory = new Function( source + '\nreturn { ' + names.join( ', ' ) + ' }' )
 
     return factory()
 }
@@ -180,4 +225,4 @@ async function extractFunctionSources( names ) {
 }
 
 
-export { extractFunctions, extractFunctionSources, readMemoViewSource, readMemoViewStyles, readEmittedScript }
+export { extractFunctions, extractFunctionSources, sliceDeclaration, readMemoViewSource, readMemoViewStyles, readEmittedScript }

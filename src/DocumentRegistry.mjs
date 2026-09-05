@@ -1122,6 +1122,12 @@ class DocumentRegistry {
         // not to pick an option (no decision record). A non-'option' kind, so #resolvePreselected
         // skips it and isRenderable never counts it toward the two-real-option render minimum.
         optionsWithDefaults.push( { 'key': 'reframe', 'label': 'Frage neu formulieren', 'kind': 'reframe' } )
+        // Memo 080 (Kap 18, PRD-F2): `reoption` is the FOURTH injected sibling default and the one the
+        // user named as the recurring problem — "oftmals ist es nicht die Frage, die falsch ist, sondern
+        // die Antwortmoeglichkeiten". It signals that the question is fine and the OPTION SET goes past
+        // the decision. Like its three siblings it is a non-'option' kind: #resolvePreselected skips it,
+        // isRenderable never counts it toward the two-real-option minimum, and it changes NO status.
+        optionsWithDefaults.push( { 'key': 'reoption', 'label': 'Antwortmoeglichkeiten neu formulieren', 'kind': 'reoption' } )
 
         // An explicit `preselected` array on the JSON entry wins (the author already decided);
         // otherwise derive it from the AI recommendation. Empty recommendation -> [] (no crash).
@@ -1368,6 +1374,10 @@ class DocumentRegistry {
         // Memo 059 (Kap 7, F3=A): mirror the JSON path — inject `reframe` as the third sibling
         // default so the markdown-authored path offers the same false-premise / re-formulate turn.
         optionsWithDefaults.push( { 'key': 'reframe', 'label': 'Frage neu formulieren', 'kind': 'reframe' } )
+        // Memo 080 (Kap 18, PRD-F2): and `reoption` as the fourth. The two injection sites stay MIRRORS
+        // of each other — a default that reaches only the JSON-authored path is a card that offers the
+        // user a different answer set depending on how the revision happened to be written.
+        optionsWithDefaults.push( { 'key': 'reoption', 'label': 'Antwortmoeglichkeiten neu formulieren', 'kind': 'reoption' } )
 
         const { topicPositions } = DocumentRegistry.#extractTopicPositions( { body } )
         const { preselected } = DocumentRegistry.#resolvePreselected( { typ, aiRecommendation, options: optionsWithDefaults } )

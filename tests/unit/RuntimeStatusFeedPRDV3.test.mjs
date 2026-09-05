@@ -312,22 +312,107 @@ describe( 'PRD-V3 — die Zeile in der Kopfleiste (WI-104)', () => {
 
 
     // The server broadcasts to EVERY connected socket, so a per-document message has to be addressed on
-    // arrival or it paints another document's figures into the head bar on screen. This is asserted as a
-    // CLASS, not as one case: every branch that reacts to a document-scoped broadcast carries the SAME
-    // guard, character for character. A new branch with its own spelling fails here.
-    it( 'every document-scoped broadcast branch carries the identical documentId guard (2 branches compared)', () => {
-        const GUARD = 'if( !data.documentId || data.documentId === currentDocumentId ) {'
-        const scoped = [ 'annotationList', 'runtimeStatus' ]
-        const unguarded = scoped
+    // arrival or it paints another document's figures into the head bar on screen.
+    //
+    // This is asserted as a CLASS, and the difference from the earlier version of this case is the whole
+    // point: the set of document-scoped message types used to be WRITTEN DOWN here as
+    // `[ 'annotationList', 'runtimeStatus' ]`. A frozen list cannot fail for a type nobody added to it, so
+    // the case promised a class and checked two cases — a third document-scoped branch with its own
+    // spelling passed. The set is SEARCHED for now: it is derived from the server source, where every
+    // message that names a document declares itself by carrying a `documentId` field next to its `type`.
+    // Add a document-scoped broadcast and it enters this set whether or not anyone remembered this file.
+    //
+    // The detector is exercised against a HOSTILE synthetic pair below, so the case proves its own teeth
+    // in the same run instead of asserting that it has them.
+    const GUARD = 'if( !data.documentId || data.documentId === currentDocumentId ) {'
+
+    // The object literal a source index sits inside, by brace matching. Bounded to 2000 characters — the
+    // wire-message literals of this server are one- and two-liners, and an unbounded scan of a 200 kB
+    // source per hit is a cost with no return.
+    const objectLiteralAt = ( { source, index } ) => {
+        const open = source.lastIndexOf( '{', index )
+        if( open === -1 ) { return '' }
+
+        const window = source.slice( open, open + 2000 )
+        const closed = window
+            .split( '' )
+            .reduce( ( state, char, position ) => {
+                if( state.end !== null ) { return state }
+                const depth = char === '{' ? state.depth + 1 : char === '}' ? state.depth - 1 : state.depth
+
+                return { depth, end: depth === 0 && char === '}' ? position : null }
+            }, { depth: 0, end: null } )
+
+        return closed.end === null ? window : window.slice( 0, closed.end + 1 )
+    }
+
+    // A message type is DOCUMENT-SCOPED when the server builds it with a `documentId` beside its `type` —
+    // the message itself says it belongs to one document. Derived, never enumerated.
+    const documentScopedTypes = ( { serverSource } ) => {
+        return Array.from( serverSource.matchAll( /'type':\s*'([A-Za-z]+)'/g ) )
+            .filter( ( hit ) => objectLiteralAt( { source: serverSource, index: hit.index } ).includes( 'documentId' ) )
+            .map( ( hit ) => hit[ 1 ] )
+            .filter( ( type, index, all ) => all.indexOf( type ) === index )
+            .sort()
+    }
+
+    const unguardedBranches = ( { types, clientSource } ) => {
+        return types
             .filter( ( type ) => {
-                const start = client.indexOf( `if( data.type === '${ type }' ) {` )
+                const start = clientSource.indexOf( `if( data.type === '${ type }' ) {` )
 
-                return start === -1 || client.slice( start, start + 200 ).includes( GUARD ) !== true
+                return start === -1 || clientSource.slice( start, start + 200 ).includes( GUARD ) !== true
             } )
+    }
 
-        expect( scoped.length ).toBe( 2 )
-        expect( unguarded ).toEqual( [] )
+    // `content` is the one document-scoped message that must NOT be filtered, and it is exempted here by
+    // name and with its reason rather than by being quietly missing from a list: it is the unicast REPLY
+    // to the client's own request, and its branch ADOPTS `data.documentId` as the new current document.
+    // Guarding it against the current document would make switching documents impossible.
+    const ADOPTS_INSTEAD_OF_FILTERS = [ 'content' ]
+
+    it( 'every document-scoped broadcast branch carries the identical documentId guard — the set is searched, not listed', () => {
+        const scoped = documentScopedTypes( { serverSource: memoView } )
+        const mustGuard = scoped
+            .filter( ( type ) => ADOPTS_INSTEAD_OF_FILTERS.includes( type ) !== true )
+
+        // A search that found nothing would make every assertion below vacuously true.
+        expect( scoped.length ).toBeGreaterThanOrEqual( 2 )
+        expect( scoped ).toContain( 'runtimeStatus' )
+        expect( scoped ).toContain( 'annotationList' )
+        expect( mustGuard.length ).toBeGreaterThanOrEqual( 2 )
+
+        expect( unguardedBranches( { types: mustGuard, clientSource: client } ) ).toEqual( [] )
         // and the guard exists exactly as often as there are branches that need it — no second spelling
-        expect( client.split( GUARD ).length - 1 ).toBe( scoped.length )
+        expect( client.split( GUARD ).length - 1 ).toBe( mustGuard.length )
+    } )
+
+
+    // The NEGATIVE PROBE of the case above. A guard case that only ever sees correct sources cannot say
+    // whether it would catch anything; this feeds the same two functions a synthetic THIRD document-scoped
+    // broadcast whose client branch is guarded with a DIFFERENT SPELLING — the exact shape the frozen list
+    // let through — and requires them to name it.
+    it( 'the class detector really bites: a third document-scoped branch with its own spelling is found', () => {
+        const hostileServer = `${ memoView }
+        static #broadcastCockpitList( { documentId, items } ) {
+            const message = JSON.stringify( { 'type': 'cockpitList', documentId, items } )
+        }`
+        // guarded — but not with the ONE spelling; the missing "!data.documentId ||" half means a
+        // broadcast that omits the id is dropped instead of accepted.
+        const hostileClient = `${ client }
+                if( data.type === 'cockpitList' ) {
+                    if( data.documentId === currentDocumentId ) {
+                        renderCockpit( data )
+                    }
+                }`
+
+        const scoped = documentScopedTypes( { serverSource: hostileServer } )
+        const mustGuard = scoped
+            .filter( ( type ) => ADOPTS_INSTEAD_OF_FILTERS.includes( type ) !== true )
+
+        expect( scoped ).toContain( 'cockpitList' )
+        expect( mustGuard.length ).toBe( documentScopedTypes( { serverSource: memoView } ).filter( ( type ) => ADOPTS_INSTEAD_OF_FILTERS.includes( type ) !== true ).length + 1 )
+        // the assertion of the case above, run against the hostile pair, goes RED — and names the branch
+        expect( unguardedBranches( { types: mustGuard, clientSource: hostileClient } ) ).toEqual( [ 'cockpitList' ] )
     } )
 } )

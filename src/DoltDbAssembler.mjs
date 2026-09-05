@@ -764,6 +764,91 @@ class DoltDbAssembler {
     }
 
 
+    // Is this file name a per-memo database? Memo 080, PRD-V3 (WI-104): the file-watcher needs the SAME
+    // marker the Zwei-Regime weiche uses, and the pattern has exactly ONE home (DB_NAME_PATTERN above).
+    // Public + pure so the watcher imports a rule instead of re-typing a regex — a second spelling of the
+    // same pattern is the class of defect this avoids, not just the one call site.
+    static isDbFileName( { fileName } ) {
+        const isDbFile = typeof fileName === 'string' && DB_NAME_PATTERN.test( fileName ) === true
+
+        return { isDbFile }
+    }
+
+
+    // Memo 080, PRD-V3 (WI-104) — the RUNTIME STATUS of one memo, read from the change-ledger. The eighth
+    // public read leaf, and the cheapest possible change-signal: `history_journal` carries a MONOTONIC `seq`
+    // (HistoryJournal.#nextSeq writes MAX(seq)+1 per commit), so ONE query on the maximum answers "did
+    // anything change" without a full comparison, and the newest row names WHAT changed.
+    //
+    // Returns { seq, latest, phases, workItems, rolloutInDb }:
+    //   * seq         — MAX(seq) of the ledger; 0 for an empty ledger and 0 for a database that has no
+    //                   `history_journal` table at all (both are "nothing recorded", never a throw).
+    //   * latest      — the newest ledger row { seq, entity, entityId, sessionId, at } or null. An empty
+    //                   ledger yields null, NOT an invented row.
+    //   * phases      — rows in `rollout_phase` WITHOUT the reserved `__state__` sentinel (the JSON
+    //                   spillover row RolloutStateStore writes). The sentinel is not a phase and must not
+    //                   be counted as one — same rule the scope line already applies (SCOPE_FIGURES).
+    //   * workItems   — rows in `rollout_work_item`.
+    //   * rolloutInDb — did the projection leave ANY row (sentinel INCLUDED)? This is the field that keeps
+    //                   "nothing to report" apart from "nothing compared": a memo whose rollout state was
+    //                   never normalized reads 0/0 exactly like a memo with an empty rollout, and a bare
+    //                   0-of-0 balance would look green while nothing was ever measured. The sentinel
+    //                   counts here — its presence proves the projection RAN, even if it wrote no phase.
+    //
+    // Read-only open, close in `finally`; every table guarded by #tableExists. NO write statement — the
+    // single-writer discipline (F4=A) stays with the core CLI, the viewer stays a pure reader.
+    static readRuntimeStatus( { dbPath } ) {
+        if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.readRuntimeStatus: "dbPath" is required (non-empty string)' )
+        }
+        if( existsSync( dbPath ) !== true ) {
+            throw new Error( `DoltDbAssembler.readRuntimeStatus: "${ dbPath }" does not exist — cannot read the history journal` )
+        }
+
+        const db = DoltDbAssembler.#open( { dbPath } )
+        try {
+            const hasJournal = DoltDbAssembler.#tableExists( { db, 'table': 'history_journal' } )
+            const maxRow = hasJournal === true
+                ? DoltDbAssembler.#get( { db, 'sql': 'SELECT MAX( seq ) AS m FROM history_journal' } )
+                : null
+            const maxSeq = maxRow === null || maxRow[ 'm' ] === null || maxRow[ 'm' ] === undefined
+                ? 0
+                : Number( maxRow[ 'm' ] )
+            const latestRow = hasJournal === true && maxSeq > 0
+                ? DoltDbAssembler.#get( { db, 'sql': 'SELECT seq, entity, entity_id, session_id, `at` FROM history_journal ORDER BY seq DESC LIMIT 1' } )
+                : null
+            const latest = latestRow === null
+                ? null
+                : {
+                    'seq': Number( latestRow[ 'seq' ] ),
+                    'entity': latestRow[ 'entity' ] === undefined ? null : latestRow[ 'entity' ],
+                    'entityId': latestRow[ 'entity_id' ] === undefined ? null : latestRow[ 'entity_id' ],
+                    'sessionId': latestRow[ 'session_id' ] === undefined ? null : latestRow[ 'session_id' ],
+                    'at': latestRow[ 'at' ] === undefined ? null : latestRow[ 'at' ]
+                }
+
+            const countOf = ( { table, where } ) => {
+                if( DoltDbAssembler.#tableExists( { db, table } ) !== true ) {
+                    return 0
+                }
+                const clause = where === null ? '' : ` WHERE ${ where }`
+                const row = DoltDbAssembler.#get( { db, 'sql': `SELECT count( * ) AS n FROM \`${ table }\`${ clause }` } )
+
+                return row === null ? 0 : Number( row[ 'n' ] )
+            }
+
+            const phases = countOf( { 'table': 'rollout_phase', 'where': "id != '__state__'" } )
+            const phaseRowsAll = countOf( { 'table': 'rollout_phase', 'where': null } )
+            const workItems = countOf( { 'table': 'rollout_work_item', 'where': null } )
+            const rolloutInDb = phaseRowsAll > 0 || workItems > 0
+
+            return { 'seq': maxSeq, latest, phases, workItems, rolloutInDb }
+        } finally {
+            db.close()
+        }
+    }
+
+
     // ---- private ----
 
     // The PURE part of readKnowledgeGraph: rows in, { mermaid, counts, empty, warnings, reason, source } out

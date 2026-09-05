@@ -1855,3 +1855,156 @@ describe( 'DoltDbAssembler.readKnowledgeGraph (Memo 080, PRD-V2 / WI-102)', () =
         expect( region.indexOf( '${' ) ).toBe( -1 )
     } )
 } )
+
+
+// PRD-V3 (Memo 080, Kap 15 / WI-104) — the eighth read leaf: the RUNTIME STATUS from the change-ledger.
+// The signal of the tracer is `history_journal.seq`, which HistoryJournal writes as MAX(seq)+1 per commit.
+// Every case states HOW MUCH it compared (ledger rows, rollout rows) — a check without a comparison basis
+// counts as red, not green. Tests write ONLY into the repo-internal .test-tmp/.
+describe( 'DoltDbAssembler.readRuntimeStatus (Memo 080, PRD-V3 / WI-104)', () => {
+    const repoTmpRoot = join( process.cwd(), '.test-tmp' )
+    let memoDir = ''
+    let dbPath = ''
+
+
+    const createRuntimeTables = ( { db } ) => {
+        db.exec( 'CREATE TABLE IF NOT EXISTS history_journal ( seq INTEGER, entity TEXT, entity_id TEXT, field TEXT, old_value TEXT, new_value TEXT, session_id TEXT, `at` TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, spillover TEXT )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
+    }
+
+    // `journalRows` ledger rows (seq 1..n, newest last), `phaseRows` real phases, `sentinel` the reserved
+    // __state__ row, `prdRows` rollout work items. Returns the seeded figures so a case can name them.
+    const seedRuntime = ( { path, journalRows, phaseRows, prdRows, sentinel } ) => {
+        const db = new DatabaseSync( path )
+        createRuntimeTables( { db } )
+
+        const journal = db.prepare( 'INSERT INTO history_journal ( seq, entity, entity_id, field, old_value, new_value, session_id, `at` ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+        Array.from( { length: journalRows } )
+            .forEach( ( _, index ) => journal.run( index + 1, index + 1 === journalRows ? 'rollout-normalize' : 'lifecycle-set', `commit-${ index + 1 }`, null, null, null, 'sess-7', `2026-09-05T10:0${ index }:00Z` ) )
+
+        const phase = db.prepare( 'INSERT INTO rollout_phase ( id, memo_id, name, status, spillover ) VALUES ( ?, ?, ?, ?, ? )' )
+        Array.from( { length: phaseRows } )
+            .forEach( ( _, index ) => phase.run( `phase-${ index }`, 'M080', `Phase ${ index }`, 'open', '{}' ) )
+        if( sentinel === true ) { phase.run( '__state__', 'M080', null, null, '{"memo":"M080"}' ) }
+
+        const prd = db.prepare( 'INSERT INTO rollout_work_item ( id, phase_id, title, status, target, wi_type, spillover ) VALUES ( ?, ?, ?, ?, ?, ?, ? )' )
+        Array.from( { length: prdRows } )
+            .forEach( ( _, index ) => prd.run( `PRD-${ index }`, 'phase-0', `PRD ${ index }`, 'open', null, 'prd', '{}' ) )
+
+        db.close()
+
+        return { journalRows, phaseRows, prdRows }
+    }
+
+
+    beforeEach( () => {
+        mkdirSync( repoTmpRoot, { recursive: true } )
+        memoDir = mkdtempSync( join( repoTmpRoot, 'memo-080-runtime-' ) )
+        dbPath = resolve( memoDir, 'memo-080.db' )
+    } )
+
+    afterEach( () => {
+        rmSync( memoDir, { recursive: true, force: true } )
+    } )
+
+
+    it( 'a filled ledger yields the MAXIMUM seq and the newest row (5 ledger rows compared)', () => {
+        const seeded = seedRuntime( { path: dbPath, journalRows: 5, phaseRows: 0, prdRows: 0, sentinel: false } )
+        const status = DoltDbAssembler.readRuntimeStatus( { dbPath } )
+
+        expect( seeded.journalRows ).toBe( 5 )
+        expect( status[ 'seq' ] ).toBe( 5 )
+        expect( status[ 'latest' ][ 'seq' ] ).toBe( 5 )
+        expect( status[ 'latest' ][ 'entity' ] ).toBe( 'rollout-normalize' )
+        expect( status[ 'latest' ][ 'entityId' ] ).toBe( 'commit-5' )
+        expect( status[ 'latest' ][ 'sessionId' ] ).toBe( 'sess-7' )
+        expect( status[ 'latest' ][ 'at' ] ).toBe( '2026-09-05T10:04:00Z' )
+    } )
+
+
+    it( 'an EMPTY ledger yields seq 0 and latest null — no invented value (0 ledger rows compared)', () => {
+        const seeded = seedRuntime( { path: dbPath, journalRows: 0, phaseRows: 0, prdRows: 0, sentinel: false } )
+        const status = DoltDbAssembler.readRuntimeStatus( { dbPath } )
+
+        expect( seeded.journalRows ).toBe( 0 )
+        expect( status[ 'seq' ] ).toBe( 0 )
+        expect( status[ 'latest' ] ).toBe( null )
+    } )
+
+
+    it( 'EMPTY rollout tables answer rolloutInDb false — "nothing compared", not a null balance (0 rollout rows)', () => {
+        const seeded = seedRuntime( { path: dbPath, journalRows: 3, phaseRows: 0, prdRows: 0, sentinel: false } )
+        const status = DoltDbAssembler.readRuntimeStatus( { dbPath } )
+
+        expect( seeded.phaseRows + seeded.prdRows ).toBe( 0 )
+        expect( status[ 'phases' ] ).toBe( 0 )
+        expect( status[ 'workItems' ] ).toBe( 0 )
+        expect( status[ 'rolloutInDb' ] ).toBe( false )
+    } )
+
+
+    it( 'FILLED rollout tables answer rolloutInDb true with the figures (11 phases + 77 rollout rows compared)', () => {
+        const seeded = seedRuntime( { path: dbPath, journalRows: 2, phaseRows: 11, prdRows: 77, sentinel: true } )
+        const status = DoltDbAssembler.readRuntimeStatus( { dbPath } )
+
+        expect( seeded.phaseRows ).toBe( 11 )
+        expect( seeded.prdRows ).toBe( 77 )
+        // the reserved __state__ sentinel is NOT a phase and is not counted as one
+        expect( status[ 'phases' ] ).toBe( 11 )
+        expect( status[ 'workItems' ] ).toBe( 77 )
+        expect( status[ 'rolloutInDb' ] ).toBe( true )
+    } )
+
+
+    it( 'the __state__ sentinel ALONE still proves the projection ran — rolloutInDb true at 0 phases', () => {
+        seedRuntime( { path: dbPath, journalRows: 1, phaseRows: 0, prdRows: 0, sentinel: true } )
+        const status = DoltDbAssembler.readRuntimeStatus( { dbPath } )
+
+        expect( status[ 'phases' ] ).toBe( 0 )
+        expect( status[ 'workItems' ] ).toBe( 0 )
+        expect( status[ 'rolloutInDb' ] ).toBe( true )
+    } )
+
+
+    it( 'a database WITHOUT the three tables reads as all-zero instead of throwing (0 of 3 tables present)', () => {
+        const db = new DatabaseSync( dbPath )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT )' )
+        db.close()
+
+        const status = DoltDbAssembler.readRuntimeStatus( { dbPath } )
+
+        expect( status ).toEqual( { 'seq': 0, 'latest': null, 'phases': 0, 'workItems': 0, 'rolloutInDb': false } )
+    } )
+
+
+    it( 'fails loud on a missing path and on a missing file — no silent default', () => {
+        expect( () => DoltDbAssembler.readRuntimeStatus( {} ) ).toThrow( /"dbPath" is required/ )
+        expect( () => DoltDbAssembler.readRuntimeStatus( { dbPath: resolve( memoDir, 'nope.db' ) } ) ).toThrow( /does not exist/ )
+    } )
+
+
+    it( 'the leaf carries NO write statement — the viewer stays a pure reader (F4=A)', () => {
+        const source = readFileSync( resolve( import.meta.dirname, 'DoltDbAssembler.mjs' ), 'utf-8' )
+        const start = source.indexOf( 'static readRuntimeStatus( { dbPath } ) {' )
+        const end = source.indexOf( '// ---- private ----', start )
+        const region = source.slice( start, end )
+        const writeVerbs = [ 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'ALTER' ]
+
+        expect( start ).toBeGreaterThan( -1 )
+        expect( end ).toBeGreaterThan( start )
+        expect( region.length ).toBeGreaterThan( 200 )
+        expect( writeVerbs.filter( ( verb ) => region.indexOf( verb ) !== -1 ) ).toEqual( [] )
+    } )
+
+
+    it( 'isDbFileName recognises the database and NOTHING else (6 names compared)', () => {
+        const names = [ 'memo-080.db', 'memo-9.db', 'notes.txt', 'REV-18.md', 'memo-080.db.write-lock', '.memo-080.db-lock' ]
+        const verdicts = names
+            .map( ( fileName ) => DoltDbAssembler.isDbFileName( { fileName } )[ 'isDbFile' ] )
+
+        expect( names.length ).toBe( 6 )
+        expect( verdicts ).toEqual( [ true, true, false, false, false, false ] )
+        expect( DoltDbAssembler.isDbFileName( { fileName: null } )[ 'isDbFile' ] ).toBe( false )
+    } )
+} )

@@ -253,6 +253,13 @@ class MemoView {
     // PRD-004 (Memo 022 Kap 8): config boot result, read ONCE at startup (see startServer).
     static #config = null
 
+    // PRD-V3 (Memo 080, Kap 15 / WI-104): the LAST RUNTIME SEQUENCE broadcast per document. The
+    // `history_journal` seq is monotonic, so "did anything change" is a comparison against this marker —
+    // an event whose seq did not GROW sends nothing at all. Without it, every stray file event on
+    // `memo-NNN.db` (a lock touch, a reader opening the file) would push an identical message to every
+    // client. Keyed per document, because each memo carries its own database and its own ledger.
+    static #lastRuntimeSeq = new Map()
+
     // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer. #specRegistry holds the auto-discovered
     // project spec/ namespaces (SpecAutoRegister, no user-local store); #specRoots keeps the two disk
     // roots the publish-badge deriver compares — the workshop spec/ and the public promotion target
@@ -549,6 +556,96 @@ class MemoView {
     }
 
 
+    // PRD-V3 (Memo 080, Kap 15 / WI-104): the RUNTIME-STATUS broadcast, mirror of #broadcastAnnotationList.
+    // Fired from the `dbChanged` branch of onChange, i.e. after a write to `memo-NNN.db` — the Anzeige-Ende
+    // of the tracer: database write -> journal row -> file watcher -> MAX(seq) -> this message -> one line
+    // in the head bar, without a reload.
+    //
+    // Sends ONLY when the ledger's sequence GREW since the last message for this document (#lastRuntimeSeq).
+    // A memo without a database, a read error, or an unchanged sequence all degrade to "send nothing" — the
+    // schaufenster never takes the server down and never repeats itself.
+    //
+    // Public for the tests (the ONLY caller in production is onChange): a private static can not be driven
+    // from a unit test without a server. Returns { sent, seq, reason } so a check can state WHY nothing was
+    // sent instead of guessing.
+    static broadcastRuntimeStatus( { documentId, memoPath } ) {
+        if( !MemoView.#wssInstance ) {
+            return { 'sent': false, 'seq': null, 'reason': 'no-clients' }
+        }
+
+        const resolved = MemoView.resolveMemoDbPath( { memoPath } )
+
+        if( resolved[ 'status' ] !== true ) {
+            return { 'sent': false, 'seq': null, 'reason': 'no-db' }
+        }
+
+        const status = ( () => {
+            try {
+                return DoltDbAssembler.readRuntimeStatus( { 'dbPath': resolved[ 'dbPath' ] } )
+            } catch( error ) {
+                return null
+            }
+        } )()
+
+        if( status === null ) {
+            return { 'sent': false, 'seq': null, 'reason': 'read-failed' }
+        }
+
+        const advanced = MemoView.advanceRuntimeSeq( { documentId, 'seq': status[ 'seq' ] } )
+
+        if( advanced[ 'advanced' ] !== true ) {
+            return { 'sent': false, 'seq': status[ 'seq' ], 'reason': 'not-advanced' }
+        }
+
+        const message = JSON.stringify( MemoView.buildRuntimeStatusMessage( { documentId, status } ) )
+
+        MemoView.#wssInstance.clients
+            .forEach( ( ws ) => {
+                if( ws.readyState === 1 ) {
+                    ws.send( message )
+                }
+            } )
+
+        return { 'sent': true, 'seq': status[ 'seq' ], 'reason': null }
+    }
+
+
+    // The GATE of the runtime feed: did the ledger's sequence grow since the last message for this document?
+    // Public + side-effecting on purpose — it is the one place the marker is written, so the rule can be
+    // measured on its own instead of only through a running server. A first sighting always advances.
+    static advanceRuntimeSeq( { documentId, seq } ) {
+        const seen = MemoView.#lastRuntimeSeq.get( documentId )
+
+        if( seen !== undefined && seq <= seen ) {
+            return { 'advanced': false, 'seen': seen }
+        }
+
+        MemoView.#lastRuntimeSeq.set( documentId, seq )
+
+        return { 'advanced': true, 'seen': seen === undefined ? null : seen }
+    }
+
+
+    // The wire shape of the runtime message, declared ONCE. The six payload fields exist in exactly this
+    // place, so no path can hand out a message with a field missing.
+    static buildRuntimeStatusMessage( { documentId, status } ) {
+        return {
+            'type': 'runtimeStatus', documentId,
+            'seq': status[ 'seq' ], 'latest': status[ 'latest' ],
+            'phases': status[ 'phases' ], 'workItems': status[ 'workItems' ], 'rolloutInDb': status[ 'rolloutInDb' ]
+        }
+    }
+
+
+    // The runtime-status marker of ONE document, dropped. Called when a document leaves the registry so a
+    // re-registration starts from "nothing seen yet" instead of silently swallowing the first message.
+    static forgetRuntimeStatus( { documentId } ) {
+        const had = MemoView.#lastRuntimeSeq.delete( documentId )
+
+        return { 'forgotten': had }
+    }
+
+
     static async startServer( { port } ) {
         let portNumber
 
@@ -571,6 +668,22 @@ class MemoView {
         MemoView.#config = config
 
         const onChange = ( { documentId, event } ) => {
+            // PRD-V3 (Memo 080, Kap 15 / WI-104): the change callback used to DISCARD the event kind and
+            // always answer with the same documentList message. A database write is a different fact than a
+            // new revision file, so it takes its own branch — and the documentList branch below stays
+            // exactly as it was for every other kind.
+            if( event === 'dbChanged' ) {
+                if( MemoView.#registry === null ) { return }
+
+                const found = MemoView.#registry.getDocument( { documentId } )
+
+                if( found[ 'status' ] !== true ) { return }
+
+                MemoView.broadcastRuntimeStatus( { documentId, 'memoPath': found[ 'document' ][ 'memoPath' ] } )
+
+                return
+            }
+
             if( MemoView.#wssInstance && MemoView.#registry ) {
                 const { tree, latest } = MemoView.buildDocumentListPayload()
                 const message = JSON.stringify( { 'type': 'documentList', tree, latest } )
@@ -747,6 +860,11 @@ class MemoView {
         const { dismissed } = DismissStore.readDismissed( { 'storePath': dismissStorePath } )
         const pruned = dismissed
             .filter( ( documentId ) => MemoView.#registry.removeDocument( { documentId } )[ 'status' ] === true )
+
+        // PRD-V3 (Memo 080, WI-104): the runtime-status marker leaves with the document, on BOTH removal
+        // paths — the boot prune here and the DELETE route. One rule, two call sites, not one of them.
+        pruned
+            .forEach( ( documentId ) => MemoView.forgetRuntimeStatus( { documentId } ) )
 
         if( pruned.length > 0 ) {
             process.stdout.write( `  Dismiss ledger: pruned ${pruned.length} dismissed document(s) (${pruned.join( ', ' )})\n` )
@@ -1688,6 +1806,10 @@ class MemoView {
              "0 Instanzen". PRD-002 (Memo 076, F10): a click now OPENS the Clients overlay (#clients-modal)
              instead of routing to a (removed) Clients tab. -->
         <button id="clients-head" class="clients-head" type="button" title="Registrierte CC-Instanzen anzeigen" aria-label="Registrierte Instanzen">0 Instanzen</button>
+        <!-- PRD-V3 (Memo 080, Kap 15 / WI-104): the LAUFZEIT-STATUS line. Filled live from the
+             runtimeStatus broadcast — one line, no reload, no scroll intervention. Empty until the
+             first database write arrives, so it costs nothing on a memo that carries no database. -->
+        <span id="runtime-status" class="runtime-status" role="status" aria-live="polite" aria-label="Laufzeit-Status der Memo-Datenbank"></span>
         <span id="nav-spacer"></span>
         <button id="transcript-new" class="nav-btn-secondary" title="Transcript hinzufügen oder neues Memo bootstrappen">Transcript</button>
         <button id="nav-unlink" class="nav-btn-secondary" title="Memo entkoppeln">Unlink</button>
@@ -2429,6 +2551,10 @@ class MemoView {
 
                     return
                 }
+
+                // PRD-V3 (Memo 080, WI-104): drop the runtime-status marker with the document. Kept, it
+                // would swallow the FIRST message after a re-registration (the seq would not have grown).
+                MemoView.forgetRuntimeStatus( { documentId } )
 
                 // Memo 079 PRD-22 (WI-045): persist the dismissal so it survives a server restart — the
                 // boot prune reads this ledger and drops the document before it re-enters the queue.

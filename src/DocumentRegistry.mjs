@@ -19,10 +19,22 @@ const MEMO_STATUS_DEFAULT = 'Entwurf'
 const REVISION_STATUS_VALUES = [ 'offen', 'transcript-eingetragen', 'eingeloggt' ]
 const REVISION_STATUS_DEFAULT = 'offen'
 
+// PRD-V3 (Memo 080, Kap 15 / WI-104): the debounce window of the DATABASE branch, in milliseconds.
+// MEASURED, not guessed — one real `memo rollout normalize` (11 phases, 77 rollout work items, one dolt
+// commit) against a copy of memo-080.db raised exactly ONE `memo-080.db` event plus two events on the
+// sibling lock files (`.memo-080.db-lock`, `memo-080.db.write-lock`), all inside the same millisecond.
+// Re-measure with: node tests/manual/runtime-status-e2e.mjs (it prints "fs-Ereignisse je Schreibvorgang").
+// The window is therefore not there to survive a long burst; it is there so a platform that DOES split one
+// commit into several events (or a writer that touches the file twice) still yields ONE evaluation. It sits
+// in the same order as the revision-file debounce (MemoView.#startFileWatcher, 100 ms), so a live viewer
+// still reacts within a blink.
+const DB_WATCH_DEBOUNCE_MS = 150
+
 
 class DocumentRegistry {
     #documents = new Map()
     #watchers = new Map()
+    #dbDebounceTimers = new Map()
     #onChangeCallback = null
 
 
@@ -2033,8 +2045,77 @@ class DocumentRegistry {
     }
 
 
+    // The MEMO folder that belongs to a watched directory. A memo is registered EITHER with its own
+    // folder (cli.mjs) OR with its `revisions/` subfolder (ProjectAutoRegister, which is the path the
+    // running server actually takes) — and `memo-NNN.db` lies in the MEMO folder in both cases. Mirror of
+    // MemoView.resolveMemoDir; the same one rule, so the two sides can not drift apart.
+    static #memoDirOfWatchPath( { dirPath } ) {
+        const memoDir = basename( dirPath ) === 'revisions' ? dirname( dirPath ) : dirPath
+
+        return { memoDir }
+    }
+
+
+    // PRD-V3 (Memo 080, Kap 15 / WI-104): ONE debounced database report per document. Every db watcher
+    // funnels through here, so a file event seen by two watchers (memo folder AND the registered folder,
+    // when they are the same directory) still produces exactly ONE evaluation. The callback carries
+    // `event: 'dbChanged'` — a DIFFERENT event kind than `revisionsUpdated`, so the receiving side can
+    // branch instead of re-broadcasting the document list for a database write.
+    #scheduleDbChange( { documentId } ) {
+        const running = this.#dbDebounceTimers.get( documentId )
+
+        if( running !== undefined ) {
+            clearTimeout( running )
+        }
+
+        const timer = setTimeout( () => {
+            this.#dbDebounceTimers.delete( documentId )
+
+            if( this.#documents.has( documentId ) !== true ) { return }
+
+            if( this.#onChangeCallback ) {
+                this.#onChangeCallback( { documentId, 'event': 'dbChanged' } )
+            }
+        }, DB_WATCH_DEBOUNCE_MS )
+
+        // An open debounce timer must not hold the process (and the jest worker) alive.
+        if( typeof timer.unref === 'function' ) { timer.unref() }
+
+        this.#dbDebounceTimers.set( documentId, timer )
+    }
+
+
+    // Watch the MEMO folder for `memo-NNN.db`. Started IN ADDITION to the revisions watcher and only when
+    // the memo folder is a different directory than the registered one — otherwise the registered watcher
+    // below already sees the file and the shared debounce would be the only thing separating the two.
+    // A directory that can not be watched (removed between the two calls) degrades to "no db signal",
+    // never to a failed registration: the memo stays usable, it just does not push runtime status.
+    #startDbWatcher( { documentId, memoDir } ) {
+        try {
+            const watcher = watch( memoDir, ( eventType, filename ) => {
+                if( DoltDbAssembler.isDbFileName( { fileName: filename } )[ 'isDbFile' ] !== true ) { return }
+
+                this.#scheduleDbChange( { documentId } )
+            } )
+
+            return { watcher }
+        } catch( error ) {
+            return { 'watcher': null }
+        }
+    }
+
+
     #startDirectoryWatcher( { documentId, dirPath } ) {
         const watcher = watch( dirPath, async ( eventType, filename ) => {
+            // PRD-V3 (Memo 080, WI-104): the DATABASE branch, BEFORE the hard `.md` filter that made this
+            // watcher deaf to `memo-NNN.db` (Beleg 15.6). It returns immediately — no revision rescan, no
+            // #refreshParsedFields; that is the business of the `.md` branch below, which stays untouched.
+            if( DoltDbAssembler.isDbFileName( { fileName: filename } )[ 'isDbFile' ] === true ) {
+                this.#scheduleDbChange( { documentId } )
+
+                return
+            }
+
             if( !filename || !filename.endsWith( '.md' ) ) { return }
 
             const revisionPattern = /^REV-(\d+)(?:-(prepare|update))?\.md$/i
@@ -2063,7 +2144,28 @@ class DocumentRegistry {
             }
         } )
 
-        return { watcher }
+        // PRD-V3 (Memo 080, WI-104): the db lives in the MEMO folder, the running server registers the
+        // `revisions/` subfolder — so the branch above alone would never fire in the real setup. The two
+        // watchers are handed back as ONE closable handle, so every existing close/shutdown call site keeps
+        // working unchanged and neither watcher can be forgotten.
+        const { memoDir } = DocumentRegistry.#memoDirOfWatchPath( { dirPath } )
+        const dbWatcher = memoDir === dirPath ? null : this.#startDbWatcher( { documentId, memoDir } )[ 'watcher' ]
+        const composite = {
+            'close': () => {
+                watcher.close()
+
+                if( dbWatcher !== null ) { dbWatcher.close() }
+
+                const running = this.#dbDebounceTimers.get( documentId )
+
+                if( running !== undefined ) {
+                    clearTimeout( running )
+                    this.#dbDebounceTimers.delete( documentId )
+                }
+            }
+        }
+
+        return { 'watcher': composite }
     }
 }
 

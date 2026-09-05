@@ -9103,6 +9103,55 @@
             } )
         }
 
+        // PRD-V3 (Memo 080, Kap 15 / WI-104): the LAUFZEIT-STATUS line, built as a PURE function of the
+        // `runtimeStatus` message so it can be measured without a DOM.
+        //
+        // Returns { html, gap }. `gap` is true for the honest case the memo names: the rollout state is NOT
+        // in the database. `phases: 0, workItems: 0` reads exactly like a finished rollout with nothing left,
+        // so a bare "0 von 0" would look green while NOTHING was ever compared — with rolloutInDb false the
+        // line says so in words instead of printing a null balance.
+        //
+        // Every value passes through escapeHtml: `entity`, `entityId` and `at` come out of the database and
+        // are put into markup here.
+        function buildRuntimeStatusLine( data ) {
+            var payload = data || {}
+            var latest = payload.latest || null
+            var seq = typeof payload.seq === 'number' ? payload.seq : 0
+            var parts = [ 'DB #' + escapeHtml( seq ) ]
+
+            if( latest !== null ) {
+                var kind = latest.entity == null ? '—' : latest.entity
+                var subject = latest.entityId == null ? '' : latest.entityId
+                parts.push( escapeHtml( kind ) + ( subject.length === 0 ? '' : ' ' + escapeHtml( subject ) ) )
+                if( latest.at != null ) { parts.push( escapeHtml( latest.at ) ) }
+            }
+
+            var gap = payload.rolloutInDb !== true
+
+            parts.push( gap === true
+                ? 'Rollout-Zustand nicht in der Datenbank'
+                : escapeHtml( payload.phases ) + ' Phasen · ' + escapeHtml( payload.workItems ) + ' PRDs' )
+
+            return { html: parts.join( ' · ' ), gap: gap }
+        }
+
+
+        // Write the line into the head bar. No re-render of the revision view, no scroll intervention —
+        // the whole point of the tracer is that the number appears WITHOUT the page moving.
+        function renderRuntimeStatus( data ) {
+            var host = document.getElementById( 'runtime-status' )
+
+            if( !host ) { return }
+
+            var line = buildRuntimeStatusLine( data )
+            host.innerHTML = line.html
+            host.title = line.gap === true
+                ? 'Die Rollout-Tabellen der Memo-Datenbank sind leer — es wurde nichts verglichen.'
+                : 'Laufzeit-Status aus dem Verlaufs-Journal der Memo-Datenbank.'
+            host.classList.toggle( 'runtime-status-gap', line.gap === true )
+        }
+
+
         function connect() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
             const ws = new WebSocket( protocol + '//' + location.host )
@@ -9218,6 +9267,13 @@
                         lastAnnotations = data.annotations || []
                         applyAnnotations()
                     }
+                }
+
+                // PRD-V3 (Memo 080, Kap 15 / WI-104): the runtime-status broadcast. Additive — none of the
+                // eight existing message types is touched. The server only sends this when the ledger's
+                // sequence has GROWN, so the branch renders unconditionally instead of deciding again.
+                if( data.type === 'runtimeStatus' ) {
+                    renderRuntimeStatus( data )
                 }
 
                 if( data.type === 'content' ) {

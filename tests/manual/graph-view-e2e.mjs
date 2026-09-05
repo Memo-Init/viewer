@@ -14,6 +14,27 @@
 //
 // Run: node tests/manual/graph-view-e2e.mjs  → exits 0 on success, 1 on any failed assertion.
 // Playwright is resolved from the sibling repo memo-init.github.io (the viewer buys no dependency).
+//
+// CORRECTION to the commit message of f6d754f (a commit message cannot be rewritten, so the figure is put
+// right here, where it can be re-measured). That message claims for the pre-fix run: "8/16 with 1 of 325
+// nodes". 8/16 is not reachable in any direction. Measured with THIS harness against the real memo-080.db,
+// every figure with the command that produces it:
+//
+//   16/16 · 325 of 325 nodes · 221 of 221 edges   the fixed sources
+//       node tests/manual/graph-view-e2e.mjs
+//    7/16 ·   1 of 325 nodes ·   0 of 221 edges   the PRE-FIX sources, server and client (the baseline)
+//       git checkout f6d754f^ -- src && node tests/manual/graph-view-e2e.mjs ; git checkout HEAD -- src
+//   11/16 · 325 of 325 nodes · 221 of 221 edges   only the CLIENT rolled back — the server already
+//                                                 condenses to 44591 characters, so the drawing succeeds
+//                                                 and only the C-block (the honest failure) fails
+//       git checkout f6d754f^ -- src/public/app.client.mjs && node tests/manual/graph-view-e2e.mjs ; git checkout HEAD -- src/public/app.client.mjs
+//
+// So "1 of 325 nodes" is right and "8/16" is not: the measured baseline is 7/16. 8/16 only comes out if B7
+// is counted as passed although the pre-fix answer carries no size facts at all — a check with nothing to
+// compare counts as RED here, which is why B7 fails in that column.
+// Rolling back ONLY the server is not measurable with this harness: the fixed client correctly refuses to
+// hand a 53362-character source to mermaid, no SVG appears, and the B-block's waitForSelector times out
+// after the first 3 checks. That direction is a harness limit, not a result.
 import { mkdtemp, mkdir, rm, copyFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -99,14 +120,22 @@ const main = async () => {
     }
 
     // What the server will hand out — measured BEFORE the browser, so the browser assertions have numbers
-    // to be held against instead of comparing against nothing.
+    // to be held against instead of comparing against nothing. The expectation is derived from `counts`,
+    // which EVERY version of the answer carries, and the size facts are read only WHERE THEY EXIST: a
+    // harness that reads `source` unconditionally dies with a TypeError before the first check when it is
+    // pointed at the pre-fix sources — and then it cannot measure the very baseline it is quoted against
+    // (see the correction in the header).
     const graph = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
-    const expectedNodes = graph[ 'source' ][ 'nodes' ]
-    const expectedEdges = graph[ 'source' ][ 'edges' ]
+    const counts = graph[ 'counts' ]
+    const facts = ( graph[ 'source' ] === undefined || graph[ 'source' ] === null ) ? null : graph[ 'source' ]
+    const expectedNodes = counts[ 'topics' ] + counts[ 'workItems' ] + counts[ 'phases' ] + counts[ 'prds' ]
+    const expectedEdges = counts[ 'edgesTopicWorkItem' ] + counts[ 'edgesPhasePrd' ] + counts[ 'edgesTopicPrd' ]
 
     process.stdout.write( `\n  Datenquelle: ${ usedReal === true ? REAL_DB : 'synthetischer Ersatz (memo-080.db nicht gefunden)' }\n` )
-    process.stdout.write( `  Gemessen: ${ expectedNodes } Knoten · ${ expectedEdges } Kanten · Quelle ${ graph[ 'source' ][ 'chars' ] } Zeichen `
-        + `(voll ${ graph[ 'source' ][ 'fullChars' ] }, Budget ${ graph[ 'source' ][ 'budget' ] }, Cap ${ graph[ 'source' ][ 'labelCap' ] })\n\n` )
+    process.stdout.write( `  Gemessen: ${ expectedNodes } Knoten · ${ expectedEdges } Kanten · `
+        + ( facts === null
+            ? 'die Antwort fuehrt KEINE Groessen-Fakten (Vorzustand vor dem Groessen-Riegel)\n\n'
+            : `Quelle ${ facts[ 'chars' ] } Zeichen (voll ${ facts[ 'fullChars' ] }, Budget ${ facts[ 'budget' ] }, Cap ${ facts[ 'labelCap' ] })\n\n` ) )
 
     await MemoView.startServer( { port: PORT } )
     await fetch( `http://127.0.0.1:${ PORT }/api/documents`, {
@@ -175,10 +204,13 @@ const main = async () => {
     check( 'B4: alle gelesenen Kanten sind gezeichnet', drawn.edgePaths === expectedEdges, `${ drawn.edgePaths } von ${ expectedEdges }` )
     check( 'B5: keine Fehler-Kachel und kein Fehler-Zustand ueber dem Graphen',
         drawn.mermaidErrorBoxes === 0 && drawn.diagramErrorBoxes === 0 && drawn.errorState === 0 )
-    check( 'B6: die Zaehlzeile nennt die gemessenen Zahlen', drawn.countsLine.includes( `Topics ${ graph[ 'counts' ][ 'topics' ] }` )
-        && drawn.countsLine.includes( `Work-Items ${ graph[ 'counts' ][ 'workItems' ] }` ), drawn.countsLine )
+    check( 'B6: die Zaehlzeile nennt die gemessenen Zahlen', drawn.countsLine.includes( `Topics ${ counts[ 'topics' ] }` )
+        && drawn.countsLine.includes( `Work-Items ${ counts[ 'workItems' ] }` ), drawn.countsLine )
+    // Without size facts there is nothing to compare against, and a check without a comparison base counts
+    // as RED, not as a free pass — that is exactly how a pre-fix run would otherwise flatter itself.
     check( 'B7: die Kuerzung der Beschriftungen ist ausgewiesen, nicht still',
-        graph[ 'source' ][ 'condensed' ] !== true || drawn.warnings.filter( ( text ) => text.includes( 'gekuerzt' ) === true ).length === 1 )
+        facts !== null && ( facts[ 'condensed' ] !== true || drawn.warnings.filter( ( text ) => text.includes( 'gekuerzt' ) === true ).length === 1 ),
+        facts === null ? 'keine Groessen-Fakten in der Antwort — nichts verglichen' : `condensed=${ facts[ 'condensed' ] }` )
     check( 'B8: keine JavaScript-Fehler auf der Seite', consoleErrors.length === 0, consoleErrors.join( ' | ' ) )
 
     // ── (C) the failure must not be silent: an undrawable source ends in the error state, WITHOUT a headline ──

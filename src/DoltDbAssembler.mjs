@@ -706,6 +706,10 @@ class DoltDbAssembler {
     // The size facts of a graph that has no source at all (no database, empty database). PUBLIC + pure for
     // the same reason as emptyGraphCounts: the `source` shape exists ONCE, so no answer path can leave a
     // field out. `budget` is the single place the client's declared mermaid limit is mirrored against.
+    // The seven fields: `chars` = the length of the source the answer SPEAKS OF (the one handed out, or the
+    // narrowest one measured when none can be handed out), `fullChars` = the same graph at full title width,
+    // `budget` = the declared ceiling, `labelCap` / `condensed` = the ladder step taken, `nodes` / `edges` =
+    // how much was compared.
     static emptyGraphSourceFacts() {
         return { 'chars': 0, 'fullChars': 0, 'budget': GRAPH_SOURCE_BUDGET, 'labelCap': null, 'condensed': false, 'nodes': 0, 'edges': 0 }
     }
@@ -724,9 +728,13 @@ class DoltDbAssembler {
     // does not carry. A reference that points nowhere is not dropped in silence: it is counted and named in
     // `warnings` (Oelstand-Regel — a value at the edge of the accepted range is itself the finding).
     //
-    // Returns { mermaid, counts, empty, warnings, reason }. `mermaid` is null exactly when `empty` is true.
+    // Returns { mermaid, counts, empty, warnings, reason, source }. `mermaid` is null in TWO cases, and
+    // `reason` tells them apart: an empty database (`empty` true, reason 'empty-db') and a source that stays
+    // over the size budget even with bare identifiers as labels (`empty` FALSE, reason 'source-too-large' —
+    // see #fitGraphSource). A drawn graph answers reason null.
     // `counts` always carries all seven figures so the view can state HOW MUCH it compared, instead of an
-    // empty canvas that would equally mean "nothing in the database" and "the read failed".
+    // empty canvas that would equally mean "nothing in the database" and "the read failed"; `source` carries
+    // the seven measured size facts (emptyGraphSourceFacts) on EVERY path, drawn or not.
     //
     // Read-only open, close in `finally`; every table guarded by #tableExists, so an early database that
     // lacks these tables reads as all-zero instead of throwing.
@@ -758,8 +766,9 @@ class DoltDbAssembler {
 
     // ---- private ----
 
-    // The PURE part of readKnowledgeGraph: rows in, { mermaid, counts, empty, warnings, reason } out. Split
-    // out so the reading and the graph rule are separable, and so the whole edge logic is one place.
+    // The PURE part of readKnowledgeGraph: rows in, { mermaid, counts, empty, warnings, reason, source } out
+    // — the same shape on every path, including the two `mermaid: null` cases named above readKnowledgeGraph.
+    // Split out so the reading and the graph rule are separable, and so the whole edge logic is one place.
     static #buildKnowledgeGraph( { rows } ) {
         const topics = rows[ 'topics' ]
         const workItems = rows[ 'workItems' ]
@@ -870,27 +879,39 @@ class DoltDbAssembler {
     // even bare identifiers stay over budget, `mermaid` is null and the caller reports that honestly — an
     // oversize source is NEVER handed to the renderer, because the renderer would silently substitute a
     // placeholder for it and the view would claim a drawing that never happened.
+    //
+    // The two measured lengths are kept apart, because a report may only name the figure its sentence is
+    // about: `fullChars` is ALWAYS the source at full title width, and `chars` is ALWAYS the source the
+    // statement speaks of — the one that is handed out when there is one, and the NARROWEST one the ladder
+    // reached when there is none. Naming the full width in the "not even bare identifiers fit" case reported
+    // a number that was never measured against the budget in that sentence (measured on 1400 nodes / 700
+    // edges: 370402 characters at full width against 69622 with bare identifiers).
     static #fitGraphSource( { nodes, edges } ) {
         const full = DoltDbAssembler.#renderGraphSource( { nodes, edges, 'cap': null } )
         const fullChars = full.length
 
-        const fitted = full.length <= GRAPH_SOURCE_BUDGET
-            ? { 'mermaid': full, 'cap': null, 'chars': full.length }
+        // The caps run from wide to narrow and the walk stops at the first fit, so the LAST source that was
+        // rendered is always the narrowest one that was measured. It starts at the full width, which is the
+        // right answer when no narrower attempt was needed at all.
+        const walked = full.length <= GRAPH_SOURCE_BUDGET
+            ? { 'fitted': { 'mermaid': full, 'cap': null, 'chars': full.length }, 'narrowestChars': fullChars }
             : GRAPH_LABEL_CAPS
                 .filter( ( cap ) => cap !== null )
                 .reduce( ( acc, cap ) => {
-                    if( acc !== null ) {
+                    if( acc[ 'fitted' ] !== null ) {
                         return acc
                     }
                     const source = DoltDbAssembler.#renderGraphSource( { nodes, edges, cap } )
 
-                    return source.length <= GRAPH_SOURCE_BUDGET
-                        ? { 'mermaid': source, cap, 'chars': source.length }
-                        : null
-                }, null )
+                    return {
+                        'fitted': source.length <= GRAPH_SOURCE_BUDGET ? { 'mermaid': source, cap, 'chars': source.length } : null,
+                        'narrowestChars': source.length
+                    }
+                }, { 'fitted': null, 'narrowestChars': fullChars } )
 
+        const fitted = walked[ 'fitted' ]
         const facts = {
-            'chars': fitted === null ? fullChars : fitted[ 'chars' ],
+            'chars': fitted === null ? walked[ 'narrowestChars' ] : fitted[ 'chars' ],
             'fullChars': fullChars,
             'budget': GRAPH_SOURCE_BUDGET,
             'labelCap': fitted === null ? null : fitted[ 'cap' ],
@@ -949,9 +970,12 @@ class DoltDbAssembler {
             : []
         // The size findings. All three name the measured characters against the budget, because "the drawing
         // is complete" and "the labels were shortened to make it fit" look identical on the canvas — and the
-        // near-edge case is itself the finding, not something to wave through (Oelstand-Regel).
+        // near-edge case is itself the finding, not something to wave through (Oelstand-Regel). Every figure
+        // is named for what it IS: `chars` is the source the sentence is about (bare identifiers in the
+        // not-drawn case), `fullChars` the same graph at full title width. Mixing the two states a number
+        // that was never measured against the budget in that sentence.
         const tooLargeWarning = source[ 'chars' ] > source[ 'budget' ]
-            ? [ `Nicht gezeichnet: die Quelle bleibt mit ${ source[ 'chars' ] } Zeichen ueber dem Budget von ${ source[ 'budget' ] } — auch mit reinen Kennungen als Beschriftung sind ${ source[ 'nodes' ] } Knoten und ${ source[ 'edges' ] } Kanten zu gross fuer den Zeichner.` ]
+            ? [ `Nicht gezeichnet: auch mit reinen Kennungen als Beschriftung bleibt die Quelle mit ${ source[ 'chars' ] } Zeichen ueber dem Budget von ${ source[ 'budget' ] } (mit vollen Titeln waeren es ${ source[ 'fullChars' ] } Zeichen) — ${ source[ 'nodes' ] } Knoten und ${ source[ 'edges' ] } Kanten sind zu gross fuer den Zeichner.` ]
             : []
         const condensedWarning = source[ 'condensed' ] === true
             ? [ `Beschriftungen auf ${ source[ 'labelCap' ] } Zeichen gekuerzt: die volle Quelle waere ${ source[ 'fullChars' ] } Zeichen lang, das Budget liegt bei ${ source[ 'budget' ] }. Alle ${ source[ 'nodes' ] } Knoten und ${ source[ 'edges' ] } Kanten sind gezeichnet, nur die Titel sind beschnitten.` ]

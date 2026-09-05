@@ -26,6 +26,8 @@ const assemblerSource = resolve( here, '..', '..', 'src', 'DoltDbAssembler.mjs' 
 // One seeded memo database with `topicCount` topics and `workItemCount` work items, each title `titleLength`
 // characters long. The title length is the knob the size gate is exercised with: short titles stay under the
 // budget, long ones force the condensation ladder, and a very large row count outgrows even bare identifiers.
+// `titleLength: 0` seeds EMPTY titles — that renders exactly the source the ladder's last step produces
+// (identifier only), which is how the bare-identifier length is measured instead of being frozen as a literal.
 const seedGraphDb = ( { dbPath, topicCount, workItemCount, titleLength } ) => {
     const db = new DatabaseSync( dbPath )
     db.exec( 'CREATE TABLE IF NOT EXISTS topic ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, phase TEXT, block TEXT )' )
@@ -33,7 +35,7 @@ const seedGraphDb = ( { dbPath, topicCount, workItemCount, titleLength } ) => {
     db.exec( 'CREATE TABLE IF NOT EXISTS rollout_phase ( id TEXT PRIMARY KEY, memo_id TEXT, name TEXT, status TEXT, spillover TEXT )' )
     db.exec( 'CREATE TABLE IF NOT EXISTS rollout_work_item ( id TEXT PRIMARY KEY, phase_id TEXT, title TEXT, status TEXT, target TEXT, wi_type TEXT, spillover TEXT )' )
 
-    const title = ( prefix, index ) => `${ prefix }-${ index } ${ 'a'.repeat( Math.max( 0, titleLength ) ) }`
+    const title = ( prefix, index ) => titleLength === 0 ? '' : `${ prefix }-${ index } ${ 'a'.repeat( Math.max( 0, titleLength ) ) }`
     const insertTopic = db.prepare( 'INSERT INTO topic ( id, memo_id, title, phase, block ) VALUES ( ?, ?, ?, ?, ? )' )
     const insertWorkItem = db.prepare( 'INSERT INTO work_item ( id, topic, title, status, grp ) VALUES ( ?, ?, ?, ?, ? )' )
 
@@ -160,9 +162,23 @@ describe( 'PRD-V2 Rework — der Groessen-Riegel der Diagramm-Quelle (echte Date
         expect( facts[ 'edges' ] ).toBe( 700 )
         expect( facts[ 'chars' ] ).toBeGreaterThan( facts[ 'budget' ] )
         expect( graph[ 'counts' ][ 'topics' ] ).toBe( 700 )
+        // The reported figure is the one the sentence is ABOUT: the source with bare identifiers, not the
+        // full-width source. Measured, not frozen — the SAME 1400 ids with empty titles render exactly the
+        // bare-identifier source, so its full width is the number the gate has to name (69622 against 370402
+        // at full width on this seed; `npm test -- KnowledgeGraphSizeGatePRDV2` re-measures both).
+        const barePath = join( root, 'huge-bare.db' )
+        seedGraphDb( { dbPath: barePath, topicCount: 700, workItemCount: 700, titleLength: 0 } )
+        const bare = DoltDbAssembler.readKnowledgeGraph( { dbPath: barePath } )
+
+        expect( bare[ 'source' ][ 'nodes' ] ).toBe( facts[ 'nodes' ] )
+        expect( facts[ 'chars' ] ).toBe( bare[ 'source' ][ 'fullChars' ] )
+        expect( facts[ 'chars' ] ).toBeLessThan( facts[ 'fullChars' ] )
         const tooLarge = graph[ 'warnings' ].filter( ( text ) => text.includes( 'Nicht gezeichnet' ) === true )
         expect( tooLarge.length ).toBe( 1 )
         expect( tooLarge[ 0 ] ).toContain( String( facts[ 'budget' ] ) )
+        // both measured lengths are named, each for what it is
+        expect( tooLarge[ 0 ] ).toContain( String( facts[ 'chars' ] ) )
+        expect( tooLarge[ 0 ] ).toContain( String( facts[ 'fullChars' ] ) )
     } )
 
 

@@ -2008,3 +2008,139 @@ describe( 'DoltDbAssembler.readRuntimeStatus (Memo 080, PRD-V3 / WI-104)', () =>
         expect( DoltDbAssembler.isDbFileName( { fileName: null } )[ 'isDbFile' ] ).toBe( false )
     } )
 } )
+
+
+// PRD-V9 (Memo 080, Kap 19 / WI-098) — the ninth read leaf: the durable ANSWERS behind one transcript.
+// The binding is a MEASURED one: `user_inputs.payload_sha256` is sha256 over the raw transcript content
+// the capture piped into `memo user-input record`, so the file on disk and its input row share a
+// fingerprint. Every case states how much it compared; a fingerprint that does not resolve yields an
+// EMPTY answer set and says so — it never falls back to "the newest review row of this memo".
+describe( 'DoltDbAssembler.readAnswersForPayload (Memo 080, PRD-V9 / WI-098)', () => {
+    const repoTmpRoot = join( process.cwd(), '.test-tmp' )
+    let memoDir = ''
+    let dbPath = ''
+
+    const seedAnswers = ( { path, payloads, answersByInput } ) => {
+        const db = new DatabaseSync( path )
+        db.exec( 'CREATE TABLE IF NOT EXISTS user_inputs ( input_id TEXT PRIMARY KEY, memo_id TEXT, kind TEXT, payload_verbatim TEXT, payload_sha256 TEXT, captured_at TEXT, source_channel TEXT, session_id TEXT, complete INTEGER, corrected_by TEXT, schema_version INTEGER )' )
+        db.exec( 'CREATE TABLE IF NOT EXISTS user_input_answers ( input_id TEXT, question_id TEXT, option_key TEXT, answer_verbatim TEXT, preselected INTEGER )' )
+
+        const input = db.prepare( 'INSERT INTO user_inputs ( input_id, memo_id, kind, payload_verbatim, payload_sha256, captured_at, source_channel, session_id, complete, corrected_by, schema_version ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
+        payloads
+            .forEach( ( entry ) => input.run(
+                entry[ 'inputId' ],
+                'M080',
+                'voice-review',
+                entry[ 'payload' ],
+                createHash( 'sha256' ).update( entry[ 'payload' ] ).digest( 'hex' ),
+                entry[ 'capturedAt' ],
+                'transcript-server',
+                'sess-9',
+                1,
+                null,
+                1
+            ) )
+
+        const answer = db.prepare( 'INSERT INTO user_input_answers ( input_id, question_id, option_key, answer_verbatim, preselected ) VALUES ( ?, ?, ?, ?, ? )' )
+        answersByInput
+            .forEach( ( row ) => answer.run( row[ 'inputId' ], row[ 'questionId' ], row[ 'optionKey' ], row[ 'answerVerbatim' ], row[ 'preselected' ] === true ? 1 : 0 ) )
+
+        db.close()
+
+        return { inputs: payloads.length, answers: answersByInput.length }
+    }
+
+
+    beforeEach( () => {
+        mkdirSync( repoTmpRoot, { recursive: true } )
+        memoDir = mkdtempSync( join( repoTmpRoot, 'memo-080-answers-' ) )
+        dbPath = resolve( memoDir, 'memo-080.db' )
+    } )
+
+    afterEach( () => {
+        rmSync( memoDir, { recursive: true, force: true } )
+    } )
+
+
+    it( 'resolves the transcript by its payload fingerprint and returns ITS answers (2 inputs / 5 answers compared)', () => {
+        const seeded = seedAnswers( {
+            path: dbPath,
+            payloads: [
+                { inputId: 'UI-0001', payload: '# REV-17 review\n\n## Antwort auf F1\nA', capturedAt: '2026-09-01T10:00:00Z' },
+                { inputId: 'UI-0002', payload: '# REV-18 review\n\n## Antwort auf F12\nA', capturedAt: '2026-09-02T10:00:00Z' }
+            ],
+            answersByInput: [
+                { inputId: 'UI-0001', questionId: 'F1', optionKey: 'A', answerVerbatim: 'erste Revision', preselected: false },
+                { inputId: 'UI-0001', questionId: 'F2', optionKey: 'B', answerVerbatim: 'zweite Frage', preselected: false },
+                { inputId: 'UI-0002', questionId: 'F12', optionKey: 'A', answerVerbatim: 'Protokoll-Weg', preselected: false },
+                { inputId: 'UI-0002', questionId: 'F31', optionKey: 'A', answerVerbatim: 'ein Server', preselected: true },
+                { inputId: 'UI-0002', questionId: 'F13', optionKey: 'C', answerVerbatim: 'dritte', preselected: false }
+            ]
+        } )
+
+        const read = DoltDbAssembler.readAnswersForPayload( { dbPath, payload: '# REV-18 review\n\n## Antwort auf F12\nA' } )
+
+        expect( seeded.inputs ).toBe( 2 )
+        expect( seeded.answers ).toBe( 5 )
+        expect( read[ 'match' ] ).toBe( 'sha256' )
+        expect( read[ 'inputId' ] ).toBe( 'UI-0002' )
+        expect( read[ 'comparedInputs' ] ).toBe( 2 )
+        expect( read[ 'answers' ].map( ( entry ) => entry[ 'questionId' ] ) ).toEqual( [ 'F12', 'F13', 'F31' ] )
+        expect( read[ 'answers' ][ 0 ] ).toEqual( { questionId: 'F12', optionKey: 'A', answerVerbatim: 'Protokoll-Weg', preselected: false } )
+        expect( read[ 'answers' ].find( ( entry ) => entry[ 'questionId' ] === 'F31' )[ 'preselected' ] ).toBe( true )
+    } )
+
+
+    it( 'an UNKNOWN payload yields an EMPTY answer set and names how much it compared — never a guessed row', () => {
+        const seeded = seedAnswers( {
+            path: dbPath,
+            payloads: [ { inputId: 'UI-0001', payload: 'known content', capturedAt: '2026-09-01T10:00:00Z' } ],
+            answersByInput: [ { inputId: 'UI-0001', questionId: 'F1', optionKey: 'A', answerVerbatim: 'ja', preselected: false } ]
+        } )
+
+        const read = DoltDbAssembler.readAnswersForPayload( { dbPath, payload: 'content nobody ever captured' } )
+
+        expect( seeded.answers ).toBe( 1 )
+        expect( read[ 'match' ] ).toBe( 'none' )
+        expect( read[ 'inputId' ] ).toBe( null )
+        expect( read[ 'answers' ] ).toEqual( [] )
+        expect( read[ 'comparedInputs' ] ).toBe( 1 )
+    } )
+
+
+    it( 'a resolved input WITHOUT answer rows reads as an empty set, not as a failure (1 input / 0 answers)', () => {
+        seedAnswers( {
+            path: dbPath,
+            payloads: [ { inputId: 'UI-0001', payload: 'no answers yet', capturedAt: '2026-09-01T10:00:00Z' } ],
+            answersByInput: []
+        } )
+
+        const read = DoltDbAssembler.readAnswersForPayload( { dbPath, payload: 'no answers yet' } )
+
+        expect( read[ 'match' ] ).toBe( 'sha256' )
+        expect( read[ 'inputId' ] ).toBe( 'UI-0001' )
+        expect( read[ 'answers' ] ).toEqual( [] )
+    } )
+
+
+    it( 'a database WITHOUT the capture tables reads as no-table / 0 compared instead of throwing', () => {
+        const db = new DatabaseSync( dbPath )
+        db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT )' )
+        db.close()
+
+        const read = DoltDbAssembler.readAnswersForPayload( { dbPath, payload: 'anything' } )
+
+        expect( read[ 'match' ] ).toBe( 'no-table' )
+        expect( read[ 'answers' ] ).toEqual( [] )
+        expect( read[ 'comparedInputs' ] ).toBe( 0 )
+    } )
+
+
+    it( 'fails loud on a missing path, a missing file and a missing payload — no silent default', () => {
+        seedAnswers( { path: dbPath, payloads: [], answersByInput: [] } )
+
+        expect( () => DoltDbAssembler.readAnswersForPayload( {} ) ).toThrow( /"dbPath" is required/ )
+        expect( () => DoltDbAssembler.readAnswersForPayload( { dbPath: resolve( memoDir, 'nope.db' ), payload: 'x' } ) ).toThrow( /does not exist/ )
+        expect( () => DoltDbAssembler.readAnswersForPayload( { dbPath } ) ).toThrow( /"payload" is required/ )
+    } )
+} )

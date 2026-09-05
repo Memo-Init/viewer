@@ -295,6 +295,48 @@ class TranscriptRegistry {
     }
 
 
+    // Memo 080, Kap 19, PRD-V9 (WI-098): WHERE does this transcript live on disk?
+    //
+    // `listTranscripts` deliberately PROJECTS the wire shape and drops `absolutePath` — a server-internal
+    // path has no business travelling to a browser. A caller that needs the file (the answer channel needs
+    // the transcript body to bind it to its durable answer rows) therefore has to ask here, instead of
+    // rebuilding the path from the id. Measured cause: the first run of the answer channel against the
+    // REAL server died with 'The "path" argument must be of type string' because it read `absolutePath`
+    // off the projected list — the unit test with its own fake registry had passed.
+    //
+    // Returns { status, absolutePath, transcriptsDir, memoDir, revisionId, memoId }. An unknown id fails
+    // with a named message, never with a guessed path.
+    resolveTranscriptFile( { transcriptId } ) {
+        const struct = { 'status': false, 'messages': [], 'absolutePath': null, 'transcriptsDir': null, 'memoDir': null, 'revisionId': null, 'memoId': null }
+
+        if( typeof transcriptId !== 'string' || transcriptId.length === 0 ) {
+            struct[ 'messages' ].push( 'TRANSCRIPT-ID-001: transcriptId must be a non-empty string' )
+
+            return struct
+        }
+
+        const transcript = this.#transcripts.get( transcriptId ) || this.#otherTranscripts.get( transcriptId )
+
+        if( transcript === undefined ) {
+            struct[ 'messages' ].push( `TRANSCRIPT-NOTFOUND-001: Transcript not found: ${ transcriptId }` )
+
+            return struct
+        }
+
+        const absolutePath = transcript[ 'absolutePath' ]
+        const transcriptsDir = dirname( absolutePath )
+
+        struct[ 'status' ] = true
+        struct[ 'absolutePath' ] = absolutePath
+        struct[ 'transcriptsDir' ] = transcriptsDir
+        struct[ 'memoDir' ] = dirname( transcriptsDir )
+        struct[ 'revisionId' ] = transcript[ 'revisionId' ] === undefined ? null : transcript[ 'revisionId' ]
+        struct[ 'memoId' ] = transcript[ 'memoId' ] === undefined ? null : transcript[ 'memoId' ]
+
+        return struct
+    }
+
+
     async updateTranscript( { transcriptId, content } ) {
         const struct = { 'status': false, 'messages': [], 'unchanged': false, 'memoId': null, 'backupPath': null, 'trashedBackups': [] }
 

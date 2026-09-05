@@ -46,6 +46,9 @@ memo-view .memo/004-example/revisions/
   change, no manual reload.
 - **Transcript support** — a transcript registry serves voice-memo transcripts
   alongside memos.
+- **Answer channel (`wait_for_answer`)** — a waiting tool call returns the
+  moment the user presses "Abschliessen", so the answer reaches the calling
+  session without polling. See [Answer channel](#answer-channel-wait_for_answer).
 
 ## Table of Contents
 
@@ -53,6 +56,7 @@ memo-view .memo/004-example/revisions/
   - [Quickstart](#quickstart)
   - [Features](#features)
   - [Scientific diagrams (Vega-Lite)](#scientific-diagrams-vega-lite)
+  - [Answer channel (wait_for_answer)](#answer-channel-wait_for_answer)
   - [Methods](#methods)
     - [.start()](#start)
     - [.startDirectory()](#startdirectory)
@@ -128,6 +132,97 @@ directly into the spec (the viewer does not compute, it renders what you write):
   ]
 }
 ```
+
+## Answer channel (wait_for_answer)
+
+The viewer exposes ONE tool endpoint, `POST /mcp`, on the server it already
+runs — same process, same port 3333, same loopback bind. It offers a single
+tool, `wait_for_answer`. A session calls it, the call waits, and it returns the
+moment the user presses "Abschliessen" for that transcript.
+
+**Read the disk after the wake — do not trust the delivery.** Every result
+carries `evidencePath` pointing at the durable answer store, and the answers in
+the result are re-read from that store after the wake. A missed message costs
+speed, never the answer. This is not caution on principle: in the rollout of
+2026-08-31/09-01, 75 agents worked cleanly, wrote their files and their return
+text still mostly failed to arrive.
+
+**Call it from the orchestrator session only.** A sub-agent gets no automatic
+backgrounding, so the call would really block it.
+
+### Registration
+
+Put this in the project root as `.mcp.json`; the client asks once for approval:
+
+```json
+{
+    "mcpServers": {
+        "memo-view": {
+            "type": "http",
+            "url": "http://127.0.0.1:3333/mcp"
+        }
+    }
+}
+```
+
+### Calling it
+
+| Argument | Type | Description | Required |
+|----------|------|-------------|----------|
+| memo | string | memo number, e.g. `"080"` | Yes |
+| transcriptId | string | the transcript to wait on | Yes |
+| questionId | string | narrow the result to one question, e.g. `"F12"` | No |
+| timeoutSeconds | integer | wait ceiling, default 3600, maximum 86400 | No |
+
+The result is the same shape on both paths — `status`, `transcriptId`,
+`answers[]`, `evidencePath`, `waitedMs`, `reason`. A timeout answers
+`status: false`, `reason: "timeout"` and **still** carries `evidencePath`, so
+the caller knows where to look instead of learning nothing.
+
+### The four deadlines
+
+| Deadline | Documented | What the endpoint does about it |
+|----------|-----------|---------------------------------|
+| auto-backgrounding above 2 min | client >= 2.1.212 | nothing — a client property; the endpoint neither needs nor influences it |
+| HTTP idle deadline | 5 min | a progress message every 60 s while the call is open |
+| overall wall clock | ~28 h default | never inherited: own ceiling, default 3600 s, maximum 86400 s |
+| sub-agents | no auto-backgrounding | the tool text forbids the sub-agent call, with its reason |
+
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` switches the auto-backgrounding off,
+which makes a long call block the session. That is an operating limit of this
+road, named here rather than worked around.
+
+### Origin
+
+The endpoint validates the `Origin` header and answers `403` for a foreign
+**and** for an absent origin (DNS-rebinding guard). A rejection is logged as
+`MCP-ORIGIN-403` with the origin it saw, so a first call that fails diagnoses
+itself.
+
+### Measuring it
+
+```bash
+MEMOVIEW_NO_BROWSER=1 node tests/manual/mcp-wait-for-answer-e2e.mjs
+node scripts/firstflight-report.mjs --protocol tests/manual/test-results/firstflight-protocol.json
+```
+
+The harness flies 5 completion events over 2 concurrently waiting sessions, one
+of them pressed only after more than 6 minutes. The report always states how
+much it compared, and it keeps `diskCount` (durable store) and
+`deliveredCount` (tool result) apart — `deliveredCount < diskCount` means the
+delivery road is defective and the file road stays leading.
+
+### Not chosen, with reasons
+
+- **Elicitation, both modes** — the form mode puts the answer in the terminal
+  and blocks the session; the URL mode needs a terminal confirmation per
+  question. Both work against the purpose of this channel.
+- **Sampling** — deprecated in the specification since 2026-07-28 and without
+  client support. Doubly dead.
+- **Channels** — a research preview behind an allow-list and an explicitly
+  dangerous start flag. Documented as a successor option, not built.
+- The existing **file road** (`/api/session/<id>/arm`, `/wake`, the wake flag)
+  is untouched and stays the fallback.
 
 ## Methods
 

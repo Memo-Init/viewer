@@ -44,6 +44,7 @@
 // Class architecture per node-class-architecture: static-only, object params, object returns,
 // private-by-default, NO SILENT DEFAULTS (every missing argument fails loud), no for/while loops.
 
+import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { resolve, sep } from 'node:path'
 
@@ -849,6 +850,88 @@ class DoltDbAssembler {
     }
 
 
+    // Memo 080, Kap 19, PRD-V9 (WI-098) — the durable answers that belong to ONE transcript.
+    //
+    // THE BINDING PROBLEM, MEASURED FIRST: `user_input_answers` has no transcript column, and neither
+    // has `user_inputs`. What both DO carry is the payload the capture wrote: `user_inputs.payload_sha256`
+    // is sha256 over the RAW transcript content the viewer piped into `memo user-input record`
+    // (UserInputStore.recordInput). So the transcript file on disk and its input row share a fingerprint.
+    // Measured against the live memo-080 store before this leaf was written: 10 of 11 transcript files
+    // resolve to their input row by sha256; the one miss is REV-09--terminal--01.md, a terminal transcript
+    // that never ran through the widget capture. Re-measure with
+    //   node -e "…createHash('sha256').update(readFileSync(f)).digest('hex')…" vs
+    //   SELECT payload_sha256 FROM user_inputs
+    //
+    // NO GUESSED BINDING. If the fingerprint does not resolve, the answer set is EMPTY and `match` says
+    // 'none' — the leaf never falls back to "the newest review row of this memo", because two open
+    // revisions would then hand a session the wrong user's decision. `comparedInputs` states how many
+    // input rows were searched, so an empty answer set is a measured empty and not a vacuum (lesson
+    // deterministic-gates-can-be-vacuum-green).
+    //
+    // Returns { answers, inputId, match, comparedInputs }:
+    //   * answers       — [ { questionId, optionKey, answerVerbatim, preselected } ], ordered by question
+    //   * inputId       — the resolved user_inputs row id, or null
+    //   * match         — 'sha256' | 'none' | 'no-table'
+    //   * comparedInputs— how many user_inputs rows the fingerprint was compared against
+    //
+    // Read-only open, close in `finally`; both tables guarded by #tableExists. NO write statement.
+    static readAnswersForPayload( { dbPath, payload } ) {
+        if( typeof dbPath !== 'string' || dbPath.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.readAnswersForPayload: "dbPath" is required (non-empty string)' )
+        }
+        if( existsSync( dbPath ) !== true ) {
+            throw new Error( `DoltDbAssembler.readAnswersForPayload: "${ dbPath }" does not exist — cannot read the answer store` )
+        }
+        if( typeof payload !== 'string' ) {
+            throw new Error( 'DoltDbAssembler.readAnswersForPayload: "payload" is required (string — the raw transcript content)' )
+        }
+
+        const sha256 = createHash( 'sha256' ).update( payload ).digest( 'hex' )
+        const db = DoltDbAssembler.#open( { dbPath } )
+
+        try {
+            if( DoltDbAssembler.#tableExists( { db, 'table': 'user_inputs' } ) !== true ) {
+                return { 'answers': [], 'inputId': null, 'match': 'no-table', 'comparedInputs': 0, sha256 }
+            }
+
+            const countRow = DoltDbAssembler.#get( { db, 'sql': 'SELECT count( * ) AS n FROM user_inputs' } )
+            const comparedInputs = countRow === null ? 0 : Number( countRow[ 'n' ] )
+            const hit = DoltDbAssembler.#getWith( {
+                db,
+                'sql': 'SELECT input_id FROM user_inputs WHERE payload_sha256 = ? ORDER BY captured_at DESC LIMIT 1',
+                'params': [ sha256 ]
+            } )
+
+            if( hit === null ) {
+                return { 'answers': [], 'inputId': null, 'match': 'none', comparedInputs, sha256 }
+            }
+
+            const inputId = hit[ 'input_id' ]
+
+            if( DoltDbAssembler.#tableExists( { db, 'table': 'user_input_answers' } ) !== true ) {
+                return { 'answers': [], inputId, 'match': 'no-table', comparedInputs, sha256 }
+            }
+
+            const rows = DoltDbAssembler.#allWith( {
+                db,
+                'sql': 'SELECT question_id, option_key, answer_verbatim, preselected FROM user_input_answers WHERE input_id = ? ORDER BY question_id',
+                'params': [ inputId ]
+            } )
+            const answers = rows
+                .map( ( row ) => ( {
+                    'questionId': row[ 'question_id' ] === undefined ? null : row[ 'question_id' ],
+                    'optionKey': row[ 'option_key' ] === undefined ? null : row[ 'option_key' ],
+                    'answerVerbatim': row[ 'answer_verbatim' ] === undefined ? null : row[ 'answer_verbatim' ],
+                    'preselected': Number( row[ 'preselected' ] ) === 1
+                } ) )
+
+            return { answers, inputId, 'match': 'sha256', comparedInputs, sha256 }
+        } finally {
+            db.close()
+        }
+    }
+
+
     // ---- private ----
 
     // The PURE part of readKnowledgeGraph: rows in, { mermaid, counts, empty, warnings, reason, source } out
@@ -1122,6 +1205,20 @@ class DoltDbAssembler {
 
     static #get( { db, sql } ) {
         const row = db.prepare( sql ).get()
+
+        return row === undefined ? null : row
+    }
+
+
+    // Bound-parameter siblings of #all/#get (Memo 080, PRD-V9). A transcript fingerprint and an input id
+    // are caller-supplied values, so they travel as `?` parameters — never spliced into the statement.
+    static #allWith( { db, sql, params } ) {
+        return db.prepare( sql ).all( ...params )
+    }
+
+
+    static #getWith( { db, sql, params } ) {
+        const row = db.prepare( sql ).get( ...params )
 
         return row === undefined ? null : row
     }

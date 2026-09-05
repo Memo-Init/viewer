@@ -27,6 +27,8 @@ import { AnnotationStore } from './AnnotationStore.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
 import { BlockSections } from './BlockSections.mjs'
 import { RevisionLogic } from './RevisionLogic.mjs'
+import { AnswerWaiter } from './AnswerWaiter.mjs'
+import { McpEndpoint } from './McpEndpoint.mjs'
 import { Config } from './data/config.mjs'
 
 
@@ -375,6 +377,223 @@ class MemoView {
         const set = MemoView.#sessionArmMap.has( transcriptId ) ? MemoView.#sessionArmMap.get( transcriptId ) : new Set()
 
         return { 'sessions': Array.from( set ) }
+    }
+
+
+    // Memo 080, Kap 19, PRD-V9 (WI-098) — the DURABLE evidence behind one transcript, read fresh off the
+    // disk on every call. This is the seam McpEndpoint.waitForAnswer reads through, and it is the reason
+    // the tool result is a pointer and not a claim (A11):
+    //   * loggedIn      — the `<revisionId>.loggedin` SIDECAR, read from the file system, not from the
+    //                     in-memory registry record. The sidecar survives a viewer restart; the record
+    //                     does not, and a wait channel that forgets across a restart is the M076 stale trap.
+    //   * answers       — the `user_input_answers` rows bound to THIS transcript by the payload
+    //                     fingerprint (DoltDbAssembler.readAnswersForPayload). Never a guessed row.
+    //   * evidencePath  — `<memo folder>/memo-NNN.db#user_input_answers`, project-relative from `.memo/`
+    //                     so no user path travels in a tool result. Without a database the pointer names
+    //                     the transcript FILE instead — an honest second-best, never an empty string.
+    static async readAnswerEvidence( { memo, transcriptId, registry } ) {
+        const struct = {
+            'found': false,
+            'loggedIn': false,
+            'answers': [],
+            'evidencePath': `memo-${ typeof memo === 'string' ? memo : '' }.db#user_input_answers`,
+            'match': 'unresolved',
+            'comparedInputs': 0,
+            'messages': []
+        }
+
+        if( typeof transcriptId !== 'string' || transcriptId.length === 0 ) {
+            struct[ 'messages' ].push( 'MCP-EVIDENCE-001: transcriptId must be a non-empty string' )
+
+            return struct
+        }
+        // The registry is a SEAM: production reads the server's own store, a test hands in its own. It is
+        // never invented — an absent store answers with a message, not with an empty success.
+        const store = ( registry !== null && registry !== undefined ) ? registry : MemoView.#transcriptRegistry
+
+        if( !store ) {
+            struct[ 'messages' ].push( 'MCP-EVIDENCE-002: transcript registry not initialized — the server has no transcript store to read' )
+
+            return struct
+        }
+
+        // The path comes from the registry's OWN resolver, never from the projected wire list — that list
+        // drops `absolutePath` on purpose, and reading it there produced an undefined path against the
+        // real server while the unit test with its fake registry stayed green.
+        const located = store.resolveTranscriptFile( { transcriptId } )
+
+        if( located[ 'status' ] !== true ) {
+            struct[ 'messages' ].push( `MCP-EVIDENCE-003: transcript not registered: ${ transcriptId } (${ located[ 'messages' ].join( '; ' ) })` )
+
+            return struct
+        }
+
+        struct[ 'found' ] = true
+
+        const transcriptPath = located[ 'absolutePath' ]
+        const transcriptsDir = located[ 'transcriptsDir' ]
+        const memoDir = located[ 'memoDir' ]
+        const markerPath = resolve( transcriptsDir, `${ located[ 'revisionId' ] }.loggedin` )
+        struct[ 'loggedIn' ] = existsSync( markerPath )
+        struct[ 'evidencePath' ] = MemoView.projectRelativeEvidencePath( { 'absolutePath': transcriptPath } )
+
+        const { hasDb } = DoltDbAssembler.hasDb( { memoDir } )
+
+        if( hasDb !== true ) {
+            struct[ 'match' ] = 'no-db'
+            struct[ 'messages' ].push( `MCP-EVIDENCE-004: no per-memo database in ${ memoDir } — the transcript file is the only evidence` )
+
+            return struct
+        }
+
+        const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
+        struct[ 'evidencePath' ] = `${ MemoView.projectRelativeEvidencePath( { 'absolutePath': dbPath } ) }#user_input_answers`
+
+        try {
+            const content = await readFile( transcriptPath, 'utf-8' )
+            const read = DoltDbAssembler.readAnswersForPayload( { dbPath, 'payload': content } )
+            struct[ 'answers' ] = read[ 'answers' ]
+            struct[ 'match' ] = read[ 'match' ]
+            struct[ 'comparedInputs' ] = read[ 'comparedInputs' ]
+        } catch ( err ) {
+            struct[ 'match' ] = 'read-failed'
+            struct[ 'messages' ].push( `MCP-EVIDENCE-005: reading the answer store failed: ${ err.message }` )
+        }
+
+        return struct
+    }
+
+
+    // Cut an absolute path down to its project-relative `.memo/...` form. A tool result travels into a
+    // session transcript, so it carries no home directory. A path OUTSIDE a `.memo` store keeps its own
+    // absolute form — that is a measured "outside the store", not a masked one.
+    static projectRelativeEvidencePath( { absolutePath } ) {
+        if( typeof absolutePath !== 'string' || absolutePath.length === 0 ) {
+            throw new Error( 'MemoView.projectRelativeEvidencePath: "absolutePath" is required (non-empty string)' )
+        }
+
+        const marker = `${ sep }.memo${ sep }`
+        const at = absolutePath.lastIndexOf( marker )
+
+        return at === -1 ? absolutePath : `.memo${ sep }${ absolutePath.slice( at + marker.length ) }`
+    }
+
+
+    // Memo 080, Kap 19, PRD-V9 (A9) — ONE call point for the "Abschliessen" press, two delivery roads:
+    // the wake FLAG for a session that polls a file, and the wait REGISTER for a session that holds an
+    // open tool call. Both are best-effort and NEITHER may take the other down: the flag write is
+    // wrapped, the register resolve is wrapped, and both report what they did instead of throwing. That
+    // is the whole reason this is a method and not two inline blocks — an inline `throw` on either side
+    // would have silently cost the other road.
+    //
+    // The seams (`writeFlag`, `resolveWaiters`) exist so a test can force a failure on EACH side and
+    // prove the other one still delivers.
+    static async deliverTranscriptCompletion( { transcriptId, armedSessions, writeFlag, resolveWaiters } ) {
+        const struct = { 'woken': [], 'resolved': 0, 'messages': [] }
+        const sessions = Array.isArray( armedSessions ) ? armedSessions : []
+        const flagWriter = typeof writeFlag === 'function' ? writeFlag : MemoView.writeWakeFlag
+        const registerResolver = typeof resolveWaiters === 'function' ? resolveWaiters : AnswerWaiter.resolve
+
+        const woken = await Promise.all(
+            sessions.map( async ( armedSessionId ) => {
+                try {
+                    const wake = await flagWriter( { 'sessionId': armedSessionId, 'payload': transcriptId } )
+
+                    return wake[ 'status' ] === true ? armedSessionId : null
+                } catch ( err ) {
+                    struct[ 'messages' ].push( `WAKE-FLAG-001: wake flag for ${ armedSessionId } failed: ${ err.message }` )
+
+                    return null
+                }
+            } )
+        )
+
+        struct[ 'woken' ] = woken.filter( ( sessionId ) => sessionId !== null )
+
+        try {
+            const resolved = registerResolver( { transcriptId, 'payload': { transcriptId, 'at': new Date().toISOString() } } )
+            struct[ 'resolved' ] = typeof resolved[ 'resolved' ] === 'number' ? resolved[ 'resolved' ] : 0
+        } catch ( err ) {
+            struct[ 'messages' ].push( `WAIT-REGISTER-001: resolving the wait register failed: ${ err.message }` )
+        }
+
+        return struct
+    }
+
+
+    // Memo 080, PRD-V9 — the transport half of the tool endpoint. TWO answer shapes:
+    //   * a `wait_for_answer` call is answered as an EVENT STREAM, because it may stay open for an hour
+    //     and the 5-minute idle deadline would otherwise kill it. A progress message goes out every 60 s
+    //     (A6); a client that sent no progress token gets an SSE comment instead — the deadline does not
+    //     care what the bytes mean, but a fabricated progress token would.
+    //   * everything else is ordinary JSON.
+    // A peer that hangs up cancels ITS waiter and only its own (A8) — the register must drain back to 0.
+    static async #serveMcpMessage( { req, res, message, sendJson } ) {
+        const { stream } = McpEndpoint.wantsEventStream( { message } )
+        const state = { 'waiterId': null, 'progressCount': 0 }
+
+        const deps = {
+            'readEvidence': ( { memo, transcriptId } ) => MemoView.readAnswerEvidence( { memo, transcriptId } ),
+            'registerWaiter': ( { transcriptId, timeoutMs } ) => {
+                const registration = AnswerWaiter.register( { transcriptId, timeoutMs } )
+                state[ 'waiterId' ] = registration[ 'waiterId' ]
+
+                return registration
+            },
+            'cancelWaiter': ( { waiterId } ) => AnswerWaiter.cancel( { waiterId } )
+        }
+
+        if( stream !== true ) {
+            const { kind, payload } = await McpEndpoint.handleMessage( { message, deps } )
+
+            if( kind === 'accepted' ) {
+                res.writeHead( 202 )
+                res.end()
+
+                return
+            }
+
+            sendJson( res, 200, payload )
+
+            return
+        }
+
+        const { token } = McpEndpoint.progressToken( { message } )
+
+        res.writeHead( 200, {
+            'Content-Type': 'text/event-stream',
+            'Cache-Control': 'no-cache, no-transform',
+            'Connection': 'keep-alive'
+        } )
+        res.write( ': memo-view wait_for_answer stream open\n\n' )
+
+        deps[ 'onProgress' ] = ( { tick, elapsedMs } ) => {
+            state[ 'progressCount' ] = state[ 'progressCount' ] + 1
+
+            if( res.writableEnded === true ) { return }
+
+            if( token === null ) {
+                res.write( `: waiting ${ Math.round( elapsedMs / 1000 ) }s\n\n` )
+
+                return
+            }
+
+            const { notification } = McpEndpoint.progressNotification( { token, tick, elapsedMs } )
+            res.write( `event: message\ndata: ${ JSON.stringify( notification ) }\n\n` )
+        }
+
+        res.on( 'close', () => {
+            if( state[ 'waiterId' ] === null ) { return }
+
+            AnswerWaiter.cancel( { 'waiterId': state[ 'waiterId' ] } )
+        } )
+
+        const { payload } = await McpEndpoint.handleMessage( { message, deps } )
+
+        if( res.writableEnded === true ) { return }
+
+        res.write( `event: message\ndata: ${ JSON.stringify( payload ) }\n\n` )
+        res.end()
     }
 
 
@@ -2882,17 +3101,19 @@ class MemoView {
                 // derives answer-ready from it, so the STATE survives a viewer restart — the M076 stale
                 // trap); the wake flag is only the 0-token push accelerator (F3). Best-effort: an invalid
                 // armed id is a no-op (writeWakeFlag re-validates, never throws).
+                // Memo 080, PRD-V9 (A9): the SAME press now feeds a second road — the wait register of
+                // the long-running `wait_for_answer` tool. ONE call point, two deliveries; neither may
+                // take the other down, which is why both live inside deliverTranscriptCompletion and
+                // report instead of throwing.
                 const { sessions: armedSessions } = MemoView.getArmedSessions( { transcriptId } )
-                const wokenSessions = ( await Promise.all(
-                    armedSessions.map( async ( armedSessionId ) => {
-                        const wake = await MemoView.writeWakeFlag( { 'sessionId': armedSessionId, 'payload': transcriptId } )
-                        return wake[ 'status' ] === true ? armedSessionId : null
-                    } )
-                ) ).filter( ( sid ) => sid !== null )
+                const delivery = await MemoView.deliverTranscriptCompletion( { transcriptId, armedSessions } )
+                const wokenSessions = delivery[ 'woken' ]
 
-                sendJson( res, 200, { 'status': 'ok', 'revisionId': result[ 'revisionId' ], 'woken': wokenSessions } )
+                delivery[ 'messages' ].forEach( ( message ) => process.stderr.write( `  WARN ${ message }\n` ) )
 
-                process.stdout.write( `  Transcript logged in: ${ transcriptId }${ wokenSessions.length > 0 ? ` (woke ${ wokenSessions.length } armed session[s])` : '' }\n` )
+                sendJson( res, 200, { 'status': 'ok', 'revisionId': result[ 'revisionId' ], 'woken': wokenSessions, 'resolvedWaiters': delivery[ 'resolved' ] } )
+
+                process.stdout.write( `  Transcript logged in: ${ transcriptId }${ wokenSessions.length > 0 ? ` (woke ${ wokenSessions.length } armed session[s])` : '' }${ delivery[ 'resolved' ] > 0 ? ` (served ${ delivery[ 'resolved' ] } waiting tool call[s])` : '' }\n` )
 
                 return
             }
@@ -2917,6 +3138,53 @@ class MemoView {
                 sendJson( res, 200, { 'status': 'ok', 'revisionId': result[ 'revisionId' ] } )
 
                 process.stdout.write( `  Transcript logged out: ${ transcriptId }\n` )
+
+                return
+            }
+
+            // Memo 080, Kap 19, PRD-V9 (F12=A / F31=A, WI-098/WI-164): the tool endpoint. It hangs off
+            // THIS server — same process, same port, same 127.0.0.1 bind, no new listener (A1). The
+            // protocol work lives in McpEndpoint; here is only the transport (origin gate, body, event
+            // stream, abort).
+            if( McpEndpoint.isEndpointUrl( { url } )[ 'matches' ] === true ) {
+                const originCheck = McpEndpoint.checkOrigin( { 'origin': req.headers[ 'origin' ] } )
+
+                if( originCheck[ 'allowed' ] !== true ) {
+                    // Loud on purpose: a 403 that says nothing turns the first real call into a mystery.
+                    process.stderr.write( `  WARN MCP-ORIGIN-403: rejected /mcp ${ req.method } — ${ originCheck[ 'reason' ] } (origin: ${ req.headers[ 'origin' ] === undefined ? '<none>' : req.headers[ 'origin' ] })\n` )
+                    sendJson( res, 403, { 'error': `Forbidden: ${ originCheck[ 'reason' ] }`, 'hint': 'send Origin: http://127.0.0.1:3333 — the endpoint refuses foreign and absent origins (DNS-rebinding guard)' } )
+
+                    return
+                }
+
+                if( req.method === 'DELETE' ) {
+                    sendJson( res, 200, { 'status': 'ok' } )
+
+                    return
+                }
+
+                if( req.method !== 'POST' ) {
+                    res.writeHead( 405, { 'Allow': 'POST, DELETE' } )
+                    res.end()
+
+                    return
+                }
+
+                const { body, aborted } = await readBody( req )
+
+                if( aborted === true ) { return }
+
+                let parsed
+
+                try {
+                    parsed = JSON.parse( body )
+                } catch {
+                    sendJson( res, 400, { 'jsonrpc': '2.0', 'id': null, 'error': { 'code': -32700, 'message': 'Parse error' } } )
+
+                    return
+                }
+
+                await MemoView.#serveMcpMessage( { req, res, 'message': parsed, sendJson } )
 
                 return
             }

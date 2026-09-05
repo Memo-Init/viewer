@@ -1,6 +1,6 @@
 import { createServer } from 'node:http'
 import { readFile, access, readdir, mkdir, writeFile, appendFile } from 'node:fs/promises'
-import { watch, existsSync, readFileSync, statSync } from 'node:fs'
+import { watch, existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve, basename, dirname, join, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -86,6 +86,62 @@ const makeBundleReader = ( path ) => {
 
 const getCssBundle = makeBundleReader( APP_CSS_PATH )
 const getClientBundle = makeBundleReader( APP_CLIENT_JS_PATH )
+
+// PRD-V11 (Memo 080 Kap 19, WI-100): the honest half of `view up`. A pure port probe (`nc -z`) only
+// proves that SOMETHING listens — a server process running code that is older than the source on disk
+// passes it, green. So the server publishes the hash it BOOTED with next to the hash the source on
+// disk carries RIGHT NOW, and `stale` is the comparison of the two.
+//
+// SCOPE, deliberately wider than "this file". The process does not consist of MemoView.mjs alone: a
+// stale DocumentRegistry or DoltDbAssembler is exactly the same defect spelled one file further, and a
+// hash over the entry module only would report it green. The reader therefore covers EVERY server-side
+// module of src/ (33 files / ~1.1 MB, measured with
+//   ls src/*.mjs | grep -v '\.test\.mjs' | wc -l  ·  du -ch $( ls src/*.mjs | grep -v '\.test\.mjs' )
+// ). Test files are out — they never enter the running process. The two public bundles keep their own
+// readers (they already carry a hash into the delivered page).
+//
+// COST. Following the mtime-invalidated pattern of makeBundleReader: the normal case is one readdir
+// plus one stat per module and NO hashing; the content is only re-read and re-hashed when the
+// fingerprint (name + mtime + size per file) actually changed. `hashCount` is returned so a test can
+// prove that (A12) instead of trusting the claim.
+const SERVER_SRC_DIR = fileURLToPath( new URL( './', import.meta.url ) )
+
+const makeSourceTreeReader = ( { dir } ) => {
+    let cache = { fingerprint: '', hash: '', files: 0, bytes: 0, hashCount: 0 }
+
+    return () => {
+        const names = ( () => {
+            try { return readdirSync( dir ) } catch { return [] }
+        } )()
+            .filter( ( name ) => name.endsWith( '.mjs' ) === true && name.endsWith( '.test.mjs' ) === false )
+            .sort()
+        const marks = names
+            .map( ( name ) => {
+                try {
+                    const seen = statSync( join( dir, name ) )
+
+                    return `${ name }:${ seen.mtimeMs }:${ seen.size }`
+                } catch {
+                    return `${ name }:missing`
+                }
+            } )
+        const fingerprint = marks.join( '|' )
+
+        if( fingerprint !== cache.fingerprint ) {
+            const source = names
+                .map( ( name ) => {
+                    try { return readFileSync( join( dir, name ), 'utf8' ) } catch { return '' }
+                } )
+                .join( '\n' )
+            const hash = createHash( 'sha1' ).update( source ).digest( 'hex' ).slice( 0, 12 )
+            cache = { fingerprint, hash, files: names.length, bytes: Buffer.byteLength( source, 'utf8' ), hashCount: cache.hashCount + 1 }
+        }
+
+        return cache
+    }
+}
+
+const getServerSource = makeSourceTreeReader( { dir: SERVER_SRC_DIR } )
 
 // PRD-V5 (Memo 080 Kap 16, WI-136): the client bundle went out as ONE ~460 KB res.end() without an
 // error sink. A browser that navigates away mid-write turns that single write into the `write EPIPE`
@@ -178,6 +234,9 @@ class MemoView {
             server.listen( portNumber, BIND_HOST, () => {
                 const startResult = true
 
+                // PRD-V11 (WI-100): freeze the boot facts here — same listener, same port.
+                MemoView.recordBoot( { port: portNumber, memoRoot: process.cwd(), nowMs: Date.now() } )
+
                 resolvePromise( { startResult } )
             } )
         } )
@@ -254,6 +313,12 @@ class MemoView {
     static #wssInstance = null
     // PRD-004 (Memo 022 Kap 8): config boot result, read ONCE at startup (see startServer).
     static #config = null
+
+    // PRD-V11 (Memo 080 Kap 19, WI-100): the boot facts /api/health answers with. `bootHash` is taken
+    // exactly ONCE, in the server.listen callback — later it is only ever COMPARED, never refreshed.
+    // A boot record that could be refreshed would answer "not stale" forever and would be the very
+    // lie the endpoint replaces.
+    static #boot = { startedAtMs: null, startedAt: null, bootHash: null, port: null, memoRoot: null }
 
     // PRD-V3 (Memo 080, Kap 15 / WI-104): the LAST RUNTIME SEQUENCE broadcast per document. The
     // `history_journal` seq is monotonic, so "did anything change" is a comparison against this marker —
@@ -991,6 +1056,9 @@ class MemoView {
             } )
 
             server.listen( portNumber, BIND_HOST, () => {
+                // PRD-V11 (WI-100): freeze the boot facts here — same listener, same port.
+                MemoView.recordBoot( { port: portNumber, memoRoot: process.cwd(), nowMs: Date.now() } )
+
                 resolvePromise()
             } )
         } )
@@ -2285,6 +2353,61 @@ class MemoView {
     }
 
 
+    // PRD-V11 (Memo 080 Kap 19, WI-100): record the boot facts ONCE, from the server.listen callback of
+    // BOTH start paths. No new listener, no new port, no new process — the endpoint rides on the
+    // existing loopback-bound server. `bootHash` is frozen here on purpose: a boot hash that could be
+    // refreshed would answer "not stale" forever, which is exactly the lie `nc -z` tells today.
+    static recordBoot( { port, memoRoot, nowMs } ) {
+        const current = getServerSource()
+        const startedAtMs = Number.isFinite( nowMs ) === true ? nowMs : Date.now()
+        MemoView.#boot = { startedAtMs, startedAt: new Date( startedAtMs ).toISOString(), bootHash: current.hash, port, memoRoot }
+
+        return { bootHash: current.hash, startedAt: MemoView.#boot.startedAt, hashedFiles: current.files, bytes: current.bytes }
+    }
+
+
+    // The body of GET /api/health as a PURE function of the two readings it compares. Pure on purpose:
+    // both directions of `stale` (the green one and the red one) have to be provable, and a builder
+    // that reaches for the module's own source dir could only ever show the green one.
+    // A process that never recorded a boot answers `status: 'unrecorded'` and `stale: null` — it can
+    // not compare, and a comfortable `false` would be an invented answer.
+    static buildHealthPayload( { boot, current, nowMs } ) {
+        const at = Number.isFinite( nowMs ) === true ? nowMs : Date.now()
+        const uptimeSeconds = boot.startedAtMs === null ? null : Math.max( 0, Math.round( ( at - boot.startedAtMs ) / 1000 ) )
+
+        return {
+            payload: {
+                status: boot.bootHash === null ? 'unrecorded' : 'ok',
+                pid: process.pid,
+                port: boot.port,
+                startedAt: boot.startedAt,
+                uptimeSeconds,
+                bootHash: boot.bootHash,
+                currentHash: current.hash,
+                hashedFiles: current.files,
+                hashComputations: current.hashCount,
+                stale: boot.bootHash === null ? null : boot.bootHash !== current.hash,
+                memoRoot: boot.memoRoot
+            }
+        }
+    }
+
+
+    // The route's call site: the recorded boot against the source tree as it is on disk right now.
+    static healthPayload( { nowMs } ) {
+        return MemoView.buildHealthPayload( { boot: MemoView.#boot, current: getServerSource(), nowMs } )
+    }
+
+
+    // Test seam ONLY: drop the recorded boot so a case can prove the unrecorded branch. Never called
+    // from the server paths.
+    static resetBootForTests() {
+        MemoView.#boot = { startedAtMs: null, startedAt: null, bootHash: null, port: null, memoRoot: null }
+
+        return { reset: true }
+    }
+
+
     static #createHttpHandler( { html, state } ) {
         const mimeTypes = {
             '.png': 'image/png',
@@ -2344,6 +2467,26 @@ class MemoView {
         // handler. It is called from exactly one try/catch below, so a throw anywhere in any route ends
         // as a 500 with a log entry instead of as a dead process.
         const route = async ( req, res, url ) => {
+            // PRD-V11 (Memo 080 Kap 19, WI-100): the honest replacement of the status line's `nc -z`
+            // port probe. A port probe can not tell a current process from one running older code; this
+            // answers with the hash the process BOOTED with and the hash the source carries right now.
+            // First branch on purpose: it reads no body, holds no connection (that is PRD-V9's job) and
+            // must stay answerable even when everything behind it is busy. `no-store`, because a cached
+            // health answer would be the stalest thing in the system.
+            if( url === '/api/health' && req.method === 'GET' ) {
+                const { payload } = MemoView.healthPayload( {} )
+                const body = JSON.stringify( payload )
+
+                res.writeHead( 200, {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'Content-Length': Buffer.byteLength( body ),
+                    'Cache-Control': 'no-store'
+                } )
+                res.end( body )
+
+                return
+            }
+
             if( url === '/api/documents' && req.method === 'POST' ) {
 
                 const { body, aborted } = await readBody( req )
@@ -6663,4 +6806,7 @@ class MemoView {
 }
 
 
-export { MemoView }
+// PRD-V11 (Memo 080 Kap 19, WI-100): the source-tree reader is exported so a test can point it at a
+// REAL throwaway tree and flip a file there. Without that seam the stale direction could only ever be
+// shown by editing the running repo — the one thing a test must not do.
+export { MemoView, makeSourceTreeReader }

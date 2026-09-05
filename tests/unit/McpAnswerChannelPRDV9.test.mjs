@@ -364,10 +364,16 @@ describe( 'PRD-V9 — the path seam matches the REAL registry, not a convenient 
 
 
 // A12 — the registration itself. It is a PROJECT file (…/memo-init/.mcp.json), two directories above this
-// repo, and CI checks this repo out ALONE — so the read is guarded and the absence is reported as a NAMED
-// skip that says what it could not judge, never as a quiet pass. When the file IS there, every rule of A12
-// is measured on its content: the loopback endpoint, no secret, no absolute user path, no machine name.
-// The patterns are a LIST, so a new forbidden shape is one entry and not a second test.
+// repo, and CI checks this repo out ALONE. In CI the basis is therefore missing in 100 % of the runs, so an
+// `if( !readable ) return` inside the case would have made this check permanently and invisibly green — the
+// exact "vacuum green" this suite exists to prevent. The case is registered through `withRegistration`
+// instead (the house spelling `existsSync( … ) ? it : it.skip`): it lands in jest's SKIPPED tally, its title
+// carries the comparison set it did or did not have, and the missing basis is additionally written to the
+// run output, because jest prints test titles only on a TTY. A run without the file is thereby readably
+// different from a run with it.
+// When the file IS there, every rule of A12 is measured on its content: the loopback endpoint, no secret, no
+// absolute user path, no machine name. The patterns are a LIST, so a new forbidden shape is one entry and
+// not a second test.
 const MCP_REGISTRATION = resolve( here, '..', '..', '..', '..', '.mcp.json' )
 
 const FORBIDDEN_IN_REGISTRATION = [
@@ -377,20 +383,33 @@ const FORBIDDEN_IN_REGISTRATION = [
     { 'label': 'machine name instead of the loopback literal', 'pattern': /(localhost|\.local\b|0\.0\.0\.0)/i }
 ]
 
+const REGISTRATION_READABLE = existsSync( MCP_REGISTRATION )
+const withRegistration = REGISTRATION_READABLE === true ? it : it.skip
+const REGISTRATION_NOTE = REGISTRATION_READABLE === true
+    ? '1 of 1 registration file compared, 4 forbidden shapes'
+    : 'SKIPPED, no comparison basis — the project root is above this repo and not checked out, 0 of 1 registration file compared'
+
+// Same channel as the sibling suite EventChannelSunsetPRDV10, and for the same measured reason: jest
+// prints a test TITLE only on a TTY and swallows the `console` block of a PASSING suite, so on the full
+// run neither would reach the CI log. stderr does.
+if( REGISTRATION_READABLE !== true ) {
+    process.stderr.write( `  SKIP McpAnswerChannelPRDV9 A12: ${ REGISTRATION_NOTE } — ${ MCP_REGISTRATION }\n` )
+}
+
 
 describe( 'PRD-V9 A12 — the project registration names the loopback endpoint and carries nothing private', () => {
-    it( 'the .mcp.json in the project root points at 127.0.0.1:3333/mcp and trips none of 4 forbidden shapes', () => {
-        const readable = existsSync( MCP_REGISTRATION )
-
-        // The comparison basis is stated in both directions: this repo alone cannot see the project root.
+    // Always runs, in every environment: the guard's OWN shape. It says which file the check is about and
+    // how many forbidden shapes it would compare — the part of A12 that needs no project root, and the
+    // reason the skip below is a named gap rather than a silent hole.
+    it( 'the guarded target is the project-root .mcp.json and the forbidden list has 4 entries', () => {
+        expect( MCP_REGISTRATION.endsWith( `${ sep }.mcp.json` ) ).toBe( true )
         expect( FORBIDDEN_IN_REGISTRATION.length ).toBe( 4 )
+        // and the note tells the truth about THIS run — it names the basis it actually had, in both directions
+        expect( REGISTRATION_NOTE ).toContain( REGISTRATION_READABLE === true ? '1 of 1 registration file compared' : '0 of 1 registration file compared' )
+    } )
 
-        if( readable !== true ) {
-            expect( MCP_REGISTRATION.endsWith( `${ sep }.mcp.json` ) ).toBe( true )
 
-            return
-        }
-
+    withRegistration( `the .mcp.json points at 127.0.0.1:3333/mcp and trips none of them (${ REGISTRATION_NOTE })`, () => {
         const text = readFileSync( MCP_REGISTRATION, 'utf-8' )
         const parsed = JSON.parse( text )
         const offenders = FORBIDDEN_IN_REGISTRATION

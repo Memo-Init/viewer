@@ -309,4 +309,25 @@ describe( 'PRD-V3 — die Zeile in der Kopfleiste (WI-104)', () => {
         expect( region ).toContain( 'renderRuntimeStatus( data )' )
         expect( region ).not.toContain( 'scrollTo' )
     } )
+
+
+    // The server broadcasts to EVERY connected socket, so a per-document message has to be addressed on
+    // arrival or it paints another document's figures into the head bar on screen. This is asserted as a
+    // CLASS, not as one case: every branch that reacts to a document-scoped broadcast carries the SAME
+    // guard, character for character. A new branch with its own spelling fails here.
+    it( 'every document-scoped broadcast branch carries the identical documentId guard (2 branches compared)', () => {
+        const GUARD = 'if( !data.documentId || data.documentId === currentDocumentId ) {'
+        const scoped = [ 'annotationList', 'runtimeStatus' ]
+        const unguarded = scoped
+            .filter( ( type ) => {
+                const start = client.indexOf( `if( data.type === '${ type }' ) {` )
+
+                return start === -1 || client.slice( start, start + 200 ).includes( GUARD ) !== true
+            } )
+
+        expect( scoped.length ).toBe( 2 )
+        expect( unguarded ).toEqual( [] )
+        // and the guard exists exactly as often as there are branches that need it — no second spelling
+        expect( client.split( GUARD ).length - 1 ).toBe( scoped.length )
+    } )
 } )

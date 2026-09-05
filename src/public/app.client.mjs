@@ -9270,10 +9270,16 @@
                 }
 
                 // PRD-V3 (Memo 080, Kap 15 / WI-104): the runtime-status broadcast. Additive — none of the
-                // eight existing message types is touched. The server only sends this when the ledger's
-                // sequence has GROWN, so the branch renders unconditionally instead of deciding again.
+                // eight existing message types is touched. The server sends it to EVERY connected client
+                // (MemoView broadcasts over wss.clients), and the message names the document it belongs to,
+                // so the branch has to ask the same question its annotationList sibling above asks: is this
+                // about the document on screen? Without it a write into document B paints B's figures into
+                // the head bar of document A. "The sequence has grown" answers WHETHER something was sent,
+                // never TO WHICH document the number belongs. Same spelling as the sibling on purpose.
                 if( data.type === 'runtimeStatus' ) {
-                    renderRuntimeStatus( data )
+                    if( !data.documentId || data.documentId === currentDocumentId ) {
+                        renderRuntimeStatus( data )
+                    }
                 }
 
                 if( data.type === 'content' ) {

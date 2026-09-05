@@ -25,6 +25,13 @@
 // an empty comparison field is a finding, never a pass. The one place where an unreadable file is not a
 // failure is the sibling repo repos/core: CI checks this repo out ALONE, so that place is reported as
 // UNJUDGED and the run states how many places it could judge.
+//
+// Everything that can only be answered WITH the sibling repo therefore lives in cases registered through
+// `withCore` (the house spelling `existsSync( … ) ? it : it.skip`), and their titles carry the count they
+// could compare. A run without the sibling repo is thus distinguishable from a run with it in jest's own
+// tally — never a hard failure (CI would be red for a reason that is not the code) and never a quiet pass.
+// The same rule holds for LABELS: they are anchored to the repo they belong to, never to a directory
+// above the checkout, whose name differs between the workbench and CI.
 import { describe, it, expect } from '@jest/globals'
 import { createServer } from 'node:http'
 import { execFile } from 'node:child_process'
@@ -40,7 +47,6 @@ const execFileP = promisify( execFile )
 const here = dirname( fileURLToPath( import.meta.url ) )
 const SELF = fileURLToPath( import.meta.url )
 const VIEWER_ROOT = resolve( here, '..', '..' )
-const PROJECT_ROOT = resolve( VIEWER_ROOT, '..', '..' )
 const SCRIPT_NAME = 'session-wake-arm.sh'
 const SCRIPT = join( VIEWER_ROOT, 'scripts', SCRIPT_NAME )
 const MEMOVIEW_SRC = join( VIEWER_ROOT, 'src', 'MemoView.mjs' )
@@ -48,6 +54,24 @@ const MEMOVIEW_SRC = join( VIEWER_ROOT, 'src', 'MemoView.mjs' )
 const CORE_ROOT = resolve( VIEWER_ROOT, '..', 'core' )
 const CORE_SKILL = join( CORE_ROOT, 'skills', 'memo', 'memo-revision-execute', 'SKILL.md' )
 const SCRIPT_REF = /session-wake-arm\.sh/g
+
+// The ONE gate for every claim whose basis is the sibling repo. `it.skip` keeps the case in the report
+// and in the skipped tally, and the note names the comparison set it did or did not have — so "ran with a
+// basis" and "ran without one" are two different, readable outcomes instead of the same green.
+const CORE_READABLE = existsSync( CORE_ROOT )
+const withCore = CORE_READABLE === true ? it : it.skip
+const CROSS_REPO_NOTE = CORE_READABLE === true
+    ? '1 of 1 cross-repo root judged'
+    : 'SKIPPED, no comparison basis — repos/core is not checked out, 0 of 1 cross-repo roots judged'
+
+// jest prints a test TITLE only on a TTY, and it swallows the `console` block of a suite that PASSES —
+// measured on the full 132-suite run piped into a file: neither the title nor a console.warn survived,
+// only the bare skip count. The missing basis is therefore written straight to stderr, the one channel
+// that reaches the CI log unconditionally (the same road the AUTOBIND warnings already travel). The line
+// names the path and the comparison set, and it is there in exactly the runs that could not judge.
+if( CORE_READABLE !== true ) {
+    process.stderr.write( `  SKIP EventChannelSunsetPRDV10: ${ CROSS_REPO_NOTE } — ${ CORE_ROOT }\n` )
+}
 
 const NEXT_PREFIX = 'NEXT: bash repos/viewer/scripts/session-wake-arm.sh'
 
@@ -240,7 +264,28 @@ const discoverCarriers = () => {
 }
 
 
-const labelOf = ( { path } ) => relative( PROJECT_ROOT, path )
+// A label is anchored to the repo it belongs to, NEVER to a directory above the checkout. Two levels up
+// is called `memo-init` in the workbench and something else on any CI runner, so a label built from there
+// is a different string in every environment and every assertion on it is a coin toss. `repos/viewer/…`
+// and `repos/core/…` are the same string everywhere, and they are pure string work — an absent sibling
+// repo still gets its correct name.
+const REPO_LABELS = [
+    { 'root': VIEWER_ROOT, 'prefix': 'repos/viewer' },
+    { 'root': CORE_ROOT, 'prefix': 'repos/core' }
+]
+
+
+const labelOf = ( { path } ) => {
+    const anchored = REPO_LABELS
+        .map( ( entry ) => ( { 'prefix': entry.prefix, 'rest': relative( entry.root, path ) } ) )
+        .filter( ( entry ) => entry.rest.length > 0 && entry.rest.startsWith( '..' ) !== true )
+
+    if( anchored.length === 0 ) {
+        throw new Error( `no repo anchor for ${ path } — a sunset label must be relative to its own repo` )
+    }
+
+    return `${ anchored[ 0 ][ 'prefix' ] }/${ anchored[ 0 ][ 'rest' ] }`
+}
 
 
 // The anchors WITHOUT which the transition is already broken. They are named, because the discovered
@@ -688,41 +733,55 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( verdict.missing ).toEqual( [] )
     } )
 
-    it( 'the walk FINDS the two carriers the copied list never had (2 named paths compared)', () => {
+    it( 'the walk FINDS the in-repo carrier the copied list never had (1 named path, 4 labels compared)', () => {
         const { places } = sunsetPlaces()
         const labels = places.map( ( place ) => place.label )
 
-        // These two were built after the list was written down and are the reason it is a search now.
-        // Both are cross-checked against the source of truth: they are on the list because they name
-        // the script, and the assertion says so with the hit count.
-        const late = [
-            'repos/core/tests/event-channel-sop-rule8.test.mjs',
-            'repos/viewer/tests/manual/event-channel-wake-e2e.mjs'
-        ]
-        const onList = late.filter( ( label ) => labels.includes( label ) === true )
-        const hitCounts = late
-            .map( ( label ) => places.find( ( place ) => place.label === label ) )
-            .filter( ( place ) => place !== undefined )
-            .map( ( place ) => place.hits )
+        // This one was built after the list was written down and is a reason the list is a search now.
+        // It is cross-checked against the source of truth: it is on the list because it names the
+        // script, and the assertion says so with the hit count.
+        const late = 'repos/viewer/tests/manual/event-channel-wake-e2e.mjs'
+        const found = places.find( ( place ) => place.label === late )
 
-        expect( onList ).toEqual( late )
-        expect( hitCounts.filter( ( hits ) => hits > 0 ).length ).toBe( late.length )
-        // and the older four are still on it — the search replaced the copy, it did not shrink it
+        expect( labels ).toContain( late )
+        expect( found.hits ).toBeGreaterThan( 0 )
+        // and the older three are still on it — the search replaced the copy, it did not shrink it
         expect( labels ).toContain( 'repos/viewer/scripts/session-wake-arm.sh' )
         expect( labels ).toContain( 'repos/viewer/tests/unit/ReverseChannelWakePRD031.test.mjs' )
         expect( labels ).toContain( 'repos/viewer/tests/unit/Phase3ViewerFeatures.test.mjs' )
     } )
 
-    it( 'A7: the running SOP rule names the script — out of repo is a NAMED skip, never a pass', () => {
-        const reading = readCoreSkill()
-        const judged = sunsetPlaces().places.filter( ( place ) => place.judged === true ).length
+    it( 'the in-repo half is compared in FULL even when the sibling repo is absent (4 places minimum)', () => {
+        const { places } = sunsetPlaces()
+        const judged = places.filter( ( place ) => place.judged === true ).length
+        const unjudged = places.filter( ( place ) => place.judged !== true )
 
         // Whatever the sibling repo does, the in-repo places must have been compared — the skip may
-        // never shrink the comparison to nothing.
+        // never shrink the comparison to nothing. And an unjudged place can only ever be a cross-repo
+        // one: an in-repo file that cannot be read is a failure, not an excuse.
         expect( judged ).toBeGreaterThanOrEqual( 4 )
-        expect( reading.skipped === true || reading.chars > 1000 ).toBe( true )
-        expect( reading.skipped === true || reading.scriptHits >= 2 ).toBe( true )
-        expect( reading.skipped === true || reading.marker === true ).toBe( true )
+        expect( unjudged.filter( ( place ) => place.label.startsWith( 'repos/core/' ) !== true ) ).toEqual( [] )
+    } )
+
+    withCore( `A7: the running SOP rule in repos/core names the script (${ CROSS_REPO_NOTE })`, () => {
+        const reading = readCoreSkill()
+
+        expect( reading.skipped ).toBe( false )
+        expect( reading.chars ).toBeGreaterThan( 1000 )
+        expect( reading.scriptHits ).toBeGreaterThanOrEqual( 2 )
+        expect( reading.marker ).toBe( true )
+    } )
+
+    withCore( `the walk FINDS the cross-repo carrier and NAMES it in the red verdict (${ CROSS_REPO_NOTE })`, () => {
+        const { places } = sunsetPlaces()
+        const late = 'repos/core/tests/event-channel-sop-rule8.test.mjs'
+        const found = places.find( ( place ) => place.label === late )
+        const verdict = evaluateSunset( { 'live': true, 'places': places } )
+
+        expect( found ).not.toBeUndefined()
+        expect( found.judged ).toBe( true )
+        expect( found.hits ).toBeGreaterThan( 0 )
+        expect( verdict.message ).toContain( 'event-channel-sop-rule8.test.mjs' )
     } )
 
     it( 'A9: a source WITH the marker turns the gate red and NAMES every remaining place', () => {
@@ -738,7 +797,6 @@ describe( 'PRD-V10 sunset gate — the transition has a machine-enforced end (A6
         expect( verdict.message ).toContain( 'session-wake-arm.sh' )
         expect( verdict.message ).toContain( 'EventChannelSunsetPRDV10.test.mjs' )
         expect( verdict.message ).toContain( 'ReverseChannelWakePRD031.test.mjs' )
-        expect( verdict.message ).toContain( 'event-channel-sop-rule8.test.mjs' )
         expect( verdict.message ).toContain( `of ${ verdict.judgedCount } places compared` )
     } )
 

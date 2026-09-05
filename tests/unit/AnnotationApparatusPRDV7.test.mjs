@@ -876,13 +876,13 @@ describe( 'PRD-V7 / WI-176 — anchoring ACROSS a link and inline code, really e
 
 
     it( 'A3 — a quote inside INLINE CODE anchors too (the same skip-list entry, the other half)', () => {
-        const { contentEl, wrapper } = paragraphWith( { tag: 'code', lead: 'ruft ', inner: 'memo kauderwelsch check', tail: ' auf' } )
+        const { contentEl, wrapper } = paragraphWith( { tag: 'code', lead: 'ruft ', inner: 'memo controlled-language check', tail: ' auf' } )
 
-        const anchored = anchor( { contentEl, exact: 'kauderwelsch' } )
+        const anchored = anchor( { contentEl, exact: 'controlled-language' } )
 
         expect( anchored ).toBe( true )
         expect( wrapper.childNodes.filter( ( node ) => node.tagName === 'MARK' ).length ).toBe( 1 )
-        expect( marksIn( contentEl ).map( ( mark ) => mark.textContent ).join( '' ) ).toBe( 'kauderwelsch' )
+        expect( marksIn( contentEl ).map( ( mark ) => mark.textContent ).join( '' ) ).toBe( 'controlled-language' )
     } )
 
 

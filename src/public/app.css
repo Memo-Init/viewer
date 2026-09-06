@@ -2192,6 +2192,20 @@
             opacity: 0.85;
             font-style: italic;
         }
+        /* PRD-22 (Memo 081 Kap 19, WI-130): the loud edge before sending. SAME warning colour as the
+           placeholder above — field marking and send-edge state one fact, and two colours would read
+           as two different things. Deliberately NOT .t-error: an omitted intent is not an error, and
+           the error channel is cleared on every save attempt. */
+        .t-notice {
+            padding: 8px 10px;
+            margin: 6px 0;
+            border: 1px solid var(--warn, #d08a2c);
+            border-radius: 6px;
+            color: var(--warn, #d08a2c);
+            font-size: 12px;
+            line-height: 1.45;
+            white-space: pre-line;
+        }
         .pp-questions-empty { font-size: 11px; color: var(--text-muted); font-style: italic; }
         .pp-footer {
             display: flex;

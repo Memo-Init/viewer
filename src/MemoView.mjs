@@ -2188,6 +2188,7 @@ class MemoView {
                         </div>
                     </div>
                     <div id="pp-error" class="t-error t-hidden"></div>
+                    <div id="pp-unconfirmed" class="t-notice t-hidden"></div>
                     <div id="pp-success" class="pp-success t-hidden"></div>
                 </div>
                 <div class="t-tab-panel" id="t-panel-new">
@@ -2214,6 +2215,7 @@ class MemoView {
                 </div>
                 <div class="t-url-box" id="t-url-box">🔗 URL erscheint erst nach dem Speichern</div>
                 <div id="t-error" class="t-error t-hidden"></div>
+                <div id="t-unconfirmed" class="t-notice t-hidden"></div>
                 <div class="t-actions" id="t-actions-default">
                     <span class="t-wordcount" id="t-wordcount"></span>
                     <button id="t-save" class="t-btn-primary">Transcript speichern</button>

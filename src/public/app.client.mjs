@@ -3987,6 +3987,11 @@
             var revisionId = document.getElementById( 't-revision' ).value
             var content = document.getElementById( 't-content' ).value
 
+            // PRD-22 (Memo 081 Kap 19, WI-130): name what the export omits BEFORE the write runs,
+            // out of the same measured state — so the user sees it while acting is still possible.
+            // The flow is not held: this reports, it does not ask (S1, N1).
+            renderUnconfirmedNotice( 't-unconfirmed', unconfirmedNotice() )
+
             // PRD-006 (Kap 9, AC-03): the confirmed question answers (st.addedText) must be
             // saved together with the transcript on the NORMAL save path too — not only via
             // "ohne Transcript speichern". Append them so a reopened "Memo" transcript can
@@ -5848,6 +5853,17 @@
             // nothing, different text -> REPLACE in place. A byte-identical second "Uebernehmen" is
             // unchanged by this (every block matches its own id with the same text and is written back
             // verbatim), so the idempotency this path already had is preserved.
+            // PRD-22 (Memo 081 Kap 19, WI-130, S3): the SAME defect, a second mechanism. On an
+            // unconfirmed selection the WI-109 gate leaves input.value empty — the intent sits in the
+            // placeholder, not the value — so the entry drops out at `val.length === 0` above, equally
+            // without a word. Closing only the named functions would close the case and leave the
+            // class open. Same producer, so both paths say the same thing.
+            // typeof-guard like the marks above: the isolated applyPromptEdit vm-eval has no module
+            // scope and must get no notice instead of a ReferenceError.
+            if( typeof unconfirmedNotice === 'function' && typeof renderUnconfirmedNotice === 'function' ) {
+                renderUnconfirmedNotice( 'pp-unconfirmed', unconfirmedNotice() )
+            }
+
             var merge = mergeAnswerBlocks( transcript, answerBlocks )
 
             // A6: an incomplete comparison set is RED — the write is refused rather than appending into a
@@ -8070,12 +8086,65 @@
 
         // PRD-028 (Kap 12.3): assemble the injected, confirmed answers (state.addedText) into
         // a single answers-only content block. Returns empty when nothing was added.
+        //
+        // PRD-22 (Memo 081 Kap 19, WI-130): IT REPORTS ITS COMPARISON BASIS. `count` says how many
+        // blocks were TAKEN and nothing said how many states were CHECKED — so no caller could tell
+        // "nothing was there" from "something was left out", and a selection the user forgot to
+        // confirm vanished without a word. A check without a declared comparison set is not green,
+        // it is blind. Same rule the answer-block merge below already follows.
+        //
+        // THE HARVEST FILTER IS UNTOUCHED (WI-109): an unconfirmed selection still does NOT reach
+        // `content`. This function NAMES it, it does not harvest it — an intent is displayed, never
+        // recorded as a decision (REV-16 :1748). `skipped` therefore uses exactly the predicate the
+        // amber placeholder uses, so field and edge speak about the same thing.
+        //
+        // `present` vs `compared`: how many state entries exist at all versus how many were actually
+        // readable. They differ only when the state carries holes — and that difference is what lets
+        // the caller report an empty comparison set instead of silently reporting nothing to say.
+        //
+        // isConfirmedAnswer is the harvest predicate, written ONCE. It stood twice (here and in
+        // appendAddedAnswers) with identical text; the second copy is gone. Naming it also keeps the
+        // "how many places may harvest" count honest — a substring buried in a lambda cannot be
+        // counted, a named predicate can.
+        function isConfirmedAnswer( st ) {
+            return !!( st && st.added === true && st.addedText )
+        }
+
         function collectAddedAnswers() {
-            var blocks = questionNav.state
-                .filter( function( st ) { return st && st.added === true && st.addedText } )
+            var entries = questionNav.state || []
+            var examined = entries.filter( function( st ) { return !!st } )
+            var blocks = examined
+                .filter( isConfirmedAnswer )
                 .map( function( st ) { return st.addedText } )
 
-            return { count: blocks.length, content: blocks.join( '\n' ) }
+            var skipped = entries
+                .map( function( st, idx ) { return { st: st, idx: idx } } )
+                .filter( function( entry ) { return !!entry.st } )
+                .filter( function( entry ) { return !isConfirmedAnswer( entry.st ) } )
+                .filter( function( entry ) {
+                    return ( entry.st.selected || [] ).length > 0 || ( entry.st.custom || [] ).length > 0
+                } )
+                .map( function( entry ) {
+                    // The state carries no question id (seedQuestionState), so the name comes from the
+                    // index-parallel questions array. A missing question falls back to the 1-based
+                    // position — NEVER to an invented id.
+                    var q = ( questionNav.questions || [] )[ entry.idx ]
+
+                    return {
+                        id: ( q && q.id ) ? q.id : ( 'Frage ' + ( entry.idx + 1 ) ),
+                        title: ( q && q.title ) ? q.title : '',
+                        intent: q ? buildAnswerText( q, entry.st ).answerLine : ''
+                    }
+                } )
+
+            return {
+                count: blocks.length,
+                content: blocks.join( '\n' ),
+                compared: examined.length,
+                present: entries.length,
+                skipped: skipped,
+                blocks: blocks
+            }
         }
 
         // PRD-006 (Kap 9, AC-03): append the collected answer blocks to a transcript content
@@ -8086,9 +8155,11 @@
             var collected = collectAddedAnswers()
             if( collected.count === 0 ) { return base }
 
-            var missing = questionNav.state
-                .filter( function( st ) { return st && st.added === true && st.addedText } )
-                .map( function( st ) { return st.addedText } )
+            // PRD-22 (Memo 081 Kap 19, WI-130): the SAME predicate stood here a second time and
+            // walked questionNav.state again. Two copies of one condition are exactly where a later
+            // change touches one and drifts them apart — so this reads the blocks the collector
+            // already measured. One filter site, one truth. The idempotency rule is unchanged.
+            var missing = collected.blocks
                 .filter( function( block ) { return base.indexOf( block.trim() ) === -1 } )
 
             if( missing.length === 0 ) { return base }
@@ -8096,6 +8167,60 @@
             var sep = base.trim().length > 0 ? '\n\n' : ''
 
             return base + sep + missing.join( '\n' )
+        }
+
+        // PRD-22 (Memo 081 Kap 19, WI-130): the loud edge before sending — ONE producer for both
+        // export paths, so the two cannot drift into two different wordings of the same fact.
+        //
+        // IT ONLY REPORTS. Nothing here changes what is exported: the unconfirmed selection stays out
+        // of the content (WI-109). "Angezeigt, nicht geerntet" (REV-16 :1748) is the whole point, and
+        // :1750 picks the display level with an action hint — not a modal that holds up the save.
+        //
+        // THE TEXT ALWAYS NAMES BOTH NUMBERS ("2 von 7"). A message that says how many were dropped
+        // but not how many were checked repeats, in the fix, the exact blindness being fixed.
+        //
+        // NOTHING FOUND IS NOT AUTOMATICALLY GREEN: a state that carries entries of which none was
+        // readable has an EMPTY comparison set, and that is reported rather than passed over in
+        // silence — the same distinction mergeAnswerBlocks draws between markers and compared. No
+        // questions at all is a legitimate null case and stays quiet.
+        function unconfirmedNotice() {
+            var collected = collectAddedAnswers()
+
+            if( collected.compared === 0 ) {
+                if( collected.present === 0 ) { return { count: 0, compared: 0, text: '' } }
+
+                return {
+                    count: 0,
+                    compared: 0,
+                    text: 'Antwort-Prüfung ohne Vergleichsgrundlage: 0 von ' + collected.present
+                        + ' Fragen konnten gelesen werden — es lässt sich nicht sagen, ob etwas fehlt.'
+                }
+            }
+
+            if( collected.skipped.length === 0 ) { return { count: 0, compared: collected.compared, text: '' } }
+
+            var names = collected.skipped
+                .map( function( entry ) { return entry.id } )
+                .join( ', ' )
+            // Same wording as the placeholder above, so the field and the edge do not give the user
+            // two different instructions for one action.
+            var text = 'Nicht übernommen: ' + collected.skipped.length + ' von ' + collected.compared
+                + ' Fragen sind ausgewählt, aber nicht bestätigt (' + names + ').'
+                + '\nSie werden NICHT gespeichert — im Widget auf "Hinzufügen" klicken, sonst geht die Auswahl verloren.'
+
+            return { count: collected.skipped.length, compared: collected.compared, text: text }
+        }
+
+        // PRD-22 (Memo 081 Kap 19, WI-130): render the notice into a field. Its own field, never the
+        // error channel — an omitted intent is not an error, and the error box is cleared on every
+        // save attempt. Missing field is not an error either (the popup path runs vm-isolated).
+        function renderUnconfirmedNotice( fieldId, notice ) {
+            var box = document.getElementById( fieldId )
+            if( !box ) { return }
+
+            box.textContent = notice.text
+            if( notice.text.length > 0 ) { box.classList.remove( 't-hidden' ) }
+            else { box.classList.add( 't-hidden' ) }
         }
 
         // PRD-012 (Memo 076 H8, WI-106): the answers-only bar ("ohne Transcript speichern" + "Fertig")

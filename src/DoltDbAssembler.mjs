@@ -1366,8 +1366,17 @@ class DoltDbAssembler {
         // User Mental Model reads (Memo 038 Kap 6). #tableExists-guarded and degraded to [] on a pre-PRD-11 db —
         // byte-identical to the core RevisionAssembler read. ORDER BY question_id, input_id so the latest record
         // per question (max input_id, "opinions can change") is deterministic across both renderers.
+        // PRD-F3 (Memo 080 Kap 18, WI-078): `preselected` joins the read so #latestAnswer can break a
+        // TIE. Column-guarded, not assumed: a database predating the column keeps the four-column read
+        // and every row then carries no provenance at all — which the tie-break reads as "not stated"
+        // and leaves the existing order untouched, rather than inventing a 0 that would look measured.
+        // Byte-identical to the core RevisionAssembler read.
+        const hasPreselected = DoltDbAssembler.#hasColumns( { db, table: 'user_input_answers', columns: [ 'preselected' ] } )
+        const answerColumns = hasPreselected === true
+            ? 'input_id, question_id, option_key, answer_verbatim, preselected'
+            : 'input_id, question_id, option_key, answer_verbatim'
         const answers = DoltDbAssembler.#tableExists( { db, table: 'user_input_answers' } ) === true
-            ? DoltDbAssembler.#all( { db, sql: 'SELECT input_id, question_id, option_key, answer_verbatim FROM user_input_answers ORDER BY question_id, input_id' } )
+            ? DoltDbAssembler.#all( { db, sql: `SELECT ${ answerColumns } FROM user_input_answers ORDER BY question_id, input_id` } )
             : []
         // research (+ research_topics / research_files edges) — the memo-local R-circle REV-03 Kap 3 Punkt 1
         // enumerates as DB-resident memo-body data ("Research-Kanten leben in der DB"). Mirrors the core
@@ -2244,7 +2253,37 @@ class DoltDbAssembler {
         }
 
         return forQuestion
-            .reduce( ( acc, row ) => String( row[ 'input_id' ] ) > String( acc[ 'input_id' ] ) ? row : acc, forQuestion[ 0 ] )
+            .reduce( ( acc, row ) => DoltDbAssembler.#answerWins( { row, acc } ) === true ? row : acc, forQuestion[ 0 ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#answerWins — which of two records for the SAME question the
+    // block shows. The existing rule decides first and is unchanged: the greater input_id, the freshest
+    // capture, wins. PRD-F3 (Memo 080 Kap 18, WI-078) only adds the TIE, which the old reduce resolved by
+    // accident (equal ids compare false, so whichever row the ORDER BY put first won).
+    //
+    // ON A TIE THE NOT-PRESELECTED ROW WINS. A tie is one capture that wrote two answers to one question —
+    // measured 22 times in memo-080.db, once (F12) with two different option keys. When one merely repeats
+    // what the AI had preselected and the other does not, the one the user actually formed is the decision.
+    static #answerWins( { row, acc } ) {
+        const rowId = String( row[ 'input_id' ] )
+        const accId = String( acc[ 'input_id' ] )
+
+        if( rowId !== accId ) {
+            return rowId > accId
+        }
+
+        return DoltDbAssembler.#isPreselected( { row: acc } ) === true && DoltDbAssembler.#isPreselected( { row } ) !== true
+    }
+
+
+    // Byte-identical to RevisionAssembler.#isPreselected. `preselected` as the writer stores it: INTEGER
+    // 1/0. A row from a database predating the column carries undefined — read as "not stated", never as
+    // a measured 0.
+    static #isPreselected( { row } ) {
+        const value = row[ 'preselected' ]
+
+        return value === 1 || value === true
     }
 
 

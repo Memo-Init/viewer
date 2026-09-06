@@ -72,11 +72,18 @@ describe( 'PRD-002 applyPromptEdit — emitted browser string', () => {
 
         const applySrc = extractFunction( emittedScript, 'async function applyPromptEdit(' )
         const activateSrc = extractFunction( emittedScript, 'function activatePsCopy(' )
+        // PRD-F3 (Memo 080 Kap 18, S3): applyPromptEdit no longer dedupes inline — it delegates to
+        // mergeAnswerBlocks (which uses scanAnswerBlocks). Both must be lifted, or the sandbox call
+        // fails with a ReferenceError instead of exercising the code under test.
+        const mergeSrc = extractFunction( emittedScript, 'function mergeAnswerBlocks(' )
+        const scanSrc = extractFunction( emittedScript, 'function scanAnswerBlocks(' )
 
         expect( applySrc.length ).toBeGreaterThan( 0 )
         expect( activateSrc.length ).toBeGreaterThan( 0 )
+        expect( mergeSrc.length ).toBeGreaterThan( 0 )
+        expect( scanSrc.length ).toBeGreaterThan( 0 )
 
-        extractedSource = applySrc + '\n' + activateSrc
+        extractedSource = applySrc + '\n' + activateSrc + '\n' + mergeSrc + '\n' + scanSrc
             + '\nglobalThis.__apply = applyPromptEdit;'
             + '\nglobalThis.__activate = activatePsCopy;'
     } )

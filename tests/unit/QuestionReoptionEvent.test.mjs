@@ -196,7 +196,7 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
 
 
     it( 'A10 — a typed-but-not-Entered reason is harvested before the answer is built (no Enter needed)', async () => {
-        const { harvestReformulationInputs, buildAnswerText } = await extractFunctions( [ 'harvestReformulationInputs', 'buildAnswerText' ], [ 'REFORMULATION_KINDS' ] )
+        const { harvestReformulationInputs, buildAnswerText } = await extractFunctions( [ 'harvestReformulationInputs', 'buildAnswerText', 'markQuestionTouched', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
 
         // a fake card that carries BOTH rows, each with its own input — the reoption one holds the typed
         // reason, the reframe one is empty (the user did not take that turn).
@@ -232,7 +232,7 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
 
 
     it( 'A11 — the reframe turn is UNTOUCHED: same label, same prompt, same folded answer', async () => {
-        const { harvestReformulationInputs, buildAnswerText } = await extractFunctions( [ 'harvestReformulationInputs', 'buildAnswerText' ], [ 'REFORMULATION_KINDS' ] )
+        const { harvestReformulationInputs, buildAnswerText } = await extractFunctions( [ 'harvestReformulationInputs', 'buildAnswerText', 'markQuestionTouched', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
 
         const reframeInput = { value: 'Wie gross soll der Umfang maximal sein?' }
         const card = { querySelector: ( sel ) => ( sel.indexOf( 'data-reframe-row' ) !== -1 ? reframeInput : null ) }

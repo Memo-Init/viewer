@@ -113,9 +113,11 @@ describe( 'UserInputCapture — PRD-09/11 user_inputs capture via CLI (Memo 079)
 
             const { answers } = UserInputCapture.parseAnswerBlocks( { content } )
 
+            // PRD-F3 (Memo 080 Kap 18): every entry now also carries the derived `preselected`; an
+            // unmarked block — every block written before the mark existed — derives to false.
             expect( answers ).toEqual( [
-                { 'question': 'F1', 'answer': 'DoltLite als DB.' },
-                { 'question': 'F6', 'answer': 'Ja, mit lost:true.' }
+                { 'question': 'F1', 'answer': 'DoltLite als DB.', 'preselected': false },
+                { 'question': 'F6', 'answer': 'Ja, mit lost:true.', 'preselected': false }
             ] )
         } )
 
@@ -253,6 +255,119 @@ describe( 'UserInputCapture — PRD-09/11 user_inputs capture via CLI (Memo 079)
             expect( result[ 'status' ] ).toBe( false )
             expect( result[ 'messages' ].join( ' ' ) ).toContain( 'USERINPUT-KIND-001' )
             expect( calls ).toHaveLength( 0 )
+        } )
+    } )
+
+
+    // PRD-F3 (Memo 080 Kap 18, WI-139 / Forensik H6): the memo id the routes forward is the VIEWER id,
+    // and the live registry carries the full folder slug there (measured: 976 transcripts with values
+    // like "080-db-vollausbau-und-laufzeit-transparenz"). The core leaf resolves memo folders by NUMBER
+    // (`startsWith( "<memo>-" )`), so the full slug was refused with exit 3 on EVERY capture. Measured
+    // against the real CLI: `--memo 080` writes a row, `--memo 080-db-vollausbau-…` returns
+    // "could not resolve a database for memo". That is the chain-wide reason both tables stayed empty.
+    describe( 'PRD-F3 — normalizeMemoId (the forwarded id must resolve)', () => {
+
+        it( 'reduces the full folder slug to the memo NUMBER — the form the leaf resolves', () => {
+            const out = UserInputCapture.normalizeMemoId( { 'memoId': '080-db-vollausbau-und-laufzeit-transparenz' } )
+
+            expect( out[ 'status' ] ).toBe( true )
+            expect( out[ 'memoId' ] ).toBe( '080' )
+        } )
+
+
+        it( 'leaves a bare number and the reserve id untouched (2 pass-through cases)', () => {
+            expect( UserInputCapture.normalizeMemoId( { 'memoId': '079' } ) ).toEqual( { 'status': true, 'memoId': '079', 'messages': [] } )
+            expect( UserInputCapture.normalizeMemoId( { 'memoId': UserInputCapture.OTHER_MEMO_ID } ) ).toEqual( { 'status': true, 'memoId': '(ungebunden)', 'messages': [] } )
+        } )
+
+
+        it( 'NO SILENT DEFAULT: an id without a leading number is refused with a named gap', () => {
+            const empty = UserInputCapture.normalizeMemoId( { 'memoId': '' } )
+            const nonsense = UserInputCapture.normalizeMemoId( { 'memoId': 'irgendein-ordner' } )
+
+            expect( empty[ 'status' ] ).toBe( false )
+            expect( empty[ 'messages' ].join( ' ' ) ).toContain( 'USERINPUT-MEMO-001' )
+            expect( nonsense[ 'status' ] ).toBe( false )
+            expect( nonsense[ 'memoId' ] ).toBe( null )
+            expect( nonsense[ 'messages' ].join( ' ' ) ).toContain( 'USERINPUT-MEMO-002' )
+        } )
+
+
+        it( 'capture execs with the NUMBER even when the route forwards the slug (2 argv checked)', async () => {
+            const { fn, calls } = makeExec( {} )
+
+            const result = await UserInputCapture.capture( {
+                'memoId': '080-db-vollausbau-und-laufzeit-transparenz',
+                'transcriptType': 'revision',
+                'content': 'Text.\n\n## Antwort auf F1 — Erste Frage\n\nA) eins\n',
+                'bodySessionId': 'sess-1', 'env': {}, 'exec': fn, 'withAnswers': true
+            } )
+
+            expect( result[ 'status' ] ).toBe( true )
+            expect( calls ).toHaveLength( 2 )
+            calls.forEach( ( call ) => {
+                expect( call[ 'args' ][ call[ 'args' ].indexOf( '--memo' ) + 1 ] ).toBe( '080' )
+            } )
+        } )
+
+
+        it( 'capture refuses an unresolvable id BEFORE exec-ing — no child process, no silent row', async () => {
+            const { fn, calls } = makeExec( {} )
+
+            const result = await UserInputCapture.capture( {
+                'memoId': 'irgendein-ordner', 'transcriptType': 'revision', 'content': 'x',
+                'bodySessionId': 'sess-1', 'env': {}, 'exec': fn, 'withAnswers': false
+            } )
+
+            expect( result[ 'status' ] ).toBe( false )
+            expect( result[ 'messages' ].join( ' ' ) ).toContain( 'USERINPUT-MEMO-002' )
+            expect( calls ).toHaveLength( 0 )
+        } )
+    } )
+
+
+    // PRD-F3 (Memo 080 Kap 18, WI-078, A7): the `preselected` column had a flag in the leaf and no
+    // caller anywhere — so it could hold nothing but 0. The mark on the answer heading is the caller.
+    describe( 'PRD-F3 — the preselection mark reaches the leaf as --preselected', () => {
+
+        const answerArgs = ( calls ) => calls.filter( ( call ) => call[ 'args' ][ 1 ] === 'answer' )
+
+
+        it( 'parseAnswerBlocks reads the mark off the heading tail, not out of the body', () => {
+            const { answers } = UserInputCapture.parseAnswerBlocks( {
+                'content': '## Antwort auf F1 — Erste [Vorauswahl]\n\nA) eins\n\n## Antwort auf F2 — Zweite\n\nB) zwei\n'
+            } )
+
+            expect( answers ).toHaveLength( 2 )
+            expect( answers[ 0 ] ).toEqual( { 'question': 'F1', 'answer': 'A) eins', 'preselected': true } )
+            expect( answers[ 1 ] ).toEqual( { 'question': 'F2', 'answer': 'B) zwei', 'preselected': false } )
+        } )
+
+
+        it( 'A7 — a marked answer execs WITH --preselected, an unmarked one WITHOUT (2 of 2 argv)', async () => {
+            const { fn, calls } = makeExec( {} )
+
+            await UserInputCapture.capture( {
+                'memoId': '080', 'transcriptType': 'revision',
+                'content': '## Antwort auf F1 — Erste [Vorauswahl]\n\nA) eins\n\n## Antwort auf F2 — Zweite\n\nB) zwei\n',
+                'bodySessionId': 'sess-1', 'env': {}, 'exec': fn, 'withAnswers': true
+            } )
+
+            const answers = answerArgs( calls )
+            expect( answers ).toHaveLength( 2 )
+            expect( answers[ 0 ][ 'args' ] ).toContain( '--preselected' )
+            expect( answers[ 1 ][ 'args' ] ).not.toContain( '--preselected' )
+            // The flag is LAST, so the token parser reads it as the boolean true (no following value).
+            expect( answers[ 0 ][ 'args' ][ answers[ 0 ][ 'args' ].length - 1 ] ).toBe( '--preselected' )
+        } )
+
+
+        it( 'an OLD transcript without any mark parses exactly as before (0 marked of 1)', () => {
+            const { answers } = UserInputCapture.parseAnswerBlocks( { 'content': '## Antwort auf F19 — Cron-Watchdog\n\nFrage neu formulieren\n' } )
+
+            expect( answers ).toHaveLength( 1 )
+            expect( answers[ 0 ][ 'answer' ] ).toBe( 'Frage neu formulieren' )
+            expect( answers[ 0 ][ 'preselected' ] ).toBe( false )
         } )
     } )
 } )

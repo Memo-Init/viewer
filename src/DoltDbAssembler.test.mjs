@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals'
 import { mkdtempSync, mkdirSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, resolve, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 
 import { DatabaseSync } from '@dolthub/doltlite'
@@ -2154,5 +2155,120 @@ describe( 'DoltDbAssembler.readAnswersForPayload (Memo 080, PRD-V9 / WI-098)', (
         expect( () => DoltDbAssembler.readAnswersForPayload( {} ) ).toThrow( /"dbPath" is required/ )
         expect( () => DoltDbAssembler.readAnswersForPayload( { dbPath: resolve( memoDir, 'nope.db' ), payload: 'x' } ) ).toThrow( /does not exist/ )
         expect( () => DoltDbAssembler.readAnswersForPayload( { dbPath } ) ).toThrow( /"payload" is required/ )
+    } )
+} )
+
+
+// ── The twin drift guard (Memo 080, PRD-F3) ──────────────────────────────────────────────────────
+//
+// `#latestAnswer` and its two helpers exist TWICE: here and as RevisionAssembler.#latestAnswer in the
+// core CLI. Three comments on both sides assert the two are "byte-identical", and until now NOTHING
+// enforced that — the sentence was a promise, not a check. PRD-F3 changed the pair (a tie is broken by
+// `preselected`), which is exactly the kind of edit a promise cannot survive when it lands on one side.
+//
+// HOW IT ENFORCES ACROSS TWO REPOS WITHOUT READING THE OTHER ONE. Each repo fingerprints its OWN copy —
+// comments stripped, class identifier neutralised, whitespace collapsed — and both pin the SAME literal
+// sha256. Identical logic yields the identical fingerprint on both sides; any divergence yields two
+// different ones, which cannot both equal one constant, so the repo that was edited alone turns red in
+// its own CI. No cross-repo read, therefore no existsSync skip-guard that would make the check vanish
+// in a standalone checkout (the lesson guard-tests-reading-outside-repo).
+//
+// The pin is INTENTIONALLY a maintenance tax: changing the pair means updating both copies and both
+// constants. That is the point — the tax is the mechanism that drags the twin along.
+describe( 'PRD-F3 twin drift guard — the answer-selection trio must not diverge from the core CLI', () => {
+    const TWIN_METHODS = [ 'latestAnswer', 'answerWins', 'isPreselected' ]
+    const TWIN_FINGERPRINT = '4fc4119272b5755540e43b758e409685d7df5bc1f06ec8300dbf94a27a3390aa'
+    const sourcePath = resolve( dirname( fileURLToPath( import.meta.url ) ), 'DoltDbAssembler.mjs' )
+
+    const matchFrom = ( { text, open, close } ) => {
+        return text
+            .split( '' )
+            .reduce( ( acc, ch, idx ) => {
+                if( acc.end !== -1 ) { return acc }
+                if( ch === open ) { acc.depth += 1 }
+                if( ch === close ) {
+                    acc.depth -= 1
+                    if( acc.depth === 0 ) { acc.end = idx }
+                }
+
+                return acc
+            }, { depth: 0, end: -1 } ).end
+    }
+
+    // Slice ONE `static #name( … ) { … }`. The parameter list is matched FIRST and the body brace taken
+    // AFTER it: these methods destructure an object parameter, so scanning braces from the method name
+    // balances on `{ answers, questionId }` and captures the SIGNATURE ONLY. Measured while building
+    // this guard — that first version fingerprinted 109 characters instead of 691 and could not have
+    // seen a body change at all, the textbook check that cannot fail.
+    const sliceMethod = ( { source, name } ) => {
+        const marker = `static #${ name }(`
+        const start = source.indexOf( marker )
+        if( start === -1 ) { throw new Error( `twin method not found: ${ name }` ) }
+
+        const parenStart = start + marker.length - 1
+        const parenEnd = matchFrom( { text: source.slice( parenStart ), open: '(', close: ')' } )
+        if( parenEnd === -1 ) { throw new Error( `unbalanced parameter list: ${ name }` ) }
+
+        const braceStart = source.indexOf( '{', parenStart + parenEnd )
+        const bodyEnd = braceStart === -1 ? -1 : matchFrom( { text: source.slice( braceStart ), open: '{', close: '}' } )
+        if( bodyEnd === -1 ) { throw new Error( `unbalanced body: ${ name }` ) }
+
+        return source.slice( start, braceStart + bodyEnd + 1 )
+    }
+
+    const twinFingerprint = ( { raw } ) => {
+        const source = raw
+            .replace( /\/\*[\s\S]*?\*\//g, ' ' )
+            .split( '\n' )
+            .map( ( line ) => line.replace( /\/\/.*$/, '' ) )
+            .join( '\n' )
+        const normalised = TWIN_METHODS
+            .map( ( name ) => sliceMethod( { source, name } ) )
+            .join( '\n' )
+            .replace( /\b(RevisionAssembler|DoltDbAssembler)\b/g, 'ASSEMBLER' )
+            .replace( /\s+/g, ' ' )
+            .trim()
+
+        return { normalised, sha256: createHash( 'sha256' ).update( normalised, 'utf8' ).digest( 'hex' ) }
+    }
+
+
+    it( 'the answer-selection trio matches the pinned cross-repo fingerprint', () => {
+        const { normalised, sha256 } = twinFingerprint( { raw: readFileSync( sourcePath, 'utf8' ) } )
+
+        // Comparison basis, stated on PASS: an empty or truncated slice must never read as agreement.
+        expect( TWIN_METHODS ).toHaveLength( 3 )
+        expect( normalised.length ).toBeGreaterThan( 400 )
+        TWIN_METHODS
+            .forEach( ( name ) => expect( normalised ).toContain( `static #${ name }(` ) )
+        expect( normalised ).toContain( "row[ 'preselected' ]" )
+
+        // On failure: the trio exists TWICE — mirror the change into
+        // repos/core/cli/src/RevisionAssembler.mjs and update TWIN_FINGERPRINT in BOTH test files.
+        expect( sha256 ).toBe( TWIN_FINGERPRINT )
+    } )
+
+
+    it( 'positive control: a one-operator edit moves the fingerprint, a comment-only edit does not', () => {
+        const raw = readFileSync( sourcePath, 'utf8' )
+        const base = twinFingerprint( { raw } )
+
+        // The guard must FAIL on a real divergence — proved, not asserted. Perturbed in memory only.
+        const perturbedRaw = raw.replace( 'return rowId > accId', 'return rowId >= accId' )
+        expect( perturbedRaw ).not.toBe( raw )
+        expect( twinFingerprint( { raw: perturbedRaw } ).sha256 ).not.toBe( base.sha256 )
+
+        // Dropping the tie-break entirely (the pre-PRD-F3 shape) must be caught too.
+        const revertedRaw = raw.replace(
+            'return DoltDbAssembler.#isPreselected( { row: acc } ) === true && DoltDbAssembler.#isPreselected( { row } ) !== true',
+            'return false'
+        )
+        expect( revertedRaw ).not.toBe( raw )
+        expect( twinFingerprint( { raw: revertedRaw } ).sha256 ).not.toBe( base.sha256 )
+
+        // And it must be QUIET on a comment-only edit, or it becomes noise nobody reads.
+        const commentedRaw = raw.replace( '// 1/0. A row from a database predating the column carries undefined', '// changed comment only' )
+        expect( commentedRaw ).not.toBe( raw )
+        expect( twinFingerprint( { raw: commentedRaw } ).sha256 ).toBe( base.sha256 )
     } )
 } )

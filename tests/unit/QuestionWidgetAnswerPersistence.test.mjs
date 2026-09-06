@@ -18,7 +18,7 @@ describe( 'Question widget answer persistence — Memo 079 PRD-24', () => {
 
 
     it( 'buildAnswerText (the popup prefill source) renders a single-select answer line', async () => {
-        const { buildAnswerText } = await extractFunctions( [ 'buildAnswerText' ], [ 'REFORMULATION_KINDS' ] )
+        const { buildAnswerText } = await extractFunctions( [ 'buildAnswerText', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
         const q = { id: 'F1', title: 'Frage', typ: 'single', options: [ { kind: 'option', key: 'A', label: 'Alpha' }, { kind: 'option', key: 'B', label: 'Beta' } ] }
         const st = { selected: [ 1 ], custom: [] }
 
@@ -27,7 +27,7 @@ describe( 'Question widget answer persistence — Memo 079 PRD-24', () => {
 
 
     it( 'buildAnswerText joins multi-select options + custom entries', async () => {
-        const { buildAnswerText } = await extractFunctions( [ 'buildAnswerText' ], [ 'REFORMULATION_KINDS' ] )
+        const { buildAnswerText } = await extractFunctions( [ 'buildAnswerText', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
         const q = { id: 'F2', title: 'Frage', typ: 'multi', options: [ { kind: 'option', key: 'A', label: 'Alpha' }, { kind: 'option', key: 'B', label: 'Beta' } ] }
         const st = { selected: [ 0, 1 ], custom: [ 'eigener' ] }
 
@@ -36,7 +36,7 @@ describe( 'Question widget answer persistence — Memo 079 PRD-24', () => {
 
 
     it( 'buildAnswerText folds the reformulation into a single-select reframe answer (PRD-24)', async () => {
-        const { buildAnswerText } = await extractFunctions( [ 'buildAnswerText' ], [ 'REFORMULATION_KINDS' ] )
+        const { buildAnswerText } = await extractFunctions( [ 'buildAnswerText', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
         const q = { id: 'F3', title: 'Frage', typ: 'single', options: [ { kind: 'option', key: 'A', label: 'Alpha' }, { kind: 'option', key: 'B', label: 'Beta' }, { kind: 'reframe', key: 'reframe', label: 'Frage neu formulieren' } ] }
         const st = { selected: [ 2 ], custom: [ 'Soll auch Option C erlaubt sein?' ] }
 
@@ -58,7 +58,20 @@ describe( 'Question widget answer persistence — Memo 079 PRD-24', () => {
     it( 'renderQuestionWidgets merges prior state by question id (no hard reset)', async () => {
         const src = await readFile( clientPath(), 'utf8' )
 
+        // Memo 080 PRD-F3: the merge map is still built in renderQuestionWidgets and is still keyed by
+        // question id — the map READ moved into the named seedQuestionState, so this asserts on the
+        // behaviour at its new home instead of on the old inline expression.
         expect( src ).toContain( 'var prevById = {}' )
-        expect( src ).toContain( 'prevById[ q.id ]' )
+        expect( src ).toContain( 'seedQuestionState( open, prevById )' )
+        expect( src ).toContain( 'var prev = q.id ? previous[ q.id ] : null' )
+    } )
+
+
+    // Memo 080 PRD-F3 (S2): the popup field gate is TOUCHED **and** CONFIRMED. PRD-24's live prefill
+    // (asserted above) must not silently turn a machine-injected answer into a recorded user decision.
+    it( 'the popup value gate additionally requires the user-touched marker', async () => {
+        const src = await readFile( clientPath(), 'utf8' )
+
+        expect( src ).toContain( 'st.added === true && st.addedText && st.touched === true' )
     } )
 } )

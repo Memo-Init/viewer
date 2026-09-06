@@ -5537,9 +5537,19 @@
                 // AND visibly confirmed counts.
                 // PRD-24's intent (do not silently drop a selection the user forgot to confirm)
                 // is preserved via placeholder: visible as a hint, never read as a value.
+                // PRD-F3 (Memo 080 Kap 18, S2): the value gate is now TOUCHED **and** CONFIRMED. `added`
+                // alone was not enough — PRD-026 lets a machine injection set added/addedText without any
+                // user interaction, and such an answer would have been read as a value here. The
+                // preselection seeds the display and never reaches this field.
                 var st = questionNav.state[ qIdx ]
-                if( st && st.added === true && st.addedText ) {
+                var stored = storedAnswerFor( q )
+                if( st && st.added === true && st.addedText && st.touched === true ) {
                     input.value = buildAnswerText( q, st ).answerLine
+                } else if( stored.found === true ) {
+                    // PRD-F3 (S2): an answer ALREADY saved into the transcript is read BACK out of the
+                    // content instead of the field starting empty — otherwise a second "Uebernehmen" would
+                    // silently drop it. It is the user's own earlier answer, never a preselection.
+                    input.value = stored.answer
                 } else if( st && ( st.selected.length > 0 || st.custom.length > 0 ) ) {
                     input.placeholder = 'Nicht bestätigt: ' + buildAnswerText( q, st ).answerLine
                         + ' — im Widget auf "Hinzufügen" klicken, sonst wird nichts übernommen.'
@@ -5549,6 +5559,145 @@
 
                 list.appendChild( row )
             } )
+        }
+
+        // PRD-F3 (Memo 080 Kap 18, S3): read EVERY "## Antwort auf …" block out of a content string.
+        // A block runs from its heading to the next "## " heading (exclusive) — the same cut both
+        // server-side parsers make, so client and server see the same blocks.
+        //
+        // IT REPORTS ITS COMPARISON BASIS. `markers` is how many answer headings the content carries at
+        // all; `parsed` is how many of them yielded a question id. The two differ exactly when a heading
+        // is malformed — and a check whose comparison set is incomplete is not allowed to report green.
+        function scanAnswerBlocks( content ) {
+            var text = String( content || '' )
+            var lines = text.split( '\n' )
+            var indexed = lines.map( function( line, index ) { return { line: line, index: index } } )
+            var headings = indexed.filter( function( entry ) { return /^##\s+Antwort auf/.test( entry.line ) } )
+
+            var blocks = headings.map( function( entry ) {
+                var match = entry.line.match( /^##\s+Antwort auf\s+(F\d+)/ )
+                var following = indexed.slice( entry.index + 1 ).filter( function( c ) { return /^##\s/.test( c.line ) } )
+                var end = following.length > 0 ? following[ 0 ].index : lines.length
+
+                return {
+                    id: match ? match[ 1 ] : null,
+                    start: entry.index,
+                    end: end,
+                    body: lines.slice( entry.index + 1, end ).join( '\n' ).trim()
+                }
+            } )
+
+            return { markers: headings.length, parsed: blocks.filter( function( b ) { return b.id !== null } ).length, blocks: blocks }
+        }
+
+        // PRD-F3 (Memo 080 Kap 18, S3): merge fresh answer blocks into a content BY QUESTION ID.
+        //
+        // WHY THE ID AND NOT THE TEXT: the previous filter compared whole block TEXT. That closed the
+        // "same block twice" half of the defect and left the other half wide open — two DIFFERENT answers
+        // to the same question are two different strings, so both were kept and the transcript carried a
+        // question answered twice, contradictorily. Measured in this memo's own stock: one recording holds
+        // 36 blocks for 18 distinct questions, and F12 appears once with option A and once with option B.
+        //
+        // THE RULE: no block for this id -> append. One with the SAME text -> nothing happens. One with a
+        // DIFFERENT text -> the existing block is REPLACED, not joined by a second. Further blocks for the
+        // same id are dropped, so a content that already carries the doubling is repaired on the next save.
+        //
+        // NOTHING FOUND IS NEVER GREEN: when the content carries answer headings that do not yield a
+        // question id, the comparison set is incomplete — the merge refuses with ok:false instead of
+        // appending blindly. Every return states how much was compared.
+        function mergeAnswerBlocks( content, blocks ) {
+            var base = String( content || '' ).trim()
+            var scan = scanAnswerBlocks( base )
+            var result = { ok: true, content: base, markers: scan.markers, compared: scan.parsed,
+                replaced: 0, unchanged: 0, dropped: 0, appended: 0, reason: null }
+
+            if( scan.markers > scan.parsed ) {
+                result.ok = false
+                result.reason = ( scan.markers - scan.parsed ) + ' von ' + scan.markers
+                    + ' "## Antwort auf"-Überschriften tragen keine lesbare Frage-Kennung — '
+                    + 'die Dubletten-Prüfung hatte keine vollständige Vergleichsmenge.'
+
+                return result
+            }
+
+            var newById = {}
+            var unkeyed = []
+            blocks.forEach( function( block ) {
+                var match = String( block ).match( /^##\s+Antwort auf\s+(F\d+)/ )
+                if( match ) { newById[ match[ 1 ] ] = String( block ).trim() }
+                else { unkeyed.push( String( block ).trim() ) }
+            } )
+
+            // First occurrence per id is REPLACED in place (position preserved), every further one dropped.
+            var seen = {}
+            var planByStart = {}
+            scan.blocks
+                .filter( function( blk ) { return blk.id !== null && newById[ blk.id ] !== undefined } )
+                .forEach( function( blk ) {
+                    var mode = seen[ blk.id ] === true ? 'drop' : 'replace'
+                    seen[ blk.id ] = true
+                    planByStart[ blk.start ] = { blk: blk, mode: mode }
+                    if( mode === 'drop' ) { result.dropped = result.dropped + 1 }
+                } )
+
+            var lines = base.split( '\n' )
+            var rebuilt = lines.reduce( function( acc, line, idx ) {
+                if( idx < acc.skipUntil ) { return acc }
+                var planned = planByStart[ idx ]
+                if( planned ) {
+                    acc.skipUntil = planned.blk.end
+                    if( planned.mode === 'replace' ) {
+                        var span = lines.slice( planned.blk.start, planned.blk.end )
+                        var fresh = newById[ planned.blk.id ]
+                        if( span.join( '\n' ).trim() === fresh ) { result.unchanged = result.unchanged + 1 }
+                        else { result.replaced = result.replaced + 1 }
+                        acc.out.push( fresh )
+                        // Re-attach the blank lines the replaced block carried after its body. Without
+                        // them a replaced block would butt straight against the next heading, and a
+                        // second "Uebernehmen" over an UNCHANGED content would produce different bytes —
+                        // which is exactly the idempotency PRD-V5 established and this must not undo.
+                        var lastFilled = span.reduce( function( found, line, i ) { return line.trim().length > 0 ? i : found }, -1 )
+                        span.slice( lastFilled + 1 ).forEach( function() { acc.out.push( '' ) } )
+                    }
+
+                    return acc
+                }
+                acc.out.push( line )
+
+                return acc
+            }, { out: [], skipUntil: 0 } )
+
+            var fresh = Object.keys( newById )
+                .filter( function( id ) { return seen[ id ] !== true } )
+                .map( function( id ) { return newById[ id ] } )
+                .concat( unkeyed.filter( function( block ) { return base.indexOf( block ) === -1 } ) )
+            result.appended = fresh.length
+
+            var merged = rebuilt.out.join( '\n' ).trim()
+            var sep = merged.length > 0 && fresh.length > 0 ? '\n\n' : ''
+            result.content = merged + sep + fresh.join( '\n\n' )
+
+            return result
+        }
+
+        // PRD-F3 (Memo 080 Kap 18, S2): the answer this question ALREADY has in the popup content. Read
+        // back so a second "Uebernehmen" carries the saved answer instead of starting from an empty field.
+        // ONLY a single-line body is offered — the field holds one line, and flattening a multi-line answer
+        // would rewrite the user's own text. A multi-line block is therefore left untouched in the content.
+        function storedAnswerFor( q ) {
+            var out = { found: false, answer: '' }
+            if( !q || !q.id ) { return out }
+            var el = document.getElementById( 'pp-content' )
+            if( !el ) { return out }
+
+            var hits = scanAnswerBlocks( el.value || '' ).blocks
+                .filter( function( blk ) { return blk.id === q.id && blk.body.length > 0 && blk.body.indexOf( '\n' ) === -1 } )
+            if( hits.length === 0 ) { return out }
+
+            out.found = true
+            out.answer = hits[ hits.length - 1 ].body
+
+            return out
         }
 
         // PRD-008 (Kap 9.5): "Übernehmen" writes BOTH prompt parts back through the existing
@@ -5573,25 +5722,36 @@
                 var q = promptEditState.questions[ qIdx ]
                 var val = ( input.value || '' ).trim()
                 if( !q || val.length === 0 ) { return }
-                answerBlocks.push( '## Antwort auf ' + q.id + ' — ' + q.title + '\n\n' + val + '\n' )
+                // PRD-F3 (Memo 080 Kap 18, S4): the popup path emits the SAME provenance mark as the
+                // widget path. typeof-guards so the isolated applyPromptEdit vm-eval (no module scope)
+                // simply gets no mark instead of a ReferenceError — the same pattern lastAnnotations uses.
+                var stForMark = ( typeof questionNav !== 'undefined' && questionNav && questionNav.state ) ? questionNav.state[ qIdx ] : null
+                var mark = ( typeof answerMarkSuffix === 'function' && stForMark ) ? answerMarkSuffix( q, stForMark ) : ''
+                answerBlocks.push( '## Antwort auf ' + q.id + ' — ' + q.title + mark + '\n\n' + val + '\n' )
             } )
 
             // "Kein Wegklicken" (Kap 9.2): both parts always go into the prompt — never optional.
-            // PRD-V5 (Memo 080 Kap 16, WI-135): dedupe FIRST. On reopen the edit field already holds the
-            // saved answer blocks, and this path re-built and re-appended them unconditionally — in the
-            // 2026-08-23 incident 18 blocks became 36. Same filter as appendAddedAnswers and the
-            // annotation branch below: a block already present in the content is not appended again.
-            // A CHANGED answer text is a different string and still passes through.
-            // Blocks are joined TRIMMED with a blank line between them, so the assembled payload carries
-            // no trailing whitespace. That is what makes a second "Uebernehmen" byte-identical: on
-            // reopen the field holds the trimmed payload, the filter drops every known block, and the
-            // result is the same string again instead of the same string minus one newline.
-            var base = transcript.trim()
-            var freshBlocks = answerBlocks
-                .filter( function( block ) { return base.indexOf( block.trim() ) === -1 } )
-                .map( function( block ) { return block.trim() } )
-            var sep = base.length > 0 && freshBlocks.length > 0 ? '\n\n' : ''
-            var content = base + sep + freshBlocks.join( '\n\n' )
+            // PRD-V5 (Memo 080 Kap 16, WI-135) deduped by whole block TEXT. That closed "the same block
+            // twice" and left "two different answers to the same question" open — measured in this memo's
+            // own recordings (36 blocks for 18 questions; F12 once as A, once as B).
+            // PRD-F3 (Memo 080 Kap 18, S3) therefore merges BY QUESTION ID: absent -> append, same text ->
+            // nothing, different text -> REPLACE in place. A byte-identical second "Uebernehmen" is
+            // unchanged by this (every block matches its own id with the same text and is written back
+            // verbatim), so the idempotency this path already had is preserved.
+            var merge = mergeAnswerBlocks( transcript, answerBlocks )
+
+            // A6: an incomplete comparison set is RED — the write is refused rather than appending into a
+            // content the check could not read. The message names how much was compared.
+            if( merge.ok !== true ) {
+                if( ppError ) {
+                    ppError.textContent = 'Dubletten-Prüfung rot: ' + merge.reason
+                    ppError.classList.remove( 't-hidden' )
+                }
+
+                return
+            }
+
+            var content = merge.content
 
             // PRD-P3-08 (Memo 075 Phase 3, WI-026/027): append the selected on-demand quality checks as
             // a "## Quality-Checks angefragt" section so the next memo-revision-generate reads it and runs
@@ -5683,10 +5843,15 @@
                 }
 
                 // c) Sichtbare Erfolgs-Quittung mit der URL statt stumm zu schliessen.
+                //    PRD-F3 (Memo 080 Kap 18, A6/US-6): the quittance states HOW MUCH the duplicate
+                //    check compared. A report without a number counts as a check that did not run.
                 if( ppSuccess ) {
-                    ppSuccess.textContent = savedUrl
+                    var checked = 'Dubletten-Prüfung: ' + merge.compared + ' Blöcke verglichen, '
+                        + merge.replaced + ' ersetzt, ' + merge.dropped + ' Dublette(n) entfernt, '
+                        + merge.appended + ' neu.'
+                    ppSuccess.textContent = ( savedUrl
                         ? 'Gespeichert · in Zwischenablage kopiert: ' + savedUrl
-                        : 'Gespeichert.'
+                        : 'Gespeichert.' ) + ' · ' + checked
                     ppSuccess.classList.remove( 't-hidden' )
                 }
 
@@ -7711,20 +7876,7 @@
                 if( pq && pq.id ) { prevById[ pq.id ] = questionNav.state[ pIdx ] }
             } )
             questionNav.questions = open
-            questionNav.state = open.map( function( q ) {
-                // single = first preselected index; multi = full preselected set.
-                var pre = Array.isArray( q.preselected ) ? q.preselected.slice() : []
-                var selected = q.typ === 'single' ? ( pre.length > 0 ? [ pre[ 0 ] ] : [] ) : pre
-                var prev = q.id ? prevById[ q.id ] : null
-                var optCount = ( q.options || [] ).length
-                if( prev && prev.selected.every( function( i ) { return i < optCount } ) ) { return prev }
-                // PRD-026 (Kap 12.1): added/addedText hold the machine-injected, confirmed
-                // answer for this question (no popup, no extra storage). The button state is
-                // bound to st.added so the visible "hinzugefügt" quittance stays consistent.
-                // PRD-006 (Kap 9): rejected flag drives the reversible "Ablehnen" toggle.
-                // It is purely a UI state — the question data + selection always survive.
-                return { selected: selected, custom: [], added: false, addedText: null, rejected: false }
-            } )
+            questionNav.state = seedQuestionState( open, prevById )
             questionNav.active = open.length > 0 ? 0 : -1
             questionNav.optionFocus = -1
             questionNav.lane = 'option'
@@ -7767,6 +7919,43 @@
             // removed (dead path; the popup's "Übernehmen" persists transcript + answers).
             updateSaveAnswersOnlyState()
             renderQuestionFocus()
+        }
+
+        // Build the per-question widget state for a freshly rendered question set.
+        //
+        // Memo 079 PRD-24: a prior state (by question id) is CARRIED OVER instead of hard-reset, so a WS
+        // content broadcast no longer wipes unsaved selections. PRD-F3 (Memo 080 Kap 18, S1) adds the
+        // `touched` marker, and it is the reason this map is its own function: the marker is the datum
+        // that separates "the widget shows the AI preselection" from "the user decided", so it has to be
+        // testable on its own rather than only through a DOM render.
+        //
+        // THE PRESELECTION SEEDS THE DISPLAY AND IS NOT A DECISION. A freshly built state is `touched:
+        // false` even when it already shows a selected option — only markQuestionTouched sets the marker,
+        // and only a real interaction calls it. A carried-over state keeps its marker (a broadcast must
+        // not turn a real choice back into a preselection); a state object from before the field existed
+        // normalises to false, because an absent marker is "not touched", never an assumed touch.
+        function seedQuestionState( open, prevById ) {
+            var previous = prevById || {}
+
+            return ( open || [] ).map( function( q ) {
+                // single = first preselected index; multi = full preselected set.
+                var pre = Array.isArray( q.preselected ) ? q.preselected.slice() : []
+                var selected = q.typ === 'single' ? ( pre.length > 0 ? [ pre[ 0 ] ] : [] ) : pre
+                var prev = q.id ? previous[ q.id ] : null
+                var optCount = ( q.options || [] ).length
+                if( prev && prev.selected.every( function( i ) { return i < optCount } ) ) {
+                    prev.touched = prev.touched === true
+
+                    return prev
+                }
+
+                // PRD-026 (Kap 12.1): added/addedText hold the machine-injected, confirmed answer for
+                // this question (no popup, no extra storage). The button state is bound to st.added so
+                // the visible "hinzugefügt" quittance stays consistent.
+                // PRD-006 (Kap 9): rejected drives the reversible "Ablehnen" toggle — purely a UI state,
+                // the question data + selection always survive.
+                return { selected: selected, custom: [], added: false, addedText: null, rejected: false, touched: false }
+            } )
         }
 
         // PRD-028 (Kap 12.3): assemble the injected, confirmed answers (state.addedText) into
@@ -8107,6 +8296,7 @@
                     // Let text input flow normally — never hijack typing here.
                     ev.stopPropagation()
                     if( ev.key === 'Enter' && input.value.trim().length > 0 ) {
+                        markQuestionTouched( qIdx )
                         questionNav.state[ qIdx ].custom.push( input.value.trim() )
                         input.value = ''
                         // PRD-026: a new custom entry changes the answer -> reset added state.
@@ -8193,10 +8383,36 @@
             return card
         }
 
+        // PRD-F3 (Memo 080 Kap 18, S1): the ONE place that flips a question from "shows the AI
+        // preselection" to "the user worked on this". Every interaction path calls this — selecting an
+        // option, typing a custom entry, harvesting a re-formulation, confirming, rejecting — so a new
+        // interaction path is marked by joining this call, not by remembering a flag in five places.
+        function markQuestionTouched( qIdx ) {
+            var st = questionNav.state[ qIdx ]
+            if( !st ) { return }
+            st.touched = true
+        }
+
+        // PRD-F3 (Memo 080 Kap 18, S4): does the CONFIRMED selection say exactly what the AI had
+        // preselected? This is the provenance datum the `preselected` column exists for — "the user went
+        // with the recommendation" — and it is written only for an answer the user actually confirmed.
+        // Empty selection is never a preselection match (nothing was chosen at all).
+        function isPreselectionAnswer( q, st ) {
+            if( !q || !st ) { return false }
+            var pre = Array.isArray( q.preselected ) ? q.preselected : []
+            var expected = q.typ === 'single' ? pre.slice( 0, 1 ) : pre
+            if( expected.length === 0 || st.selected.length !== expected.length ) { return false }
+            if( st.custom.length > 0 ) { return false }
+
+            return expected.every( function( idx ) { return st.selected.indexOf( idx ) !== -1 } )
+        }
+
         function toggleOption( qIdx, optIdx ) {
             var q = questionNav.questions[ qIdx ]
             var st = questionNav.state[ qIdx ]
             if( !q || !st ) { return }
+
+            markQuestionTouched( qIdx )
 
             var pos = st.selected.indexOf( optIdx )
             if( q.typ === 'single' ) {
@@ -8326,9 +8542,20 @@
             var answerLine = ( q.typ === 'multi' || isReformulationAnswer ) ? parts.join( '; ' ) : ( parts[ 0 ] || '' )
             // Markdown form unchanged from the previous modal flow: "## Antwort auf {id} — {title}"
             // + answer line, multi joined by "; ".
-            var text = '## Antwort auf ' + q.id + ' — ' + q.title + '\n\n' + answerLine + '\n'
+            // PRD-F3 (Memo 080 Kap 18, S4): a confirmed answer that says exactly what the AI preselected
+            // carries the provenance mark on the HEADING tail. Body and answer line stay the user's words
+            // verbatim, and both existing block parsers already skip the heading tail — so this is
+            // readable provenance without a second format.
+            var text = '## Antwort auf ' + q.id + ' — ' + q.title + answerMarkSuffix( q, st ) + '\n\n' + answerLine + '\n'
 
             return { answerLine: answerLine, text: text }
+        }
+
+        // PRD-F3 (Memo 080 Kap 18, S4): the heading suffix carrying the provenance mark, or the empty
+        // string. Kept as its own function so the popup path (applyPromptEdit) emits the SAME bytes as
+        // the widget path — one mark, one producer, no second spelling.
+        function answerMarkSuffix( q, st ) {
+            return isPreselectionAnswer( q, st ) ? ' [Vorauswahl]' : ''
         }
 
         function setAddButtonState( qIdx, added ) {
@@ -8380,6 +8607,7 @@
                     return entry.value
                 } )
             if( harvested.length === 0 ) { return }
+            markQuestionTouched( qIdx )
             if( st.added ) {
                 st.added = false
                 st.addedText = null
@@ -8402,6 +8630,11 @@
 
                 return
             }
+
+            // PRD-F3 (Memo 080 Kap 18, S1): clicking "Hinzufügen" IS the interaction. A machine injection
+            // that reached st.added without this click stays untouched and is therefore never read as a
+            // value — that is the whole point of the second condition in S2.
+            markQuestionTouched( qIdx )
 
             // Memo 079 reframe-freetext-click-loss: harvest a typed-but-not-Entered reformulation before
             // buildAnswerText reads st.custom, so clicking "Hinzufügen" never drops it.
@@ -8452,6 +8685,8 @@
             var st = questionNav.state[ qIdx ]
             if( !st || st.rejected === true ) { return }
 
+            // PRD-F3 (Memo 080 Kap 18, S1): rejecting is an interaction with this question too.
+            markQuestionTouched( qIdx )
             st.rejected = true
             // Deliberately do NOT touch st.selected (Bug 2 fix) — the data stays intact.
             var card = document.querySelector( '#question-widgets .qw-card[data-qidx="' + qIdx + '"]' )
@@ -8468,6 +8703,7 @@
             var st = questionNav.state[ qIdx ]
             if( !st || st.rejected !== true ) { return }
 
+            markQuestionTouched( qIdx )
             st.rejected = false
             var card = document.querySelector( '#question-widgets .qw-card[data-qidx="' + qIdx + '"]' )
             if( card ) {

@@ -109,25 +109,35 @@ describe( 'PRD-V5 WI-135 — applyPromptEdit haengt keine Dubletten an', () => {
 
 
     beforeAll( async () => {
-        const lifted = await extractFunctionSources( [ 'applyPromptEdit', 'activatePsCopy' ] )
+        // PRD-F3 (Memo 080 Kap 18, S3): applyPromptEdit reicht die Dubletten-Pruefung an
+        // mergeAnswerBlocks / scanAnswerBlocks weiter — beide muessen mitgehoben werden, sonst
+        // scheitert der Sandbox-Aufruf an einer fehlenden Referenz statt am Pruefgegenstand.
+        const lifted = await extractFunctionSources( [ 'applyPromptEdit', 'activatePsCopy', 'mergeAnswerBlocks', 'scanAnswerBlocks' ] )
         extractedSource = `${ lifted[ 'source' ] }\nglobalThis.__apply = applyPromptEdit;`
         loadedNames = lifted[ 'names' ]
     } )
 
 
-    it( 'der Helfer hebt AUCH async-Funktionen samt Schluesselwort heraus (2 Funktionen)', () => {
-        expect( loadedNames.length ).toBe( 2 )
+    it( 'der Helfer hebt AUCH async-Funktionen samt Schluesselwort heraus (4 Funktionen)', () => {
+        expect( loadedNames.length ).toBe( 4 )
         expect( extractedSource.startsWith( 'async function applyPromptEdit(' ) ).toBe( true )
         expect( extractedSource ).toContain( 'function activatePsCopy(' )
+        expect( extractedSource ).toContain( 'function mergeAnswerBlocks(' )
+        expect( extractedSource ).toContain( 'function scanAnswerBlocks(' )
     } )
 
 
-    it( 'der Dubletten-Filter steht im Quelltext und folgt dem bestehenden Muster (3 Vorkommen)', () => {
+    it( 'der Antwort-Zweig dedupliziert ueber die Frage-Kennung, nicht mehr ueber den Blocktext', () => {
+        // Das Text-Muster steht weiterhin 3-mal, aber an ANDEREN Stellen: appendAddedAnswers, der
+        // Anmerkungs-Zweig und — neu — der Rest-Zweig in mergeAnswerBlocks fuer Bloecke OHNE lesbare
+        // Kennung. Der Antwort-Zweig von applyPromptEdit ist raus; dass er raus ist, wird nicht ueber
+        // die Zahl behauptet, sondern ueber das Verschwinden seiner Variablen belegt.
         const pattern = /\.filter\( function\( block \) \{ return \w+\.indexOf\( block(\.trim\(\))? \) === -1 \} \)/g
         const hits = clientScript.match( pattern ) || []
 
         expect( hits.length ).toBe( 3 )
-        expect( clientScript ).toContain( 'var freshBlocks = answerBlocks' )
+        expect( clientScript ).not.toContain( 'var freshBlocks = answerBlocks' )
+        expect( clientScript ).toContain( 'var merge = mergeAnswerBlocks( transcript, answerBlocks )' )
     } )
 
 
@@ -180,7 +190,9 @@ describe( 'PRD-V5 WI-135 — applyPromptEdit haengt keine Dubletten an', () => {
         vm.runInContext( extractedSource, sandbox )
         await sandbox.__apply()
 
-        return { sent }
+        // PRD-F3: der rote Zweig schreibt nichts und nennt seinen Grund in pp-error. Beides gehoert
+        // zum Pruefgegenstand, also reist die sichtbare Meldung neben den Nutzlasten zurueck.
+        return { sent, 'error': nodes[ 'pp-error' ].textContent, 'success': nodes[ 'pp-success' ].textContent }
     }
 
 
@@ -237,7 +249,11 @@ describe( 'PRD-V5 WI-135 — applyPromptEdit haengt keine Dubletten an', () => {
     } )
 
 
-    it( 'ein GEAENDERTER Antwort-Text wird weiterhin uebernommen (1 von 2 Bloecken neu)', async () => {
+    it( 'ein GEAENDERTER Antwort-Text ERSETZT den bestehenden Block (2 bleiben 2, nicht 3)', async () => {
+        // PRD-F3 (Memo 080 Kap 18, S3 / US-4): bis hierher legte eine geaenderte Antwort einen ZWEITEN
+        // Block neben den alten — die Frage stand danach zweimal, mit zwei verschiedenen Antworten. Der
+        // Text-Filter konnte das nicht sehen, weil zwei verschiedene Antworten zwei verschiedene Strings
+        // sind. Die Pruefung ueber die Frage-Kennung ersetzt statt zu ergaenzen.
         const answers = [
             { 'id': 'F1', 'title': 'Erste Frage', 'value': 'Antwort eins' },
             { 'id': 'F2', 'title': 'Zweite Frage', 'value': 'Antwort zwei' }
@@ -253,9 +269,50 @@ describe( 'PRD-V5 WI-135 — applyPromptEdit haengt keine Dubletten an', () => {
         const secondPayload = second[ 'sent' ][ 0 ][ 'content' ]
 
         expect( secondPayload ).toContain( 'NEU FORMULIERT' )
-        expect( secondPayload.length ).toBeGreaterThan( firstPayload.length )
-        // Der unveraenderte Block wurde NICHT verdoppelt: 3 Bloecke (2 alte + 1 neuer), nicht 4.
-        expect( ( secondPayload.match( /## Antwort auf F/g ) || [] ).length ).toBe( 3 )
+        // Die ALTE Fassung ist weg, nicht daneben: genau 2 Bloecke, F2 genau einmal.
+        expect( ( secondPayload.match( /## Antwort auf F/g ) || [] ).length ).toBe( 2 )
+        expect( ( secondPayload.match( /## Antwort auf F2/g ) || [] ).length ).toBe( 1 )
+        expect( secondPayload.includes( 'Antwort zwei\n' ) ).toBe( false )
+    } )
+
+
+    it( 'eine bereits verdoppelte Vorlage wird beim Speichern repariert (2 Bloecke fuer F1 -> 1)', async () => {
+        // Beleg 18.4 in Reinform: eine Aufzeichnung dieses Memos traegt 36 Bloecke fuer 18 Fragen.
+        // Ein Speichern ueber so eine Vorlage darf die Doppelung nicht konservieren.
+        const damaged = [
+            'Text.',
+            '',
+            '## Antwort auf F1 — Erste Frage',
+            '',
+            'A) alte Antwort',
+            '',
+            '## Antwort auf F1 — Erste Frage',
+            '',
+            'B) zweite, widersprechende Antwort'
+        ].join( '\n' )
+        const answers = [ { 'id': 'F1', 'title': 'Erste Frage', 'value': 'A) endgueltige Antwort' } ]
+
+        const out = await runApply( { 'transcriptValue': damaged, answers, 'existingTranscriptId': 'T-1' } )
+        const payload = out[ 'sent' ][ 0 ][ 'content' ]
+
+        expect( ( damaged.match( /## Antwort auf F1/g ) || [] ).length ).toBe( 2 )
+        expect( ( payload.match( /## Antwort auf F1/g ) || [] ).length ).toBe( 1 )
+        expect( payload ).toContain( 'A) endgueltige Antwort' )
+        expect( payload ).not.toContain( 'widersprechende' )
+    } )
+
+
+    it( 'ohne lesbare Frage-Kennung meldet die Pruefung ROT und schreibt NICHT', async () => {
+        // A6 / "nichts gefunden ist nie gruen": der Inhalt traegt eine Antwort-Ueberschrift, die keine
+        // Frage-Kennung hergibt — die Vergleichsmenge ist unvollstaendig, also faellt die Pruefung.
+        const unreadable = [ 'Text.', '', '## Antwort auf (ohne Kennung)', '', 'irgendwas' ].join( '\n' )
+        const answers = [ { 'id': 'F1', 'title': 'Erste Frage', 'value': 'Antwort eins' } ]
+
+        const out = await runApply( { 'transcriptValue': unreadable, answers, 'existingTranscriptId': 'T-1' } )
+
+        expect( out[ 'sent' ].length ).toBe( 0 )
+        expect( out[ 'error' ] ).toContain( 'Dubletten-Prüfung rot' )
+        expect( out[ 'error' ] ).toContain( '1 von 1' )
     } )
 
 

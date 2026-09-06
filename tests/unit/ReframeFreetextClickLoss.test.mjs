@@ -42,7 +42,7 @@ describe( 'Memo 079 reframe-freetext-click-loss', () => {
 
 
     it( 'harvestReformulationInputs folds a typed-but-not-Entered reformulation into st.custom and clears the field', async () => {
-        const { harvestReformulationInputs } = await extractFunctions( [ 'harvestReformulationInputs' ], [ 'REFORMULATION_KINDS' ] )
+        const { harvestReformulationInputs } = await extractFunctions( [ 'harvestReformulationInputs', 'markQuestionTouched', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
         const { input } = installFakeDom( { inputValue: '  Soll auch Option C erlaubt sein?  ' } )
         globalThis.questionNav = { state: [ { selected: [ 2 ], custom: [], added: false } ] }
 
@@ -54,7 +54,7 @@ describe( 'Memo 079 reframe-freetext-click-loss', () => {
 
 
     it( 'does NOT duplicate a reformulation already committed (dedup by value)', async () => {
-        const { harvestReformulationInputs } = await extractFunctions( [ 'harvestReformulationInputs' ], [ 'REFORMULATION_KINDS' ] )
+        const { harvestReformulationInputs } = await extractFunctions( [ 'harvestReformulationInputs', 'markQuestionTouched', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
         installFakeDom( { inputValue: 'Reformulierung' } )
         globalThis.questionNav = { state: [ { selected: [ 2 ], custom: [ 'Reformulierung' ], added: false } ] }
 
@@ -65,7 +65,7 @@ describe( 'Memo 079 reframe-freetext-click-loss', () => {
 
 
     it( 'an empty input is a no-op (nothing pushed)', async () => {
-        const { harvestReformulationInputs } = await extractFunctions( [ 'harvestReformulationInputs' ], [ 'REFORMULATION_KINDS' ] )
+        const { harvestReformulationInputs } = await extractFunctions( [ 'harvestReformulationInputs', 'markQuestionTouched', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
         installFakeDom( { inputValue: '   ' } )
         globalThis.questionNav = { state: [ { selected: [ 2 ], custom: [], added: false } ] }
 
@@ -76,7 +76,7 @@ describe( 'Memo 079 reframe-freetext-click-loss', () => {
 
 
     it( 'end-to-end: harvest → buildAnswerText yields the folded reframe answer (no dropped text)', async () => {
-        const { harvestReformulationInputs, buildAnswerText } = await extractFunctions( [ 'harvestReformulationInputs', 'buildAnswerText' ], [ 'REFORMULATION_KINDS' ] )
+        const { harvestReformulationInputs, buildAnswerText } = await extractFunctions( [ 'harvestReformulationInputs', 'buildAnswerText', 'markQuestionTouched', 'answerMarkSuffix', 'isPreselectionAnswer' ], [ 'REFORMULATION_KINDS' ] )
         installFakeDom( { inputValue: 'Soll auch Option C erlaubt sein?' } )
         const q = { id: 'F3', title: 'Frage', typ: 'single', options: [ { kind: 'option', key: 'A', label: 'Alpha' }, { kind: 'reframe', key: 'reframe', label: 'Frage neu formulieren' } ] }
         globalThis.questionNav = { state: [ { selected: [ 1 ], custom: [], added: false } ] }

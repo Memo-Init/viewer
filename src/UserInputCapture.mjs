@@ -18,6 +18,12 @@ class UserInputCapture {
     // pool). Mirrors TranscriptRegistry.OTHER_TRANSCRIPTS_MEMO_ID — keep the two literals in sync.
     static OTHER_MEMO_ID = '(ungebunden)'
 
+    // PRD-F3 (Memo 080 Kap 18, WI-078): the heading mark that records "this confirmed answer WAS the
+    // AI preselection". It rides on the HEADING tail, never in the body, so the answer verbatim stays
+    // exactly the user's words and every existing parser — which reads `## Antwort auf (F\d+)` and
+    // ignores the rest of the line — keeps reading old and new transcripts identically.
+    static PRESELECTED_MARK = '[Vorauswahl]'
+
     // Transcript header-type -> user_inputs.kind. init / other-memo-init -> voice-init,
     // revision -> voice-review, frei -> voice-frei. An unknown type yields null so the caller
     // surfaces it (never a silent guess). The DB `kind` column is free TEXT (DoltSchema), but the core
@@ -48,6 +54,49 @@ class UserInputCapture {
         const kind = UserInputCapture.#KIND_BY_TYPE[ transcriptType ] || null
 
         return { kind }
+    }
+
+
+    // PRD-F3 (Memo 080 Kap 18, WI-139 / forensics H6): the memo id the routes forward is the VIEWER's
+    // id, and the live registry carries the full folder slug there (measured: 976 transcripts with
+    // values like "080-db-vollausbau-und-laufzeit-transparenz"). The core leaf resolves a memo through
+    // `startsWith( "<memo>-" )` over the memo folders, i.e. it expects the NUMBER — so the full slug
+    // was refused with exit 3 ("could not resolve a database for memo") on EVERY capture, for every
+    // memo. That, not a missing session id and not a broken PATH, is why `user_inputs` and
+    // `user_input_answers` stayed empty while the transcripts on disk were complete.
+    //
+    // The reserve id passes through untouched (it has no number and its own DB). NO SILENT DEFAULT: an
+    // id without a leading three-digit number is refused with a NAMED gap, never mapped to some memo.
+    static normalizeMemoId( { memoId } ) {
+        const struct = { 'status': false, 'memoId': null, 'messages': [] }
+
+        if( memoId === UserInputCapture.OTHER_MEMO_ID ) {
+            struct[ 'status' ] = true
+            struct[ 'memoId' ] = UserInputCapture.OTHER_MEMO_ID
+
+            return struct
+        }
+
+        const value = ( typeof memoId === 'string' ) ? memoId.trim() : ''
+
+        if( value.length === 0 ) {
+            struct[ 'messages' ].push( 'USERINPUT-MEMO-001: empty memo id — user_inputs row NOT recorded (transcript MD unaffected)' )
+
+            return struct
+        }
+
+        const match = value.match( /^(\d{3})(?:-|$)/ )
+
+        if( match === null ) {
+            struct[ 'messages' ].push( `USERINPUT-MEMO-002: memo id '${ value }' carries no leading three-digit memo number — the core leaf resolves memo folders by number, so this id cannot resolve; user_inputs row NOT recorded (transcript MD unaffected)` )
+
+            return struct
+        }
+
+        struct[ 'status' ] = true
+        struct[ 'memoId' ] = match[ 1 ]
+
+        return struct
     }
 
 
@@ -93,15 +142,20 @@ class UserInputCapture {
             return struct
         }
 
-        const pattern = /(?:^|\n)##\s+Antwort auf\s+(F\d+)[^\n]*\n([\s\S]*?)(?=\n##\s|$)/g
+        // The heading TAIL is captured (group 2) so the PRD-F3 preselection mark can be read off it.
+        // It was already skipped by the old `[^\n]*`, so widening it to a capture group changes no
+        // match and no body — an unmarked (old) transcript parses byte-identically and yields false.
+        const pattern = /(?:^|\n)##\s+Antwort auf\s+(F\d+)([^\n]*)\n([\s\S]*?)(?=\n##\s|$)/g
         const matches = [ ...content.matchAll( pattern ) ]
 
         struct[ 'answers' ] = matches
             .map( ( match ) => {
                 const question = match[ 1 ]
-                const answer = ( match[ 2 ] || '' ).trim()
+                const heading = match[ 2 ] || ''
+                const answer = ( match[ 3 ] || '' ).trim()
+                const preselected = heading.includes( UserInputCapture.PRESELECTED_MARK )
 
-                return { question, answer }
+                return { question, answer, preselected }
             } )
             .filter( ( entry ) => entry[ 'answer' ].length > 0 )
 
@@ -206,7 +260,18 @@ class UserInputCapture {
         const resolvedSource = ( typeof source === 'string' && source.length > 0 ) ? source : 'transcript-server'
         const { bin: resolvedBin } = UserInputCapture.resolveBin( { env, bin } )
         const { kind } = UserInputCapture.mapKind( { transcriptType } )
-        const resolvedMemo = ( typeof memoId === 'string' && memoId.length > 0 ) ? memoId : UserInputCapture.OTHER_MEMO_ID
+        const givenMemo = ( typeof memoId === 'string' && memoId.length > 0 ) ? memoId : UserInputCapture.OTHER_MEMO_ID
+        // PRD-F3 / forensics H6: normalize BEFORE the exec — the routes hand over the viewer id (the
+        // full folder slug in the live registry) and the core leaf resolves memo folders by number.
+        const normalized = UserInputCapture.normalizeMemoId( { 'memoId': givenMemo } )
+
+        if( normalized[ 'status' ] !== true ) {
+            struct[ 'messages' ] = struct[ 'messages' ].concat( normalized[ 'messages' ] )
+
+            return struct
+        }
+
+        const resolvedMemo = normalized[ 'memoId' ]
 
         if( kind === null ) {
             struct[ 'messages' ].push( `USERINPUT-KIND-001: unknown transcript type '${ transcriptType }' — user_inputs row NOT recorded (transcript MD unaffected)` )
@@ -282,7 +347,12 @@ class UserInputCapture {
         const base = [ 'user-input', 'answer', '--memo', String( memoId ), '--input-id', String( inputId ), '--question', question ]
         const hasOption = ( answer[ 'option' ] !== undefined && answer[ 'option' ] !== null && String( answer[ 'option' ] ).length > 0 )
         const withOption = hasOption ? base.concat( [ '--option', String( answer[ 'option' ] ) ] ) : base
-        const args = withOption.concat( [ '--answer', answerText ] )
+        const withAnswer = withOption.concat( [ '--answer', answerText ] )
+        // PRD-F3 (Memo 080 Kap 18, WI-078): the provenance column gets its caller. `preselected` was a
+        // flag the leaf accepted and nobody ever set, so the column could hold nothing but 0 — a column
+        // that cannot distinguish anything. The bare flag is appended LAST, so the token parser reads it
+        // as the boolean true (a flag with no following value). Absent mark => absent flag => false.
+        const args = ( answer[ 'preselected' ] === true ) ? withAnswer.concat( [ '--preselected' ] ) : withAnswer
 
         struct[ 'argv' ] = [ binary ].concat( args )
 

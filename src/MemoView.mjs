@@ -29,6 +29,8 @@ import { BlockSections } from './BlockSections.mjs'
 import { RevisionLogic } from './RevisionLogic.mjs'
 import { AnswerWaiter } from './AnswerWaiter.mjs'
 import { McpEndpoint } from './McpEndpoint.mjs'
+import { VendorAssets } from './VendorAssets.mjs'
+import { ContentSecurityPolicy } from './ContentSecurityPolicy.mjs'
 import { Config } from './data/config.mjs'
 
 
@@ -215,8 +217,8 @@ class MemoView {
 
         MemoView.#currentDirectoryState = state
 
-        const { html } = MemoView.#buildHtmlPage( { port: portNumber } )
-        const { handler } = MemoView.#createHttpHandler( { html, state } )
+        const { html, csp } = MemoView.#buildHtmlPage( { port: portNumber } )
+        const { handler } = MemoView.#createHttpHandler( { html, csp, state } )
 
         const server = createServer( handler )
 
@@ -1040,8 +1042,8 @@ class MemoView {
 
         MemoView.#currentDirectoryState = state
 
-        const { html } = MemoView.#buildHtmlPage( { port: portNumber } )
-        const { handler } = MemoView.#createHttpHandler( { html, state } )
+        const { html, csp } = MemoView.#buildHtmlPage( { port: portNumber } )
+        const { handler } = MemoView.#createHttpHandler( { html, csp, state } )
 
         const server = createServer( handler )
 
@@ -2049,6 +2051,16 @@ class MemoView {
 
         const configFlag = showOnlyFullRevisions ? 'true' : 'false'
 
+        // WI-103 (Memo 080 Kap 15): the two inline <script> bodies are DECLARED as strings before the
+        // page is built, then interpolated into the page AND hashed for the Content-Security-Policy.
+        // One declaration, two uses — the header can therefore never describe a text different from
+        // the one the browser executes, which is the failure mode a hand-maintained hash list has.
+        const configBootstrap = `window.__MEMO_CONFIG__ = { showOnlyFullRevisions: ${configFlag} }`
+        const buildBootstrap = `window.__MEMO_VIEW_BUILD__ = ${ JSON.stringify( getClientBundle().hash ) }`
+        const { header: csp } = ContentSecurityPolicy.build( {
+            'inlineScripts': [ configBootstrap, buildBootstrap ], port
+        } )
+
         const html = `<!DOCTYPE html>
 <html lang="de">
 <head>
@@ -2324,32 +2336,21 @@ class MemoView {
     <!-- PRD-004 (Memo 022 Kap 8): server-injected client config in a DEDICATED early script block.
          Kept separate from the main inline script so the latter stays free of template
          interpolation (source-slice unit tests assert no '\${' in the main script). -->
-    <script>
-        window.__MEMO_CONFIG__ = { showOnlyFullRevisions: ${configFlag} }
-    </script>
-    <!-- Memo 020 Kap 6 (F6 = volle Haertung): every CDN script is version-pinned AND carries an
-         SRI integrity hash (sha384) + crossorigin, so a tampered/poisoned CDN file is rejected by
-         the browser instead of executed. The marked/mermaid tags were retrofitted with SRI too. -->
-    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.0/marked.min.js" integrity="sha384-5S+6C4bM5PFDRwie5G8wVUoq/5EzdFEaE2bg7xLLhNiz4fjj7fsecAfOl8VzZ/co" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js" integrity="sha384-rbtjAdnIQE/aQJGEgXrVUlMibdfTSa4PQju4HDhN3sR2PmaKFzhEafuePsl9H/9I" crossorigin="anonymous"></script>
-    <!-- Memo 020 Kap 3/6: scientific-diagram stack (Vega-Lite). Load order is load-bearing
-         (vega -> vega-lite -> vega-embed -> app client). The CSP-safe AST expression interpreter
-         is bundled inside vega-embed@7.1.0 (it depends on vega-interpreter@^2.0.0) and is selected
-         per-embed via { ast: true } in app.client.mjs — there is no separate vega-interpreter tag
-         because its published build is ESM-only (not loadable as a classic <script>) and is
-         redundant with the bundled one. CDN-Tags: 2 -> 5, npm-Deps: still 0. -->
-    <script src="https://cdn.jsdelivr.net/npm/vega@6.2.0/build/vega.min.js" integrity="sha384-0Wc8+KeboSkAq/fK81pd4uFbWKu4ouB+y4KWCYxlC69hRWol7vnc6zZSruXOtc0F" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.3/build/vega-lite.min.js" integrity="sha384-9/70gNCfOu6G7xXvkdreMfuqAEsoaGJVXV2BN/JLRXkSmcGvnMqtsRx8HZtUWAvI" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/vega-embed@7.1.0/build/vega-embed.min.js" integrity="sha384-giTAWqsEDsWuWzWKi6NCvjgwi160SClnTYYXWPLuy/DnaQTqmk4soinrpxcCS4dx" crossorigin="anonymous"></script>
+    <script>${ configBootstrap }</script>
+    <!-- WI-103 (Memo 080 Kap 15, F13 = A): the display building blocks are SHIPPED, not fetched.
+         Emitted from VendorAssets, the single register that also owns the /vendor/<file> route, so
+         page and route cannot drift apart. Order is register order and is load-bearing. Why the five
+         former network tags went away and what replaced them: see src/VendorAssets.mjs. -->
+${ VendorAssets.scriptTags().tags }
     <!-- PRD-009 (Memo 076 H6, WI-080): stamp the build hash the served bundle was rendered with, so
          the client can compare it against the CURRENT server hash sent on the WS connect and reload
          itself when a server restart shipped a newer bundle (kills the stale-tab-polls-dead-routes drift). -->
-    <script>window.__MEMO_VIEW_BUILD__ = ${ JSON.stringify( getClientBundle().hash ) }</script>
+    <script>${ buildBootstrap }</script>
     <script src="/app.client.mjs"></script>
 </body>
 </html>`
 
-        return { html }
+        return { html, csp }
     }
 
 
@@ -2408,7 +2409,7 @@ class MemoView {
     }
 
 
-    static #createHttpHandler( { html, state } ) {
+    static #createHttpHandler( { html, csp, state } ) {
         const mimeTypes = {
             '.png': 'image/png',
             '.jpg': 'image/jpeg',
@@ -2841,7 +2842,8 @@ class MemoView {
                         'status': 'ok', 'documentId': documentId, 'mermaid': null,
                         'counts': DoltDbAssembler.emptyGraphCounts(), 'empty': true,
                         'warnings': [ `Dieses Memo führt keine Datenbank — es gibt nichts zu zeichnen (${ resolved[ 'message' ] })` ],
-                        'reason': 'no-db', 'source': DoltDbAssembler.emptyGraphSourceFacts()
+                        'reason': 'no-db', 'source': DoltDbAssembler.emptyGraphSourceFacts(),
+                        'elements': DoltDbAssembler.emptyGraphElements()
                     } )
 
                     return
@@ -2854,7 +2856,7 @@ class MemoView {
                         'status': 'ok', 'documentId': documentId, 'mermaid': graph[ 'mermaid' ],
                         'counts': graph[ 'counts' ], 'empty': graph[ 'empty' ],
                         'warnings': graph[ 'warnings' ], 'reason': graph[ 'reason' ],
-                        'source': graph[ 'source' ]
+                        'source': graph[ 'source' ], 'elements': graph[ 'elements' ]
                     } )
                 } catch( error ) {
                     sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
@@ -4070,6 +4072,33 @@ class MemoView {
                 return
             }
 
+            // WI-103 (Memo 080 Kap 15, F13 = A): the shipped display building blocks. The route serves
+            // ONLY what the VendorAssets register names — the URL is matched against the register by
+            // EQUALITY, never joined into a path, so there is no traversal surface to get wrong. A
+            // missing file answers 404 with the install hint instead of an empty 200: a package that was
+            // never installed must not look like a typo in the URL.
+            if( url.startsWith( '/vendor/' ) && req.method === 'GET' ) {
+                const asset = VendorAssets.resolve( { 'route': url } )
+
+                if( asset[ 'status' ] !== true ) {
+                    res.writeHead( 404, { 'Content-Type': 'text/plain; charset=utf-8' } )
+                    res.end( asset[ 'messages' ].join( '; ' ) )
+
+                    return
+                }
+
+                const vendorSource = await readFile( asset[ 'filePath' ] )
+
+                res.writeHead( 200, {
+                    'Content-Type': 'text/javascript; charset=utf-8',
+                    'Content-Length': vendorSource.length,
+                    'Cache-Control': 'no-cache'
+                } )
+                res.end( vendorSource )
+
+                return
+            }
+
             if( url.startsWith( localPrefix ) ) {
                 const filePath = url.slice( localPrefix.length )
                 const ext = filePath.substring( filePath.lastIndexOf( '.' ) ).toLowerCase()
@@ -4427,7 +4456,13 @@ class MemoView {
                 return
             }
 
-            res.writeHead( 200, { 'Content-Type': 'text/html; charset=utf-8' } )
+            // WI-103 (Memo 080 Kap 15): the Sicherheits-Kopf rides on the page response — the only
+            // response that can execute anything. `csp` was computed together with the HTML, so its two
+            // inline-script hashes describe exactly the blocks this body carries.
+            res.writeHead( 200, {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Content-Security-Policy': csp
+            } )
             res.end( html )
         }
 

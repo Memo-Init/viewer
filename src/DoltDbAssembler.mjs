@@ -266,6 +266,13 @@ const GRAPH_CLASS_DEFS = [
 const GRAPH_COUNT_KEYS = [ 'topics', 'workItems', 'phases', 'prds', 'edgesTopicWorkItem', 'edgesPhasePrd', 'edgesTopicPrd' ]
 
 
+// WI-103 (Memo 080 Kap 15, F30 = A): the label width of an INTERACTIVE node. The mermaid source has to
+// fit a character budget for the whole diagram, so its cap moves with the size of the graph; a cytoscape
+// node is laid out by the browser and only has to stay readable inside its own box. Fixed on purpose —
+// the untruncated title travels with every node anyway (`title`) and the detail panel shows it in full.
+const GRAPH_ELEMENT_LABEL_CAP = 42
+
+
 // Memo 080, PRD-V2 rework — the diagram source carries a SIZE BUDGET, enforced on the producing side.
 // Measured cause: mermaid does not fail loudly on an oversize source. Above `maxTextSize` characters
 // (11.4.1 ships 50000 as the default, read back from mermaidAPI.getConfig() in real Chromium) the renderer
@@ -746,6 +753,63 @@ class DoltDbAssembler {
     }
 
 
+    // WI-103 (Memo 080 Kap 15, F30 = A) — the element set the INTERACTIVE graph is drawn from. Same
+    // reason as emptyGraphCounts/emptyGraphSourceFacts: the shape exists ONCE, so the no-database path
+    // and the empty-database path answer in the same shape a real read produces.
+    static emptyGraphElements() {
+        return { 'nodes': [], 'edges': [], 'droppedDuplicateNodes': 0 }
+    }
+
+
+    // The cytoscape element set for one already-computed node/edge set. Pure, and deliberately a SECOND
+    // projection of the SAME nodes and edges the mermaid source is rendered from — not a second read and
+    // not a second edge rule. `label` is the short drawing text, `title` keeps the untruncated row title
+    // for the detail panel a click opens, and `kind` carries the colour class.
+    //
+    // Edge ids are built from their endpoints (`<from>__<to>`) because cytoscape requires unique element
+    // ids and the three edge families can legitimately connect the same pair twice: a topic reaching a PRD
+    // over the work-item bridge is a different STATEMENT than the same topic reaching it directly, so the
+    // family is part of the id and neither edge silently swallows the other.
+    //
+    // DEDUPLICATION, and why it is not silent. Measured on the real M080 database: 426 read rows carry only
+    // 413 distinct identifiers — 13 rollout rows repeat an id that already exists. A graph library refuses
+    // a duplicate id and simply keeps the first, and the mermaid source collapsed those rows just as
+    // quietly. So the drop happens HERE, deterministically (first row wins), it is COUNTED, and the count
+    // becomes a warning next to the head line — otherwise the figures would go on claiming 426 nodes over
+    // a drawing of 413.
+    static graphElements( { nodes, edgeFamilies } ) {
+        const seenNodeIds = new Set()
+        const uniqueNodes = nodes
+            .filter( ( node ) => {
+                if( seenNodeIds.has( node[ 'id' ] ) === true ) { return false }
+                seenNodeIds.add( node[ 'id' ] )
+
+                return true
+            } )
+        const droppedDuplicateNodes = nodes.length - uniqueNodes.length
+
+        const elementNodes = uniqueNodes
+            .map( ( node ) => ( { 'data': {
+                'id': node[ 'id' ],
+                'kind': node[ 'kind' ],
+                'rawId': node[ 'rawId' ] === null || node[ 'rawId' ] === undefined ? '' : String( node[ 'rawId' ] ),
+                'label': graphNodeLabel( { 'id': node[ 'rawId' ], 'title': node[ 'rawTitle' ], 'cap': GRAPH_ELEMENT_LABEL_CAP } ),
+                'title': node[ 'rawTitle' ] === null || node[ 'rawTitle' ] === undefined ? '' : String( node[ 'rawTitle' ] )
+            } } ) )
+
+        const elementEdges = edgeFamilies
+            .flatMap( ( family ) => family[ 'edges' ]
+                .map( ( edge ) => ( { 'data': {
+                    'id': `${ family[ 'kind' ] }__${ edge[ 'from' ] }__${ edge[ 'to' ] }`,
+                    'source': edge[ 'from' ],
+                    'target': edge[ 'to' ],
+                    'kind': family[ 'kind' ]
+                } } ) ) )
+
+        return { 'nodes': elementNodes, 'edges': elementEdges, droppedDuplicateNodes }
+    }
+
+
     // Memo 080, PRD-V2 (WI-102) — the KNOWLEDGE GRAPH of one memo, stage 1: the server builds the diagram
     // SOURCE deterministically from four tables, the client's EXISTING diagram registry draws it. No new
     // display building block, no new dependency, no second drawing path.
@@ -1044,28 +1108,43 @@ class DoltDbAssembler {
         if( empty === true ) {
             const emptyWarnings = DoltDbAssembler.#graphWarnings( {
                 counts, empty, 'danglingTopicRefs': 0, 'danglingPhaseRefs': 0,
-                'source': DoltDbAssembler.emptyGraphSourceFacts()
+                'source': DoltDbAssembler.emptyGraphSourceFacts(), 'droppedDuplicateNodes': 0
             } )
 
             return {
                 'mermaid': null, counts, 'empty': true, 'warnings': emptyWarnings, 'reason': 'empty-db',
-                'source': DoltDbAssembler.emptyGraphSourceFacts()
+                'source': DoltDbAssembler.emptyGraphSourceFacts(),
+                'elements': DoltDbAssembler.emptyGraphElements()
             }
         }
 
         const edges = [].concat( topicWorkItemEdges ).concat( phasePrdEdges ).concat( topicPrdEdges )
         const fitted = DoltDbAssembler.#fitGraphSource( { nodes, edges } )
+        // WI-103: the interactive element set is built from the SAME nodes and the SAME three edge
+        // families the mermaid source uses — and it is built UNCONDITIONALLY, including on the
+        // 'source-too-large' path. A graph whose text source blows the mermaid budget is exactly the
+        // graph a user most needs to explore, and cytoscape has no text budget to blow.
+        const elements = DoltDbAssembler.graphElements( {
+            nodes,
+            'edgeFamilies': [
+                { 'kind': 'topic-work-item', 'edges': topicWorkItemEdges },
+                { 'kind': 'phase-prd', 'edges': phasePrdEdges },
+                { 'kind': 'topic-prd', 'edges': topicPrdEdges }
+            ]
+        } )
         const warnings = DoltDbAssembler.#graphWarnings( {
             counts, empty,
             'danglingTopicRefs': topicWorkItemRefs.length - topicWorkItemEdges.length,
             'danglingPhaseRefs': phasePrdRefs.length - phasePrdEdges.length,
-            'source': fitted[ 'source' ]
+            'source': fitted[ 'source' ],
+            'droppedDuplicateNodes': elements[ 'droppedDuplicateNodes' ]
         } )
 
         return {
             'mermaid': fitted[ 'mermaid' ], counts, 'empty': false, warnings,
             'reason': fitted[ 'mermaid' ] === null ? 'source-too-large' : null,
-            'source': fitted[ 'source' ]
+            'source': fitted[ 'source' ],
+            elements
         }
     }
 
@@ -1144,7 +1223,7 @@ class DoltDbAssembler {
     // The honest findings about THIS graph. Every branch names the measured figures, so a reader can tell
     // "nothing is there" from "something is there but does not connect" — the two cases an empty canvas
     // would render identically.
-    static #graphWarnings( { counts, empty, danglingTopicRefs, danglingPhaseRefs, source } ) {
+    static #graphWarnings( { counts, empty, danglingTopicRefs, danglingPhaseRefs, source, droppedDuplicateNodes } ) {
         const emptyWarning = empty === true
             ? [ 'Keine Zeilen in topic, work_item, rollout_phase und rollout_work_item — 0 Knoten und 0 Kanten verglichen.' ]
             : []
@@ -1166,6 +1245,14 @@ class DoltDbAssembler {
         const danglingPhaseWarning = danglingPhaseRefs > 0
             ? [ `Auffaellig: ${ danglingPhaseRefs } Rollout-Zeile(n) verweisen auf eine Phase, die nicht in der Tabelle rollout_phase steht — die Kante wird nicht gezeichnet.` ]
             : []
+        // WI-103 (Memo 080 Kap 15): the same identifier read twice. The drawing keeps ONE node per id —
+        // it has to, because a graph library refuses a duplicate id and the mermaid source collapsed such
+        // rows just as silently before. What must not happen is that the head line goes on stating the
+        // TABLE count over a drawing that shows fewer nodes. Measured on the real M080 database: 426 rows
+        // read, 413 distinct identifiers, 13 rollout rows carrying an id that already existed.
+        const duplicateNodeWarning = droppedDuplicateNodes > 0
+            ? [ `Auffaellig: ${ droppedDuplicateNodes } Zeile(n) tragen eine Kennung, die im selben Graphen schon vorkommt — gezeichnet wird je Kennung EIN Knoten, die Zaehlung oben nennt die gelesenen Zeilen.` ]
+            : []
         // The size findings. All three name the measured characters against the budget, because "the drawing
         // is complete" and "the labels were shortened to make it fit" look identical on the canvas — and the
         // near-edge case is itself the finding, not something to wave through (Oelstand-Regel). Every figure
@@ -1183,7 +1270,7 @@ class DoltDbAssembler {
             : []
 
         return [].concat( emptyWarning ).concat( unlinkedWarning ).concat( missingSideWarning )
-            .concat( danglingTopicWarning ).concat( danglingPhaseWarning )
+            .concat( danglingTopicWarning ).concat( danglingPhaseWarning ).concat( duplicateNodeWarning )
             .concat( tooLargeWarning ).concat( condensedWarning ).concat( nearEdgeWarning )
     }
 

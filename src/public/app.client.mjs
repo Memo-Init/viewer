@@ -1656,7 +1656,7 @@
                     inner += '<span class="rev-mini-chip" data-rev-chip><span class="rev-mini-chip-q">?</span>' + revOpen + '</span>'
                 }
 
-                var entryHtml = '<li class="' + cls + '" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" data-state="' + escapeAttr( rev.revisionType || 'full' ) + '" onclick="selectRevision(this.dataset.doc,this.dataset.rev)">'
+                var entryHtml = '<li class="' + cls + '" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" data-state="' + escapeAttr( rev.revisionType || 'full' ) + '">'
                 entryHtml += inner
                 entryHtml += '</li>'
                 return entryHtml
@@ -1707,7 +1707,7 @@
                 var rolloutSubLabel = rolloutSubLabelFor( doc.lifecycleState )
                 var queueLifecycleDisplay = rolloutSubLabel || queueLifecycle
 
-                var html = '<li class="queue-card" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" onclick="selectRevision(this.dataset.doc,this.dataset.rev)">'
+                var html = '<li class="queue-card" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '">'
                 html += '<span class="queue-card-bar" aria-hidden="true"></span>'
                 html += '<span class="queue-card-info" data-queue-info>'
                 // Zeile 1: Memo-Titel + Minuten-Chip + Fragen-Chip.
@@ -1901,9 +1901,17 @@
 
             navEl.innerHTML = html
 
-            // PRD-002 (Memo 018 Kap 5): queue entries are now rendered via renderRevEntry, which
-            // carries its own inline onclick=selectRevision(doc,rev). No separate .queue-entry
-            // click handler is needed — the shared revision-line markup handles selection.
+            // PRD-002 (Memo 018 Kap 5): queue entries are rendered via renderRevEntry, which carries the
+            // same data-doc/data-rev pair as the revision lines. ONE binding serves both.
+            // WI-103 (Memo 080 Kap 15): that binding used to be an inline onclick= attribute in the
+            // generated markup — the last thing on the page that forced 'unsafe-inline' into script-src
+            // and thereby made the Sicherheits-Kopf worth less than the header it is written in. Bound
+            // here instead, the policy needs no script exception at all.
+            navEl.querySelectorAll( 'li[data-doc][data-rev]' ).forEach( function( el ) {
+                el.addEventListener( 'click', function() {
+                    selectRevision( el.getAttribute( 'data-doc' ), el.getAttribute( 'data-rev' ) )
+                } )
+            } )
 
             // PRD-006 (Memo 019 Kap 6.9): namespace box toggle. Clicking the NS-Header collapses/
             // expands the box body (the memos). Navigation must be reliable — the WHOLE header is
@@ -5122,12 +5130,66 @@
             }
         }
 
+        // WI-103 (Memo 080 Kap 15, F30 = A): the four node colours of the interactive graph. They are the
+        // SAME four the mermaid classDefs used (DoltDbAssembler GRAPH_CLASS_DEFS) so the drawing did not
+        // silently change its colour language when the renderer changed.
+        var GRAPH_KIND_STYLES = [
+            { kind: 'T', fill: '#1f3a5f', stroke: '#4a90d9', text: '#e6f0fa' },
+            { kind: 'W', fill: '#24402b', stroke: '#5aa75a', text: '#e8f5e8' },
+            { kind: 'P', fill: '#4a3a1f', stroke: '#c9a227', text: '#faf3e0' },
+            { kind: 'R', fill: '#3f2b4a', stroke: '#9b6ad9', text: '#f2e8fa' }
+        ]
+
+        var GRAPH_KIND_LABELS = { T: 'Topic', W: 'Work-Item', P: 'Phase', R: 'PRD' }
+
+        var GRAPH_CY_STYLE = [
+            {
+                selector: 'node',
+                style: {
+                    // Fixed box instead of the auto-fit `width: 'label'` / `height: 'label'` pair: cytoscape
+                    // deprecated that value and warns on every draw. The server already caps the drawing
+                    // label, so a fixed box holds it, and the untruncated title is one click away.
+                    'label': 'data(label)', 'font-size': '11px', 'text-wrap': 'wrap', 'text-max-width': '160px',
+                    'text-valign': 'center', 'shape': 'round-rectangle', 'width': 178, 'height': 44,
+                    'border-width': 1
+                }
+            },
+            {
+                selector: 'edge',
+                style: {
+                    'width': 1.4, 'line-color': '#5b6673', 'target-arrow-color': '#5b6673',
+                    'target-arrow-shape': 'triangle', 'curve-style': 'bezier', 'arrow-scale': 0.8
+                }
+            },
+            { selector: 'edge[kind = "topic-prd"]', style: { 'line-style': 'dashed', 'line-color': '#9b6ad9', 'target-arrow-color': '#9b6ad9' } },
+            { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#ffffff' } }
+        ].concat( GRAPH_KIND_STYLES.map( function( entry ) {
+            return {
+                selector: 'node[kind = "' + entry.kind + '"]',
+                style: { 'background-color': entry.fill, 'border-color': entry.stroke, 'color': entry.text }
+            }
+        } ) )
+
+        // The live cytoscape instance of the graph view, or null. Held at this level because the view is
+        // torn down and rebuilt on every toggle and every memo switch — an instance left behind keeps its
+        // listeners and its render loop attached to a container that is no longer in the document.
+        var graphInstance = null
+
+        function destroyGraphInstance() {
+            if( graphInstance === null ) { return }
+            try { graphInstance.destroy() } catch( err ) { /* an already-destroyed instance is not an error */ }
+            graphInstance = null
+        }
+
         // PRD-V2 (Memo 080 Kap 15, WI-102): render the knowledge graph answer into #content. The head
         // line ALWAYS states how much was compared (nodes per kind, edges per kind) — an empty drawing
         // area could equally mean "nothing in the database" and "the read failed", so the numbers, the
         // warnings and the explicit empty message carry that difference (Oelstand-Regel).
-        // The drawing itself goes through the EXISTING diagram registry: a div.mermaid with the source in
-        // data-src plus one renderAllDiagrams() call — no second renderer, no new display building block.
+        // WI-103 (Memo 080 Kap 15, F30 = A): the drawing itself is INTERACTIVE and goes through cytoscape,
+        // shipped with the viewer (F13 = A). It replaces the mermaid tile of stage 1, which could only ever
+        // be a picture: mermaid runs with securityLevel 'strict' here, and strict switches its click
+        // bindings off — a graph whose whole purpose is "welches Topic steckt in welchem PRD" has to be
+        // explorable, not just legible. Prose ```mermaid blocks keep using mermaid; only THIS view moved.
         function renderGraphView( payload, contentTarget ) {
             contentTarget.textContent = ''
             var counts = ( payload && payload.counts ) ? payload.counts : {}
@@ -5159,7 +5221,15 @@
                 wrap.appendChild( note )
             } )
 
-            if( !payload || payload.empty === true || !payload.mermaid ) {
+            // WI-103 (Memo 080 Kap 15, F30 = A): the drawing is decided by the ELEMENT set, not by the
+            // mermaid source. That is the whole point of the change — a graph whose text source blew the
+            // mermaid budget ('source-too-large') used to land here as "kein Graph gezeichnet"; cytoscape
+            // has no text budget, so it draws exactly those graphs too.
+            var elements = ( payload && payload.elements ) ? payload.elements : null
+            var elementNodes = ( elements && elements.nodes ) ? elements.nodes : []
+            var elementEdges = ( elements && elements.edges ) ? elements.edges : []
+
+            if( !payload || payload.empty === true || elementNodes.length === 0 ) {
                 var emptyBox = document.createElement( 'div' )
                 emptyBox.className = 'graph-empty'
                 emptyBox.setAttribute( 'data-graph-empty', '1' )
@@ -5170,23 +5240,60 @@
                 return wrap
             }
 
+            // The detail panel a node click fills. It exists BEFORE the graph is drawn and starts with the
+            // instruction, so the interaction is discoverable instead of hidden.
+            var detail = document.createElement( 'div' )
+            detail.className = 'graph-detail'
+            detail.setAttribute( 'data-graph-detail', 'empty' )
+            detail.textContent = 'Knoten anklicken für Details · Knoten ziehen zum Umordnen · Mausrad zoomt'
+            wrap.appendChild( detail )
+
             var box = document.createElement( 'div' )
-            box.className = 'mermaid'
-            box.setAttribute( 'data-src', payload.mermaid )
+            box.className = 'graph-canvas'
+            box.setAttribute( 'data-graph-canvas', '1' )
             wrap.appendChild( box )
             contentTarget.appendChild( wrap )
-            // Memo 080, PRD-V2 rework: the count line may only stand over a drawing that REALLY happened.
-            // The renderer resolves even when it silently replaced an oversize source with a placeholder
-            // tile, so the head line used to claim "325 Knoten / 221 Kanten" above an error tile — exactly
-            // the silent failure US-2 exists against. The render outcome decides: a failed drawing puts the
-            // whole view into the SHARED error state, with the renderer's real message AND the measured
-            // figures, instead of a success headline above a failure.
-            renderAllDiagrams()
-                .then( function( outcomes ) {
-                    var failed = outcomes.filter( function( status ) { return status && status.ok === false && status.el === box } )
-                    if( failed.length === 0 ) { return }
-                    renderViewError( contentTarget, 'Graph konnte nicht gezeichnet werden: ' + failed[ 0 ].error + ' — gemessen: ' + headText )
+
+            // A previous instance keeps listeners and a render loop alive on a container that is no longer
+            // in the document. Destroy it BEFORE the new one exists — the view is re-entered often.
+            destroyGraphInstance()
+
+            try {
+                graphInstance = cytoscape( {
+                    container: box,
+                    elements: { nodes: elementNodes, edges: elementEdges },
+                    style: GRAPH_CY_STYLE,
+                    layout: { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 120, padding: 30 },
+                    // The three properties that make this a GRAPH and not a picture. Spelled out rather than
+                    // left to defaults so a later cytoscape release cannot quietly turn interaction off.
+                    userZoomingEnabled: true,
+                    userPanningEnabled: true,
+                    autoungrabify: false
                 } )
+            } catch( err ) {
+                renderViewError( contentTarget, 'Graph konnte nicht gezeichnet werden: ' + ( err && err.message ? err.message : String( err ) ) + ' — gemessen: ' + headText )
+
+                return wrap
+            }
+
+            graphInstance.on( 'tap', 'node', function( event ) {
+                var data = event.target.data()
+                var kindLabel = GRAPH_KIND_LABELS[ data.kind ] || data.kind
+                detail.setAttribute( 'data-graph-detail', 'node' )
+                detail.setAttribute( 'data-graph-detail-id', data.rawId || '' )
+                detail.textContent = kindLabel + ' ' + ( data.rawId || '' )
+                    + ( data.title ? ' — ' + data.title : '' )
+                    + ' · Kanten: ' + event.target.degree( false )
+            } )
+
+            // Tapping the empty background returns the panel to its instruction — the panel never keeps
+            // stating a selection that is no longer highlighted.
+            graphInstance.on( 'tap', function( event ) {
+                if( event.target !== graphInstance ) { return }
+                detail.setAttribute( 'data-graph-detail', 'empty' )
+                detail.removeAttribute( 'data-graph-detail-id' )
+                detail.textContent = 'Knoten anklicken für Details · Knoten ziehen zum Umordnen · Mausrad zoomt'
+            } )
 
             return wrap
         }
@@ -5204,6 +5311,9 @@
             var step = nextViewState( currentContentView, 'graph' )
             currentContentView = step.view
             if( step.view === 'prose' ) {
+                // WI-103: leaving the graph tears the instance down. Without this the toggle back to prose
+                // would leave a live cytoscape attached to a container the next render throws away.
+                destroyGraphInstance()
                 renderProseContent( false )
                 syncContentViewToggles()
 

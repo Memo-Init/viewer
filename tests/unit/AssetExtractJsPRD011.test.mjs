@@ -61,23 +61,26 @@ describe( 'Asset extraction — app.client.mjs (PRD-011, Memo 016 F1/F2)', () =>
         } )
 
 
-        it( 'keeps the __MEMO_CONFIG__ bootstrap + marked/mermaid CDN tags in the correct load order', () => {
-            const bootstrapIdx = pageTemplate.indexOf( 'window.__MEMO_CONFIG__ =' )
-            const markedIdx = pageTemplate.indexOf( 'marked@15.0.0/marked.min.js' )
-            const mermaidIdx = pageTemplate.indexOf( 'mermaid@11.4.1/dist/mermaid.min.js' )
+        // WI-103 (Memo 080 Kap 15, F13 = A): the load order is unchanged, its SOURCE is not. The two
+        // building blocks used to be named by their cdn.jsdelivr.net URL right here; they now come from
+        // the VendorAssets register, which is emitted into the page by VendorAssets.scriptTags(). The
+        // order assertion therefore moved to VendorAssetsWI103.test.mjs, where the register is the
+        // subject; what this test still owns is that the bootstrap precedes the vendor block and the
+        // vendor block precedes the client bundle.
+        it( 'keeps the __MEMO_CONFIG__ bootstrap + the shipped vendor tags in the correct load order', () => {
+            const bootstrapIdx = pageTemplate.indexOf( '<script>${ configBootstrap }</script>' )
+            const vendorIdx = pageTemplate.indexOf( 'VendorAssets.scriptTags().tags' )
             const clientIdx = pageTemplate.indexOf( '<script src="/app.client.mjs"></script>' )
 
-            // All four wiring points are present…
+            // All three wiring points are present…
             expect( bootstrapIdx ).toBeGreaterThan( -1 )
-            expect( markedIdx ).toBeGreaterThan( -1 )
-            expect( mermaidIdx ).toBeGreaterThan( -1 )
+            expect( vendorIdx ).toBeGreaterThan( -1 )
             expect( clientIdx ).toBeGreaterThan( -1 )
 
-            // …and ordered bootstrap < marked < mermaid < client, so marked/mermaid and
+            // …and ordered bootstrap < vendor < client, so the shipped libraries and
             // window.__MEMO_CONFIG__ all exist by the time the extracted client script runs.
-            expect( bootstrapIdx ).toBeLessThan( markedIdx )
-            expect( markedIdx ).toBeLessThan( mermaidIdx )
-            expect( mermaidIdx ).toBeLessThan( clientIdx )
+            expect( bootstrapIdx ).toBeLessThan( vendorIdx )
+            expect( vendorIdx ).toBeLessThan( clientIdx )
         } )
 
 

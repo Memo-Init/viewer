@@ -292,11 +292,20 @@ describe( 'PRD-V2 Rework — der Client erkennt die Platzhalter-Kachel als Fehls
         expect( ( registry.match( /mermaidDrawFailure\(/g ) || [] ).length ).toBe( 2 )
         expect( registry ).toContain( 'return { ok: true, error: null, el: el }' )
         expect( registry ).toContain( 'buildMermaidErrorHtml( new Error( substituted ), spec )' )
-        // the graph view no longer leaves the count line standing over a failed drawing
+        // The graph view still never leaves the count line standing over a failed drawing — WI-103
+        // (Memo 080 Kap 15, F30 = A) only changed WHICH renderer can fail there. The mermaid
+        // placeholder-tile gate above keeps guarding the prose ```mermaid path, which is untouched;
+        // the graph view draws with cytoscape and routes ITS failure into the same shared error state,
+        // carrying the same measured figures.
         expect( viewStart ).toBeGreaterThan( -1 )
-        expect( ( view.match( /renderAllDiagrams\(\)/g ) || [] ).length ).toBe( 1 )
+        expect( ( view.match( /renderAllDiagrams\(\)/g ) || [] ).length ).toBe( 0 )
         expect( view ).toContain( "renderViewError( contentTarget, 'Graph konnte nicht gezeichnet werden: '" )
-        expect( view ).toContain( 'status.el === box' )
+        expect( view ).toContain( "' — gemessen: ' + headText" )
+        expect( view ).toContain( 'graphInstance = cytoscape( {' )
+        // and the size gate itself is no longer a reason to show nothing: cytoscape has no text budget,
+        // so the element set is drawn even when the mermaid source was over budget
+        expect( view ).toContain( 'var elementNodes = ( elements && elements.nodes ) ? elements.nodes : []' )
+        expect( view.indexOf( 'payload.mermaid' ) ).toBe( -1 )
     } )
 
 

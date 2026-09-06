@@ -268,19 +268,31 @@ describe( 'PRD-V2 — die Ansicht im Betrachter (Client-Quelltext-Nachweis)', ()
     } )
 
 
-    it( 'the graph is drawn through the EXISTING diagram registry — one div.mermaid, one render pass', () => {
+    // WI-103 (Memo 080 Kap 15, F30 = A / F13 = A) — stage 2. PRD-V2 built stage 1 deliberately as a
+    // mermaid TILE and this test held that boundary. The memo's Soll-Zustand is an INTERACTIVE graph,
+    // so the boundary moves: the drawing is cytoscape, the mermaid tile is gone from this view, and the
+    // prose ```mermaid path is untouched (it is outside renderGraphView).
+    it( 'the graph is drawn INTERACTIVELY with cytoscape — no mermaid tile left in this view', () => {
         const start = client.indexOf( 'function renderGraphView( payload, contentTarget )' )
         const end = client.indexOf( 'async function loadGraphView( documentId )', start )
         const region = client.slice( start, end )
 
         expect( start ).toBeGreaterThan( -1 )
         expect( end ).toBeGreaterThan( start )
-        expect( region ).toContain( "box.className = 'mermaid'" )
-        expect( region ).toContain( "box.setAttribute( 'data-src', payload.mermaid )" )
-        // exactly ONE render call in the graph path — no second drawing path is opened
-        expect( ( region.match( /renderAllDiagrams\(\)/g ) || [] ).length ).toBe( 1 )
-        // and no direct renderer call bypassing the registry
-        expect( region.indexOf( 'mermaid.render' ) ).toBe( -1 )
+        expect( region ).toContain( "box.className = 'graph-canvas'" )
+        expect( region ).toContain( 'graphInstance = cytoscape( {' )
+        // the three interaction properties are DECLARED, not left to a library default that a later
+        // release could flip — a graph that cannot be grabbed or zoomed is a picture
+        expect( region ).toContain( 'userZoomingEnabled: true' )
+        expect( region ).toContain( 'userPanningEnabled: true' )
+        expect( region ).toContain( 'autoungrabify: false' )
+        // a node click has a handler, so the graph answers instead of only being looked at
+        expect( region ).toContain( "graphInstance.on( 'tap', 'node', function( event )" )
+        // the mermaid tile of stage 1 is gone from THIS view…
+        expect( region.indexOf( "box.className = 'mermaid'" ) ).toBe( -1 )
+        expect( ( region.match( /renderAllDiagrams\(\)/g ) || [] ).length ).toBe( 0 )
+        // …while the prose diagram path outside this view still exists (it was never the subject)
+        expect( ( client.match( /renderAllDiagrams\(\)/g ) || [] ).length ).toBeGreaterThan( 0 )
     } )
 
 
@@ -310,16 +322,31 @@ describe( 'PRD-V2 — die Ansicht im Betrachter (Client-Quelltext-Nachweis)', ()
     } )
 
 
-    it( 'the security posture is NOT lowered: strict stays strict, 5 network assets stay 5, 0 new deps', () => {
+    // WI-103 (Memo 080 Kap 15, F13 = A) — stage 2 RAISES the posture instead of lowering it. Stage 1
+    // measured "5 network assets stay 5, 0 new deps"; the memo asks for the opposite trade: the network
+    // count goes to ZERO and the libraries become declared, pinned dependencies that ship with the tool.
+    // The direction of every number here is therefore inverted on purpose, and each one still fails on a
+    // regression — a single re-added CDN tag turns `cdn.length` non-zero.
+    it( 'the security posture is RAISED: strict stays strict, 0 network assets, 6 shipped deps', () => {
         const strict = client.match( /securityLevel: 'strict'/g ) || []
         const cdn = source.match( /cdn\.jsdelivr\.net/g ) || []
+        const clientCdn = client.match( /cdn\.jsdelivr\.net/g ) || []
         const deps = Object.keys( manifest[ 'dependencies' ] )
 
         expect( strict.length ).toBe( 1 )
-        expect( cdn.length ).toBe( 5 )                               // the tracer adds no sixth network asset
-        expect( deps.length ).toBe( 2 )                              // @dolthub/doltlite + ws, unchanged
-        expect( deps.sort() ).toEqual( [ '@dolthub/doltlite', 'ws' ] )
-        // no vendored graph library was dropped into the served folder
-        expect( client.indexOf( 'cytoscape' ) ).toBe( -1 )
+        expect( cdn.length ).toBe( 0 )                               // nothing is fetched from the network any more
+        expect( clientCdn.length ).toBe( 0 )
+        expect( deps.length ).toBe( 8 )                              // 2 old + 6 shipped display building blocks
+        expect( deps.sort() ).toEqual( [
+            '@dolthub/doltlite', 'cytoscape', 'marked', 'mermaid', 'vega', 'vega-embed', 'vega-lite', 'ws'
+        ] )
+        // every one of the six is PINNED exactly — a floating range would re-open the supply-chain gate
+        // that depwatch was run against
+        const ranges = [ 'cytoscape', 'marked', 'mermaid', 'vega', 'vega-embed', 'vega-lite' ]
+            .map( ( name ) => manifest[ 'dependencies' ][ name ] )
+
+        expect( ranges.filter( ( range ) => /^\d+\.\d+\.\d+$/.test( range ) !== true ) ).toEqual( [] )
+        // the graph library is now genuinely in use, not merely installed
+        expect( client.indexOf( 'cytoscape( {' ) ).toBeGreaterThan( -1 )
     } )
 } )

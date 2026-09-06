@@ -75,9 +75,16 @@ const ERROR_CODE_CATALOG = [
     //
     // NUMBERING — MEASURED, NOT ASSUMED. PRD-F4 assigns the four warnings to WARN-020..023 and calls that
     // range free. Measured against this file on 2026-09-06 it is not: WARN-020 and WARN-021 above were
-    // taken by PRD-R1 Vollausbau. The warnings therefore take the next free block, WARN-030..033, per the
+    // taken by PRD-R1 Vollausbau. The warnings therefore take the next free block, WARN-030..034, per the
     // "number blocks have gaps" convention at the top of this comment. MEMO-034..039 and INFO-020 were
     // measured free (0 catalogue hits) and keep the numbers the PRD assigns.
+    //
+    // THEME — THE SECOND DEVIATION FROM THE PRD, NAMED HERE SO IT IS NOT FOUND AS A SURPRISE. PRD-F4 / A9
+    // prescribes the theme `optionen` (resp. `frage`). These entries carry a NEW theme, `optionen-guete`,
+    // and that is load-bearing rather than cosmetic: the transcript reject-gate selects the question-format
+    // family BY THEME (see QUESTION_FORMAT_THEMES below), so filing the option-QUALITY codes under
+    // `optionen` would have made every one of them a reason to reject a transcript — a door this work never
+    // meant to touch. The quality family is a different subject from the parse family, and the theme says so.
     //
     // SCOPE (A10) — the six ERROR codes fire on OPEN questions that carry at least one quality field. Two
     // classes are SKIPPED and COUNTED rather than graded, and the counts ride in `optionQuality`:
@@ -87,9 +94,17 @@ const ERROR_CODE_CATALOG = [
     //                       reasoning stands at the head of OptionQualityLint.mjs.
     //   legacy-shaped     — an open question carrying none of the nine fields predates the standard, so
     //                       there is nothing on it to decide any rule against (808 of 808 open questions
-    //                       in the stock, and every revision RevisionAssembler generates today). A run
-    //                       that measured nothing emits INFO-020 instead of reporting green.
+    //                       in the stock, and every revision RevisionAssembler generates today). The skip
+    //                       is stated as WARN-034 naming every ungraded id, and a run that measured
+    //                       nothing emits INFO-020 on top of it.
     // The moment a question carries ONE field it is measured in FULL — a half-adopted object is loud.
+    //
+    // WHY THE SKIP NEEDS ITS OWN CODE AND NOT ONLY A COUNTER. INFO-020 answers "did the run compare
+    // anything at all?" and therefore goes quiet as soon as ONE question was measured — which is exactly
+    // the MIXED block the transition period consists of. Measured 2026-09-06: a block with one opted-in
+    // question next to one legacy-shaped one reported the first and named the second nowhere. WARN-034
+    // closes that, and it is a WARNING rather than an INFO because an ungraded OPEN question is
+    // actionable (one field opts it in) and because the warnings channel is the one every caller carries.
     { 'code': 'MEMO-034', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': 'Option set is not balanced — the way forward (continues: true, scope !== "smaller") or the smaller cut (scope: "smaller") is missing; also fires when an option scope sits outside the closed list, which makes the predicate undecidable (A1/C2)' },
     { 'code': 'MEMO-035', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': 'One decision per question is not established — "dimension" missing, an option "value" missing, or two real options taking the same value (A2)' },
     { 'code': 'MEMO-036', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': 'Real option without a non-empty "effect" — every option names in half a sentence what follows when it is chosen (A3)' },
@@ -100,6 +115,7 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'WARN-031', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'An option label couples goal and measure (";", " + ", " und ") — one option row carries one value (R3)' },
     { 'code': 'WARN-032', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'A non-approved word from the anchor register\'s misLabels[] sits in title/question/label/value — use the approved label (A7/R6). Only checked when the register was handed in; otherwise the run reports registerAvailable: false and the rule counts as NOT checked' },
     { 'code': 'WARN-033', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': '"mentalModelCheck" missing or empty — state "aligned" or name the collision with the known user tendency (A8, advisory: it never answers the question and never removes it)' },
+    { 'code': 'WARN-034', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'Open questions were left UNGRADED because they carry none of the option-quality fields — the finding names every id, so a MIXED block cannot report the opted-in question and stay silent about the one next to it (A11). Non-blocking while the writing path adopts the fields; one field opts an object in and it is then measured in full' },
     { 'code': 'INFO-020', 'severity': 'INFO', 'theme': 'optionen-guete', 'description': 'The option-quality lint examined 0 open questions although a questions-json block was present — the run reports that it compared nothing instead of reporting a green zero (A11)' }
 ]
 

@@ -10,7 +10,9 @@ import { MemoValidator } from '../../src/MemoValidator.mjs'
 // one perturbation per code. Each test asserts the DISTINCT CODE SET — not "contains" — so a code
 // that fires next to its neighbours fails just as loudly as a code that never fires at all.
 //
-// A code without its own fixture counts as unverified. All eleven have one below.
+// A code without its own fixture counts as unverified. All twelve have one below — the twelfth,
+// WARN-034, was added after a verifier reproduced a MIXED block (one opted-in question next to one
+// legacy-shaped one) in which the ungraded question produced no trace at any door.
 
 
 // A synthetic register, deliberately tiny and NOT the live spec/data/anchor-terms.json: a unit test
@@ -463,17 +465,17 @@ describe( 'PRD-F4 — the same rules through the validator door (one catalogue, 
     } )
 
 
-    it( 'carries the eleven new codes in the ONE catalogue with the right severities', () => {
+    it( 'carries the twelve new codes in the ONE catalogue with the right severities', () => {
         const { catalog } = MemoValidator.getCatalog()
         const byCode = new Map( catalog.map( ( entry ) => [ entry[ 'code' ], entry ] ) )
         const expected = [
             [ 'MEMO-034', 'ERROR' ], [ 'MEMO-035', 'ERROR' ], [ 'MEMO-036', 'ERROR' ],
             [ 'MEMO-037', 'ERROR' ], [ 'MEMO-038', 'ERROR' ], [ 'MEMO-039', 'ERROR' ],
             [ 'WARN-030', 'WARNING' ], [ 'WARN-031', 'WARNING' ], [ 'WARN-032', 'WARNING' ],
-            [ 'WARN-033', 'WARNING' ], [ 'INFO-020', 'INFO' ]
+            [ 'WARN-033', 'WARNING' ], [ 'WARN-034', 'WARNING' ], [ 'INFO-020', 'INFO' ]
         ]
 
-        expect( expected.map( ( entry ) => entry[ 0 ] ).filter( ( code ) => byCode.has( code ) ).length ).toBe( 11 )
+        expect( expected.map( ( entry ) => entry[ 0 ] ).filter( ( code ) => byCode.has( code ) ).length ).toBe( 12 )
         expected.forEach( ( entry ) => {
             expect( { 'code': entry[ 0 ], 'severity': byCode.get( entry[ 0 ] )[ 'severity' ] } )
                 .toEqual( { 'code': entry[ 0 ], 'severity': entry[ 1 ] } )
@@ -511,13 +513,16 @@ describe( 'PRD-F4 — the LEGACY shape is a named, counted skip, never a silent 
     } )
 
 
-    it( 'a question carrying NONE of the quality fields is skipped, counted and reported via INFO-020', () => {
+    it( 'a question carrying NONE of the quality fields is skipped, counted and reported via INFO-020 + WARN-034', () => {
         const result = OptionQualityLint.check( { 'questions': [ legacyQuestion() ], 'anchorTerms': REGISTER } )
 
-        expect( result[ 'findings' ].map( ( f ) => f[ 'code' ] ) ).toEqual( [ 'INFO-020' ] )
+        expect( result[ 'findings' ].map( ( f ) => f[ 'code' ] ) ).toEqual( [ 'INFO-020', 'WARN-034' ] )
         expect( result[ 'checked' ] ).toBe( 0 )
         expect( result[ 'skippedLegacy' ] ).toBe( 1 )
         expect( result[ 'findings' ][ 0 ][ 'description' ] ).toContain( '1 open but carrying none of the quality fields' )
+        // The two say DIFFERENT things and both are needed: INFO-020 answers "did this run compare
+        // anything at all", WARN-034 answers "which questions did it leave ungraded" — by name.
+        expect( result[ 'findings' ][ 1 ][ 'description' ] ).toContain( 'F7' )
     } )
 
 
@@ -544,16 +549,83 @@ describe( 'PRD-F4 — the LEGACY shape is a named, counted skip, never a silent 
     } )
 
 
-    it( 'a mixed block measures the new objects and counts the old ones separately', () => {
+    it( 'a MIXED block names every ungraded question — the case a counter alone went silent on', () => {
+        // THIS is the case the first build got wrong, and the case the transition period consists of.
+        // INFO-020 answers "did the run compare anything at all", so it falls silent the moment ONE
+        // question is measured — and the legacy question next to it then produced no trace anywhere.
+        // Measured through `memo lint` on 2026-09-06: the ungraded id appeared 0 times in the output.
+        const second = legacyQuestion()
+        second[ 'id' ] = 'F8'
         const result = OptionQualityLint.check( {
-            'questions': [ legacyQuestion(), cleanQuestion(), legacyQuestion() ],
+            'questions': [ legacyQuestion(), cleanQuestion(), second ],
             'anchorTerms': REGISTER
         } )
 
         expect( result[ 'checked' ] ).toBe( 1 )
         expect( result[ 'skippedLegacy' ] ).toBe( 2 )
         expect( result[ 'skippedAnswered' ] ).toBe( 0 )
-        // The one measured question is clean, and INFO-020 does NOT fire — something WAS compared.
+        // Something WAS compared, so INFO-020 stays silent — but the gap is stated, by name, once per
+        // block rather than once per question, so a memo carrying its full open set cannot flood it.
+        expect( result[ 'findings' ].map( ( f ) => f[ 'code' ] ) ).toEqual( [ 'WARN-034' ] )
+        expect( result[ 'findings' ][ 0 ][ 'description' ] ).toContain( '2 of 3 open question(s)' )
+        expect( result[ 'findings' ][ 0 ][ 'description' ] ).toContain( 'F7, F8' )
+        expect( result[ 'counts' ] ).toEqual( { 'WARN-034': 1 } )
+    } )
+
+
+    it( 'WARN-034 is SILENT when every open question opted in — the code can be quiet', () => {
+        // The counter-check that makes the case above readable: the same run over opted-in objects
+        // only. A code that fires on everything states nothing.
+        const second = cleanQuestion()
+        second[ 'id' ] = 'F2'
+        const result = OptionQualityLint.check( { 'questions': [ cleanQuestion(), second ], 'anchorTerms': REGISTER } )
+
+        expect( result[ 'checked' ] ).toBe( 2 )
+        expect( result[ 'skippedLegacy' ] ).toBe( 0 )
         expect( result[ 'findings' ] ).toEqual( [] )
+    } )
+
+
+    it( 'an ANSWERED legacy record does not enter WARN-034 — it is the other skip, counted its own way', () => {
+        // The two skips are different statements and stay apart: an answered record is a frozen
+        // decision record (Out of Scope forbids rewriting it), an open one is actionable.
+        const answered = legacyQuestion()
+        answered[ 'answered' ] = true
+        const result = OptionQualityLint.check( { 'questions': [ answered ], 'anchorTerms': REGISTER } )
+
+        expect( result[ 'skippedAnswered' ] ).toBe( 1 )
+        expect( result[ 'skippedLegacy' ] ).toBe( 0 )
+        expect( result[ 'findings' ].map( ( f ) => f[ 'code' ] ) ).toEqual( [ 'INFO-020' ] )
+    } )
+
+
+    it( 'an ungraded question without a usable id is named "F?" rather than dropped', () => {
+        const nameless = legacyQuestion()
+        delete nameless[ 'id' ]
+        const result = OptionQualityLint.check( { 'questions': [ nameless, cleanQuestion() ], 'anchorTerms': REGISTER } )
+
+        expect( result[ 'findings' ].map( ( f ) => f[ 'code' ] ) ).toEqual( [ 'WARN-034' ] )
+        expect( result[ 'findings' ][ 0 ][ 'description' ] ).toContain( 'F?' )
+    } )
+
+
+    it( 'WARN-034 reaches BOTH validator channels the way its severity says — warnings, never messages', () => {
+        // The door test: a WARNING must never touch `status`, and it must arrive in the non-blocking
+        // channel — which is the channel every caller of the validator carries.
+        const doc = buildQuestionsJsonDoc( { 'questions': [ legacyQuestion(), cleanQuestion() ] } )
+        const without = buildQuestionsJsonDoc( { 'questions': [ cleanQuestion() ] } )
+
+        const result = MemoValidator.validate( { doc, 'anchorTerms': REGISTER } )
+        const control = MemoValidator.validate( { 'doc': without, 'anchorTerms': REGISTER } )
+
+        expect( result[ 'warnings' ].filter( ( m ) => /^WARN-034\b/.test( m ) ).length ).toBe( 1 )
+        expect( result[ 'messages' ].filter( ( m ) => /^WARN-034\b/.test( m ) ) ).toEqual( [] )
+        // NON-BLOCKING, measured rather than asserted: the same document with and without the ungraded
+        // question reaches the SAME verdict and the SAME blocking messages. (The minimal fixture doc is
+        // invalid either way — it carries no mandatory sections — which is exactly why the comparison,
+        // not the bare value, is the readable proof.)
+        expect( result[ 'status' ] ).toBe( control[ 'status' ] )
+        expect( result[ 'messages' ] ).toEqual( control[ 'messages' ] )
+        expect( result[ 'optionQuality' ] ).toEqual( { 'ran': true, 'checked': 1, 'skippedAnswered': 0, 'skippedLegacy': 1, 'registerAvailable': true } )
     } )
 } )

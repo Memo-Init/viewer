@@ -27,6 +27,8 @@ import { VALID_SCOPES, QUESTION_QUALITY_FIELDS, OPTION_QUALITY_FIELDS, isRealOpt
 //   WARN-031  WARNING  an option label couples goal and measure (R3)
 //   WARN-032  WARNING  a non-approved word from the register's misLabels[] (A7, R6)
 //   WARN-033  WARNING  `mentalModelCheck` missing or empty (A8, advisory by construction)
+//   WARN-034  WARNING  open questions were left UNGRADED because they carry none of the quality fields —
+//                      the named skip of the transition period, stated per block with every id (A11)
 //   INFO-020  INFO     the run examined 0 open questions although a questions-json block was present (A11)
 //
 // NUMBERING NOTE — MEASURED, NOT ASSUMED. PRD-F4 assigned WARN-020..023 to the four warnings and
@@ -48,11 +50,15 @@ import { VALID_SCOPES, QUESTION_QUALITY_FIELDS, OPTION_QUALITY_FIELDS, isRealOpt
 // assembler generates, because the generator does not emit the fields either. That is not a finding,
 // it is the absence of a comparison basis, and the two are different statements.
 //
-// So a legacy-shaped question is SKIPPED and COUNTED — `skippedLegacy` rides in every result, and a run
-// that measured nothing says INFO-020 instead of reporting green. The moment a question carries even ONE
-// quality field it has opted into the standard and is measured in FULL, so a half-adopted object is
-// loud rather than quietly half-checked. The distinction "not checked" versus "checked and clean" is the
-// whole point; it is the same distinction `registerAvailable` draws for WARN-032.
+// So a legacy-shaped question is SKIPPED, COUNTED and NAMED — `skippedLegacy` rides in every result, every
+// ungraded id is named in WARN-034, and a run that measured nothing says INFO-020 on top of that. The
+// naming is not decoration: a counter alone is only readable by a caller that carries the counter through,
+// and the moment ONE question was measured the "I compared nothing" statement is no longer true, so without
+// WARN-034 a MIXED block — the shape the whole transition period consists of — would report the opted-in
+// question and stay silent about the one next to it. The moment a question carries even ONE quality field
+// it has opted into the standard and is measured in FULL, so a half-adopted object is loud rather than
+// quietly half-checked. The distinction "not checked" versus "checked and clean" is the whole point; it is
+// the same distinction `registerAvailable` draws for WARN-032.
 //
 // The graduation is therefore a MEASUREMENT, not a promise: once the writing path emits the fields, the
 // legacy count falls to zero on its own and the rules bite on everything.
@@ -122,7 +128,9 @@ class OptionQualityLint {
     // registerAvailable, counts }. `checked` is the number of OPEN questions actually examined and it
     // rides in EVERY result: a verdict without its comparison basis is not readable, and a run that
     // examined nothing reports INFO-020 instead of a green zero (A11). `skippedAnswered` is the same
-    // statement for the answered records A10's substitution leaves ungraded (see the head of this file).
+    // statement for the answered records A10's substitution leaves ungraded (see the head of this file),
+    // and `skippedLegacy` is backed by a NAMED finding (WARN-034) so the gap survives a caller that reads
+    // only the finding channels — a count that no door carries is the same as no statement at all.
     static check( { questions, anchorTerms } ) {
         // No silent default: a non-array question list is the one loud error case. An EMPTY array is
         // a valid input — it means "a block was present and carried no question", which is exactly
@@ -155,7 +163,8 @@ class OptionQualityLint {
         const skippedAnswered = objects.length - open.length
 
         const measured = open.filter( ( question ) => OptionQualityLint.#carriesQualityFields( { question } ).carries === true )
-        const skippedLegacy = open.length - measured.length
+        const legacy = open.filter( ( question ) => OptionQualityLint.#carriesQualityFields( { question } ).carries !== true )
+        const skippedLegacy = legacy.length
 
         const findings = measured
             .flatMap( ( question ) => OptionQualityLint.#checkOne( { question, terms, registerAvailable } ) )
@@ -167,8 +176,32 @@ class OptionQualityLint {
                 'description': `The option-quality lint examined 0 open questions although a questions-json block was present (${ objects.length } question object(s): ${ skippedAnswered } answered, ${ skippedLegacy } open but carrying none of the quality fields) — a run without a comparison basis reports that it compared nothing, it never reports green`
             } ]
             : []
+        // WARN-034 — THE SKIP IS ANNOUNCED, BY NAME, AND IT DOES NOT DEPEND ON THE RUN HAVING MEASURED
+        // NOTHING. INFO-020 answers "did this run compare anything at all?" and therefore falls silent the
+        // moment ONE question is measured. That left a hole exactly where the transition lives: a MIXED
+        // block — one opted-in question next to a legacy-shaped one — reported the measured question and
+        // said nothing whatsoever about the other, so a question violating four rules produced no trace.
+        // Reproduced 2026-09-06 through `memo lint`: the ungraded id appeared 0 times in the output.
+        //
+        // The gap is therefore stated as its OWN finding, per block, naming every ungraded id, and it is a
+        // WARNING rather than an INFO for two measured reasons: an ungraded OPEN question is actionable
+        // (unlike an answered record, which Out of Scope forbids rewriting — it can simply be given a
+        // quality field), and the warnings channel is the one channel every door carries. It stays
+        // NON-BLOCKING because the writing path does not emit the fields yet; sharpening it is bound to a
+        // fresh corpus measurement, not to its introduction.
+        //
+        // ONE finding per block, not one per question: the ids are named in it, so nothing is hidden, and a
+        // memo carrying its full open-question set cannot flood the channel it needs to be read in.
+        const ungraded = legacy.length === 0
+            ? []
+            : [ {
+                'code': 'WARN-034',
+                'questionId': '(block)',
+                'field': 'questions',
+                'description': `${ legacy.length } of ${ open.length } open question(s) carry none of the option-quality fields and were NOT graded: ${ legacy.map( ( question ) => OptionQualityLint.#idOf( { question } ).id ).join( ', ' ) } — an ungraded question is a stated gap, never a clean result; one quality field opts an object into the standard and it is then measured in full`
+            } ]
 
-        const all = OptionQualityLint.#sorted( { findings: findings.concat( vacuum ) } )
+        const all = OptionQualityLint.#sorted( { findings: findings.concat( ungraded ).concat( vacuum ) } )
 
         return {
             'status': true,
@@ -204,8 +237,19 @@ class OptionQualityLint {
     }
 
 
+    // The id a finding names the question by. ONE derivation, used by the graded findings and by the
+    // WARN-034 skip notice alike — an id that reads "F2" in one line and "F?" in the next would make the
+    // two halves of the same run unjoinable. An object without a usable id is named "F?" rather than
+    // dropped, because a nameless ungraded question is still a stated gap.
+    static #idOf( { question } ) {
+        const id = question[ 'id' ]
+
+        return { 'id': ( typeof id === 'string' && id.length > 0 ) ? id : 'F?' }
+    }
+
+
     static #checkOne( { question, terms, registerAvailable } ) {
-        const id = typeof question[ 'id' ] === 'string' && question[ 'id' ].length > 0 ? question[ 'id' ] : 'F?'
+        const { id } = OptionQualityLint.#idOf( { question } )
         const { options } = OptionQualityLint.#realOptions( { question } )
 
         return []

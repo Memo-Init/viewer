@@ -26,6 +26,43 @@
 const VALID_OPTION_KINDS = [ 'option', 'custom', 'topic', 'reframe', 'reoption' ]
 
 
+// Memo 080, PRD-F4 (Kap 18): the option-quality fields and the closed `scope` list live HERE, next to
+// VALID_OPTION_KINDS, because they are read by more than one party — OptionQualityLint decides the
+// balance predicate on them, MemoValidator hangs the check in, and the `old_options` serialiser of the
+// `reoptioned` event has to carry them through a re-formulation instead of hard-wiring {key,label,kind}
+// (a serialiser that names three fields loses every field added later). One contract, no second list.
+//
+// `scope` says how big the cut of an option is against the question's full scope; `smaller` is the
+// reduced cut. `continues: true` marks the way forward. The two together ARE the balance predicate:
+// a set is balanced when it carries a way forward (continues && scope !== 'smaller') AND a smaller
+// cut (scope === 'smaller'). A set in which every option is `smaller` and none continues consists of
+// nothing but ways to stop.
+const VALID_SCOPES = [ 'smaller', 'same', 'larger' ]
+
+
+// The quality fields of the QUESTION object: the one thing being decided (`dimension`), the premise
+// all options share when there is one (`sharedPremise`), and the visible comparison against the known
+// user tendency (`mentalModelCheck`).
+const QUESTION_QUALITY_FIELDS = [ 'dimension', 'sharedPremise', 'mentalModelCheck' ]
+
+
+// The quality fields of an OPTION object: the value it takes on the dimension (`value`), what follows
+// when it is chosen (`effect`), the size of its cut (`scope`), whether it is a way forward
+// (`continues`), whether it denies the shared premise (`deniesPremise`), and the price of a
+// postponement it names (`deferCost`).
+const OPTION_QUALITY_FIELDS = [ 'value', 'effect', 'scope', 'continues', 'deniesPremise', 'deferCost' ]
+
+
+// isRealOptionKind — is this `kind` an AUTHOR-supplied answer choice? A missing kind counts as one
+// (the default is `option`, see the comment above); the four injected siblings never do. This is the
+// one place that reading lives, so the quality lint and any later reader cannot drift apart on it.
+const isRealOptionKind = ( { kind } ) => {
+    if( kind === undefined || kind === null ) { return { 'real': true } }
+
+    return { 'real': kind === 'option' }
+}
+
+
 // EXACT logic mirror of isQuestionCleanParse (src/public/app.client.mjs). Returns true only when
 // the question can be rendered as a clean interactive card: a well-formed F-id, a non-empty Frage,
 // at least two distinct real options (kind === 'option'), and — for single-select — an AI
@@ -86,4 +123,4 @@ const invalidOptionKinds = ( { options } ) => {
 }
 
 
-export { VALID_OPTION_KINDS, isRenderable, invalidOptionKinds }
+export { VALID_OPTION_KINDS, VALID_SCOPES, QUESTION_QUALITY_FIELDS, OPTION_QUALITY_FIELDS, isRenderable, invalidOptionKinds, isRealOptionKind }

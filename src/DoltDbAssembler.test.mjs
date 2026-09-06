@@ -572,6 +572,17 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             const insertSession = db.prepare( 'INSERT INTO sessions ( session_id, memo_id, parent_session_id, role, model, started_at, tokens, tool_calls ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
             insertSession.run( 'sess-worker', 'M079', 'sess-lead', 'worker', 'opus', '2026-08-20T10:00:00.000Z', 4200, 17 )
             insertSession.run( 'sess-lead', 'M079', null, 'orchestrator', 'opus', '2026-08-20T09:00:00.000Z', 12800, 42 )
+            // Memo 080, PRD-P3 (WI-182) — rows IDENTICAL to what the core LessonStore stages from
+            // seedCanonical. ONE lesson with TWO provenance rows, the second naming a FOREIGN memo, so this
+            // fixture really renders the qualified reference join (`M079/REV-01:42 · M076/WI-109`) in both
+            // repos instead of agreeing on an empty mark.
+            db.exec( 'CREATE TABLE IF NOT EXISTS lesson_learned ( id TEXT PRIMARY KEY, memo_id TEXT, title TEXT, body TEXT, phase_id TEXT, prd_id TEXT, origin TEXT, session_id TEXT, created_at TEXT )' )
+            db.exec( 'CREATE TABLE IF NOT EXISTS lesson_source ( lesson_id TEXT, source_memo_id TEXT, kind TEXT, ref TEXT, path TEXT, lines TEXT, label TEXT, sha256 TEXT )' )
+            db.prepare( 'INSERT INTO lesson_learned ( id, memo_id, title, body, phase_id, prd_id, origin, session_id, created_at ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ?, ? )' )
+                .run( 'LL-001', 'M079', 'Eine Kennung, die aufloest, ist noch keine richtige', 'Work-Item-Kennungen sind memo-lokal.', 'P1', 'PRD-16', 'durchlauf', 'sess-seed', '2026-08-20T11:00:00.000Z' )
+            const insertLessonSource = db.prepare( 'INSERT INTO lesson_source ( lesson_id, source_memo_id, kind, ref, path, lines, label, sha256 ) VALUES ( ?, ?, ?, ?, ?, ?, ?, ? )' )
+            insertLessonSource.run( 'LL-001', 'M079', 'revision', 'REV-01', 'revisions/REV-01.md', '42', 'DB Traceability', null )
+            insertLessonSource.run( 'LL-001', 'M076', 'work-item', 'WI-109', '_work-items/WI-109.json', null, 'renderDiffView interpoliert currentFullFile/previousFile roh (unescaped) in HTML', null )
             db.close()
         }
 
@@ -609,6 +620,12 @@ describe( 'DoltDbAssembler — P6a DB-schaufenster (Memo 079)', () => {
             expect( markdown ).toContain( '## Ancillary Files\n\n1. `context/research/2026-08-19--doltlite-machbarkeit.md`' )
             expect( markdown ).toContain( '## Rollout-Entry-Points\n\n1. `cli/src/RevisionAssembler.mjs`' )
             expect( markdown ).toContain( '## Lessons-Learned\n\nEin Traeger fehlt erst dann auf, wenn er gerendert werden soll.' )
+            // Memo 080, PRD-P3 (WI-182): the appending Lessons table under the frozen prose of the same
+            // section, with every provenance entry QUALIFIED by its memo. The second entry names a FOREIGN
+            // memo on purpose — that is what proves the join really carries source_memo_id here too, and not
+            // only in the core. An unqualified `WI-109` would resolve and mean something else in M080.
+            expect( markdown ).toContain( '| LL | Lesson | Phase | PRD | Herkunft | Entstanden |' )
+            expect( markdown ).toContain( '| LL-001 | Eine Kennung, die aufloest, ist noch keine richtige — Work-Item-Kennungen sind memo-lokal. | P1 | PRD-16 | M076/WI-109 · M079/REV-01:42 | 2026-08-20T11:00:00.000Z |' )
 
             // hand-edit guard: the vendored fixture must hash to the recorded manifest sha256 (same value the
             // core repo records), so a doctored golden that would silently satisfy the equality is caught.
@@ -1260,10 +1277,12 @@ describe( 'DoltDbAssembler — external payload pointers (Memo 080, PRD-D5)', ()
         const fixtureSha = createHash( 'sha256' ).update( POINTER_GOLDEN_BODY, 'utf8' ).digest( 'hex' )
         expect( fixtureSha ).toBe( POINTER_MANIFEST[ 'sha256' ] )
         expect( Buffer.byteLength( POINTER_GOLDEN_BODY, 'utf8' ) ).toBe( POINTER_MANIFEST[ 'byteLength' ] )
-        // Measured after the heading-level change (Memo 080, PRD-R3 Vollausbau): 1857 bytes, two fewer than
-        // the 1859 before, because the two `#### ` table/diagram headings became `### `. The figure is
-        // re-measured, never carried over.
-        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1857 )             // compared 1857 bytes, > 0
+        // Re-measured after the Lessons carrier (Memo 080, PRD-P3): 1882 bytes, 25 more than the 1857
+        // before, because `## Lessons-Learned` now carries BOTH empty marks — `_kein Inhalt_` for the
+        // absent prose and `_keine Lessons-Learned_` for the empty appending table. (The 1857 itself was
+        // measured after PRD-R3 turned the two `#### ` headings into `### `.) The figure is re-measured
+        // on every intentional render change, never carried over.
+        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1882 )             // compared 1882 bytes, > 0
     } )
 
 

@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
-import { isRenderable, invalidOptionKinds, VALID_OPTION_KINDS } from '../../src/QuestionContract.mjs'
+import { isRenderable, invalidOptionKinds, VALID_OPTION_KINDS, VALID_SCOPES, QUESTION_QUALITY_FIELDS, OPTION_QUALITY_FIELDS, isRealOptionKind } from '../../src/QuestionContract.mjs'
 import { MemoValidator } from '../../src/MemoValidator.mjs'
 import { DocumentRegistry } from '../../src/DocumentRegistry.mjs'
 
@@ -229,5 +229,46 @@ describe( 'Memo 041 Teil B — defensive kind coercion (suspenders)', () => {
         expect( kinds ).toContain( 'topic' )
         // Memo 059 (F3): the reframe sibling is injected on the JSON path too.
         expect( kinds ).toContain( 'reframe' )
+    } )
+} )
+
+
+describe( 'Memo 080, PRD-F4 — the quality fields live in the ONE contract, not in a second list', () => {
+    it( 'pins the closed scope list the balance predicate rests on', () => {
+        // Nailed down exactly like VALID_OPTION_KINDS above: the lint, the validator and the
+        // old_options serialiser of the `reoptioned` event all read THIS list. A value added here
+        // without a reader, or a reader inventing a value not here, is the drift the pin catches.
+        expect( VALID_SCOPES ).toEqual( [ 'smaller', 'same', 'larger' ] )
+    } )
+
+
+    it( 'pins the question-level and option-level quality field names', () => {
+        expect( QUESTION_QUALITY_FIELDS ).toEqual( [ 'dimension', 'sharedPremise', 'mentalModelCheck' ] )
+        expect( OPTION_QUALITY_FIELDS ).toEqual( [ 'value', 'effect', 'scope', 'continues', 'deniesPremise', 'deferCost' ] )
+    } )
+
+
+    it( 'every quality field name is distinct from the render-contract field names it sits beside', () => {
+        const rendered = [ 'key', 'label', 'kind' ]
+        const overlap = QUESTION_QUALITY_FIELDS
+            .concat( OPTION_QUALITY_FIELDS )
+            .filter( ( field ) => rendered.includes( field ) === true )
+
+        expect( overlap ).toEqual( [] )
+    } )
+
+
+    it( 'isRealOptionKind treats an omitted kind as a real option and the four siblings as not', () => {
+        expect( isRealOptionKind( { kind: 'option' } ) ).toEqual( { 'real': true } )
+        expect( isRealOptionKind( { kind: undefined } ) ).toEqual( { 'real': true } )
+        expect( isRealOptionKind( { kind: null } ) ).toEqual( { 'real': true } )
+
+        const siblings = VALID_OPTION_KINDS.filter( ( kind ) => kind !== 'option' )
+        expect( siblings.length ).toBe( 4 )
+        expect( siblings.map( ( kind ) => isRealOptionKind( { kind } ).real ) ).toEqual( [ false, false, false, false ] )
+
+        // An INVALID kind is not a real option either — MEMO-033 is what reports it, the balance
+        // predicate must not count a row the renderer will drop.
+        expect( isRealOptionKind( { kind: 'normal' } ) ).toEqual( { 'real': false } )
     } )
 } )

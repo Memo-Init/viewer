@@ -97,6 +97,12 @@ const GAP_REASON = {
 // headings, same order, same empty mark — a one-sided change fails the hash-gated parity fixture.
 const PROSE_EMPTY = '_kein Inhalt_'
 
+// Byte-identical to RevisionAssembler LESSONS_EMPTY (core, Memo 080 PRD-P3 / WI-182). The section
+// `## Lessons-Learned` carries TWO statements: the frozen prose of the revision and the APPENDING table
+// under it. Two statements, two independent empty marks — a table that vanished when it held nothing
+// would make "nothing learned yet" indistinguishable from "this database has no carrier".
+const LESSONS_EMPTY = '_keine Lessons-Learned_'
+
 // Byte-identical to RevisionAssembler HEAD_FIELDS (core): the five mandatory lint fields plus the two the
 // DOCUMENT LEVEL demands (REV-18 Z. 160 — `Typ`, `Aenderungen`; Memo 080, PRD-R1 Vollausbau). Both come
 // from the head CARRIER only, so this side needs no second source either.
@@ -1418,6 +1424,16 @@ class DoltDbAssembler {
         const sessionRows = DoltDbAssembler.#tableExists( { db, table: 'sessions' } ) === true
             ? DoltDbAssembler.#all( { db, sql: 'SELECT session_id, role, model, started_at, tokens, tool_calls FROM sessions ORDER BY started_at, session_id' } )
             : []
+        // The Lessons carrier + its provenance edge (Memo 080, PRD-P3 / WI-182) — the same two reads, the
+        // same ORDER BY and the same #tableExists guard-and-degrade the core RevisionAssembler applies, so
+        // a database that predates the tables renders the identical empty mark on both sides instead of
+        // throwing on one of them.
+        const lessons = DoltDbAssembler.#tableExists( { db, table: 'lesson_learned' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT id, memo_id, title, body, phase_id, prd_id, origin, created_at FROM lesson_learned ORDER BY created_at, id' } )
+            : []
+        const lessonSources = DoltDbAssembler.#tableExists( { db, table: 'lesson_source' } ) === true
+            ? DoltDbAssembler.#all( { db, sql: 'SELECT lesson_id, source_memo_id, kind, ref, path, lines, label FROM lesson_source ORDER BY lesson_id, source_memo_id, kind, ref, path' } )
+            : []
 
         const head = DoltDbAssembler.#renderHead( { db, memo, headRows } )
         const rendered = DoltDbAssembler.#renderBlocks( { blocks, blockTables, blockDiagrams, blockSections } )
@@ -1439,7 +1455,7 @@ class DoltDbAssembler {
             finalisierungsCheckliste: DoltDbAssembler.#renderProse( { sections, heading: 'Finalisierungs-Checkliste' } ),
             anhaenge: DoltDbAssembler.#renderProse( { sections, heading: 'Ancillary Files' } ),
             einstiegspunkte: DoltDbAssembler.#renderProse( { sections, heading: 'Rollout-Entry-Points' } ),
-            lessonsLearned: DoltDbAssembler.#renderProse( { sections, heading: 'Lessons-Learned' } ),
+            lessonsLearned: DoltDbAssembler.#renderLessons( { sections, lessons, lessonSources } ),
             workItems: DoltDbAssembler.#renderWorkItems( { workItems } ),
             topics: DoltDbAssembler.#renderTopics( { topics } ),
             research: DoltDbAssembler.#renderResearch( { research, researchTopics, researchFiles, pointer } ),
@@ -1656,6 +1672,75 @@ class DoltDbAssembler {
         return [ `## ${ heading }`, '' ]
             .concat( bodies.join( '\n\n' ).split( '\n' ) )
             .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to RevisionAssembler.#renderLessons (core, Memo 080 PRD-P3 / WI-182): the frozen
+    // prose of the revision FIRST, the appending Lessons table under it. Two statements in one section, so
+    // two independent empty marks.
+    //
+    // THE QUALIFICATION RULE IS VENDORED, NOT IMPORTED. Its authority is LessonProvenance.qualifiedRef in
+    // core; a cross-repo import is what the worktree boundary forbids, so the rule stands here a second
+    // time and the two copies are held against each other by the hash-manifested revision-body-v1 fixture
+    // — the same mechanism DOCUMENT_SECTIONS and DEFERRED_STATUS already rely on. A reference is written
+    // `M080/REV-18:2622`, never `REV-18:2622`: work-item, topic and revision ids are MEMO-LOCAL, so an
+    // unqualified one resolves and means something else in the next memo.
+    static #renderLessons( { sections, lessons, lessonSources } ) {
+        const prose = DoltDbAssembler.#renderProse( { sections, heading: 'Lessons-Learned' } )
+        if( lessons.length === 0 ) {
+            return prose.concat( [ LESSONS_EMPTY, '' ] )
+        }
+
+        const table = [
+            '| LL | Lesson | Phase | PRD | Herkunft | Entstanden |',
+            '| --- | --- | --- | --- | --- | --- |'
+        ]
+        const bodyRows = lessons
+            .map( ( row ) => {
+                const herkunft = lessonSources
+                    .filter( ( edge ) => edge[ 'lesson_id' ] === row[ 'id' ] )
+                    .map( ( edge ) => DoltDbAssembler.#qualifiedRef( { edge } ) )
+                    .join( ' · ' )
+
+                return `| ${ cell( row[ 'id' ] ) } | ${ cell( DoltDbAssembler.#lessonText( { row } ) ) } | ${ cell( row[ 'phase_id' ] ) } | ${ cell( row[ 'prd_id' ] ) } | ${ cell( herkunft ) } | ${ cell( row[ 'created_at' ] ) } |`
+            } )
+
+        return prose
+            .concat( table )
+            .concat( bodyRows )
+            .concat( [ '' ] )
+    }
+
+
+    // Byte-identical to LessonProvenance.qualifiedRef (core). A row without `source_memo_id` FAILS LOUD
+    // rather than rendering an unqualified reference — emitting one would defeat the very section it
+    // appears in.
+    static #qualifiedRef( { edge } ) {
+        const memoId = edge[ 'source_memo_id' ]
+        if( typeof memoId !== 'string' || memoId.length === 0 ) {
+            throw new Error( 'DoltDbAssembler.#qualifiedRef: "source_memo_id" is required — an unqualified reference is exactly what this carrier exists against' )
+        }
+
+        const ref = edge[ 'ref' ]
+        const lines = edge[ 'lines' ]
+        const base = typeof ref === 'string' && ref.length > 0 ? ref : edge[ 'path' ]
+        if( typeof base !== 'string' || base.length === 0 ) {
+            throw new Error( `DoltDbAssembler.#qualifiedRef: ${ memoId } line carries neither ref nor path — there is nothing to point at` )
+        }
+
+        const suffix = typeof lines === 'string' && lines.length > 0 ? `:${ lines }` : ''
+
+        return `${ memoId }/${ base }${ suffix }`
+    }
+
+
+    // Byte-identical to RevisionAssembler.#lessonText: title and body in ONE cell, joined by an em-dash.
+    // An empty body yields the title alone — no dangling separator, no invented text.
+    static #lessonText( { row } ) {
+        const title = row[ 'title' ] === null || row[ 'title' ] === undefined ? '' : String( row[ 'title' ] )
+        const body = row[ 'body' ] === null || row[ 'body' ] === undefined ? '' : String( row[ 'body' ] )
+
+        return body.length === 0 ? title : `${ title } — ${ body }`
     }
 
 

@@ -1,6 +1,7 @@
 import { DocumentRegistry } from './DocumentRegistry.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
 import { invalidOptionKinds } from './QuestionContract.mjs'
+import { OptionQualityLint } from './OptionQualityLint.mjs'
 import { BlockSections } from './BlockSections.mjs'
 
 
@@ -17,7 +18,8 @@ import { BlockSections } from './BlockSections.mjs'
 //   Sections      MEMO-001–009   Pflicht-Sections fehlen
 //   Header        MEMO-010–019   Header-Felder / Schema-Version-Marker
 //   Frage         MEMO-020–029   ### F{N}-Block unvollstaendig (Hintergrund/Frage/AI)
-//   Optionen      MEMO-030–039   Optionen nicht parsebar (Klammern statt Zeilen)
+//   Optionen      MEMO-030–033   Optionen nicht parsebar (Klammern statt Zeilen) / kind ungueltig
+//   Options-Guete MEMO-034–039   Options-Qualitaetsregeln (Memo 080, PRD-F4, Kap 18)
 //   Typ-Badge     MEMO-040–049   Typ single/multi inkonsistent (Checkliste = multi)
 //   JSON-Block    MEMO-050–059   Fragen-JSON-Codeblock malformed (PRD-039)
 //   Dateiname     MEMO-060–069   Revisions-Dateiname-Suffix malformed (Memo 012, Kap 3)
@@ -43,7 +45,7 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'MEMO-050', 'severity': 'ERROR', 'theme': 'json-block', 'description': 'Questions JSON codeblock is malformed' },
     { 'code': 'MEMO-031', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option marker is bold-wrapped (e.g. "**A)**" / "**A:**") and does not parse as an option' },
     { 'code': 'MEMO-032', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Duplicate option within a question (duplicate key, or an authored option duplicates the injected custom/topic default)' },
-    { 'code': 'MEMO-033', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option kind is not one of {option, custom, topic, reframe} — the renderer drops such an option (Memo 041 Teil B, the split-brain fix)' },
+    { 'code': 'MEMO-033', 'severity': 'ERROR', 'theme': 'optionen', 'description': 'Option kind is not one of {option, custom, topic, reframe, reoption} — the renderer drops such an option (Memo 041 Teil B, the split-brain fix)' },
     { 'code': 'MEMO-060', 'severity': 'ERROR', 'theme': 'filename', 'description': 'Revision filename suffix malformed (expected REV-NN.md, REV-NN-prepare.md or REV-NN-update.md)' },
     { 'code': 'MEMO-070', 'severity': 'ERROR', 'theme': 'lifecycle', 'description': 'Unresolved "[Research offen]" marker present outside code spans' },
     { 'code': 'MEMO-080', 'severity': 'ERROR', 'theme': 'block-meta', 'description': 'block-meta overlay block is malformed (invalid JSON; topic/prd ids not in T001 / PRD-001 shape; or a Parent/Child invariant is violated — child carrying prds, a block mixing singular topic with plural topics, or a grandchild/second level)' },
@@ -66,8 +68,62 @@ const ERROR_CODE_CATALOG = [
     // flags the pointer that replaces content; WARN-011 sees two files and names what LEFT the
     // document. Measured 2026-09-03 over the memo-080 revisions: REV-01 -> REV-02 lost the
     // `User-Auftrag` block in 8 of 9 compared chapters, REV-17 -> REV-18 in 0 of 25.
-    { 'code': 'WARN-011', 'severity': 'WARNING', 'theme': 'standalone-continuity', 'description': 'A chapter lost substance against the predecessor revision — a dropped User-Auftrag block, a chapter shrunk below half its non-empty lines, or a fallen evidence-marker balance (Memo 080 Kap 14: a revision carries its whole content itself)' }
+    { 'code': 'WARN-011', 'severity': 'WARNING', 'theme': 'standalone-continuity', 'description': 'A chapter lost substance against the predecessor revision — a dropped User-Auftrag block, a chapter shrunk below half its non-empty lines, or a fallen evidence-marker balance (Memo 080 Kap 14: a revision carries its whole content itself)' },
+    // Memo 080, PRD-F4 (Kap 18) — the eight OPTION-QUALITY rules, moved out of prose into a decidable
+    // predicate. The engine is OptionQualityLint (repos/viewer/src); the codes enter THIS catalogue, the
+    // only one, so `memo lint` and `POST /api/validate` inherit the check without a second rule copy.
+    //
+    // NUMBERING — MEASURED, NOT ASSUMED. PRD-F4 assigns the four warnings to WARN-020..023 and calls that
+    // range free. Measured against this file on 2026-09-06 it is not: WARN-020 and WARN-021 above were
+    // taken by PRD-R1 Vollausbau. The warnings therefore take the next free block, WARN-030..033, per the
+    // "number blocks have gaps" convention at the top of this comment. MEMO-034..039 and INFO-020 were
+    // measured free (0 catalogue hits) and keep the numbers the PRD assigns.
+    //
+    // SCOPE (A10) — the six ERROR codes fire on OPEN questions that carry at least one quality field. Two
+    // classes are SKIPPED and COUNTED rather than graded, and the counts ride in `optionQuality`:
+    //   answered records  — the decision record, not a draft; grading it would falsify the very record
+    //                       memo-mental-model-derive reads (233 in the stock, measured 2026-09-06). A10's
+    //                       "degradieren zu INFO" is deliberately REPLACED by this counted skip; the
+    //                       reasoning stands at the head of OptionQualityLint.mjs.
+    //   legacy-shaped     — an open question carrying none of the nine fields predates the standard, so
+    //                       there is nothing on it to decide any rule against (808 of 808 open questions
+    //                       in the stock, and every revision RevisionAssembler generates today). A run
+    //                       that measured nothing emits INFO-020 instead of reporting green.
+    // The moment a question carries ONE field it is measured in FULL — a half-adopted object is loud.
+    { 'code': 'MEMO-034', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': 'Option set is not balanced — the way forward (continues: true, scope !== "smaller") or the smaller cut (scope: "smaller") is missing; also fires when an option scope sits outside the closed list, which makes the predicate undecidable (A1/C2)' },
+    { 'code': 'MEMO-035', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': 'One decision per question is not established — "dimension" missing, an option "value" missing, or two real options taking the same value (A2)' },
+    { 'code': 'MEMO-036', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': 'Real option without a non-empty "effect" — every option names in half a sentence what follows when it is chosen (A3)' },
+    { 'code': 'MEMO-037', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': 'Time expression in the "label" or "value" of a subject-matter option — the rollout moment is the user\'s own question and is never bundled into a subject option (A4)' },
+    { 'code': 'MEMO-038', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': 'Option names a postponement but carries no "deferCost" — no flat penalty, but no concealed price either (A5)' },
+    { 'code': 'MEMO-039', 'severity': 'ERROR', 'theme': 'optionen-guete', 'description': '"sharedPremise" is set but not exactly one real option carries deniesPremise: true (A6 — the CONSISTENCY is checked; whether the author noticed a premise is not machine-decidable and is not claimed)' },
+    { 'code': 'WARN-030', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'The question sentence bundles two decisions ("… und mit welchem / wie / ob / welche …") — split it into one question per decision (R1)' },
+    { 'code': 'WARN-031', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'An option label couples goal and measure (";", " + ", " und ") — one option row carries one value (R3)' },
+    { 'code': 'WARN-032', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'A non-approved word from the anchor register\'s misLabels[] sits in title/question/label/value — use the approved label (A7/R6). Only checked when the register was handed in; otherwise the run reports registerAvailable: false and the rule counts as NOT checked' },
+    { 'code': 'WARN-033', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': '"mentalModelCheck" missing or empty — state "aligned" or name the collision with the known user tendency (A8, advisory: it never answers the question and never removes it)' },
+    { 'code': 'INFO-020', 'severity': 'INFO', 'theme': 'optionen-guete', 'description': 'The option-quality lint examined 0 open questions although a questions-json block was present — the run reports that it compared nothing instead of reporting a green zero (A11)' }
 ]
+
+
+// THE QUESTION-FORMAT FAMILY — the codes that say a submitted body's question block does not PARSE
+// cleanly. It is a THEME list, not a number range, and that is the whole point (Memo 080, PRD-F4).
+//
+// The reject-gate of POST /api/transcripts (MemoView.#computeQuestionReject) used to select these
+// codes with /^MEMO-(02\d?[a-d]?|03\d|04\d|05\d)\b/. A numeric range silently ADOPTS every code later
+// added inside it: the moment MEMO-034..039 entered the catalogue, `03\d` matched them too and a
+// transcript could be rejected on option-QUALITY grounds — a door the option-quality work never
+// meant to touch. Narrowing the range to `03[0-3]` would have closed that one case and left the same
+// trap armed for the next code in any of the four blocks.
+//
+// So the selection reads the catalogue instead. A code belongs to the family when ITS OWN entry
+// carries one of these themes; a code with a new theme (`optionen-guete`) is not in the family and
+// cannot creep in by number. The set is exactly what the gate's contract names: the question fields
+// (MEMO-020a-d), the question parse (MEMO-025), the option parse (MEMO-030..033), the type badge
+// (MEMO-040) and the JSON block (MEMO-050) — the PRD-004 clean-parse truth.
+//
+// A code that is NOT in the catalogue is not in the family: the catalogue is the ONE catalogue, so an
+// unknown code is a defect of the emitter, and treating it as a reject reason would let an unnamed
+// code block a write.
+const QUESTION_FORMAT_THEMES = [ 'frage', 'frage-parse', 'optionen', 'typ', 'json-block' ]
 
 
 // Memo 080, Kap 16 / WI-218 (T106): a revision file is not one shape but three. `full`
@@ -155,7 +211,11 @@ const AI_ON_BEHALF_START_THRESHOLD = 0.95
 
 
 class MemoValidator {
-    static validate( { doc, fileName } ) {
+    // `anchorTerms` (Memo 080, PRD-F4 / A12) is an OPTIONAL payload key and the module stays pure: the
+    // validator reads no file, the caller hands the parsed register in (repos/core/cli/lib/lint.mjs does
+    // the IO). Its absence is NOT a silent default — it is reported as `optionQuality.registerAvailable:
+    // false`, and WARN-032 then counts as not checked rather than as clean.
+    static validate( { doc, fileName, anchorTerms } ) {
         // Memo 080, Kap 16 / WI-218: derive the revision type ONCE, then hand it to every check
         // family. Derived before the empty-document guard so even a refusal reports which schema
         // it would have applied.
@@ -165,7 +225,17 @@ class MemoValidator {
         // every existing full revision red on the day the check is introduced, before anybody has
         // measured anything. The channel is what makes "enter as WARNING, sharpen later" a real state
         // rather than a promise.
-        const struct = { 'status': false, 'messages': [], 'info': [], 'warnings': [], 'checked': { 'sections': 0, 'headerFields': 0, 'comparedSections': 0, 'comparedHeaderFields': 0 }, revisionType }
+        // Memo 080, PRD-F4: `optionQuality` is the comparison basis of the option-quality family and it
+        // rides in EVERY result, including the refusal below. It is a key of its own rather than a member
+        // of `checked` on purpose — `checked` is the section/header basis and several suites pin its exact
+        // shape; a basis that is bolted onto a foreign one is the drift the whole family exists against.
+        //   ran                 did the family run at all (off for `prepare`, off without a json block)
+        //   checked             how many OPEN questions in the NEW shape were examined
+        //   skippedAnswered     how many answered records were passed over untouched (A10's substitution)
+        //   skippedLegacy       how many OPEN questions carried none of the quality fields and could
+        //                       therefore not be decided — a named skip, never a green zero
+        //   registerAvailable   was an anchor register handed in — WARN-032 counts as checked only then
+        const struct = { 'status': false, 'messages': [], 'info': [], 'warnings': [], 'checked': { 'sections': 0, 'headerFields': 0, 'comparedSections': 0, 'comparedHeaderFields': 0 }, 'optionQuality': { 'ran': false, 'checked': 0, 'skippedAnswered': 0, 'skippedLegacy': 0, 'registerAvailable': false }, revisionType }
 
         if( typeof doc !== 'string' || doc.length === 0 ) {
             const { message } = MemoValidator.#buildMessage( {
@@ -188,6 +258,7 @@ class MemoValidator {
         const json = MemoValidator.#validateJsonBlock( { doc, jsonFound, jsonError, revisionType } )
         const questions = MemoValidator.#validateQuestions( { doc, questionSchema, jsonFound, revisionType } )
         const optionKinds = MemoValidator.#validateOptionKinds( { doc, jsonFound, revisionType } )
+        const optionQuality = MemoValidator.#validateOptionQuality( { doc, jsonFound, revisionType, anchorTerms } )
         const lintExt = MemoValidator.#validateLintExtensions( { doc, fileName, revisionType } )
         const documentOrder = MemoValidator.#validateDocumentOrder( { doc, revisionType } )
         const documentHeader = MemoValidator.#validateDocumentHeader( { doc, revisionType } )
@@ -198,6 +269,7 @@ class MemoValidator {
             .concat( json[ 'messages' ] )
             .concat( questions[ 'messages' ] )
             .concat( optionKinds[ 'messages' ] )
+            .concat( optionQuality[ 'messages' ] )
             .concat( lintExt[ 'messages' ] )
 
         const info = []
@@ -206,11 +278,15 @@ class MemoValidator {
             .concat( json[ 'info' ] )
             .concat( questions[ 'info' ] )
             .concat( optionKinds[ 'info' ] )
+            .concat( optionQuality[ 'info' ] )
             .concat( lintExt[ 'info' ] )
 
         struct[ 'messages' ] = messages
         struct[ 'info' ] = info
-        struct[ 'warnings' ] = documentOrder[ 'warnings' ].concat( documentHeader[ 'warnings' ] )
+        struct[ 'warnings' ] = documentOrder[ 'warnings' ]
+            .concat( documentHeader[ 'warnings' ] )
+            .concat( optionQuality[ 'warnings' ] )
+        struct[ 'optionQuality' ] = optionQuality[ 'basis' ]
         struct[ 'status' ] = messages.length === 0
         // Memo 080, PRD-R1: a verdict without its comparison basis is not readable. `checked` states HOW
         // MUCH was compared — how many mandatory sections and how many mandatory header fields the run
@@ -238,6 +314,20 @@ class MemoValidator {
         const severity = prefix === 'INFO' ? 'INFO' : ( prefix === 'WARN' ? 'WARNING' : 'ERROR' )
 
         return { severity }
+    }
+
+
+    // isQuestionFormatCode — does this code belong to the QUESTION-FORMAT family (see
+    // QUESTION_FORMAT_THEMES)? Public because the reject-gate of POST /api/transcripts lives in
+    // MemoView and its test drives the SAME predicate: a hand-kept regex copy in either place is how
+    // the two came to disagree in the first place. `code` may be a bare code or the first token of a
+    // message; anything else answers false rather than throwing.
+    static isQuestionFormatCode( { code } ) {
+        const token = typeof code === 'string' ? code.trim().split( ' ' )[ 0 ] : ''
+        const entry = ERROR_CODE_CATALOG.find( ( item ) => item[ 'code' ] === token )
+        if( entry === undefined ) { return { 'questionFormat': false } }
+
+        return { 'questionFormat': QUESTION_FORMAT_THEMES.includes( entry[ 'theme' ] ) }
     }
 
 
@@ -1109,11 +1199,71 @@ class MemoValidator {
                         MemoValidator.#route( {
                             'code': 'MEMO-033',
                             'feldPfad': `${ id }.options.${ keyLabel }.kind`,
-                            'description': `Option kind "${ option[ 'kind' ] }" is not one of {option, custom, topic, reframe} — the renderer drops it`,
+                            'description': `Option kind "${ option[ 'kind' ] }" is not one of {option, custom, topic, reframe, reoption} — the renderer drops it`,
                             'messages': struct[ 'messages' ],
                             'info': struct[ 'info' ]
                         } )
                     } )
+            } )
+
+        return struct
+    }
+
+
+    // MEMO-034..039 / WARN-030..033 / INFO-020 (Memo 080, PRD-F4, Kap 18): the OPTION-QUALITY family.
+    // Hung in right next to #validateOptionKinds because both read the SAME raw source for the same
+    // reason — the normaliser knows neither the authored `kind` nor the quality fields, so a check run
+    // against the normalised list would measure fields that were already thrown away.
+    //
+    // The rules themselves live in OptionQualityLint; this method is the bridge only: it parses, calls,
+    // and routes each finding into the channel its severity belongs to. No rule is copied here.
+    static #validateOptionQuality( { doc, jsonFound, revisionType, anchorTerms } ) {
+        const struct = { 'messages': [], 'info': [], 'warnings': [], 'basis': { 'ran': false, 'checked': 0, 'skippedAnswered': 0, 'skippedLegacy': 0, 'registerAvailable': false } }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+
+        // Off for `prepare` for the same reason as every other question family: a planning artefact's
+        // question list is an informal note, not the binding question surface.
+        if( schema[ 'questionFamilies' ] !== true ) { return struct }
+
+        if( jsonFound !== true ) { return struct }
+
+        const blockPattern = /```questions-json\s*\n([\s\S]*?)\n```/
+        const matched = doc.match( blockPattern )
+        if( matched === null ) { return struct }
+
+        let parsed
+        try {
+            parsed = JSON.parse( matched[ 1 ] )
+        } catch {
+            // A malformed block is already MEMO-050's subject — do not double-report.
+            return struct
+        }
+
+        const list = Array.isArray( parsed )
+            ? parsed
+            : ( parsed !== null && typeof parsed === 'object' && Array.isArray( parsed[ 'questions' ] ) ? parsed[ 'questions' ] : [] )
+
+        const result = OptionQualityLint.check( { questions: list, anchorTerms } )
+        if( result[ 'status' ] !== true ) { return struct }
+
+        struct[ 'basis' ] = {
+            'ran': true,
+            'checked': result[ 'checked' ],
+            'skippedAnswered': result[ 'skippedAnswered' ],
+            'skippedLegacy': result[ 'skippedLegacy' ],
+            'registerAvailable': result[ 'registerAvailable' ]
+        }
+
+        result[ 'findings' ]
+            .forEach( ( finding ) => {
+                MemoValidator.#route( {
+                    'code': finding[ 'code' ],
+                    'feldPfad': `${ finding[ 'questionId' ] }.${ finding[ 'field' ] }`,
+                    'description': finding[ 'description' ],
+                    'messages': struct[ 'messages' ],
+                    'info': struct[ 'info' ],
+                    'warnings': struct[ 'warnings' ]
+                } )
             } )
 
         return struct

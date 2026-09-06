@@ -79,8 +79,13 @@ describe( 'MemoValidator.validate — result shape & status (PRD-036)', () => {
         // rests on. PRD-V13 widened it by ONE more: `revisionType`, WHICH schema was applied. The
         // Vollausbau widens it by ONE more: `warnings`, the NON-BLOCKING channel — a WARNING routed into
         // `messages` would set status:false, which is the whole reason it has a channel of its own.
-        // The assertion stays EXACT (a seventh key would still fail) — it is not loosened.
-        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'revisionType', 'status', 'warnings' ] )
+        // PRD-F4 widens it by ONE more: `optionQuality`, the comparison basis of the option-quality
+        // family — did it run, how many OPEN questions it examined, how many answered records it passed
+        // over, and whether an anchor register was available. It is a key of its OWN rather than a member
+        // of `checked` on purpose: `checked` is the section/header basis, and a basis bolted onto a
+        // foreign one is exactly the drift the family exists against.
+        // The assertion stays EXACT (an eighth key would still fail) — it is not loosened.
+        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'warnings' ] )
         expect( Array.isArray( result[ 'messages' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'info' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'warnings' ] ) ).toBe( true )

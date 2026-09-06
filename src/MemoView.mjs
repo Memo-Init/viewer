@@ -4955,6 +4955,15 @@ class MemoView {
         // which mirror the PRD-004 clean-parse truth. A body without questions produces no such
         // code (keine Fragen -> keine Frage-Fehler) and passes — that keeps the "nur Antworten"
         // exception path intact. Defensive: a validator crash NEVER blocks (reject:false).
+        //
+        // THE FAMILY IS SELECTED FROM THE CATALOGUE, NOT BY NUMBER RANGE (Memo 080, PRD-F4). This
+        // filter used to be /^MEMO-(02\d?[a-d]?|03\d|04\d|05\d)\b/, and a number range adopts whatever
+        // is later added inside it: when MEMO-034..039 (option QUALITY) entered the catalogue, `03\d`
+        // began matching them, so a body carrying a questions-json block with a single quality field
+        // was rejected on a ground this door was never given — measured, not suspected.
+        // MemoValidator.isQuestionFormatCode reads each code's own catalogue THEME instead, so a code
+        // in a new theme cannot creep in by number, and gate and test share ONE spelling of the rule
+        // rather than a hand-kept regex copy on each side.
         try {
             const validation = MemoValidator.validate( { doc: content } )
 
@@ -4963,7 +4972,7 @@ class MemoView {
             }
 
             const questionMessages = ( Array.isArray( validation[ 'messages' ] ) ? validation[ 'messages' ] : [] )
-                .filter( ( message ) => /^MEMO-(02\d?[a-d]?|03\d|04\d|05\d)\b/.test( String( message ) ) )
+                .filter( ( message ) => MemoValidator.isQuestionFormatCode( { code: String( message ) } ).questionFormat === true )
 
             return { 'reject': questionMessages.length > 0, 'messages': questionMessages }
         } catch {

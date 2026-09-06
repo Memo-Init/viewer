@@ -79,7 +79,12 @@ describe( 'MemoValidator document level — the catalogue (A14, A17)', () => {
 
         // 22 since Memo 080 / PRD-R4 added WARN-011 (standalone-continuity) — additive, a WARNING,
         // and it changes nothing about the two codes this case is actually about.
-        expect( catalog.length ).toBe( 22 )
+        // 33 since Memo 080 / PRD-F4 added the eleven option-quality codes (MEMO-034..039,
+        // WARN-030..033, INFO-020). PRD-F4 had ASSIGNED its four warnings to WARN-020..023; measured
+        // against this catalogue that range was already taken by the two codes below, so the family
+        // moved to the next free block. This case is what makes that collision impossible to
+        // re-introduce silently: the two numbers keep their meaning and their theme.
+        expect( catalog.length ).toBe( 33 )
         expect( added.length ).toBe( 2 )
         expect( added.map( ( entry ) => [ entry[ 'code' ], entry[ 'severity' ], entry[ 'theme' ] ] ) ).toEqual( [
             [ 'WARN-020', 'WARNING', 'dokument-ebene' ],

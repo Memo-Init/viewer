@@ -149,6 +149,10 @@ Diese Revision entsteht aus der Datenbank.
 
 Ein Traeger fehlt erst dann auf, wenn er gerendert werden soll.
 
+| LL | Lesson | Phase | PRD | Herkunft | Entstanden |
+| --- | --- | --- | --- | --- | --- |
+| LL-001 | Eine Kennung, die aufloest, ist noch keine richtige — Work-Item-Kennungen sind memo-lokal. | P1 | PRD-16 | M076/WI-109 · M079/REV-01:42 | 2026-08-20T11:00:00.000Z |
+
 ## Work Items
 
 | ID | Topic | Title | Status | Group |

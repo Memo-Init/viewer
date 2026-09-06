@@ -318,25 +318,35 @@ describe( 'MemoValidator revision types — the update schema (A4)', () => {
 describe( 'MemoValidator revision types — no new error code (A8)', () => {
     // PRD-V13 introduced NO code of its own and asserted the catalogue at 19. Memo 080 / PRD-R1
     // Vollausbau adds exactly TWO — WARN-020 and WARN-021 — and PRD-R4 adds exactly ONE more,
-    // WARN-011 (standalone-continuity), so the case reads 22 with all three named. That is the ONE
-    // test figure these PRDs change, and they change it by naming the additions, never by relaxing
-    // the assertion to a length or a subset check. Every pre-existing code keeps its number, its
+    // WARN-011 (standalone-continuity). PRD-F4 adds the ELEVEN option-quality codes (MEMO-034..039,
+    // WARN-030..033, INFO-020), so the case reads 33 with all fourteen named. That is the ONE test
+    // figure these PRDs change, and they change it by naming the additions, never by relaxing the
+    // assertion to a length or a subset check. Every pre-existing code keeps its number, its
     // severity and its theme; the second case below proves the severity half of that claim.
-    const ADDED_SINCE_PRD_V13 = [ 'WARN-011', 'WARN-020', 'WARN-021' ]
+    //
+    // The PRD-F4 warnings sit at WARN-030..033 and not at the WARN-020..023 the PRD assigned: that
+    // range was MEASURED against this list and found taken by the two document-level codes.
+    const ADDED_SINCE_PRD_V13 = [
+        'WARN-011', 'WARN-020', 'WARN-021',
+        'MEMO-034', 'MEMO-035', 'MEMO-036', 'MEMO-037', 'MEMO-038', 'MEMO-039',
+        'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'INFO-020'
+    ]
 
-    it( 'getCatalog() carries exactly 22 codes — the 19 of PRD-V13 plus the three new WARNINGs', () => {
+    it( 'getCatalog() carries exactly 33 codes — the 19 of PRD-V13 plus the fourteen later additions', () => {
         const { catalog } = MemoValidator.getCatalog()
         const codes = catalog.map( ( entry ) => entry[ 'code' ] ).sort()
 
         expect( codes ).toEqual( [
-            'INFO-010', 'MEMO-001', 'MEMO-002', 'MEMO-010', 'MEMO-020a', 'MEMO-020b', 'MEMO-020c',
-            'MEMO-020d', 'MEMO-025', 'MEMO-030', 'MEMO-031', 'MEMO-032', 'MEMO-033', 'MEMO-040',
-            'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010', 'WARN-011', 'WARN-020', 'WARN-021'
+            'INFO-010', 'INFO-020', 'MEMO-001', 'MEMO-002', 'MEMO-010', 'MEMO-020a', 'MEMO-020b',
+            'MEMO-020c', 'MEMO-020d', 'MEMO-025', 'MEMO-030', 'MEMO-031', 'MEMO-032', 'MEMO-033',
+            'MEMO-034', 'MEMO-035', 'MEMO-036', 'MEMO-037', 'MEMO-038', 'MEMO-039', 'MEMO-040',
+            'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010', 'WARN-011', 'WARN-020',
+            'WARN-021', 'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033'
         ] )
     } )
 
 
-    it( 'no pre-existing severity changed — the three additions are WARNINGs and nothing else moved', () => {
+    it( 'no pre-existing severity changed — the later additions never moved an existing code', () => {
         const { catalog } = MemoValidator.getCatalog()
         const severities = catalog
             .filter( ( entry ) => ADDED_SINCE_PRD_V13.includes( entry[ 'code' ] ) !== true )
@@ -351,8 +361,14 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
             [ 'MEMO-033', 'ERROR' ], [ 'MEMO-040', 'ERROR' ], [ 'MEMO-050', 'ERROR' ], [ 'MEMO-060', 'ERROR' ],
             [ 'MEMO-070', 'ERROR' ], [ 'MEMO-080', 'ERROR' ], [ 'WARN-010', 'WARNING' ]
         ] )
+        // The fourteen additions, in catalogue order: three WARNINGs (PRD-R1/R4), then the six
+        // option-quality ERRORs, four WARNINGs and one INFO of PRD-F4.
         expect( catalog.filter( ( entry ) => ADDED_SINCE_PRD_V13.includes( entry[ 'code' ] ) ).map( ( entry ) => entry[ 'severity' ] ) )
-            .toEqual( [ 'WARNING', 'WARNING', 'WARNING' ] )
+            .toEqual( [
+                'WARNING', 'WARNING', 'WARNING',
+                'ERROR', 'ERROR', 'ERROR', 'ERROR', 'ERROR', 'ERROR',
+                'WARNING', 'WARNING', 'WARNING', 'WARNING', 'INFO'
+            ] )
     } )
 } )
 

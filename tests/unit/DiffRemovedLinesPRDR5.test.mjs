@@ -481,12 +481,19 @@ describe( 'PRD-R5 source shape and untouched neighbourhood (A11, A12, A13, A14)'
     } )
 
 
-    it( 'the four call sites are untouched — the verdict travels in the existing result object (A13)', () => {
+    // Memo 081, PRD-37 (WI-105): the point of this case — no call site computes `removed`/`comparison`
+    // itself, the addition sits at ONE place — is unchanged and asserted below unchanged. Only the number
+    // of call sites moved:
+    //   before: 4 call sites, 4x `diffResult['previousContent'] = previousRaw`  -> expected 4 / 4
+    //   after:  1 call site (#buildDiff), 1x `diffResult['previousBlockTexts']` -> expected 1 / 1
+    // The diff is built only on request now, so the four duplicated blocks became one; the raw previous
+    // revision stopped travelling, so counting by it would count nothing and report green.
+    it( 'the single call site is untouched — the verdict travels in the existing result object (A13)', () => {
         const callSites = ( memoViewSource.match( /const \{ diffResult \} = MemoView\.#computeDiff\( \{ currentContent: currentRaw, previousContent: previousRaw \} \)/g ) || [] ).length
-        const previousContentSites = ( memoViewSource.match( /diffResult\['previousContent'\] = previousRaw/g ) || [] ).length
+        const previousSideSites = ( memoViewSource.match( /diffResult\['previousBlockTexts'\] = blockTexts/g ) || [] ).length
 
-        expect( callSites ).toBe( 4 )
-        expect( previousContentSites ).toBe( 4 )
+        expect( callSites ).toBe( 1 )
+        expect( previousSideSites ).toBe( 1 )
         // No call site sets comparison/removed itself — the addition sits at ONE place.
         expect( memoViewSource ).not.toMatch( /diffResult\['removed'\] =/ )
         expect( memoViewSource ).not.toMatch( /diffResult\['comparison'\] =/ )

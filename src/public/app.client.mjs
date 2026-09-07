@@ -332,7 +332,21 @@
         let currentWs = null
         const history = []
         let currentDiff = null
-        let showDiff = true
+        // Memo 081, WI-105: showDiff used to start at true and be RESET on every incoming content
+        // message (showDiff = hasDiff), so the reader's decision survived exactly until the next click
+        // and the view was open by default on every single one. That is why "the diff is sent even
+        // though nobody looks at it" was not the everyday case — and why a requestDiff message alone
+        // would have saved nothing: the client would have asked back immediately. The preference is the
+        // reader's now and persists across revisions; diffAvailable only decides whether the toggle is
+        // OFFERED, never whether it is ON.
+        let showDiff = false
+        // The announcement of the current revision (server: diffAvailable/diffInfo) and the pair the
+        // diff on screen belongs to. currentDiffKey is what makes a LATE answer discardable: a reply
+        // naming a revision the reader has already left is dropped instead of painted.
+        let diffAvailable = false
+        let diffInfo = null
+        let currentDiffKey = null
+        let requestedDiffKey = null
         let lastContent = ''
         let lastQuestionSchema = []
         let lastVorwort = ''
@@ -5736,11 +5750,31 @@
         // PRD-008: the diff-toggle now lives in the content-sticky-header and is re-created on
         // each updateSidebarSticky render. bindDiffToggle wires the (current) #diff-toggle node
         // to the diff logic and restores its show/hide + active state from currentDiff/showDiff.
+        // Memo 081, WI-105: the diff is fetched, not received. This asks for the diff of the revision on
+        // screen and asks AT MOST ONCE per revision — a second toggle-on of the same revision uses what
+        // is already here. The key is the documentId/fileName pair the server echoes back, so an answer
+        // that arrives after the reader moved on can be recognised as stale and dropped.
+        function requestDiffIfNeeded() {
+            if( diffAvailable !== true ) { return false }
+            if( !currentDocumentId || !currentFileName ) { return false }
+
+            var key = currentDocumentId + '::' + currentFileName
+            if( currentDiffKey === key && currentDiff ) { return false }
+            if( requestedDiffKey === key ) { return false }
+            if( !currentWs || currentWs.readyState !== 1 ) { return false }
+
+            requestedDiffKey = key
+            currentWs.send( JSON.stringify( { type: 'requestDiff', documentId: currentDocumentId, fileName: currentFileName } ) )
+
+            return true
+        }
+
         function bindDiffToggle() {
             var diffToggleEl = document.getElementById( 'diff-toggle' )
             if( !diffToggleEl ) { return }
 
-            if( currentDiff && currentDiff.hasDiff ) {
+            // The toggle is OFFERED on the announcement, not on a payload that is no longer here.
+            if( diffAvailable === true ) {
                 diffToggleEl.style.display = ''
                 diffToggleEl.classList.toggle( 'active', showDiff )
             } else {
@@ -5754,6 +5788,8 @@
             diffToggleEl.addEventListener( 'click', function() {
                 showDiff = !showDiff
                 diffToggleEl.classList.toggle( 'active', showDiff )
+
+                if( showDiff ) { requestDiffIfNeeded() }
 
                 if( showDiff && currentDiff ) {
                     renderDiffView( lastContent, currentDiff )
@@ -10044,20 +10080,17 @@
                 return set
             }
 
+            // Memo 081, WI-105: the previous side no longer arrives as raw markdown to be parsed a
+            // second time in the browser. The server ships previousBlockTexts — the SAME set this code
+            // used to build here, formed by the SAME rule (MemoView.collectBlockTexts). With it go the
+            // throwaway container, the second marked.parse and the slugCounts rescue that only existed
+            // because of them. A null value means "not built", which is a different statement from
+            // "built and empty": on null every block stays UNMARKED rather than every block being
+            // marked new, because a missing comparison basis must not look like a comparison that found
+            // everything changed.
             var previousTextSet = new Set()
-            if( diff.previousContent ) {
-                // PRD-015 (D8): the previous-content render runs through the SAME renderer.heading,
-                // which mutates the shared slugCounts map. Rendering it after the live render would
-                // leave slugCounts in a polluted state for any later reuse. Snapshot the live counts,
-                // run the throwaway previous render on a fresh count space, then restore — so the
-                // previous render owns its OWN slugCounts and never pollutes the live anchors.
-                var liveSlugCounts = new Map( slugCounts )
-                slugCounts.clear()
-                var prevContainer = document.createElement( 'div' )
-                prevContainer.innerHTML = marked.parse( diff.previousContent )
-                previousTextSet = collectBlockTexts( prevContainer )
-                slugCounts.clear()
-                liveSlugCounts.forEach( function( v, k ) { slugCounts.set( k, v ) } )
+            if( Array.isArray( diff.previousBlockTexts ) ) {
+                diff.previousBlockTexts.forEach( function( text ) { previousTextSet.add( text ) } )
             }
 
             // PRD-018: changedSections is the server-side, reliable chapter granularity.
@@ -10424,13 +10457,16 @@
                     // `|| {}` fallback on purpose — a missing/failed validation must stay null so
                     // the band can state the gap instead of showing an empty, reassuring strip.
                     lastValidation = data.validation === undefined ? null : data.validation
-                    currentDiff = data.diff || null
-
-                    if( currentDiff && currentDiff.hasDiff ) {
-                        showDiff = true
-                    } else {
-                        showDiff = false
-                    }
+                    // Memo 081, WI-105: a content message no longer carries the diff — it carries the
+                    // ANNOUNCEMENT. The payload of the PREVIOUS revision is dropped here (it belongs to
+                    // a revision that is no longer on screen), and showDiff is NOT touched: the reader's
+                    // choice survives the click that used to overwrite it. What the message decides is
+                    // only whether the toggle is offered.
+                    currentDiff = null
+                    currentDiffKey = null
+                    requestedDiffKey = null
+                    diffAvailable = data.diffAvailable === true
+                    diffInfo = data.diffInfo || null
                     // The diff-toggle now lives in the sticky header and is (re)bound there
                     // via updateSidebarSticky -> bindDiffToggle (called later in this handler).
 
@@ -10510,6 +10546,51 @@
                         // assigned in THIS branch, and currentRevisionId() reads it, so a load started
                         // before this point would ask for the PREVIOUS revision's state.
                         refreshQuestionState()
+                        // Memo 081, WI-105: a reader who left the diff view ON gets it back without a
+                        // second click — the request goes out as soon as the pair is known. A reader who
+                        // left it off sends nothing at all, which is the whole point of the change.
+                        if( showDiff ) { requestDiffIfNeeded() }
+                    }
+                }
+
+                // Memo 081, WI-105: the answer to requestDiff. The echoed pair is checked against the
+                // revision on screen BEFORE anything is rendered — a late answer for a revision the
+                // reader has already left is dropped, never painted over the current one. `diff: null`
+                // with a named reason is an answer too: the view says why it is empty instead of waiting
+                // silently for something that will not come.
+                if( data.type === 'diff' ) {
+                    if( !data.documentId || data.documentId === currentDocumentId ) {
+                        // The line above is the ONE document guard this client uses for every
+                        // document-scoped message (RuntimeStatusFeedPRDV3 measures that there is no second
+                        // spelling — a private one here was written first and the class detector found it).
+                        // A diff needs a SECOND half the other messages do not: it belongs to a REVISION,
+                        // not only to a document, so an answer for the right document but the revision the
+                        // reader has already left is dropped as well.
+                        if( data.fileName !== currentFileName ) { return }
+
+                        var answeredKey = data.documentId + '::' + data.fileName
+                        currentDiff = data.diff || null
+                        currentDiffKey = answeredKey
+                        requestedDiffKey = null
+
+                        if( currentDiff === null ) {
+                            // Named, not silent: the toggle goes inactive and says WHY on hover, instead
+                            // of leaving the reader before an empty view waiting for an answer that came.
+                            var reasonText = 'Kein Diff verfügbar' + ( data.reason ? ' — ' + data.reason : '' )
+                            var toggleEl = document.getElementById( 'diff-toggle' )
+                            showDiff = false
+                            if( toggleEl ) {
+                                toggleEl.classList.remove( 'active' )
+                                toggleEl.title = reasonText
+                            }
+                            console.warn( reasonText )
+
+                            return
+                        }
+
+                        if( showDiff && shouldRerenderOnBroadcast( currentContentView ) && currentMode !== 'specs' ) {
+                            renderProseContent( true )
+                        }
                     }
                 }
             }

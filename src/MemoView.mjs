@@ -5105,33 +5105,19 @@ ${ VendorAssets.scriptTags().tags }
                         MemoView.#readFileContent( { absolutePath: revPath } )
                             .then( async ( { content } ) => {
                                 const revFileName = basename( revPath )
-                                const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath: revPath } )
-                                let diff = null
-
-                                if( previousPath && currentFullPath ) {
-                                    try {
-                                        const previousRaw = await readFile( previousPath, 'utf-8' )
-                                        const currentRaw = await readFile( currentFullPath, 'utf-8' )
-                                        const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
-                                        diffResult['previousFile'] = basename( previousPath )
-                                        diffResult['currentFullFile'] = basename( currentFullPath )
-                                        diffResult['previousContent'] = previousRaw
-                                        diffResult['skippedUpdates'] = skippedUpdates
-                                        // Memo 080, PRD-R4: additive, exactly like previousContent above.
-                                        diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
-                                        diff = diffResult
-                                    } catch {
-                                        // skip
-                                    }
-                                }
-
-                                const { memoName } = MemoView.#resolveMemoName( { absolutePath: revPath } )
+                                // Memo 081, WI-105: the diff no longer rides on every content message. What rides
+                                // along is the ANNOUNCEMENT, so the client can render its toggle honestly without
+                                // holding the payload; the body arrives on `requestDiff`. Measured before this
+                                // change: the diff was 1 258 354 B, 69.5 % of the content message and 47.2 % of
+                                // the 2 665 636 B a single click moved.
+                                const { diffAvailable, diffInfo } = await MemoView.#announceDiff( { absolutePath: revPath } )
+                                const { memoName } = MemoView.resolveMemoName( { documentId: autoTarget[ 'documentId' ] } )
 
                                 if( ws.readyState === 1 ) {
                                     const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
                                     const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': revFileName } )
-                                    ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'diff': diff, questionSchema, vorwort, validation } ) )
+                                    ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'documentId': autoTarget[ 'documentId' ], 'diffAvailable': diffAvailable, 'diffInfo': diffInfo, questionSchema, vorwort, validation } ) )
                                 }
                             } )
                     }
@@ -5151,32 +5137,13 @@ ${ VendorAssets.scriptTags().tags }
                                     state.absolutePath = revPath
                                     const { content } = await MemoView.#readFileContent( { absolutePath: revPath } )
                                     const revFileName = basename( revPath )
-                                    const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath: revPath } )
-                                    let diff = null
-
-                                    if( previousPath && currentFullPath ) {
-                                        try {
-                                            const previousRaw = await readFile( previousPath, 'utf-8' )
-                                            const currentRaw = await readFile( currentFullPath, 'utf-8' )
-                                            const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
-                                            diffResult['previousFile'] = basename( previousPath )
-                                            diffResult['currentFullFile'] = basename( currentFullPath )
-                                            diffResult['previousContent'] = previousRaw
-                                            diffResult['skippedUpdates'] = skippedUpdates
-                                            // Memo 080, PRD-R4: additive, exactly like previousContent above.
-                                            diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
-                                            diff = diffResult
-                                        } catch {
-                                            // skip
-                                        }
-                                    }
-
-                                    const { memoName } = MemoView.#resolveMemoName( { absolutePath: revPath } )
+                                    const { diffAvailable, diffInfo } = await MemoView.#announceDiff( { absolutePath: revPath } )
+                                    const { memoName } = MemoView.resolveMemoName( { documentId: msg.documentId } )
                                     const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
                                     const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': revFileName } )
 
-                                    ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'documentId': msg.documentId, 'diff': diff, questionSchema, vorwort, validation } ) )
+                                    ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'documentId': msg.documentId, 'diffAvailable': diffAvailable, 'diffInfo': diffInfo, questionSchema, vorwort, validation } ) )
 
                                     const { tree, latest } = MemoView.buildDocumentListPayload()
                                     clients.forEach( ( c ) => {
@@ -5185,6 +5152,26 @@ ${ VendorAssets.scriptTags().tags }
                                         }
                                     } )
                                 }
+                            }
+                        }
+
+                        // Memo 081, WI-105: the diff has its own message now. The client asks with
+                        // { documentId, fileName } — the SAME pair a click carries — and the server answers
+                        // this ONE socket, never a broadcast: a diff is a property of what THIS reader is
+                        // looking at. The handler does NOT call selectRevision: asking for a diff is not
+                        // choosing a revision, and making it one would move process-wide selection state on a
+                        // read (DocumentRegistry.mjs:549 clears every other document's selection). The answer
+                        // ECHOES documentId and fileName so a late reply on a revision the reader has already
+                        // left can be discarded instead of painting a foreign diff — without those two fields
+                        // this branch would recreate the very class N1 belongs to.
+                        if( msg.type === 'requestDiff' && MemoView.#registry ) {
+                            const { absolutePath, reason } = MemoView.resolveRevisionPath( { documentId: msg.documentId, fileName: msg.fileName } )
+                            const answer = absolutePath === null
+                                ? { diff: null, reason }
+                                : await MemoView.#buildDiff( { absolutePath } )
+
+                            if( ws.readyState === 1 ) {
+                                ws.send( JSON.stringify( { 'type': 'diff', 'documentId': msg.documentId, 'fileName': msg.fileName, 'diff': answer[ 'diff' ], 'reason': answer[ 'reason' ] } ) )
                             }
                         }
 
@@ -5212,31 +5199,12 @@ ${ VendorAssets.scriptTags().tags }
                 MemoView.#readFileContent( { absolutePath: state.absolutePath } )
                     .then( async ( { content } ) => {
                         const fileName = basename( state.absolutePath )
-                        const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath: state.absolutePath } )
-                        let diff = null
-
-                        if( previousPath && currentFullPath ) {
-                            try {
-                                const previousRaw = await readFile( previousPath, 'utf-8' )
-                                const currentRaw = await readFile( currentFullPath, 'utf-8' )
-                                const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
-                                diffResult['previousFile'] = basename( previousPath )
-                                diffResult['currentFullFile'] = basename( currentFullPath )
-                                diffResult['previousContent'] = previousRaw
-                                diffResult['skippedUpdates'] = skippedUpdates
-                                // Memo 080, PRD-R4: additive, exactly like previousContent above.
-                                diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
-                                diff = diffResult
-                            } catch {
-                                // skip
-                            }
-                        }
-
-                        const { memoName } = MemoView.#resolveMemoName( { absolutePath: state.absolutePath } )
+                        const { diffAvailable, diffInfo } = await MemoView.#announceDiff( { absolutePath: state.absolutePath } )
+                        const { memoName, documentId } = MemoView.resolveMemoName( { absolutePath: state.absolutePath } )
                         const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                         const { vorwort } = DocumentRegistry.parseVorwort( { content } )
                         const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': fileName } )
-                        const message = JSON.stringify( { 'type': 'content', content, fileName, memoName, diff, questionSchema, vorwort, validation } )
+                        const message = JSON.stringify( { 'type': 'content', content, fileName, memoName, documentId, diffAvailable, diffInfo, questionSchema, vorwort, validation } )
 
                         if( ws.readyState === 1 ) {
                             ws.send( message )
@@ -5358,40 +5326,20 @@ ${ VendorAssets.scriptTags().tags }
 
 
     static async #broadcastContent( { clients, content, fileName, preserveScroll = false, absolutePath } ) {
-        let diff = null
-
-        if( absolutePath ) {
-            const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath } )
-
-            if( previousPath && currentFullPath ) {
-                try {
-                    const previousRaw = await readFile( previousPath, 'utf-8' )
-                    const currentRaw = await readFile( currentFullPath, 'utf-8' )
-                    const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
-                    diffResult['previousFile'] = basename( previousPath )
-                    diffResult['currentFullFile'] = basename( currentFullPath )
-                    diffResult['previousContent'] = previousRaw
-                    diffResult['skippedUpdates'] = skippedUpdates
-                    // Memo 080, PRD-R4: additive, exactly like previousContent above.
-                    diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
-                    diff = diffResult
-                } catch {
-                    // Previous file not readable, skip diff
-                }
-            }
-        }
-
-        let memoName = null
-
-        if( absolutePath ) {
-            const resolved = MemoView.#resolveMemoName( { absolutePath } )
-            memoName = resolved['memoName']
-        }
+        // Memo 081, WI-105: same announcement as the three other content-send sites. This one has no
+        // documentId of its own — a full path is all it holds — so it resolves BOTH fields from the
+        // address, which is unique in the stock (0 duplicate memoPaths over 385 documents).
+        const announced = absolutePath ? await MemoView.#announceDiff( { absolutePath } ) : { 'diffAvailable': false, 'diffInfo': null }
+        const resolved = absolutePath ? MemoView.resolveMemoName( { absolutePath } ) : { 'memoName': null, 'documentId': null }
+        const memoName = resolved[ 'memoName' ]
+        const documentId = resolved[ 'documentId' ]
+        const diffAvailable = announced[ 'diffAvailable' ]
+        const diffInfo = announced[ 'diffInfo' ]
 
         const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
         const { vorwort } = DocumentRegistry.parseVorwort( { content } )
         const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': fileName } )
-        const message = JSON.stringify( { 'type': 'content', content, fileName, preserveScroll, memoName, diff, questionSchema, vorwort, validation } )
+        const message = JSON.stringify( { 'type': 'content', content, fileName, preserveScroll, memoName, documentId, diffAvailable, diffInfo, questionSchema, vorwort, validation } )
 
         clients.forEach( ( ws ) => {
             if( ws.readyState === 1 ) {
@@ -5886,15 +5834,277 @@ ${ VendorAssets.scriptTags().tags }
     }
 
 
-    static #resolveMemoName( { absolutePath } ) {
-        if( !MemoView.#registry ) { return { memoName: null } }
+    // Memo 081, N1 (Phasen-Abnahme C1-3 § 6): this used to take a full path, throw it away with
+    // basename(), and then search ALL documents for the first whose selectedRevision carried the same
+    // BARE file name. Measured against the real stock: 2377 of 2387 revisions (99.6 %) sit under a file
+    // name that is NOT unique — REV-01.md alone appears in 367 documents. With one socket the search
+    // happened to land right (0 of 26 wrong); with six concurrent sockets 21 of 26 answers carried a
+    // foreign or null name, while the CONTENT was correct every single time. memoName is not decoration:
+    // the client drives memo status (:638), memo entry (:659), transcript attribution (:951) and minute
+    // aggregation (:985) off it, so a wrong name hangs foreign transcripts onto a document.
+    //
+    // The fix is not "one more argument". Two of the four callers ALREADY hold the documentId and simply
+    // did not pass it, and the other two hold a full path — which IS unique, because memoPath differs
+    // per document (measured: 0 duplicate memoPaths over 385 documents). So the resolver accepts only
+    // unique keys and no longer accepts the ambiguous one at all: the wrong lookup is not forbidden
+    // here, it is unspeakable.
+    //
+    // The path branch asks WHICH DOCUMENT THIS ADDRESS BELONGS TO, not which document is currently
+    // selected — it compares the full path against every revision path the document owns. That is a
+    // property of the address, not of the moment, so it stays right while another socket selects
+    // concurrently and DocumentRegistry.selectRevision (:549) clears every other selection. Resolving
+    // against selectedRevision would have reproduced exactly the null half of N1.
+    static resolveMemoName( { documentId = null, absolutePath = null } ) {
+        if( documentId === null && absolutePath === null ) {
+            throw new Error( 'resolveMemoName: needs documentId or absolutePath — a lookup that cannot say what it searches for is not a lookup' )
+        }
+
+        if( !MemoView.#registry ) { return { 'memoName': null, 'documentId': null } }
+
+        if( documentId !== null ) {
+            const detail = MemoView.#registry.getDocument( { documentId } )
+
+            if( detail[ 'status' ] !== true ) { return { 'memoName': null, 'documentId': null } }
+
+            return { 'memoName': detail[ 'document' ][ 'memoName' ], 'documentId': documentId }
+        }
 
         const { documents } = MemoView.#registry.getDocuments()
-        const fileName = basename( absolutePath )
-        const match = documents.find( ( d ) => d['selectedRevision'] === fileName )
-        const memoName = match ? match['memoName'] : null
+        const target = resolve( absolutePath )
+        const match = documents
+            .find( ( doc ) => {
+                return ( doc[ 'revisions' ] || [] )
+                    .some( ( revision ) => resolve( doc[ 'memoPath' ], revision[ 'fileName' ] ) === target )
+            } )
 
-        return { memoName }
+        if( match === undefined ) { return { 'memoName': null, 'documentId': null } }
+
+        return { 'memoName': match[ 'memoName' ], 'documentId': match[ 'documentId' ] }
+    }
+
+
+    // Memo 081, WI-105: the address of ONE revision, built from the pair a click already carries. It is
+    // deliberately NOT selectRevision + getSelectedRevisionPath: reading a diff must not move the
+    // process-wide selection marker. A pair that does not belong together is REFUSED with a named
+    // reason instead of being answered with whatever was selected last — that silent substitution is
+    // the defect PRD-35 closed for the content and this branch must not reopen for the diff.
+    static resolveRevisionPath( { documentId = null, fileName = null } ) {
+        const struct = { 'absolutePath': null, 'reason': null }
+
+        if( documentId === null || fileName === null ) {
+            struct[ 'reason' ] = 'documentId and fileName are both required'
+
+            return struct
+        }
+
+        if( !MemoView.#registry ) {
+            struct[ 'reason' ] = 'no registry'
+
+            return struct
+        }
+
+        const detail = MemoView.#registry.getDocument( { documentId } )
+
+        if( detail[ 'status' ] !== true ) {
+            struct[ 'reason' ] = `unknown document: ${ documentId }`
+
+            return struct
+        }
+
+        const known = ( detail[ 'document' ][ 'revisions' ] || [] )
+            .some( ( revision ) => revision[ 'fileName' ] === fileName )
+
+        if( known !== true ) {
+            struct[ 'reason' ] = `revision ${ fileName } does not belong to ${ documentId }`
+
+            return struct
+        }
+
+        struct[ 'absolutePath' ] = resolve( detail[ 'document' ][ 'memoPath' ], fileName )
+
+        return struct
+    }
+
+
+    // Memo 081, WI-105: the announcement that replaces the payload on the content path. It answers
+    // WHETHER there is a diff to fetch and names the two files it would compare, so the toggle can be
+    // offered honestly without the 1 228,9 KB body. No diff is computed here — the comparison itself
+    // now happens only when a reader asks for it.
+    static async #announceDiff( { absolutePath } ) {
+        const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath } )
+
+        if( !previousPath || !currentFullPath ) { return { 'diffAvailable': false, 'diffInfo': null } }
+
+        const diffInfo = {
+            'previousFile': basename( previousPath ),
+            'currentFullFile': basename( currentFullPath ),
+            'skippedUpdates': skippedUpdates
+        }
+
+        return { 'diffAvailable': true, 'diffInfo': diffInfo }
+    }
+
+
+    // Memo 081, WI-105 (REV-16:2643): the full previous revision used to ride along RAW, on top of the
+    // diff that already carries the comparison — measured 543 247 B, 20.4 % of every single click. The
+    // client never DISPLAYED it: it parsed it a second time through marked into a throwaway container
+    // (app.client.mjs:10046-10060) purely to collect the block texts of the previous side, so a block of
+    // the current side is only marked green when its text is absent there. That set is what the client
+    // needs; the 530 KB were the way it used to get it. The server already holds previousRaw here, so it
+    // ships the SET and the raw text stops travelling. `previousContent` is REMOVED, not renamed — a
+    // field that no longer carries the previous content must not keep its name.
+    //
+    // `previousBlockTexts` is null when the set could not be built and an array when it could. "Not
+    // built" and "built and empty" are two statements, and the client marks nothing on null rather than
+    // marking everything new — a missing comparison basis must not look like a comparison that found
+    // everything changed.
+    static async #buildDiff( { absolutePath } ) {
+        const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath } )
+
+        if( !previousPath || !currentFullPath ) { return { 'diff': null, 'reason': 'no previous full revision' } }
+
+        try {
+            const previousRaw = await readFile( previousPath, 'utf-8' )
+            const currentRaw = await readFile( currentFullPath, 'utf-8' )
+            const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
+            const { blockTexts } = await MemoView.collectBlockTexts( { 'markdown': previousRaw } )
+            diffResult['previousFile'] = basename( previousPath )
+            diffResult['currentFullFile'] = basename( currentFullPath )
+            diffResult['previousBlockTexts'] = blockTexts
+            diffResult['skippedUpdates'] = skippedUpdates
+            // Memo 080, PRD-R4: additive, exactly like previousBlockTexts above.
+            diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
+
+            return { 'diff': diffResult, 'reason': null }
+        } catch( error ) {
+            return { 'diff': null, 'reason': `previous revision not readable: ${ error[ 'message' ] }` }
+        }
+    }
+
+
+    // Memo 081, WI-105: the SAME rule collectBlockTexts follows in the browser (app.client.mjs:10033),
+    // moved to where the comparison already runs — once on the server instead of once in every browser.
+    // The client renders the previous side with marked and collects the trimmed text of every
+    // `p, li, h1..h6, blockquote > p, td, th` block that is not inside `pre`, not inside `.diff-banner`
+    // and longer than two characters. `blockquote > p` is a subset of `p`, so the plain tag list covers
+    // it. Diagram and block-meta fences reach the browser as EMPTY containers and reach this side as
+    // `pre` blocks — neither contributes text, which is why the two sides agree without this code
+    // knowing the diagram registry.
+    //
+    // marked is imported dynamically: it is a runtime dependency of the client bundle, this is the only
+    // server-side use, and a top-level import would put the cost on every boot that never renders a diff.
+    static async collectBlockTexts( { markdown } ) {
+        if( typeof markdown !== 'string' ) { return { 'blockTexts': null } }
+
+        try {
+            const { marked } = await import( 'marked' )
+            const html = await marked.parse( markdown, { 'gfm': true, 'breaks': false } )
+            const { blockTexts } = MemoView.extractBlockTexts( { html } )
+
+            return { blockTexts }
+        } catch {
+            return { 'blockTexts': null }
+        }
+    }
+
+
+    // The HTML half of the rule above, split out so it is testable without a markdown fixture. It walks
+    // the tag stream and accumulates text into EVERY open element, which is what `textContent` does —
+    // a nested list item carries the text of its children, exactly as the browser reports it.
+    static extractBlockTexts( { html } ) {
+        const blockTags = [ 'p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'td', 'th' ]
+        const voidTags = [ 'br', 'img', 'hr', 'input', 'meta', 'link', 'source', 'col', 'area', 'base', 'embed', 'param', 'track', 'wbr' ]
+        const seed = { 'stack': [], 'texts': [] }
+
+        const state = String( html )
+            .split( /(<[^>]*>)/ )
+            .reduce( ( acc, segment ) => {
+                if( segment.length === 0 ) { return acc }
+
+                if( segment.startsWith( '<' ) !== true ) {
+                    const decoded = MemoView.#decodeHtmlEntities( { 'text': segment } )
+                    acc[ 'stack' ].forEach( ( frame ) => { frame[ 'text' ] = frame[ 'text' ] + decoded } )
+
+                    return acc
+                }
+
+                if( segment.startsWith( '<!' ) === true || segment.startsWith( '<?' ) === true ) { return acc }
+
+                const closing = segment.startsWith( '</' ) === true
+                const nameMatch = segment.match( /^<\/?\s*([a-zA-Z][a-zA-Z0-9-]*)/ )
+
+                if( nameMatch === null ) { return acc }
+
+                const tag = nameMatch[ 1 ].toLowerCase()
+
+                if( closing === true ) {
+                    const openIndex = acc[ 'stack' ].map( ( frame ) => frame[ 'tag' ] ).lastIndexOf( tag )
+
+                    if( openIndex === -1 ) { return acc }
+
+                    acc[ 'stack' ]
+                        .splice( openIndex )
+                        .reverse()
+                        .forEach( ( frame ) => {
+                            if( blockTags.includes( frame[ 'tag' ] ) !== true ) { return }
+                            if( frame[ 'skipped' ] === true ) { return }
+
+                            const text = frame[ 'text' ].trim()
+
+                            if( text.length <= 2 ) { return }
+
+                            acc[ 'texts' ].push( text )
+                        } )
+
+                    return acc
+                }
+
+                if( voidTags.includes( tag ) === true || segment.endsWith( '/>' ) === true ) { return acc }
+
+                const parent = acc[ 'stack' ][ acc[ 'stack' ].length - 1 ]
+                const inheritedSkip = parent === undefined ? false : parent[ 'skipped' ]
+                const classMatch = segment.match( /class\s*=\s*["']([^"']*)["']/ )
+                const isBanner = classMatch === null ? false : classMatch[ 1 ].split( /\s+/ ).includes( 'diff-banner' )
+                acc[ 'stack' ].push( { tag, 'text': '', 'skipped': inheritedSkip === true || tag === 'pre' || isBanner === true } )
+
+                return acc
+            }, seed )
+
+        return { 'blockTexts': [ ...new Set( state[ 'texts' ] ) ] }
+    }
+
+
+    // `textContent` in a browser returns DECODED text, so the server side has to decode too — otherwise
+    // every block carrying an entity would differ from the browser's set and be flagged as new. Numeric
+    // references are decoded generically; the named list covers what the real stock uses.
+    static #decodeHtmlEntities( { text } ) {
+        const named = {
+            'amp': '&', 'lt': '<', 'gt': '>', 'quot': '"', 'apos': "'", 'nbsp': ' ',
+            'ndash': '–', 'mdash': '—', 'hellip': '…', 'laquo': '«', 'raquo': '»',
+            'ldquo': '“', 'rdquo': '”', 'lsquo': '‘', 'rsquo': '’', 'bdquo': '„',
+            'sbquo': '‚', 'lsaquo': '‹', 'rsaquo': '›', 'auml': 'ä', 'ouml': 'ö',
+            'uuml': 'ü', 'Auml': 'Ä', 'Ouml': 'Ö', 'Uuml': 'Ü', 'szlig': 'ß',
+            'copy': '©', 'reg': '®', 'trade': '™', 'deg': '°', 'times': '×',
+            'middot': '·', 'bull': '•', 'dagger': '†', 'euro': '€', 'pound': '£',
+            'sect': '§', 'para': '¶', 'plusmn': '±', 'frac12': '½', 'frac14': '¼',
+            'larr': '←', 'rarr': '→', 'harr': '↔', 'uarr': '↑', 'darr': '↓',
+            'rArr': '⇒', 'lArr': '⇐', 'hArr': '⇔', 'infin': '∞', 'ne': '≠',
+            'le': '≤', 'ge': '≥', 'minus': '−', 'divide': '÷', 'micro': 'µ',
+            'permil': '‰', 'prime': '′', 'Prime': '″', 'shy': '­', 'ensp': ' ',
+            'emsp': ' ', 'thinsp': ' ', 'zwnj': '‌', 'zwj': '‍'
+        }
+
+        return String( text )
+            .replace( /&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g, ( whole, body ) => {
+                if( body.startsWith( '#x' ) === true || body.startsWith( '#X' ) === true ) {
+                    return String.fromCodePoint( parseInt( body.slice( 2 ), 16 ) )
+                }
+                if( body.startsWith( '#' ) === true ) {
+                    return String.fromCodePoint( parseInt( body.slice( 1 ), 10 ) )
+                }
+
+                return named[ body ] === undefined ? whole : named[ body ]
+            } )
     }
 
 

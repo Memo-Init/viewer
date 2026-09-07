@@ -37,14 +37,22 @@ describe( 'PRD-R4 continuity wiring in MemoView (A8)', () => {
     } )
 
 
-    it( 'EVERY diff-building site attaches continuity — as many as attach previousContent', async () => {
+    // Memo 081, PRD-37 (WI-105): the INVARIANT of this case is unchanged — every diff-building site
+    // attaches continuity. What changed is the number of sites and the field they are counted by.
+    //   before: 4 sites, counted by `diffResult['previousContent'] = previousRaw`  -> expected 4 / 4
+    //   after:  1 site  (#buildDiff), counted by `diffResult['previousBlockTexts']` -> expected 1 / 1
+    // The four duplicated blocks were folded into ONE because the diff is now built only when a reader
+    // asks for it; `previousContent` no longer travels at all, so counting by it would count nothing and
+    // report green (a vacuum measurement). The equality between the two counts is what carries the case
+    // and it is asserted unchanged.
+    it( 'EVERY diff-building site attaches continuity — as many as build a diff', async () => {
         const src = await readFile( memoViewPath, 'utf-8' )
-        const previousContentSites = ( src.match( /diffResult\['previousContent'\] = previousRaw/g ) || [] ).length
+        const diffBuildingSites = ( src.match( /diffResult\['previousBlockTexts'\] = blockTexts/g ) || [] ).length
         const continuitySites = ( src.match( /diffResult\['continuity'\] = MemoView\.#computeContinuity\(/g ) || [] ).length
 
-        // The comparison basis of THIS check: four diff sites in the file today.
-        expect( previousContentSites ).toBe( 4 )
-        expect( continuitySites ).toBe( previousContentSites )
+        // The comparison basis of THIS check: one diff-building site in the file today.
+        expect( diffBuildingSites ).toBe( 1 )
+        expect( continuitySites ).toBe( diffBuildingSites )
     } )
 
 
@@ -52,7 +60,9 @@ describe( 'PRD-R4 continuity wiring in MemoView (A8)', () => {
         const src = await readFile( memoViewPath, 'utf-8' )
         const calls = src.match( /MemoView\.#computeContinuity\( \{ currentContent: currentRaw, previousContent: previousRaw \} \)/g ) || []
 
-        expect( calls.length ).toBe( 4 )
+        // Memo 081, PRD-37: 4 -> 1, same reason as above. The assertion that the pair is the SAME pair
+        // the diff is computed from is untouched; only the number of places it is made in changed.
+        expect( calls.length ).toBe( 1 )
     } )
 
 

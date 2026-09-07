@@ -183,15 +183,30 @@ describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () =>
     } )
 
 
-    it( 'D8: the previous-content render isolates slugCounts (snapshot/restore around it)', () => {
-        const start = clientSource.indexOf( 'if( diff.previousContent )' )
-        expect( start ).toBeGreaterThan( -1 )
-        const slice = clientSource.slice( start, start + 1200 )
+    // Memo 081, PRD-37 (WI-105): D8 protected the LIVE ANCHORS against a second render — the throwaway
+    // marked.parse of the previous side mutated the shared slugCounts map, so the snapshot/restore dance
+    // existed to undo it. That render is gone: the server now ships the block-text set the client used to
+    // derive from it, so there is no second render left to isolate against.
+    //   before: `if( diff.previousContent )` exists, and within 1200 chars: liveSlugCounts snapshot,
+    //           slugCounts.clear(), liveSlugCounts.forEach restore
+    //   after:  the cause is REMOVED — `diff.previousContent` does not occur, no second marked.parse of a
+    //           previous side exists, and exactly ONE slugCounts.clear() precedes the ONE live render
+    // The protected property is the same one, asserted at its cause instead of at its repair.
+    it( 'D8: no second render competes for slugCounts — the previous-side render is gone', () => {
+        expect( clientSource ).not.toContain( 'diff.previousContent' )
+        expect( clientSource ).not.toContain( 'var liveSlugCounts = new Map( slugCounts )' )
 
-        // snapshot the live map, clear, render previous, then restore -> live anchors untouched.
-        expect( slice ).toContain( 'var liveSlugCounts = new Map( slugCounts )' )
-        expect( slice ).toContain( 'slugCounts.clear()' )
-        expect( slice ).toContain( 'liveSlugCounts.forEach(' )
+        const start = clientSource.indexOf( 'var previousTextSet = new Set()' )
+        expect( start ).toBeGreaterThan( -1 )
+        const slice = clientSource.slice( start, start + 400 )
+
+        // The set arrives ready-made; nothing inside this block renders markdown.
+        expect( slice ).toContain( 'Array.isArray( diff.previousBlockTexts )' )
+        expect( slice ).not.toContain( 'marked.parse' )
+
+        // and the ONE live render still clears the map before it runs, as before.
+        const renderStart = clientSource.indexOf( 'slugCounts.clear()\n            var html = marked.parse( content )' )
+        expect( renderStart ).toBeGreaterThan( -1 )
     } )
 
 

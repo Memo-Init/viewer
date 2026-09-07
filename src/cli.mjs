@@ -199,7 +199,11 @@ const run = async () => {
             const result = await registry.addDocument( { projectId, 'memoPath': absolutePath } )
 
             if( result['status'] ) {
-                process.stdout.write( `  Document added: ${result['documentId']} (${result['revisionsFound']} revisions)\n` )
+                // Memo 081, WI-067: the line that HOLDS the documentId now also hands out its address.
+                // The port is `serverPort` — the port this process is actually listening on — never the
+                // constant 3333: an acceptance fixture measures on another port, and a hard-wired 3333
+                // would be a lie in exactly the environment that measures it.
+                process.stdout.write( `  Document added: ${result['documentId']} (${result['revisionsFound']} revisions)\n  http://localhost:${serverPort}/doc/${encodeURIComponent( result['documentId'] )}\n` )
             } else {
                 process.stderr.write( `  Warning: ${result['messages'].join( '; ' )}\n` )
             }
@@ -209,7 +213,10 @@ const run = async () => {
             const result = await registry.addDocument( { projectId, 'memoPath': dir } )
 
             if( result['status'] ) {
-                process.stdout.write( `  Document added: ${result['documentId']} (${result['revisionsFound']} revisions)\n` )
+                // Memo 081, WI-067: same line, same reasoning as the directory branch above. Both are
+                // changed together on purpose — leaving one of two identical lines behind would close
+                // the case and leave the class open.
+                process.stdout.write( `  Document added: ${result['documentId']} (${result['revisionsFound']} revisions)\n  http://localhost:${serverPort}/doc/${encodeURIComponent( result['documentId'] )}\n` )
             } else {
                 process.stderr.write( `  Warning: ${result['messages'].join( '; ' )}\n` )
             }

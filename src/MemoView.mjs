@@ -2793,7 +2793,17 @@ ${ VendorAssets.scriptTags().tags }
                     'revisionsFound': result['revisionsFound']
                 } )
 
-                process.stdout.write( `  Document added: ${result['documentId']} (${result['revisionsFound']} revisions)\n` )
+                // Memo 081, WI-067: the POST path prints the address next to the id it already holds.
+                // The port is read from the recorded BOOT facts (the same single source /api/health
+                // answers with), never the constant 3333 — a process listening elsewhere would
+                // otherwise print an address its own server does not serve. A boot without a recorded
+                // port says so instead of inventing one; that is a named gap, not a silent default.
+                // The JSON answer above is deliberately UNCHANGED: it carries documentId already, and a
+                // fourth field would be an API change nobody asked for.
+                const { payload: bootFacts } = MemoView.healthPayload( {} )
+                const linkLine = bootFacts['port'] === null ? '  (no address — this process recorded no boot port)' : `  http://localhost:${bootFacts['port']}/doc/${encodeURIComponent( result['documentId'] )}`
+
+                process.stdout.write( `  Document added: ${result['documentId']} (${result['revisionsFound']} revisions)\n${linkLine}\n` )
 
                 return
             }

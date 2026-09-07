@@ -2250,7 +2250,10 @@ class MemoView {
                         <span class="pp-tcount" id="pp-tcount" data-pp-tcount></span>
                     </div>
                     <div class="pp-section pp-questions" data-pp-questions>
-                        <span class="pp-section-label" id="pp-questions-label" data-pp-questions-label>2 · FRAGEN BEANTWORTEN (0 / 0)</span>
+                        <!-- Memo 081 (WI-064, S4): the label used to ship "(0 / 0)" in the delivered HTML,
+                             before anything had been counted. renderPromptQuestions overwrites it the moment
+                             the popup opens, but until then a placeholder must not look like a measurement. -->
+                        <span class="pp-section-label" id="pp-questions-label" data-pp-questions-label>2 · FRAGEN BEANTWORTEN (…)</span>
                         <div id="pp-questions-list" class="pp-questions-list"></div>
                     </div>
                     <!-- PRD-P3-08 (Memo 075 Phase 3, WI-026/027): on-demand quality-check selection.
@@ -2996,7 +2999,11 @@ ${ VendorAssets.scriptTags().tags }
                     'documentKind': doc['documentKind'] || 'memo',
                     'status': doc['status'],
                     'memoStatus': doc['memoStatus'] || 'Entwurf',
-                    'questions': doc['questions'] || { 'open': 0, 'answered': 0, 'deferred': 0 },
+                    // Memo 081 (WI-064, Ä4): the third copy of the fallback shape. It carried `deferred`
+                    // where the two in DocumentRegistry did not, so the same absent datum answered in two
+                    // different shapes depending on which route asked. One builder now, and it declares
+                    // itself as uncounted instead of passing for a memo with zero questions.
+                    'questions': doc['questions'] || DocumentRegistry.undeclaredQuestionCounts(),
                     'selectedRevision': doc['selectedRevision'],
                     'revisionCount': revisions.length,
                     'revisions': revisions
@@ -6284,7 +6291,14 @@ ${ VendorAssets.scriptTags().tags }
     // "Kein Wegklicken" (Kap 9.2): there is NO opt-out flag in this model — a present transcript
     // is ALWAYS part of the prompt. transcriptInPrompt mirrors hasTranscript exactly; it can never
     // be toggled off from Zone 2. Mirrored by the inline browser-script builder.
-    static promptStatusLine( { words, spokenMinutes, questionsAnswered, questionsTotal, transcriptUrl } ) {
+    // Memo 081 (WI-064): `basis` is the caller's statement about its own input — "I had a set to count".
+    // This method is where the literal string "0 von 0 beantwortet" is built, and that string was the
+    // reported symptom: it stood over fifteen rendered question cards and read exactly like a memo with
+    // no questions. An explicit `basis: false` now yields "nicht gezählt" instead of a zero, so the two
+    // states are distinguishable in the one place that formats them. It is a statement about the input,
+    // not a display option: `undefined` means the caller said nothing and the numeric form is kept, which
+    // is what every caller that predates the declaration gets.
+    static promptStatusLine( { words, spokenMinutes, questionsAnswered, questionsTotal, transcriptUrl, basis } ) {
         const hasTranscript = typeof transcriptUrl === 'string' && transcriptUrl.length > 0
 
         const wordCount = ( typeof words === 'number' && words > 0 ) ? words : 0
@@ -6318,8 +6332,9 @@ ${ VendorAssets.scriptTags().tags }
             answered,
             'total': total,
             open,
-            'answeredLabel': answered + ' von ' + total + ' beantwortet',
-            'openLabel': open + ' offen'
+            'counted': basis !== false,
+            'answeredLabel': basis === false ? 'nicht gezählt' : answered + ' von ' + total + ' beantwortet',
+            'openLabel': basis === false ? 'nicht gezählt' : open + ' offen'
         }
     }
 

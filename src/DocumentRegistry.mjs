@@ -40,6 +40,11 @@ const QUESTION_STATUS = [ 'open', 'answered', 'irrelevant', 'replaced' ]
 
 const DEFERRED_QUESTION_STATUS = [ 'irrelevant', 'replaced' ]
 
+// Memo 081 (WI-064/WI-069): the CLOSED vocabulary of `comparison.source`. A question count either came
+// from the memo database, from a parsed revision file, or from nothing at all. There is no fourth value
+// and there is no default — a caller that cannot name where it counted has not counted anything.
+const QUESTION_COUNT_SOURCES = [ 'db', 'file', 'none' ]
+
 
 class DocumentRegistry {
     #documents = new Map()
@@ -114,7 +119,10 @@ class DocumentRegistry {
             revisions,
             'status': 'open',
             'memoStatus': MEMO_STATUS_DEFAULT,
-            'questions': { 'open': 0, 'answered': 0 },
+            // Memo 081 (WI-064): a freshly registered document has not been counted yet, and says so.
+            // #refreshParsedFields overwrites this a few lines below; until it does, the field must not
+            // read like a memo with zero questions.
+            'questions': DocumentRegistry.undeclaredQuestionCounts(),
             'selectedRevision': null
         }
 
@@ -216,7 +224,7 @@ class DocumentRegistry {
                     // Memo 079 M4 (T013): the RAW DB lifecycle state (null for legacy memos) so the client can
                     // un-collapse the four rollout-progression states past the coarse 'Finalisiert' badge.
                     'lifecycleState': doc['lifecycleState'] || null,
-                    'questions': doc['questions'] || { 'open': 0, 'answered': 0 },
+                    'questions': doc['questions'] || DocumentRegistry.undeclaredQuestionCounts(),
                     // PRD-22 #4 (Memo 079): surface the answer-record completion flag so the queue join
                     // (MemoView.enrichDocumentsList -> #markAnsweredRevisions) can drop a fully-answered
                     // revision from the queue.
@@ -303,7 +311,7 @@ class DocumentRegistry {
                     // Memo 079 M4 (T013): the RAW DB lifecycle state (null for legacy memos) drives the
                     // queue card's distinct rollout/pausiert/gelandet/gemerged sub-label past 'Finalisiert'.
                     'lifecycleState': doc['lifecycleState'] || null,
-                    'questions': doc['questions'] || { 'open': 0, 'answered': 0 },
+                    'questions': doc['questions'] || DocumentRegistry.undeclaredQuestionCounts(),
                     // PRD-22 #4 (Memo 079): surface the answer-record completion flag so the queue join
                     // (MemoView.enrichRevisionStatus -> #markAnsweredRevisions) can drop a fully-answered
                     // revision from the queue (widget OR terminal answers, same single-writer record).
@@ -746,8 +754,79 @@ class DocumentRegistry {
     // record — the caller (queue join) uses it so a terminal-answered revision leaves the queue instead
     // of staying 'offen' forever (forensics b5). Keeps parseQuestions' json+markdown counting intact:
     // that is the file-parse path for the 383 legacy memos, untouched here.
+    // questionCounts — the ONE place a question count object is built. Memo 081 (WI-064/WI-069): the
+    // Zone-2 header, the queue card, the sidebar row, the revision chip and the prompt-popup label all
+    // read this single field, so one bare number here becomes five bare numbers on screen. Every count
+    // therefore carries the set it was held against: `counted` is the size of that set, `source` names
+    // WHERE it was counted, `countedIn` names the file, and `basis` says whether a set was read at all.
+    // A zero with basis:false is NOT the same statement as a zero with basis:true, and the display layer
+    // must be able to tell them apart — "0 von 0" was indistinguishable from "nothing was read" while
+    // fifteen question cards stood underneath it (REV-16:1955: a check with `compared == 0` is red).
+    //
+    // `basis` answers "was there a set to count?", NOT "was the result non-zero". A revision that was
+    // read and holds no question is a MEASURED zero (basis true, counted 0); a revision that was never
+    // read is not. The PRD phrases this as `counted > 0`, which would mark every memo whose newest
+    // revision carries an empty question set as unmeasured — 173 of 385, measured — and would contradict
+    // its own acceptance A2 (basis false implies source 'none'). The source is the honest discriminator.
+    //
+    // Public on purpose: MemoView builds the same object for its own document payload, and a private
+    // twin over there is exactly the drift this method exists to end. Every argument is required; an
+    // omitted or unknown `source` throws instead of defaulting, because a silent default here is the
+    // defect itself in miniature.
+    static questionCounts( { open, answered, deferred, source, countedIn, counted, note } ) {
+        const numbers = [ [ 'open', open ], [ 'answered', answered ], [ 'deferred', deferred ], [ 'counted', counted ] ]
+            .filter( ( [ , value ] ) => typeof value !== 'number' || Number.isFinite( value ) !== true || value < 0 )
+            .map( ( [ key ] ) => key )
+
+        if( numbers.length > 0 ) {
+            throw new Error( `DocumentRegistry.questionCounts: must be a number >= 0: ${ numbers.join( ', ' ) }` )
+        }
+
+        if( QUESTION_COUNT_SOURCES.includes( source ) !== true ) {
+            throw new Error( `DocumentRegistry.questionCounts: source must be one of ${ QUESTION_COUNT_SOURCES.join( ' | ' ) }, got: ${ JSON.stringify( source ) }` )
+        }
+
+        if( countedIn !== null && typeof countedIn !== 'string' ) {
+            throw new Error( 'DocumentRegistry.questionCounts: countedIn must be a string or null' )
+        }
+
+        if( note !== null && typeof note !== 'string' ) {
+            throw new Error( 'DocumentRegistry.questionCounts: note must be a string or null' )
+        }
+
+        return {
+            open,
+            answered,
+            deferred,
+            'basis': source !== 'none',
+            'comparison': { source, countedIn, counted, note }
+        }
+    }
+
+
+    // The undeclared count — the shape three payload builders reached for when a document carried no
+    // `questions` field yet. Memo 081 (WI-064, S5): those three fallbacks were `{ open: 0, answered: 0 }`
+    // twice and `{ open: 0, answered: 0, deferred: 0 }` once, so the API answered with two different
+    // ideas of "no information" and neither said it was a fallback. One function, one shape, and it
+    // reports itself as uncounted rather than as a memo with zero questions.
+    static undeclaredQuestionCounts() {
+        return DocumentRegistry.questionCounts( {
+            'open': 0,
+            'answered': 0,
+            'deferred': 0,
+            'source': 'none',
+            'countedIn': null,
+            'counted': 0,
+            'note': 'Noch nicht gezählt — das Dokument trägt keine Fragen-Zählung'
+        } )
+    }
+
+
     static #deriveDbQuestionCounts( { memoPath } ) {
-        const struct = { 'isDb': false, 'questions': { 'open': 0, 'answered': 0, 'deferred': 0 }, 'allAnswered': false }
+        // Memo 081 (WI-064, Ä2): `total` and the db file name travel with the counts now. Both existed
+        // already — `readQuestionAnswerState` returns `total` and `resolveDbPath` the path — and both
+        // were dropped on the floor here, which is why the display had a number and no denominator.
+        const struct = { 'isDb': false, 'questions': { 'open': 0, 'answered': 0, 'deferred': 0 }, 'allAnswered': false, 'total': 0, 'countedIn': null }
 
         if( typeof memoPath !== 'string' || memoPath.length === 0 ) {
             return struct
@@ -765,15 +844,17 @@ class DocumentRegistry {
             struct[ 'isDb' ] = true
 
             const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir } )
-            const { open, answered, deferred, allAnswered } = DoltDbAssembler.readQuestionAnswerState( { dbPath } )
+            const { open, answered, deferred, total, allAnswered } = DoltDbAssembler.readQuestionAnswerState( { dbPath } )
             struct[ 'questions' ] = { 'open': open, 'answered': answered, 'deferred': deferred }
             struct[ 'allAnswered' ] = allAnswered
+            struct[ 'total' ] = total
+            struct[ 'countedIn' ] = basename( dbPath )
 
             return struct
         } catch( error ) {
             console.warn( `DocumentRegistry.#deriveDbQuestionCounts: db question read failed for "${ memoDir }" — file parse fallback (${ error.message })` )
 
-            return { 'isDb': false, 'questions': { 'open': 0, 'answered': 0, 'deferred': 0 }, 'allAnswered': false }
+            return { 'isDb': false, 'questions': { 'open': 0, 'answered': 0, 'deferred': 0 }, 'allAnswered': false, 'total': 0, 'countedIn': null }
         }
     }
 
@@ -2011,7 +2092,7 @@ class DocumentRegistry {
 
 
     async #refreshParsedFields( { documentId } ) {
-        const struct = { 'status': false, 'memoStatus': MEMO_STATUS_DEFAULT, 'questions': { 'open': 0, 'answered': 0 } }
+        const struct = { 'status': false, 'memoStatus': MEMO_STATUS_DEFAULT, 'questions': DocumentRegistry.undeclaredQuestionCounts() }
 
         if( !this.#documents.has( documentId ) ) {
             return struct
@@ -2054,21 +2135,58 @@ class DocumentRegistry {
         // PRD-22 #4 (Memo 079): the DB path also folds in the answer records; allAnswered marks a memo
         // whose open questions are ALL covered by a record (widget or terminal). It is stored on the doc
         // so the queue join (MemoView.#markAnsweredRevisions) can drop the revision from the queue.
-        const { isDb: isDbQuestions, questions: dbQuestions, allAnswered: dbAllAnswered } = DocumentRegistry.#deriveDbQuestionCounts( { memoPath: doc[ 'memoPath' ] } )
+        const { isDb: isDbQuestions, questions: dbQuestions, allAnswered: dbAllAnswered, total: dbTotal, countedIn: dbCountedIn } = DocumentRegistry.#deriveDbQuestionCounts( { memoPath: doc[ 'memoPath' ] } )
 
-        let questions = { 'open': 0, 'answered': 0, 'deferred': 0 }
+        // Memo 081 (WI-064/WI-069, Ä2): each of the three branches states which set it counted. The old
+        // start value was the silent branch — a memo with neither a database nor a full revision kept a
+        // bare `{ open: 0, ... }`, and nothing downstream could tell that zero apart from a revision that
+        // was read and holds no question. The `catch` below is the same class: it swallowed the read
+        // error and answered with the same zero as a healthy empty memo.
+        let questions = DocumentRegistry.questionCounts( {
+            'open': 0,
+            'answered': 0,
+            'deferred': 0,
+            'source': 'none',
+            'countedIn': null,
+            'counted': 0,
+            'note': 'Weder eine Memo-Datenbank noch eine Full-Revision gefunden — nichts gezählt'
+        } )
 
         if( isDbQuestions === true ) {
-            questions = dbQuestions
+            questions = DocumentRegistry.questionCounts( {
+                'open': dbQuestions[ 'open' ],
+                'answered': dbQuestions[ 'answered' ],
+                'deferred': dbQuestions[ 'deferred' ],
+                'source': 'db',
+                'countedIn': dbCountedIn,
+                'counted': dbTotal,
+                'note': null
+            } )
         } else if( fullRevision !== undefined ) {
             const fullPath = fullRevision[ 'absolutePath' ] || resolve( doc[ 'memoPath' ], fullRevision[ 'fileName' ] )
 
             try {
                 const content = await readFile( fullPath, 'utf-8' )
                 const parsed = DocumentRegistry.parseQuestions( { content } )
-                questions = { 'open': parsed[ 'openCount' ], 'answered': parsed[ 'answeredCount' ], 'deferred': parsed[ 'deferredCount' ] }
-            } catch {
-                questions = { 'open': 0, 'answered': 0, 'deferred': 0 }
+                questions = DocumentRegistry.questionCounts( {
+                    'open': parsed[ 'openCount' ],
+                    'answered': parsed[ 'answeredCount' ],
+                    'deferred': parsed[ 'deferredCount' ],
+                    'source': 'file',
+                    'countedIn': fullRevision[ 'fileName' ],
+                    'counted': parsed[ 'openCount' ] + parsed[ 'answeredCount' ] + parsed[ 'deferredCount' ],
+                    'note': null
+                } )
+            } catch( error ) {
+                questions = DocumentRegistry.questionCounts( {
+                    'open': 0,
+                    'answered': 0,
+                    'deferred': 0,
+                    'source': 'none',
+                    'countedIn': null,
+                    'counted': 0,
+                    'note': `Revision „${ fullRevision[ 'fileName' ] }" nicht lesbar: ${ error.message }`
+                } )
             }
         }
 

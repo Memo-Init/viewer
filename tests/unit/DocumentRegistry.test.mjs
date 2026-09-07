@@ -782,7 +782,7 @@ describe( 'DocumentRegistry', () => {
             const { document } = registry.getDocument( { documentId: addResult['documentId'] } )
 
             expect( document['memoStatus'] ).toBe( 'Finalisiert' )
-            expect( document['questions'] ).toEqual( { open: 2, answered: 1, deferred: 0 } )
+            expect( document['questions'] ).toMatchObject( { open: 2, answered: 1, deferred: 0 } )
         } )
 
 
@@ -796,12 +796,12 @@ describe( 'DocumentRegistry', () => {
             const { documents } = registry.getDocuments()
 
             expect( documents[0]['memoStatus'] ).toBe( 'Finalisiert' )
-            expect( documents[0]['questions'] ).toEqual( { open: 1, answered: 0, deferred: 0 } )
+            expect( documents[0]['questions'] ).toMatchObject( { open: 1, answered: 0, deferred: 0 } )
 
             const { tree } = registry.getDocumentTree()
 
             expect( tree['proj']['memos'][0]['memoStatus'] ).toBe( 'Finalisiert' )
-            expect( tree['proj']['memos'][0]['questions'] ).toEqual( { open: 1, answered: 0, deferred: 0 } )
+            expect( tree['proj']['memos'][0]['questions'] ).toMatchObject( { open: 1, answered: 0, deferred: 0 } )
         } )
 
 

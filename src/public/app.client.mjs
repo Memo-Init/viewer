@@ -504,9 +504,59 @@
         // used to leave "offen" and appear nowhere — a silent difference between the parsed stock and the
         // shown one. It now changes column instead of vanishing, and the label states it whenever it is
         // non-zero (a constant "· 0 zurueckgestellt" on every memo would be noise, not information).
+        // Memo 081 (WI-064/WI-069): the fallback below used to manufacture a zero that was
+        // indistinguishable from a measured one, and four display sites rendered it as "0". It now carries
+        // the server's declaration through — `basis` and `comparison` (source, countedIn, counted, note).
+        // A payload without a declaration is treated as UNDECLARED, not as good: an old server, a document
+        // that was never counted and a memo with zero questions are three different statements, and the
+        // display can finally tell them apart.
         function normalizeQuestions( questions ) {
             var q = questions || { open: 0, answered: 0, deferred: 0 }
-            return { open: q.open || 0, answered: q.answered || 0, deferred: q.deferred || 0 }
+            var declared = q.comparison && typeof q.basis === 'boolean'
+            var comparison = declared
+                ? { source: q.comparison.source, countedIn: q.comparison.countedIn, counted: q.comparison.counted, note: q.comparison.note }
+                : { source: 'none', countedIn: null, counted: 0, note: 'Ohne Deklaration geliefert — die Zahl nennt ihre Menge nicht' }
+            return {
+                open: q.open || 0,
+                answered: q.answered || 0,
+                deferred: q.deferred || 0,
+                basis: declared ? q.basis : false,
+                comparison: comparison
+            }
+        }
+
+        // Memo 081 (WI-064, Ä7): the ONE filter that decides which questions are open. renderQuestionWidgets
+        // owned this expression alone, so the Zone-2 header and the popup label counted a different stock
+        // than the cards they sit above. `status` (not `!answered`) is the axis PRD-F1 (Memo 080) settled on
+        // — a retired question changes column, it is not answered. Two copies of one condition are exactly
+        // where the next divergence starts, so both call sites read this one.
+        function openQuestionsOf( schema ) {
+            return ( schema || [] ).filter( function( q ) { return q && q.status === 'open' } )
+        }
+
+        // The counted stock of a rendered revision: open + answered elements of its question schema. This is
+        // the ORACLE the Zone-2 header and the popup label answer to — "how many cards does the revision I am
+        // looking at render?" — as opposed to the registry's per-memo figure. Both are legitimate; they answer
+        // different questions, and Memo 081 asks that the difference be visible rather than smoothed over.
+        // Memo 081 (WI-064/WI-069, Ä6): the set behind a per-memo figure, in plain words, for the title
+        // attribute of every element that shows that figure. This is the cheapest form of the rule the memo
+        // binds the rollout to — a number states what it was held against — and it is the difference between
+        // "no open questions" and "nobody looked". `source` and `countedIn` stay machine values underneath;
+        // only this sentence is German, because it is what the reader sees.
+        function questionCountTitle( qMeta ) {
+            if( !qMeta.basis ) {
+                return 'Nicht gezählt' + ( qMeta.comparison.note ? ( ' — ' + qMeta.comparison.note ) : '' )
+            }
+            var where = qMeta.comparison.countedIn || 'unbenannter Quelle'
+            var kind = qMeta.comparison.source === 'db' ? 'Datenbank' : 'Datei'
+            return 'Gezählt in ' + where + ' (' + kind + ') — ' + qMeta.comparison.counted + ' Fragen, davon ' + qMeta.open + ' offen'
+        }
+
+        function countQuestionsOf( schema ) {
+            var list = schema || []
+            var open = openQuestionsOf( list ).length
+            var answered = list.filter( function( q ) { return q && q.status === 'answered' } ).length
+            return { open: open, answered: answered, total: open + answered, elements: list.length }
         }
 
         function questionsLabel( questions ) {
@@ -530,16 +580,29 @@
 
         // PRD-013: look up { projectId, doc } for a memoName from the memos tree. Needed for
         // the sticky-header button to read doc.revisions (Soll-Nummern-Logik) + projectId.
-        function lookupMemoEntry( memoName ) {
+        function findMemoEntry( matches ) {
             var found = null
             Object.keys( lastTree || {} ).forEach( function( projectId ) {
                 var node = lastTree[ projectId ]
                 var memos = ( node && node.memos ) ? node.memos : ( Array.isArray( node ) ? node : [] )
                 memos.forEach( function( m ) {
-                    if( !found && m.memoName === memoName ) { found = { projectId: projectId, doc: m } }
+                    if( !found && matches( m ) ) { found = { projectId: projectId, doc: m } }
                 } )
             } )
             return found
+        }
+
+        function lookupMemoEntry( memoName ) {
+            return findMemoEntry( function( m ) { return m.memoName === memoName } )
+        }
+
+        // Memo 081 (WI-064): the same lookup keyed on documentId. renderQuestionWidgets needs the memo's
+        // registry figure, and it runs BEFORE `currentMemoName` is adopted in the content handler —
+        // `currentDocumentId` is adopted before the render pipeline, for exactly this reason. Looking the
+        // memo up by name there would have compared this revision's cards against the PREVIOUSLY viewed
+        // memo's count, which is the defect this PRD exists to remove, one level deeper.
+        function lookupMemoEntryById( documentId ) {
+            return findMemoEntry( function( m ) { return m.documentId === documentId } )
         }
 
         // PRD-013 (Memo 016 Kap 3) Soll-Nummern-Logik: next = (highest existing REV)+1,
@@ -1054,8 +1117,11 @@
                 answered: answered,
                 total: total,
                 open: open,
-                answeredLabel: answered + ' von ' + total + ' beantwortet',
-                openLabel: open + ' offen'
+                // Memo 081 (WI-064): mirrors MemoView.promptStatusLine 1:1 — an explicit basis:false
+                // renders "nicht gezählt" where the old model rendered "0 von 0 beantwortet".
+                counted: opts.basis !== false,
+                answeredLabel: opts.basis === false ? 'nicht gezählt' : answered + ' von ' + total + ' beantwortet',
+                openLabel: opts.basis === false ? 'nicht gezählt' : open + ' offen'
             }
         }
 
@@ -1250,11 +1316,17 @@
             // Transcript ist immer Teil des Prompts. Einziger Eintrittspunkt: "Prompt bearbeiten".
             var memoEntry = memoName ? lookupMemoEntry( memoName ) : null
 
-            // Fragen-Counts: gleiche Quelle wie die Sidebar (doc.questions {open, answered}),
-            // damit Zone 2 und Sidebar nie auseinanderlaufen.
+            // Fragen-Counts. Memo 081 (WI-064, S2): Zone 2 sits above a rendered revision, so it counts THAT
+            // revision's question schema — the very array renderQuestionWidgets filters. The old code read the
+            // per-memo registry figure instead, which is why the header could say "0 von 0" while fifteen
+            // cards stood below it: two sets, one number, and no way to see which one was meant. The registry
+            // figure is still read (qMeta) — not to display, but to hold the two against each other.
             var qMeta = normalizeQuestions( memoEntry ? memoEntry.doc.questions : null )
-            var psAnswered = qMeta.answered
-            var psTotal = qMeta.answered + qMeta.open
+            // No revision on screen means no set was counted — not a memo with zero questions.
+            var psView = viewedRevision ? countQuestionsOf( lastQuestionSchema ) : null
+            var psBasis = psView !== null
+            var psAnswered = psBasis ? psView.answered : 0
+            var psTotal = psBasis ? psView.total : 0
 
             // Minuten-Leitkennzahl (Kap 9.4): gemessene Sprech-Dauer aus dem Transcript-Record
             // (viewedTranscript.spokenMinutes), sonst Fallback auf die wordCount-Schaetzung.
@@ -1276,8 +1348,18 @@
                 spokenMinutes: psSpoken,
                 questionsAnswered: psAnswered,
                 questionsTotal: psTotal,
-                transcriptUrl: transcriptUrl
+                transcriptUrl: transcriptUrl,
+                basis: psBasis
             } )
+            // Memo 081 (WI-064): the set behind the number, spelled out on the element that shows it. The
+            // title is the smallest place where a figure can name what it counted, and it costs no layout.
+            // Both sets, on the element that shows one of them. The header answers "what does the revision
+            // in front of me render?", the memo overview answers "what does this memo carry?" — they may
+            // legitimately differ, and the title is where the reader can see both without a banner.
+            var psTitle = psBasis
+                ? ( 'Gezählt in ' + ( viewedRevision || 'der angezeigten Revision' ) + ' — ' + psView.elements + ' Fragen im Schema, davon ' + psView.open + ' offen'
+                    + ' · Memo-Übersicht: ' + questionCountTitle( qMeta ) )
+                : 'Nicht gezählt — es ist keine Revision geöffnet · Memo-Übersicht: ' + questionCountTitle( qMeta )
 
             var statusRow = '<div class="hdr-zone hdr-zone-2" data-zone="2"><div class="prompt-statuszeile" id="prompt-statuszeile">'
 
@@ -1325,8 +1407,10 @@
             statusRow += '<span class="ps-ico" aria-hidden="true">\u2611</span>'
             statusRow += '<span class="ps-label">Fragen</span>'
             statusRow += '<span class="ps-sep">\u00b7</span>'
-            statusRow += '<span class="ps-answered" data-zone2-answered>' + escapeAttr( ps.answeredLabel ) + '</span>'
-            statusRow += '<span class="ps-qmark" data-zone2-qmark>'
+            statusRow += '<span class="ps-answered" data-zone2-answered data-zone2-basis="' + ( psBasis ? '1' : '0' ) + '"'
+                + ' data-zone2-counted="' + ( psBasis ? psView.elements : 0 ) + '"'
+                + ' title="' + escapeAttr( psTitle ) + '">' + escapeAttr( ps.answeredLabel ) + '</span>'
+            statusRow += '<span class="ps-qmark" data-zone2-qmark title="' + escapeAttr( psTitle ) + '">'
                 + '<span class="ps-qmark-sign" aria-hidden="true">?</span>'
                 + '<span>' + escapeAttr( ps.openLabel ) + '</span>'
                 + '</span>'
@@ -1652,8 +1736,18 @@
                 if( rev.revisionType === 'prepare' ) {
                     inner += '<span class="rev-mini-note">Basis-Snapshot</span>'
                 } else {
-                    var revOpen = isSelected ? ( ( doc.questions || {} ).open || 0 ) : 0
-                    inner += '<span class="rev-mini-chip" data-rev-chip><span class="rev-mini-chip-q">?</span>' + revOpen + '</span>'
+                    // Memo 081 (WI-064, A6 Gegenprobe): a SIXTH reader of doc.questions, which the PRD's
+                    // inventory of display sites did not list. It rendered a hard "0" for every revision
+                    // that is not the selected one — a zero that never counted anything, on every row of
+                    // the tree. Same rule as its five siblings: only a counted figure is shown as a number.
+                    var revMeta = normalizeQuestions( doc.questions )
+                    var revCounted = isSelected && revMeta.basis === true
+                    var revChipTitle = isSelected
+                        ? questionCountTitle( revMeta )
+                        : 'Nicht gezählt — gezählt wird die ausgewählte Revision'
+                    inner += '<span class="rev-mini-chip" data-rev-chip data-basis="' + ( revCounted ? '1' : '0' ) + '"'
+                        + ' title="' + escapeAttr( revChipTitle ) + '"><span class="rev-mini-chip-q">?</span>'
+                        + ( revCounted ? revMeta.open : '' ) + '</span>'
                 }
 
                 var entryHtml = '<li class="' + cls + '" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" data-state="' + escapeAttr( rev.revisionType || 'full' ) + '">'
@@ -1684,8 +1778,12 @@
                 var doc = pair.doc
                 var rev = pair.rev
                 var revLabel = String( rev.fileName || '' ).replace( /\.md$/, '' )
-                var openCount = ( doc.questions || {} ).open
-                var openNum = ( typeof openCount === 'number' && openCount > 0 ) ? openCount : 0
+                // Memo 081 (WI-069, Ä6): the queue card is a PER-MEMO figure — it has no viewed revision to
+                // count — so it keeps the registry source and names it instead. "? 0" was the reported
+                // symptom here; with basis:false the card now shows a bare "?" and its title says why.
+                var qCard = normalizeQuestions( doc.questions )
+                var openNum = qCard.open
+                var cardTitle = questionCountTitle( qCard )
                 // BUGFIX (fix/transcript-abschliessen-queue): the queue now holds 'offen' AND
                 // 'transcript-eingetragen' revisions (only 'eingeloggt' drops out). Map the raw enum
                 // to a readable status word so the card line reads "REV-NN · offen" or
@@ -1715,7 +1813,9 @@
                 html += '<span class="queue-card-title" data-queue-title>' + escapeAttr( doc.memoName || '' ) + '</span>'
                 html += '<span class="queue-card-spacer"></span>'
                 html += '<span class="queue-card-minutes" data-queue-minutes="' + queueMemoMinutes + '" title="Gesamte gesprochene Transcript-Dauer">\uD83C\uDF99 ' + queueMemoMinutes + ' Min</span>'
-                html += '<span class="queue-card-chip" data-queue-chip><span class="queue-card-chip-q">?</span>' + openNum + '</span>'
+                html += '<span class="queue-card-chip" data-queue-chip data-basis="' + ( qCard.basis ? '1' : '0' ) + '"'
+                    + ' title="' + escapeAttr( cardTitle ) + '"><span class="queue-card-chip-q">?</span>'
+                    + ( qCard.basis ? openNum : '' ) + '</span>'
                 html += '</span>'
                 // Zeile 2: REV-NN · offen + Lifecycle-Status des Memos (PRD-004-Modell). Memo 079 M4: the
                 // label shows the distinct rollout sub-label when present; data-queue-lifecycle keeps the
@@ -1784,11 +1884,22 @@
                 // PRD-019 (Memo 016 Kap 7.3): emoji reduction. The ❓ emoji is replaced by a
                 // quiet textual count badge ("N ?") — same information (open questions exist +
                 // how many), no colourful emoji. Hidden when there are no open questions.
-                var openCount = ( doc.questions || {} ).open || 0
+                // Memo 081 (WI-069, Ä6): same per-memo figure as the queue card, same declaration. Three
+                // states instead of two: a COUNTED zero stays hidden (`:empty`, unchanged), a counted number
+                // renders as before, and an UNCOUNTED memo shows a bare "?" — the old silent-zero form hid
+                // exactly the case that needed to be seen.
+                var qRow = normalizeQuestions( doc.questions )
+                var openCount = qRow.open
+                var rowTitle = qRow.basis ? ( 'Offene Fragen anzeigen — ' + questionCountTitle( qRow ) ) : questionCountTitle( qRow )
                 // PRD-006 (Kap 6.4 / AC-10): "?" und Zahl in eigene Spans, damit der Chip-gap
                 // den Box-Abstand zum Fragezeichen vergroessert. Leer bei 0 -> :empty blendet aus.
-                var qlContent = openCount > 0 ? ( '<span class="ql-q">\u003f</span><span class="ql-n">' + openCount + '</span>' ) : ''
-                memoHtml += '<span class="questions-link" data-document-id="' + escapeAttr( doc.documentId ) + '" data-selected-rev="' + escapeAttr( doc.selectedRevision || '' ) + '" data-open="' + openCount + '" title="Offene Fragen anzeigen">' + qlContent + '</span>'
+                var qlContent = ''
+                if( qRow.basis !== true ) {
+                    qlContent = '<span class="ql-q">\u003f</span>'
+                } else if( openCount > 0 ) {
+                    qlContent = '<span class="ql-q">\u003f</span><span class="ql-n">' + openCount + '</span>'
+                }
+                memoHtml += '<span class="questions-link" data-document-id="' + escapeAttr( doc.documentId ) + '" data-selected-rev="' + escapeAttr( doc.selectedRevision || '' ) + '" data-open="' + openCount + '" data-basis="' + ( qRow.basis ? '1' : '0' ) + '" title="' + escapeAttr( rowTitle ) + '">' + qlContent + '</span>'
                 memoHtml += '</div>'
                 memoHtml += '<ul data-memo-list="' + escapeAttr( doc.documentId ) + '" style="list-style:none;padding:0;margin:2px 0 0;display:' + revDisplay + '">'
                 // PRD-004 (Memo 022 Kap 8): when showOnlyFullRevisions is ON (Default), Prepare-
@@ -5574,8 +5685,9 @@
             }
 
             // ---- Abschnitt 2: Fragen. Open questions of the viewed memo, each with an answer
-            // field. Source = doc.questions count for the label; the live questionNav.questions
-            // (open, parsed) supply the per-question titles/answer fields.
+            // field. Memo 081 (WI-064): the label used to count doc.questions while the list below it
+            // rendered questionNav — two sets under one heading. Both now come from the schema of the
+            // viewed revision, so the label counts what the list shows.
             renderPromptQuestions( memoEntry )
 
             modal.classList.remove( 't-hidden' )
@@ -5605,17 +5717,23 @@
         }
 
         // PRD-008 (Kap 9.5): build the Fragen-Abschnitt — one answer field per open question.
-        // Reuses the live questionNav.questions (already parsed from the rendered revision). The
-        // label "2 · FRAGEN BEANTWORTEN (n / m)" reflects doc.questions (same source as Zone 2).
+        // Reuses the live questionNav.questions (already parsed from the rendered revision). Memo 081
+        // (WI-064): the label "2 · FRAGEN BEANTWORTEN (n / m)" now counts the SAME question schema the
+        // list renders. It used to read doc.questions — the per-memo figure — which is how "(0 / 0)"
+        // came to sit over five pre-filled answer fields (Beleg 19.2).
         function renderPromptQuestions( memoEntry ) {
             var list = document.getElementById( 'pp-questions-list' )
             var label = document.getElementById( 'pp-questions-label' )
             if( !list ) { return }
             list.innerHTML = ''
 
-            var qMeta = normalizeQuestions( memoEntry ? memoEntry.doc.questions : null )
-            var total = qMeta.answered + qMeta.open
-            if( label ) { label.textContent = '2 · FRAGEN BEANTWORTEN (' + qMeta.answered + ' / ' + total + ')' }
+            // Memo 081 (WI-064, S2/Ä7): the sharpest form of the defect stood in these four lines — the
+            // LABEL counted the registry while the LIST below it rendered questionNav, so "(0 / 0)" could
+            // sit over five pre-filled answer fields. The label now counts the same schema the list does.
+            // Only the label is touched here; questionNav and its state belong to PRD-31 and are read, not
+            // written.
+            var qView = countQuestionsOf( lastQuestionSchema )
+            if( label ) { label.textContent = '2 · FRAGEN BEANTWORTEN (' + qView.answered + ' / ' + qView.total + ')' }
 
             var open = Array.isArray( questionNav.questions ) ? questionNav.questions : []
             promptEditState.questions = open
@@ -7984,7 +8102,9 @@
             // `status`, not `!answered` — a question retired as irrelevant/ersetzt is not answered either,
             // so the old test handed it a widget and it kept collecting answers nobody would ever read.
             // `status` is set on BOTH parse paths (json fence and markdown blocks), so this is one axis.
-            var open = ( schema || [] ).filter( function( q ) { return q && q.status === 'open' } )
+            // Memo 081 (WI-064, Ä7): the filter moved into openQuestionsOf so the Zone-2 header and the
+            // popup label count the SAME stock this renders, by construction rather than by agreement.
+            var open = openQuestionsOf( schema )
 
             // Anchor the widgets directly under the "Offene Fragen" section (Phase 4),
             // or at the end of the content if that anchor is missing.
@@ -8039,6 +8159,29 @@
                 banner.textContent = '⚠ ' + fallbackCount + ' von ' + open.length
                     + ' Fragen konnten nicht als Widget geparst werden — sie werden als Rohtext angezeigt.'
                 container.insertBefore( banner, container.firstChild )
+            }
+
+            // Memo 081 (WI-064/WI-069, S3 + Ä8): the SECOND axis at the same place. The banner above covers
+            // parse ("the counter promised N, only N-k could be rendered"); this one covers SOURCE ("the memo
+            // list says N, this revision renders M"). Both are legitimate figures answering different
+            // questions — per memo against per revision — and the memo asks that the difference be stated,
+            // not resolved. The container also carries the rendered count on a stable hook so a later
+            // end-to-end check can compare cards and number in one read instead of counting cards.
+            var registryEntry = lookupMemoEntryById( currentDocumentId )
+            var registry = normalizeQuestions( registryEntry ? registryEntry.doc.questions : null )
+            container.setAttribute( 'data-qw-rendered', String( open.length ) )
+            container.setAttribute( 'data-qw-source', registry.comparison.source )
+            container.setAttribute( 'data-qw-registry-open', registry.basis ? String( registry.open ) : '' )
+
+            if( registry.basis === true && registry.open !== open.length ) {
+                var divergence = document.createElement( 'div' )
+                divergence.className = 'qw-parse-warn'
+                divergence.id = 'qw-source-warn'
+                divergence.setAttribute( 'data-qw-divergence', '1' )
+                divergence.textContent = '⚠ Zwei Mengen: die Memo-Übersicht zählt ' + registry.open
+                    + ' offene Fragen (' + questionCountTitle( registry ) + '), diese Revision rendert '
+                    + open.length + ' Karten. Beide Zahlen stehen hier, damit die Differenz sichtbar ist.'
+                container.insertBefore( divergence, container.firstChild )
             }
 
             // PRD-012 (Memo 076 H8, WI-106): the answers-only bar + mountAnswersOnlyBarInHeader are

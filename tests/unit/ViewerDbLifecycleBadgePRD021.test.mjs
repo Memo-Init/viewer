@@ -255,7 +255,7 @@ describe( 'Viewer DB-first lifecycle badge (Memo 079, PRD-21)', () => {
             const { registry } = DocumentRegistry.create( {} )
             await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-db-questions', 'revisions' ) } )
 
-            expect( questionsOf( { registry, memoName: '079-db-questions' } ) ).toEqual( { open: 2, answered: 1, deferred: 0 } )
+            expect( questionsOf( { registry, memoName: '079-db-questions' } ) ).toMatchObject( { open: 2, answered: 1, deferred: 0 } )
             registry.shutdown()
         } )
 
@@ -265,7 +265,7 @@ describe( 'Viewer DB-first lifecycle badge (Memo 079, PRD-21)', () => {
             const { registry } = DocumentRegistry.create( {} )
             await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-db-noq', 'revisions' ) } )
 
-            expect( questionsOf( { registry, memoName: '079-db-noq' } ) ).toEqual( { open: 0, answered: 0, deferred: 0 } )
+            expect( questionsOf( { registry, memoName: '079-db-noq' } ) ).toMatchObject( { open: 0, answered: 0, deferred: 0 } )
             registry.shutdown()
         } )
     } )

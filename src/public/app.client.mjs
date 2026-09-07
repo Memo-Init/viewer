@@ -383,6 +383,12 @@
         const RECONNECT_MAX_MS = 30000
         const collapsedProjects = new Set()
         const collapsedMemos = new Set()
+        // Memo 081 (WI-070): which memos have their HIDDEN revisions revealed. Default empty — the
+        // configured view stays what it was (showOnlyFullRevisions, § S3); what changes is that the
+        // hidden ones are reachable at all. Kept beside the two collapse sets on purpose: it is the same
+        // kind of per-session view state, and computeSidebarSignature has to see it or the next
+        // documentList broadcast silently folds the row back up.
+        const revealedMemos = new Set()
         // PRD-016 (Memo 016 Kap 6.1): namespaces default to COLLAPSED. We track which
         // namespaces have already been seeded into collapsedProjects so a later re-render
         // never re-collapses a group the user has manually expanded.
@@ -1755,6 +1761,39 @@
                 return revType === 'full'
             }
 
+            // Memo 081, WI-070: THE FILTER REPORTS WHAT IT TOOK AWAY. The predicate above is unchanged —
+            // what changes is that its loss becomes a number. Measured before this change: 13 of 27
+            // registered revisions of memo 081 vanished from the tree without a single digit, and over
+            // the whole corpus 184 of 524 (35.1 %). A filter that does not say how much it removed is
+            // the display twin of a vacuum-green gate, and the same sidebar showed an update revision
+            // under "Letzte Revisionen" while hiding it here — two truths about one stock, neither
+            // declaring itself a selection. Returns the partition, so the caller renders the rest
+            // instead of quietly shrinking the list.
+            function partitionRevisionsByConfigFilter( revisions ) {
+                var list = Array.isArray( revisions ) ? revisions : []
+                var kept = list.filter( revisionPassesConfigFilter )
+                var hidden = list.filter( function( rev ) { return revisionPassesConfigFilter( rev ) !== true } )
+                var byType = hidden.reduce( function( acc, rev ) {
+                    var type = ( rev && rev.revisionType ) ? rev.revisionType : 'full'
+                    acc[ type ] = ( acc[ type ] || 0 ) + 1
+                    return acc
+                }, {} )
+
+                return { kept: kept, hidden: hidden, byType: byType, considered: list.length }
+            }
+
+            // The German display text for the hidden row. Field and class names stay English, the label
+            // speaks the language of the rest of the sidebar ("Warteschlange", "Basis-Snapshot") — a
+            // German label over an English field is two artefacts, not mixed language in one.
+            function hiddenRevisionsLabel( partition ) {
+                var order = [ 'prepare', 'update', 'full' ]
+                var parts = order
+                    .filter( function( type ) { return ( partition.byType[ type ] || 0 ) > 0 } )
+                    .map( function( type ) { return partition.byType[ type ] + ' ' + type } )
+
+                return partition.hidden.length + ' ausgeblendet (' + parts.join( ', ' ) + ')'
+            }
+
             function renderRevEntry( doc, rev ) {
                 var isSelected = rev.fileName === doc.selectedRevision
                 var cls = 'rev-mini'
@@ -1792,6 +1831,12 @@
                 // 6. Fragen-Chip rechts (offene Revisionen). Prepare zeigt stattdessen die Note.
                 if( rev.revisionType === 'prepare' ) {
                     inner += '<span class="rev-mini-note">Basis-Snapshot</span>'
+                } else if( rev.revisionType === 'update' ) {
+                    // Memo 081, WI-070: an update row can now actually appear in the tree (revealed via
+                    // the hidden-count row), so it says what it is. Without this a revealed update row
+                    // would be indistinguishable from a full revision — the type would live only in the
+                    // data-state attribute, which is a hook, not a display.
+                    inner += '<span class="rev-mini-note">Update</span>'
                 } else {
                     // Memo 081 (WI-064, A6 Gegenprobe): a SIXTH reader of doc.questions, which the PRD's
                     // inventory of display sites did not list. It rendered a hard "0" for every revision
@@ -1977,9 +2022,30 @@
                 // and Update-Revisionen werden in der Sidebar AUSGEBLENDET (rein visuell — Registry
                 // und Tree-Payload bleiben unveraendert). Fehlender/unbekannter Typ -> als 'full'
                 // behandelt (Fallback konsistent zum data-state in renderRevEntry).
-                ;( doc.revisions || [] ).filter( revisionPassesConfigFilter ).forEach( function( rev ) {
+                // Memo 081, WI-070: the same predicate, but the remainder is no longer dropped on the
+                // floor. `hidden` is rendered as ONE row that names the number and the types and is
+                // itself the control that opens them — the config switch showOnlyFullRevisions has no
+                // operating element anywhere (measured: 13 code sites, none of them an input, its only
+                // override a gitignored file read once at server start), so "reachable" had to be built,
+                // not configured. An empty `hidden` renders NOTHING: a "0 ausgeblendet" line under every
+                // memo would be noise, and from the outside it is indistinguishable from "nothing was
+                // filtered" anyway.
+                var partition = partitionRevisionsByConfigFilter( doc.revisions )
+                var isRevealed = revealedMemos.has( doc.documentId )
+                var shown = isRevealed ? ( doc.revisions || [] ) : partition.kept
+                ;( shown ).forEach( function( rev ) {
                     memoHtml += renderRevEntry( doc, rev )
                 } )
+                if( partition.hidden.length > 0 ) {
+                    memoHtml += '<li class="rev-hidden-note' + ( isRevealed ? ' rev-hidden-note-open' : '' ) + '"'
+                        + ' data-hidden-toggle="' + escapeAttr( doc.documentId ) + '"'
+                        + ' data-hidden-count="' + partition.hidden.length + '"'
+                        + ' data-hidden-types="' + escapeAttr( JSON.stringify( partition.byType ) ) + '"'
+                        + ' data-hidden-considered="' + partition.considered + '"'
+                        + ' title="' + escapeAttr( isRevealed ? 'Ausgeblendete Revisionen wieder einklappen' : 'Ausgeblendete Revisionen anzeigen' ) + '">'
+                        + escapeHtml( ( isRevealed ? '▾ ' : '▸ ' ) + hiddenRevisionsLabel( partition ) )
+                        + '</li>'
+                }
                 memoHtml += '</ul></div>'
                 return memoHtml
             }
@@ -2155,6 +2221,25 @@
                 } )
             } )
 
+            // Memo 081, WI-070: the count row IS the control. One click reveals this memo's hidden
+            // revisions, another folds them back. The state lives in revealedMemos and is part of
+            // computeSidebarSignature, so the next documentList broadcast redraws WITH it instead of
+            // quietly closing what the user opened — an unfolding that does not survive a broadcast is
+            // worthless for operating the tree, and every broadcast redraws this sidebar.
+            navEl.querySelectorAll( 'li[data-hidden-toggle]' ).forEach( function( el ) {
+                el.addEventListener( 'click', function( ev ) {
+                    if( ev && typeof ev.stopPropagation === 'function' ) { ev.stopPropagation() }
+                    var memoId = el.getAttribute( 'data-hidden-toggle' )
+                    if( revealedMemos.has( memoId ) ) {
+                        revealedMemos.delete( memoId )
+                    } else {
+                        revealedMemos.add( memoId )
+                    }
+                    lastSidebarSignature = null
+                    renderSidebar()
+                } )
+            } )
+
             // Deep-link from questions icon -> open content + scroll to "Offene Fragen"
             navEl.querySelectorAll( '.questions-link' ).forEach( function( el ) {
                 el.addEventListener( 'click', function( ev ) {
@@ -2182,6 +2267,10 @@
             var collapse = {
                 p: Array.from( collapsedProjects ).sort(),
                 m: Array.from( collapsedMemos ).sort(),
+                // Memo 081, WI-070: the reveal state joins the signature for the same reason the two
+                // collapse sets are in it — it drives the markup, so a signature blind to it would skip
+                // exactly the redraw the user asked for.
+                r: Array.from( revealedMemos ).sort(),
                 full: cfg.showOnlyFullRevisions === true
             }
             if( currentMode === 'transcripts' ) {
@@ -8746,15 +8835,25 @@
 
             // WI-041 (Memo 081): the AI recommendation is a DISPLAY property, never a selection.
             // Both the option marker (qw-ai + "(KI-Empfehlung)" hint) and the green KI-EMPFEHLUNG
-            // line used to read `preselected` — but every question sets preselected:[] (the
-            // Vorauswahl-Sperre against the submit leak, Memo 081 Kap 19), so the Sperre silently
-            // switched the whole recommendation display off. Derive the recommended option ONCE
-            // here: from the preselection when present, otherwise from the leading option key of
-            // the recommendation text. Nothing below writes selection state — the Sperre holds.
+            // line used to read `preselected` — a field that meant two things at once, so the
+            // Vorauswahl-Sperre of REV-02 (writing preselected:[] into every question) silently
+            // switched the whole recommendation display off. WI-025 ends that: the server now ships
+            // `aiRecommended` as its own display field and `preselected` carries only what an author
+            // explicitly chose. This reads the display field FIRST.
+            //
+            // Two fallbacks stay, in this order, and both earn their place: a payload from an older
+            // server build carries no aiRecommended at all (then the old preselected reading is the
+            // right one), and a payload from neither still has the recommendation TEXT. The regex
+            // fallback is strictly weaker than the server derivation — measured against 1285 single
+            // questions with a non-empty recommendation it finds 1158 and misses 127 (9.9 %), namely
+            // "Option A — …" and "**A** — …". Dropping it would be a new regression of the same
+            // family as REV-02, only smaller and therefore harder to notice.
             var aiReasoning = typeof q.aiRecommendation === 'string' ? q.aiRecommendation.trim() : ''
             var aiRecommendedIdx = -1
             if( q.typ === 'single' ) {
-                if( Array.isArray( q.preselected ) && q.preselected.length > 0 ) {
+                if( Array.isArray( q.aiRecommended ) && q.aiRecommended.length > 0 ) {
+                    aiRecommendedIdx = q.aiRecommended[ 0 ]
+                } else if( !Array.isArray( q.aiRecommended ) && Array.isArray( q.preselected ) && q.preselected.length > 0 ) {
                     aiRecommendedIdx = q.preselected[ 0 ]
                 } else if( aiReasoning.length > 0 ) {
                     var aiKeyMatch = aiReasoning.match( /^([A-H])\b/ )
@@ -9078,7 +9177,13 @@
         // Empty selection is never a preselection match (nothing was chosen at all).
         function isPreselectionAnswer( q, st ) {
             if( !q || !st ) { return false }
-            var pre = Array.isArray( q.preselected ) ? q.preselected : []
+            // Memo 081, WI-025: the datum this asks about is "did the user go with the RECOMMENDATION",
+            // so it reads the display field, not the selection field. Without this the provenance chain
+            // — [Vorauswahl] in the answer heading -> PRESELECTED_MARK -> the --preselected CLI flag ->
+            // the user_input_answers.preselected column — would report a constant false as soon as the
+            // derivation left `preselected`, and a constant value in a provenance column looks exactly
+            // like a result. The fallback is the older-payload case, same reasoning as in the widget.
+            var pre = Array.isArray( q.aiRecommended ) ? q.aiRecommended : ( Array.isArray( q.preselected ) ? q.preselected : [] )
             var expected = q.typ === 'single' ? pre.slice( 0, 1 ) : pre
             if( expected.length === 0 || st.selected.length !== expected.length ) { return false }
             if( st.custom.length > 0 ) { return false }

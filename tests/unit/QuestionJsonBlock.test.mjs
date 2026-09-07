@@ -103,8 +103,13 @@ describe( 'DocumentRegistry.renderQuestionsMarkdown (PRD-039)', () => {
 } )
 
 
-describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselected (Bug A)', () => {
-    it( 'derives preselected from aiRecommendation for a single question', () => {
+// Memo 081, WI-025 (PRD-35): the derivation is unchanged, its TARGET FIELD is not. `preselected` used
+// to answer both "what did the author choose?" and "what does the AI recommend?", so the recommendation
+// walked into the widget's selection state and — since PRD-31 — into the durable question-state store.
+// Measured before the split: 1335 of 4046 parsed questions carried a selection nobody clicked (33.0 %).
+// Each case below asserts BOTH halves, so a regression that reconnects the two fields fails here.
+describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives the AI recommendation (Bug A)', () => {
+    it( 'derives aiRecommended from aiRecommendation for a single question, preselecting nothing', () => {
         const questions = [
             {
                 'id': 'F1',
@@ -123,10 +128,11 @@ describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselec
         const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
         const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
 
-        expect( Array.isArray( parsed[ 0 ][ 'preselected' ] ) ).toBe( true )
+        expect( Array.isArray( parsed[ 0 ][ 'aiRecommended' ] ) ).toBe( true )
         // C is the third real option (index 2). custom/topic defaults are appended AFTER the
         // real options, so the index of C is stable at 2.
-        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [ 2 ] )
+        expect( parsed[ 0 ][ 'aiRecommended' ] ).toEqual( [ 2 ] )
+        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [] )
     } )
 
 
@@ -147,12 +153,12 @@ describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselec
         const kinds = parsed[ 0 ][ 'options' ].map( ( option ) => option[ 'kind' ] )
         expect( kinds ).toContain( 'custom' )
         expect( kinds ).toContain( 'topic' )
-        // preselected still points at the real option A (index 0), not at a default.
-        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [ 0 ] )
+        // the recommendation still points at the real option A (index 0), not at a default.
+        expect( parsed[ 0 ][ 'aiRecommended' ] ).toEqual( [ 0 ] )
     } )
 
 
-    it( 'returns preselected [] for an empty aiRecommendation (no crash)', () => {
+    it( 'returns aiRecommended [] for an empty aiRecommendation (no crash)', () => {
         const questions = [
             {
                 'id': 'F1',
@@ -166,7 +172,9 @@ describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselec
         const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
         const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
 
-        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [] )
+        // Held against aiRecommended: preselected is empty here whatever the recommendation says, so
+        // asserting it would be a case that can no longer fail.
+        expect( parsed[ 0 ][ 'aiRecommended' ] ).toEqual( [] )
     } )
 
 
@@ -188,10 +196,13 @@ describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselec
         const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
         const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
 
-        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [ 0, 2 ] )
+        expect( parsed[ 0 ][ 'aiRecommended' ] ).toEqual( [ 0, 2 ] )
+        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [] )
     } )
 
 
+    // Unchanged on purpose: an EXPLICIT author selection is exactly what `preselected` still means, and
+    // the split must not take it away. This is the one case in this file that needed no adjustment.
     it( 'respects an explicit preselected array on the JSON entry', () => {
         const questions = [
             {
@@ -220,7 +231,7 @@ describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselec
                 'id': 'F1',
                 'frage': 'Was tun?',
                 // The token "INCONCLUSIVE:" ends with an "E" right before a colon — the old
-                // unanchored regex matched it as key "E". With anchoring it must NOT preselect.
+                // unanchored regex matched it as key "E". With anchoring it must NOT match.
                 'aiRecommendation': 'INCONCLUSIVE: das Ergebnis ist offen',
                 'typ': 'single',
                 'options': [
@@ -233,7 +244,9 @@ describe( 'PRD-004 (Memo 011 Kap 11) — #normalizeJsonQuestion derives preselec
         const content = '```questions-json\n' + JSON.stringify( questions ) + '\n```'
         const { questions: parsed } = DocumentRegistry.parseQuestionJsonBlock( { content } )
 
-        expect( parsed[ 0 ][ 'preselected' ] ).toEqual( [] )
+        // Held against aiRecommended — the anchored key regex is what this case measures, and after
+        // the split that regex feeds the recommendation field.
+        expect( parsed[ 0 ][ 'aiRecommended' ] ).toEqual( [] )
     } )
 } )
 

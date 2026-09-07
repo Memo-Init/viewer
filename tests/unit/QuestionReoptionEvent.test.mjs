@@ -140,7 +140,12 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
     } )
 
 
-    it( 'A3/R3 — the new kind is never PRE-SELECTED, on either path, and it decides nothing for the user', () => {
+    // Memo 081, WI-025 (PRD-35): the guarantee is unchanged — an injected default is never chosen FOR
+    // the user — but the field that carries the derivation moved. Held against `aiRecommended`, because
+    // `preselected` now only ever holds an explicit author selection and this fixture writes none, so
+    // the case would be vacuously true there: the `recommended.length > 0` guard below is exactly the
+    // line that keeps it from being so.
+    it( 'A3/R3 — the new kind is never RECOMMENDED, on either path, and it decides nothing for the user', () => {
         const cases = [
             { name: 'questions-json', question: jsonAuthored().questions[ 0 ] },
             { name: 'markdown', question: markdownAuthored().questions[ 0 ] }
@@ -150,17 +155,17 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
         const compared = cases
             .map( ( entry ) => {
                 const options = entry.question[ 'options' ]
-                const preselected = entry.question[ 'preselected' ]
+                const recommended = entry.question[ 'aiRecommended' ]
                 const nonOptionIndexes = options
                     .map( ( option, index ) => ( option[ 'kind' ] === 'option' ? -1 : index ) )
                     .filter( ( index ) => index !== -1 )
 
                 // the AI recommendation names A, so the recommendation IS resolved — the case is not
-                // vacuously true because nothing was pre-selected at all.
-                expect( preselected.length ).toBeGreaterThan( 0 )
+                // vacuously true because nothing was recommended at all.
+                expect( recommended.length ).toBeGreaterThan( 0 )
                 expect( nonOptionIndexes.length ).toBe( INJECTED.length )
                 nonOptionIndexes
-                    .forEach( ( index ) => expect( preselected ).not.toContain( index ) )
+                    .forEach( ( index ) => expect( recommended ).not.toContain( index ) )
 
                 return nonOptionIndexes.length
             } )

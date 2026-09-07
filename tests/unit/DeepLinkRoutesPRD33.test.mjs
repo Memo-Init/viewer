@@ -359,30 +359,38 @@ describe( 'PRD-33 — am LAUFENDEN Server: Route, Rangfolge, Negativ-Kontrollen'
 
 
     it( 'T-H (Positiv-Kontrolle, eigener Server): ein Socket OHNE Adresse bekommt den Rueckfall', () => {
-        // Der Rueckfall braucht einen Bestand, in dem documents[ 0 ] ueberhaupt eine Revision traegt —
-        // sonst vergliche T-G zwei Stillen. Dieser Bestand ist ein ZWEITER Kindprozess: im gemischten
-        // Bestand ist documents[ 0 ] nicht vorhersagbar (siehe die Zeile darunter), und ein Nachbessern
-        // AN der Reihenfolge waere ein Eingriff in die Vorauswahl-Regel, die PRD-35 gehoert.
         // Vergleichsmenge: 1 Socket gegen einen Bestand aus 2 Dokumenten, beide mit Revisionen.
+        //
+        // Memo 081, WI-025 (PRD-35): dieser Fall behauptete frueher, der Rueckfall nehme
+        // `documents[ 0 ]`. Genau das war der Defekt — die Position gehoert dem Gewinner des
+        // Registrierungs-Wettrennens (Promise.all), und im echten Bestand trug dieser Gewinner keine
+        // Revision, weshalb der Zweig in 0 von 385 Sockets feuerte. PRD-33 hat die Reparatur woertlich an
+        // PRD-35 uebergeben; sie ist jetzt gebaut. Behauptet wird deshalb die ZUSICHERUNG der neuen
+        // Regel, nicht eine Map-Position: der Rueckfall waehlt ein Dokument, das etwas zu oeffnen hat,
+        // und oeffnet dessen neueste Revision.
         expect( control[ 'documentCount' ] ).toBe( 2 )
         expect( control[ 'zeroRevisionDocs' ] ).toEqual( [] )
         expect( control[ 'fallback' ][ 'contentSeen' ] ).toBe( true )
-        expect( control[ 'fallback' ][ 'fileName' ] ).toBe( control[ 'expectedFallbackFile' ] )
-        expect( control[ 'fallback' ][ 'documentGuess' ] ).toBe( control[ 'firstDocumentId' ] )
+
+        const picked = control[ 'fallback' ][ 'documentGuess' ]
+        expect( typeof picked ).toBe( 'string' )
+        expect( control[ 'revisionsById' ][ picked ] ).toBeGreaterThan( 0 )
+        expect( control[ 'fallback' ][ 'fileName' ] ).toBe( control[ 'firstRevisionById' ][ picked ] )
     } )
 
 
-    it( 'Befund (nicht repariert): der Rueckfall haengt an documents[ 0 ], und das ist ein Wettrennen', () => {
-        // § I4 in klein, reproduziert: documents[ 0 ] ist die Position, die das WETTRENNEN der
-        // nebenlaeufigen Registrierung gewinnt (ProjectAutoRegister nutzt Promise.all), und das leere
-        // Memo gewinnt es meist, weil es nichts zu lesen hat. Genau die Form, wegen der der Rueckfall im
-        // echten Bestand in 0 von 385 Faellen feuert. Dieses PRD macht ihn entbehrlich, es repariert ihn
-        // nicht — Adressat ist PRD-35. Behauptet wird deshalb nicht, WELCHES Dokument gewinnt (das waere
-        // ein flackernder Test), sondern die Kopplung: der Rueckfall liefert genau dann etwas, wenn das
-        // erste Dokument eine Revision traegt.
-        const firstHasRevisions = report[ 'firstDocumentRevisions' ] > 0
-
-        expect( report[ 'sockets' ][ 'fallbackInMixed' ][ 'contentSeen' ] ).toBe( firstHasRevisions )
+    it( 'Befund GESCHLOSSEN (PRD-35): der Rueckfall haengt nicht mehr an documents[ 0 ]', () => {
+        // § I4 in klein: `documents[ 0 ]` ist die Position, die das WETTRENNEN der nebenlaeufigen
+        // Registrierung gewinnt, und das leere Memo gewinnt es meist, weil es nichts zu lesen hat. Genau
+        // die Form, wegen der der Rueckfall im echten Bestand in 0 von 385 Faellen feuerte.
+        //
+        // Memo 081, WI-025 (PRD-35): die Kopplung ist aufgeloest. Der Rueckfall folgt einer BENANNTEN
+        // Regel (resolveAutoSelectTarget: das zuletzt aktive Dokument MIT Revision) und liefert deshalb
+        // auch dann etwas, wenn das erste Dokument leer ist. Die Vergleichsmenge steht in der ersten
+        // Zeile: dieser Bestand enthaelt den problematischen Fall ueberhaupt — sonst pruefte der Fall
+        // eine Bedingung, die nie eintritt.
+        expect( report[ 'zeroRevisionDocs' ].length ).toBeGreaterThan( 0 )
+        expect( report[ 'sockets' ][ 'fallbackInMixed' ][ 'contentSeen' ] ).toBe( true )
     } )
 
 
@@ -502,6 +510,21 @@ const main = async () => {
     // process-wide — an observation of the fallback is only worth something before the first selection.
     if( MODE === 'fallback' ) {
         report[ 'expectedFallbackFile' ] = report[ 'firstDocumentRevisions' ] > 0 ? documents[ 0 ][ 'revisions' ][ 0 ][ 'fileName' ] : null
+        // Memo 081, WI-025 (PRD-35): the fallback no longer takes documents[ 0 ], so the test needs the
+        // per-document revision inventory to state what the NEW rule guarantees — the picked document
+        // has something to open. Reported, not asserted here: the harness measures, the cases judge.
+        report[ 'revisionsById' ] = documents
+            .reduce( ( acc, doc ) => {
+                acc[ doc[ 'documentId' ] ] = ( doc[ 'revisions' ] || [] ).length
+
+                return acc
+            }, {} )
+        report[ 'firstRevisionById' ] = documents
+            .reduce( ( acc, doc ) => {
+                acc[ doc[ 'documentId' ] ] = ( doc[ 'revisions' ] || [] ).length > 0 ? doc[ 'revisions' ][ 0 ][ 'fileName' ] : null
+
+                return acc
+            }, {} )
         report[ 'fallback' ] = await firstContent( '/' )
 
         process.stdout.write( '###PRD33###' + JSON.stringify( report ) + '###PRD33###' )

@@ -45,6 +45,18 @@ const DEFERRED_QUESTION_STATUS = [ 'irrelevant', 'replaced' ]
 // and there is no default — a caller that cannot name where it counted has not counted anything.
 const QUESTION_COUNT_SOURCES = [ 'db', 'file', 'none' ]
 
+// Memo 081 (WI-070): the same closed vocabulary, one level down, for a REVISION count. A revision count
+// either came from the directory scan that registered the files, or from nothing at all. Two values, no
+// default — the sibling above states the reasoning and this list follows it rather than inventing a
+// second convention beside it.
+const REVISION_COUNT_SOURCES = [ 'scan', 'none' ]
+
+// Memo 081 (WI-070): the closed list of revision types the scan can produce (#classifyRevisionType). It
+// exists so `byType` can report a type that DID NOT OCCUR as an explicit 0 instead of leaving the key
+// out — a missing number is not a zero, and a consumer that has to guess which of the two it is holds
+// the display twin of the vacuum-green gate this memo keeps finding.
+const REVISION_TYPES = [ 'full', 'update', 'prepare' ]
+
 
 class DocumentRegistry {
     #documents = new Map()
@@ -317,6 +329,13 @@ class DocumentRegistry {
                     // revision from the queue (widget OR terminal answers, same single-writer record).
                     'answerRecordsComplete': doc['answerRecordsComplete'] === true,
                     'revisionCount': doc['revisions'].length,
+                    // Memo 081 (WI-070): the tree filters NOTHING and now says how much there is to
+                    // filter. Every consumer of this payload — the sidebar tree, the queue, the deep-link
+                    // route of PRD-33 — reads the same comparison basis instead of deriving its own; two
+                    // derivations of one datum are the parallel path that produced the contradiction in
+                    // the first place (the tree keeps `full`, the latest list keeps `full || update`, and
+                    // until now neither said it was a selection).
+                    'revisionCounts': DocumentRegistry.#countRevisions( { 'revisions': mappedRevisions, 'countedIn': doc['memoPath'] } ),
                     'selectedRevision': doc['selectedRevision'],
                     // PRD-016/017: memo-level activity timestamp = the newest revision mtime.
                     // null when no revision carries an mtime (no Silent-Default on invented time).
@@ -430,7 +449,71 @@ class DocumentRegistry {
 
         const latest = filtered.slice( 0, limit )
 
-        return { latest }
+        // Memo 081 (WI-070): this filter is DELIBERATELY not the tree's. "What is there?" and "what
+        // happened last?" are two questions, and the second may answer more narrowly. The defect was
+        // never that the two rules differ — it was that neither said it was applying one, so the same
+        // sidebar showed an update revision in "Letzte Revisionen" and hid it in the tree next to it.
+        // A difference that declares itself is a distinction; an undeclared one is a contradiction.
+        const comparison = { 'considered': all.length, 'kept': filtered.length, 'removed': all.length - filtered.length, 'filter': 'full-or-update' }
+
+        return { latest, comparison }
+    }
+
+
+    // Memo 081 (WI-025, WI-070): THE PRESELECTION RULE FOR A SOCKET THAT NAMED NOTHING.
+    //
+    // Until now the connect handler took `documents[ 0 ]` — the first position of a Map that
+    // ProjectAutoRegister fills with Promise.all, so the position belongs to whichever registration wins
+    // the race (measured by PRD-33; the order differed between two runs of the same stock). That is a
+    // preselection WITHOUT A RULE, and it is the same class as the one this work item removes on the
+    // question path: something is chosen for the user, nobody can say by what criterion, and the choice
+    // looks like a decision. Measured on the real stock the old rule also never fired — the race winner
+    // carries 0 revisions, so 385 of 385 sockets fell through it.
+    //
+    // The rule here is one sentence long and can be printed: the most recently active document THAT HAS
+    // A REVISION, newest first, by the same latestMtimeMs order the sidebar sorts by (sortMemosByNewest)
+    // — never a document whose activity timestamp is unknown, and never one with nothing to open. The
+    // result carries `considered` and `skipped` so a caller can say how large the set was; a rule that
+    // picks from an unnamed set is only half a rule.
+    resolveAutoSelectTarget() {
+        const struct = { 'status': false, 'documentId': null, 'fileName': null, 'rule': 'newest-active-document-with-revision', 'considered': 0, 'skipped': 0, 'reason': null }
+
+        const candidates = [ ...this.#documents.values() ]
+            .map( ( doc ) => {
+                const revisions = Array.isArray( doc[ 'revisions' ] ) ? doc[ 'revisions' ] : []
+
+                return { 'documentId': doc[ 'documentId' ], revisions, 'latestMtimeMs': DocumentRegistry.#latestMtimeMs( { revisions } ) }
+            } )
+
+        struct[ 'considered' ] = candidates.length
+
+        const usable = candidates
+            .filter( ( entry ) => entry[ 'revisions' ].length > 0 && entry[ 'latestMtimeMs' ] !== null )
+
+        struct[ 'skipped' ] = candidates.length - usable.length
+
+        if( usable.length === 0 ) {
+            struct[ 'reason' ] = candidates.length === 0
+                ? 'Keine Dokumente registriert'
+                : `Kein Dokument mit Revision und Zeitstempel unter ${ candidates.length } registrierten`
+
+            return struct
+        }
+
+        const [ winner ] = usable
+            .sort( ( a, b ) => {
+                if( b[ 'latestMtimeMs' ] !== a[ 'latestMtimeMs' ] ) { return b[ 'latestMtimeMs' ] - a[ 'latestMtimeMs' ] }
+
+                // A tie is broken by the documentId, never by Map position: two documents stamped in the
+                // same millisecond must not make the choice depend on the registration race again.
+                return a[ 'documentId' ] < b[ 'documentId' ] ? -1 : 1
+            } )
+
+        struct[ 'status' ] = true
+        struct[ 'documentId' ] = winner[ 'documentId' ]
+        struct[ 'fileName' ] = winner[ 'revisions' ][ 0 ][ 'fileName' ]
+
+        return struct
     }
 
 
@@ -822,6 +905,131 @@ class DocumentRegistry {
     }
 
 
+    // revisionCounts — the ONE place a revision count object is built. Memo 081 (WI-070): the sidebar
+    // tree dropped every non-full revision without printing a single digit. Measured on this project's
+    // own corpus, 184 of 524 registered revision documents (35.1 %) were unreachable that way — 160
+    // prepare and 24 update — and for memo 081 alone 13 of 27. A filter that does not say how much it
+    // removed is the display twin of a vacuum-green gate (REV-16:1861), and the tree carried exactly
+    // that form: two truths about the same stock in the same sidebar, neither declaring itself a
+    // selection. The registry therefore ships the SET plus its size, and every consumer that narrows it
+    // says so with a number.
+    //
+    // Modelled on questionCounts above, deliberately down to the closed `source` vocabulary and the
+    // `basis` field: a zero with basis:false ("nothing was scanned") is not the statement a zero with
+    // basis:true ("scanned, and there is nothing") makes. A second, private shape beside its sibling is
+    // the drift that method exists to end.
+    //
+    // `registered` MUST equal the sum over `byType`, and a mismatch THROWS. A balance that does not add
+    // up is a finding, not a rounding error — this is the one invariant the acceptance leans on, and it
+    // holds regardless of how many revisions the stock happens to carry. Every argument is required; an
+    // omitted or unknown source throws instead of defaulting, because a count that cannot name where it
+    // counted is not a count.
+    static revisionCounts( { registered, byType, source, countedIn, note } ) {
+        if( typeof registered !== 'number' || Number.isInteger( registered ) !== true || registered < 0 ) {
+            throw new Error( `DocumentRegistry.revisionCounts: registered must be an integer >= 0, got: ${ JSON.stringify( registered ) }` )
+        }
+
+        if( byType === null || typeof byType !== 'object' || Array.isArray( byType ) === true ) {
+            throw new Error( 'DocumentRegistry.revisionCounts: byType must be an object' )
+        }
+
+        const unknownTypes = Object.keys( byType )
+            .filter( ( key ) => REVISION_TYPES.includes( key ) !== true )
+
+        if( unknownTypes.length > 0 ) {
+            throw new Error( `DocumentRegistry.revisionCounts: byType must only carry ${ REVISION_TYPES.join( ' | ' ) }, got: ${ unknownTypes.join( ', ' ) }` )
+        }
+
+        const badCounts = REVISION_TYPES
+            .filter( ( type ) => {
+                const value = byType[ type ]
+
+                return typeof value !== 'number' || Number.isInteger( value ) !== true || value < 0
+            } )
+
+        if( badCounts.length > 0 ) {
+            throw new Error( `DocumentRegistry.revisionCounts: byType must carry an integer >= 0 for every type, wrong: ${ badCounts.join( ', ' ) }` )
+        }
+
+        if( REVISION_COUNT_SOURCES.includes( source ) !== true ) {
+            throw new Error( `DocumentRegistry.revisionCounts: source must be one of ${ REVISION_COUNT_SOURCES.join( ' | ' ) }, got: ${ JSON.stringify( source ) }` )
+        }
+
+        if( countedIn !== null && typeof countedIn !== 'string' ) {
+            throw new Error( 'DocumentRegistry.revisionCounts: countedIn must be a string or null' )
+        }
+
+        if( note !== null && typeof note !== 'string' ) {
+            throw new Error( 'DocumentRegistry.revisionCounts: note must be a string or null' )
+        }
+
+        const summed = REVISION_TYPES
+            .reduce( ( total, type ) => total + byType[ type ], 0 )
+
+        if( summed !== registered ) {
+            throw new Error( `DocumentRegistry.revisionCounts: registered ${ registered } does not equal the sum over byType ${ summed }` )
+        }
+
+        return {
+            registered,
+            'byType': REVISION_TYPES
+                .reduce( ( acc, type ) => {
+                    acc[ type ] = byType[ type ]
+
+                    return acc
+                }, {} ),
+            'basis': source !== 'none',
+            'comparison': { source, countedIn, note }
+        }
+    }
+
+
+    // The counterpart for a caller without a stock — the same shape, declaring itself uncounted.
+    // Mirrors undeclaredQuestionCounts: "not counted" and "counted zero" must stay distinguishable,
+    // and a payload that answers with a bare 0 for both has lost exactly the difference that matters.
+    static undeclaredRevisionCounts() {
+        return DocumentRegistry.revisionCounts( {
+            'registered': 0,
+            'byType': REVISION_TYPES
+                .reduce( ( acc, type ) => {
+                    acc[ type ] = 0
+
+                    return acc
+                }, {} ),
+            'source': 'none',
+            'countedIn': null,
+            'note': 'Noch nicht gezählt — das Dokument trägt keine Revisions-Zählung'
+        } )
+    }
+
+
+    // The one place a revision list is turned into the count object above. Kept private and used by
+    // getDocumentTree, so the tree payload and any later consumer cannot drift into two tallies of the
+    // same stock — the very shape that produced the two contradicting filters this work item found.
+    static #countRevisions( { revisions, countedIn } ) {
+        const list = Array.isArray( revisions ) ? revisions : []
+        const byType = list
+            .reduce( ( acc, revision ) => {
+                const type = REVISION_TYPES.includes( revision[ 'revisionType' ] ) === true ? revision[ 'revisionType' ] : 'full'
+                acc[ type ] += 1
+
+                return acc
+            }, REVISION_TYPES.reduce( ( acc, type ) => {
+                acc[ type ] = 0
+
+                return acc
+            }, {} ) )
+
+        return DocumentRegistry.revisionCounts( {
+            'registered': list.length,
+            byType,
+            'source': 'scan',
+            'countedIn': typeof countedIn === 'string' ? countedIn : null,
+            'note': null
+        } )
+    }
+
+
     static #deriveDbQuestionCounts( { memoPath } ) {
         // Memo 081 (WI-064, Ä2): `total` and the db file name travel with the counts now. Both existed
         // already — `readQuestionAnswerState` returns `total` and `resolveDbPath` the path — and both
@@ -1194,29 +1402,37 @@ class DocumentRegistry {
         // PRD-004 (Memo 011 Kap 11, Bug A): the JSON path previously never set `preselected`,
         // so the KI-recommendation was never pre-selected or shown. Mirror the markdown path
         // (#parseSingleQuestion Z.926-934): append the custom/topic default options, then derive
-        // `preselected` from `aiRecommendation` via #resolvePreselected.
+        // the recommendation from `aiRecommendation` via #resolveAiRecommended. Memo 081 (WI-025)
+        // moved that derivation OUT of `preselected` and into its own display field; the mirroring
+        // of the two paths is unchanged, only the field it lands in.
         const optionsWithDefaults = [ ...options ]
         optionsWithDefaults.push( { 'key': 'custom', 'label': 'ablehnen', 'kind': 'custom' } )
         optionsWithDefaults.push( { 'key': 'topic', 'label': 'Über das Topic springen', 'kind': 'topic' } )
         // Memo 059 (Kap 7, F3=A): `reframe` is the third injected sibling default. It signals the
         // question rests on a FALSE PREMISE — the answer is to re-formulate it (a discussion turn),
-        // not to pick an option (no decision record). A non-'option' kind, so #resolvePreselected
+        // not to pick an option (no decision record). A non-'option' kind, so #resolveAiRecommended
         // skips it and isRenderable never counts it toward the two-real-option render minimum.
         optionsWithDefaults.push( { 'key': 'reframe', 'label': 'Frage neu formulieren', 'kind': 'reframe' } )
         // Memo 080 (Kap 18, PRD-F2): `reoption` is the FOURTH injected sibling default and the one the
         // user named as the recurring problem — "oftmals ist es nicht die Frage, die falsch ist, sondern
         // die Antwortmoeglichkeiten". It signals that the question is fine and the OPTION SET goes past
-        // the decision. Like its three siblings it is a non-'option' kind: #resolvePreselected skips it,
+        // the decision. Like its three siblings it is a non-'option' kind: #resolveAiRecommended skips it,
         // isRenderable never counts it toward the two-real-option minimum, and it changes NO status.
         optionsWithDefaults.push( { 'key': 'reoption', 'label': 'Antwortmoeglichkeiten neu formulieren', 'kind': 'reoption' } )
 
-        // An explicit `preselected` array on the JSON entry wins (the author already decided);
-        // otherwise derive it from the AI recommendation. Empty recommendation -> [] (no crash).
-        const explicitPreselected = Array.isArray( safe[ 'preselected' ] )
+        // Memo 081, WI-025 (REV-16:1747): DISPLAY AND SELECTION ARE TWO THINGS AND NEVER SHARE A FIELD.
+        // `preselected` used to answer BOTH "what did the author choose?" and "what does the AI
+        // recommend?", so the recommendation walked into the widget's selection state and — since
+        // PRD-31 — into the durable question-state store, as a choice nobody made. Measured on this
+        // corpus before the split: 1335 of 4046 parsed questions carried such a selection (33.0 %),
+        // while the explicit `"preselected": []` mitigation reached 108 of them (2.7 %). From here on
+        // `preselected` is ONLY an explicit author decision and the derived recommendation lives in its
+        // own display-only field. This is not a rule that must be obeyed: after the split there is no
+        // path left from the recommendation text into the selection state.
+        const preselected = Array.isArray( safe[ 'preselected' ] )
             ? safe[ 'preselected' ].filter( ( index ) => Number.isInteger( index ) )
-            : null
-        const { preselected: derivedPreselected } = DocumentRegistry.#resolvePreselected( { typ, aiRecommendation, options: optionsWithDefaults } )
-        const preselected = explicitPreselected !== null ? explicitPreselected : derivedPreselected
+            : []
+        const { recommended: aiRecommended } = DocumentRegistry.#resolveAiRecommended( { typ, aiRecommendation, options: optionsWithDefaults } )
 
         // Memo 038 Kap 7 (P3a, F5=A): question-level answer-provenance, modelled after the
         // memo-level `Initiator`. `answeredBy` records WHO decided the question — the user, or
@@ -1244,6 +1460,7 @@ class DocumentRegistry {
             typ,
             'options': optionsWithDefaults,
             preselected,
+            aiRecommended,
             'allowCustomEntries': typ === 'multi',
             answered,
             answeredBy,
@@ -1461,7 +1678,15 @@ class DocumentRegistry {
         optionsWithDefaults.push( { 'key': 'reoption', 'label': 'Antwortmoeglichkeiten neu formulieren', 'kind': 'reoption' } )
 
         const { topicPositions } = DocumentRegistry.#extractTopicPositions( { body } )
-        const { preselected } = DocumentRegistry.#resolvePreselected( { typ, aiRecommendation, options: optionsWithDefaults } )
+        // Memo 081, WI-025: the same split as on the json path, and this path needed it more. The
+        // markdown form has NO syntax for an explicit selection, so before the split it derived straight
+        // into `preselected` with no way for an author to switch it off: 405 of 2909 markdown questions
+        // carried a selection nobody could withdraw. The mitigation of REV-02 — writing an explicit
+        // empty array — was never available here at all, which is why it held for 108 questions and left
+        // 1335 standing. `preselected` is therefore always empty on this path, and it is empty by
+        // construction rather than by discipline.
+        const { recommended: aiRecommended } = DocumentRegistry.#resolveAiRecommended( { typ, aiRecommendation, options: optionsWithDefaults } )
+        const preselected = []
 
         // Memo 038 Kap 7 (P1c/P3b): provenance from the split subsection (only meaningful for
         // answered entries); the default is 'user'. Normalised through the same helper as the JSON
@@ -1478,6 +1703,7 @@ class DocumentRegistry {
             'options': optionsWithDefaults,
             topicPositions,
             preselected,
+            aiRecommended,
             'allowCustomEntries': typ === 'multi',
             answered,
             answeredBy,
@@ -1802,8 +2028,11 @@ class DocumentRegistry {
     }
 
 
-    static #resolvePreselected( { typ, aiRecommendation, options } ) {
-        const struct = { 'preselected': [] }
+    // Memo 081, WI-025: renamed from #resolvePreselected, body unchanged. From here on this function
+    // computes a DISPLAY property — which option the AI named — and never a selection state. Without
+    // this sentence the comment below would describe one behaviour and the name another.
+    static #resolveAiRecommended( { typ, aiRecommendation, options } ) {
+        const struct = { 'recommended': [] }
 
         if( typeof aiRecommendation !== 'string' || aiRecommendation.length === 0 ) {
             return struct
@@ -1843,9 +2072,9 @@ class DocumentRegistry {
         }
 
         if( typ === 'single' ) {
-            struct[ 'preselected' ] = [ matchedIndices[ 0 ] ]
+            struct[ 'recommended' ] = [ matchedIndices[ 0 ] ]
         } else {
-            struct[ 'preselected' ] = matchedIndices
+            struct[ 'recommended' ] = matchedIndices
         }
 
         return struct

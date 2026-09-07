@@ -44,7 +44,11 @@ describe( 'PRD-040 gate wiring (source-structural)', () => {
         const contentLines = lines
             .filter( ( line ) => line.includes( "'type': 'content'" ) && line.includes( 'questionSchema' ) )
 
-        expect( contentLines.length ).toBe( 4 )
+        // Memo 081, WI-025 (PRD-35): FIVE sites now, not four. The new one is the empty state a socket
+        // gets when its address names a document that holds no revision (7 of 385 in the real stock) —
+        // before, such a socket was served the process-wide leftover, a foreign memo under this
+        // document's address. The assertion below is unchanged and covers the new site with the rest.
+        expect( contentLines.length ).toBe( 5 )
 
         contentLines
             .forEach( ( line ) => {
@@ -57,10 +61,12 @@ describe( 'PRD-040 gate wiring (source-structural)', () => {
         const src = await readFile( memoViewPath, 'utf-8' )
         const computeCount = ( src.match( /MemoView\.#computeValidation\( \{ content \} \)/g ) || [] ).length
 
-        // 4 content-send sites (PRD-040) + 1 read-only /api/validate route (PRD-005, Memo 019).
-        // The route reuses the same centralised, defensive validator helper instead of calling
-        // MemoValidator.validate directly, so the gate behaviour stays consistent everywhere.
-        expect( computeCount ).toBe( 5 )
+        // 5 content-send sites (PRD-040 + the empty state of PRD-35) + 1 read-only /api/validate route
+        // (PRD-005, Memo 019). The route reuses the same centralised, defensive validator helper instead
+        // of calling MemoValidator.validate directly, so the gate behaviour stays consistent everywhere.
+        // The new site deliberately calls the helper in the identical form — a fifth site that computed
+        // its validation differently would pass the count above and defeat exactly this check.
+        expect( computeCount ).toBe( 6 )
     } )
 } )
 

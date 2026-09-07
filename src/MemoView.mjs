@@ -4967,6 +4967,15 @@ ${ VendorAssets.scriptTags().tags }
                 ws.send( JSON.stringify( { 'type': 'clientList', clients } ) )
             }
 
+            // Memo 081, WI-025 (PRD-35): DID THIS SOCKET NAME A DOCUMENT? The answer decides whether the
+            // process-wide leftover at the end of this handler may reach it. `state` is ONE object per
+            // server run (:245/:251), so every socket that sets no path of its own is served whatever the
+            // process selected last — measured against the real stock of 385 documents, the 7 without a
+            // revision showed a FOREIGN memo on a warm server and a blank page on a cold one, both under
+            // an address that named something else. An address that resolves is an instruction, and an
+            // instruction is never answered with somebody else's document.
+            let addressedDocumentId = null
+
             if( MemoView.#registry ) {
                 const { tree, latest } = MemoView.buildDocumentListPayload()
                 ws.send( JSON.stringify( { 'type': 'documentList', tree, latest } ) )
@@ -4981,6 +4990,39 @@ ${ VendorAssets.scriptTags().tags }
                 // click the server performs, not a new class of state change. Setting state.absolutePath
                 // here is what makes the fallback below stand down; its own condition is untouched.
                 const linked = MemoView.resolveDeepLinkTarget( { 'pathname': req === undefined || req === null ? null : req.url } )
+
+                if( linked[ 'status' ] === true ) { addressedDocumentId = linked[ 'documentId' ] }
+
+                // Memo 081, WI-025 (PRD-35): the address resolves but the document holds no revision —
+                // 7 of 385 in the real stock. `status: true` says the address is valid, `fileName: null`
+                // says there is nothing to open, and until now the branch below simply fell through, so
+                // the socket was served the process-wide leftover: a foreign memo under this document's
+                // address, and which one it was depended on what happened to be selected before.
+                // The honest answer is neither a 404 (the document exists and is addressable — PRD-33
+                // decided that and this does not overturn it) nor a foreign document, but an EMPTY STATE
+                // that names the document it was asked for and says why it is empty.
+                if( linked[ 'status' ] === true && linked[ 'fileName' ] === null ) {
+                    const detail = MemoView.#registry.getDocument( { 'documentId': linked[ 'documentId' ] } )
+                    const memoName = detail[ 'status' ] === true ? detail[ 'document' ][ 'memoName' ] : linked[ 'documentId' ]
+                    const content = [
+                        `# ${ memoName }`,
+                        '',
+                        'Dieses Dokument ist registriert, trägt aber **keine Revision**.',
+                        '',
+                        `Die Adresse \`/doc/${ linked[ 'documentId' ] }\` ist gültig — es gibt hier nichts zu öffnen.`,
+                        'Sobald eine Revisionsdatei im Revisions-Ordner liegt, erscheint sie in der Seitenleiste.'
+                    ].join( '\n' )
+                    // The three helpers are called in the SAME form as the four other content-send sites,
+                    // so the source-structural gate of PRD-040 counts this one with them instead of
+                    // finding a fifth site that computes its validation some other way.
+                    const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
+                    const { vorwort } = DocumentRegistry.parseVorwort( { content } )
+                    const { validation } = MemoView.#computeValidation( { content } )
+
+                    if( ws.readyState === 1 ) {
+                        ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': null, 'memoName': memoName, 'documentId': linked[ 'documentId' ], 'diff': null, questionSchema, vorwort, validation } ) )
+                    }
+                }
 
                 if( linked[ 'status' ] === true && linked[ 'fileName' ] !== null ) {
                     const { status: linkSelected } = MemoView.#registry.selectRevision( { 'documentId': linked[ 'documentId' ], 'fileName': linked[ 'fileName' ] } )
@@ -5004,57 +5046,58 @@ ${ VendorAssets.scriptTags().tags }
                     }
                 }
 
-                const { documents } = MemoView.#registry.getDocuments()
+                // Memo 081, WI-025 (PRD-35): the fallback now follows a NAMED RULE instead of taking
+                // documents[ 0 ]. That position belongs to whichever registration wins the Promise.all
+                // race in ProjectAutoRegister — measured twice on the same stock, two different winners —
+                // and it carried no revision, so the branch fired in 0 of 385 sockets while looking like
+                // a working preselection. A preselection nobody can state the criterion for is the same
+                // defect this work item removes on the question path, one layer up: resolveAutoSelectTarget
+                // takes the most recently active document that HAS a revision, and can say so.
+                const autoTarget = MemoView.#registry.resolveAutoSelectTarget()
 
-                if( documents.length > 0 && !state.absolutePath ) {
-                    const firstDoc = documents[ 0 ]
-                    const docDetail = MemoView.#registry.getDocument( { documentId: firstDoc['documentId'] } )
+                if( autoTarget[ 'status' ] === true && !state.absolutePath && addressedDocumentId === null ) {
+                    MemoView.#registry.selectRevision( { 'documentId': autoTarget[ 'documentId' ], 'fileName': autoTarget[ 'fileName' ] } )
 
-                    if( docDetail['status'] && docDetail['document']['revisions'].length > 0 ) {
-                        const newestRevision = docDetail['document']['revisions'][ 0 ]['fileName']
-                        MemoView.#registry.selectRevision( { documentId: firstDoc['documentId'], fileName: newestRevision } )
+                    const { absolutePath: revPath } = MemoView.#registry.getSelectedRevisionPath( { 'documentId': autoTarget[ 'documentId' ] } )
 
-                        const { absolutePath: revPath } = MemoView.#registry.getSelectedRevisionPath( { documentId: firstDoc['documentId'] } )
+                    if( revPath ) {
+                        state.absolutePath = revPath
 
-                        if( revPath ) {
-                            state.absolutePath = revPath
+                        const { tree: updatedTree, latest: updatedLatest } = MemoView.buildDocumentListPayload()
+                        ws.send( JSON.stringify( { 'type': 'documentList', tree: updatedTree, latest: updatedLatest } ) )
 
-                            const { tree: updatedTree, latest: updatedLatest } = MemoView.buildDocumentListPayload()
-                            ws.send( JSON.stringify( { 'type': 'documentList', tree: updatedTree, latest: updatedLatest } ) )
+                        MemoView.#readFileContent( { absolutePath: revPath } )
+                            .then( async ( { content } ) => {
+                                const revFileName = basename( revPath )
+                                const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath: revPath } )
+                                let diff = null
 
-                            MemoView.#readFileContent( { absolutePath: revPath } )
-                                .then( async ( { content } ) => {
-                                    const revFileName = basename( revPath )
-                                    const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath: revPath } )
-                                    let diff = null
-
-                                    if( previousPath && currentFullPath ) {
-                                        try {
-                                            const previousRaw = await readFile( previousPath, 'utf-8' )
-                                            const currentRaw = await readFile( currentFullPath, 'utf-8' )
-                                            const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
-                                            diffResult['previousFile'] = basename( previousPath )
-                                            diffResult['currentFullFile'] = basename( currentFullPath )
-                                            diffResult['previousContent'] = previousRaw
-                                            diffResult['skippedUpdates'] = skippedUpdates
-                                            // Memo 080, PRD-R4: additive, exactly like previousContent above.
-                                            diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
-                                            diff = diffResult
-                                        } catch {
-                                            // skip
-                                        }
+                                if( previousPath && currentFullPath ) {
+                                    try {
+                                        const previousRaw = await readFile( previousPath, 'utf-8' )
+                                        const currentRaw = await readFile( currentFullPath, 'utf-8' )
+                                        const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
+                                        diffResult['previousFile'] = basename( previousPath )
+                                        diffResult['currentFullFile'] = basename( currentFullPath )
+                                        diffResult['previousContent'] = previousRaw
+                                        diffResult['skippedUpdates'] = skippedUpdates
+                                        // Memo 080, PRD-R4: additive, exactly like previousContent above.
+                                        diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
+                                        diff = diffResult
+                                    } catch {
+                                        // skip
                                     }
+                                }
 
-                                    const { memoName } = MemoView.#resolveMemoName( { absolutePath: revPath } )
+                                const { memoName } = MemoView.#resolveMemoName( { absolutePath: revPath } )
 
-                                    if( ws.readyState === 1 ) {
-                                        const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
-                                        const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                                        const { validation } = MemoView.#computeValidation( { content } )
-                                        ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'diff': diff, questionSchema, vorwort, validation } ) )
-                                    }
-                                } )
-                        }
+                                if( ws.readyState === 1 ) {
+                                    const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
+                                    const { vorwort } = DocumentRegistry.parseVorwort( { content } )
+                                    const { validation } = MemoView.#computeValidation( { content } )
+                                    ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'diff': diff, questionSchema, vorwort, validation } ) )
+                                }
+                            } )
                     }
                 }
 
@@ -5120,39 +5163,50 @@ ${ VendorAssets.scriptTags().tags }
                 return
             }
 
-            MemoView.#readFileContent( { absolutePath: state.absolutePath } )
-                .then( async ( { content } ) => {
-                    const fileName = basename( state.absolutePath )
-                    const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath: state.absolutePath } )
-                    let diff = null
+            // Memo 081, WI-025 (PRD-35): THE PROCESS-WIDE LEFTOVER NEVER OVERRULES AN ADDRESS. `state` is
+            // one object per server run, so this push serves every fresh socket the content of whatever
+            // was selected last. For a socket that named a document that is wrong twice over: it either
+            // repeats what the deep-link branch already sent, or — for the 7 documents without a revision
+            // — it delivers a FOREIGN memo on top of the empty state that just explained the emptiness.
+            // Measured before this guard: all 7 showed `003-konsolidierung-v3-und-staging-readiness` on a
+            // warm server, whichever one had been opened before. Only the CONTENT push is skipped; the
+            // navigate handler below is registered as before, because an addressed socket follows links
+            // inside its document exactly like any other.
+            if( addressedDocumentId === null ) {
+                MemoView.#readFileContent( { absolutePath: state.absolutePath } )
+                    .then( async ( { content } ) => {
+                        const fileName = basename( state.absolutePath )
+                        const { previousPath, currentFullPath, skippedUpdates } = await MemoView.#findPreviousFullRevision( { absolutePath: state.absolutePath } )
+                        let diff = null
 
-                    if( previousPath && currentFullPath ) {
-                        try {
-                            const previousRaw = await readFile( previousPath, 'utf-8' )
-                            const currentRaw = await readFile( currentFullPath, 'utf-8' )
-                            const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
-                            diffResult['previousFile'] = basename( previousPath )
-                            diffResult['currentFullFile'] = basename( currentFullPath )
-                            diffResult['previousContent'] = previousRaw
-                            diffResult['skippedUpdates'] = skippedUpdates
-                            // Memo 080, PRD-R4: additive, exactly like previousContent above.
-                            diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
-                            diff = diffResult
-                        } catch {
-                            // skip
+                        if( previousPath && currentFullPath ) {
+                            try {
+                                const previousRaw = await readFile( previousPath, 'utf-8' )
+                                const currentRaw = await readFile( currentFullPath, 'utf-8' )
+                                const { diffResult } = MemoView.#computeDiff( { currentContent: currentRaw, previousContent: previousRaw } )
+                                diffResult['previousFile'] = basename( previousPath )
+                                diffResult['currentFullFile'] = basename( currentFullPath )
+                                diffResult['previousContent'] = previousRaw
+                                diffResult['skippedUpdates'] = skippedUpdates
+                                // Memo 080, PRD-R4: additive, exactly like previousContent above.
+                                diffResult['continuity'] = MemoView.#computeContinuity( { currentContent: currentRaw, previousContent: previousRaw } )['continuity']
+                                diff = diffResult
+                            } catch {
+                                // skip
+                            }
                         }
-                    }
 
-                    const { memoName } = MemoView.#resolveMemoName( { absolutePath: state.absolutePath } )
-                    const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
-                    const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                    const { validation } = MemoView.#computeValidation( { content } )
-                    const message = JSON.stringify( { 'type': 'content', content, fileName, memoName, diff, questionSchema, vorwort, validation } )
+                        const { memoName } = MemoView.#resolveMemoName( { absolutePath: state.absolutePath } )
+                        const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
+                        const { vorwort } = DocumentRegistry.parseVorwort( { content } )
+                        const { validation } = MemoView.#computeValidation( { content } )
+                        const message = JSON.stringify( { 'type': 'content', content, fileName, memoName, diff, questionSchema, vorwort, validation } )
 
-                    if( ws.readyState === 1 ) {
-                        ws.send( message )
-                    }
-                } )
+                        if( ws.readyState === 1 ) {
+                            ws.send( message )
+                        }
+                    } )
+            }
 
             ws.on( 'message', async ( raw ) => {
                 const data = JSON.parse( raw.toString() )

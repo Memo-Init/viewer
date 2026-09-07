@@ -666,7 +666,13 @@ describe( 'DocumentRegistry', () => {
         } )
 
 
-        it( 'maps "Option C" to exactly one preselected index for single', () => {
+        // Memo 081, WI-025 (PRD-35): these three cases asserted the coupling this work item dissolves —
+        // that the AI recommendation lands IN the selection field. The markdown path has no syntax for
+        // an explicit author selection at all, so 405 of 2909 markdown questions carried a preselection
+        // the author had no way to withdraw. The derivation is unchanged and is asserted here as before;
+        // what changed is the field it writes to. Each case now states BOTH halves of the split, so a
+        // regression that quietly reconnects the two fields fails here.
+        it( 'maps "Option C" to exactly one aiRecommended index for single, and preselects nothing', () => {
             const { question } = buildQuestion( {
                 body: '**AI-Empfehlung:** Option C\n\nA) a B) b C) c'
             } )
@@ -674,29 +680,33 @@ describe( 'DocumentRegistry', () => {
             const cIndex = keys.indexOf( 'C' )
 
             expect( question[ 'typ' ] ).toBe( 'single' )
-            expect( question[ 'preselected' ] ).toEqual( [ cIndex ] )
+            expect( question[ 'aiRecommended' ] ).toEqual( [ cIndex ] )
+            expect( question[ 'preselected' ] ).toEqual( [] )
         } )
 
 
-        it( 'maps "A+B" to both preselected indices for multi', () => {
+        it( 'maps "A+B" to both aiRecommended indices for multi, and preselects nothing', () => {
             const { question } = buildQuestion( {
                 body: '**Typ:** multi\n**AI-Empfehlung:** A+B\n\nA) a B) b C) c'
             } )
             const keys = keysOf( { question } )
 
             expect( question[ 'typ' ] ).toBe( 'multi' )
-            expect( question[ 'preselected' ] ).toEqual( [ keys.indexOf( 'A' ), keys.indexOf( 'B' ) ] )
+            expect( question[ 'aiRecommended' ] ).toEqual( [ keys.indexOf( 'A' ), keys.indexOf( 'B' ) ] )
+            expect( question[ 'preselected' ] ).toEqual( [] )
         } )
 
 
-        it( 'yields empty preselected for an unmatchable / missing recommendation', () => {
+        it( 'yields empty aiRecommended for an unmatchable / missing recommendation', () => {
             const none = buildQuestion( { body: 'A) a B) b' } )
             const unmatched = buildQuestion( {
                 body: '**AI-Empfehlung:** keine klare Wahl\n\nA) a B) b'
             } )
 
-            expect( none.question[ 'preselected' ] ).toEqual( [] )
-            expect( unmatched.question[ 'preselected' ] ).toEqual( [] )
+            // Held against aiRecommended, not preselected: on this path preselected is empty by
+            // construction now, so asserting it here would be a case that can no longer fail.
+            expect( none.question[ 'aiRecommended' ] ).toEqual( [] )
+            expect( unmatched.question[ 'aiRecommended' ] ).toEqual( [] )
         } )
     } )
 

@@ -8057,6 +8057,13 @@
         // applying the delta. Every later Shift+Up/Down then steps normally.
         var questionNav = { active: -1, optionFocus: -1, lane: 'option', questions: [], state: [], fertig: false, footerFocus: -1, engaged: false }
 
+        // Memo 081 WI-118: the working state that came back from the server, plus the document+revision
+        // pair it belongs to. `key` is what makes the load happen ONCE per pair — a second broadcast of
+        // the same pair must not re-fetch, or a late answer would overwrite a fresh selection. The
+        // entries are the raw stored records; stateFromStoredRecord maps them, nothing else reads them.
+        var questionStateStored = { key: null, entries: {}, seen: 0, skipped: 0 }
+        var questionStateSaveTimer = null
+
         // Memo 080 (Kap 18, PRD-F2): THE RE-FORMULATION KINDS AND THEIR FREE-TEXT ROWS. `reframe` says the
         // QUESTION is wrong (Memo 059), `reoption` says the ANSWER OPTIONS go past the decision — the case
         // the user named as the recurring one. Two turns, two prompts, ONE mechanism: the row build, the
@@ -8121,6 +8128,20 @@
             ;( questionNav.questions || [] ).forEach( function( pq, pIdx ) {
                 if( pq && pq.id ) { prevById[ pq.id ] = questionNav.state[ pIdx ] }
             } )
+            // Memo 081 WI-118: the STORED working state fills the SAME map, right before it is read — no
+            // second merge branch. Everything the map already guarantees therefore holds for a restored
+            // state too: keyed by q.id (not by position), and dropped whole by the validity latch in
+            // seedQuestionState when its selection index outruns today's option list.
+            //
+            // WHO WINS. A live entry the user has WORKED ON (touched, or already confirmed) beats the
+            // stored one — otherwise a broadcast arriving mid-typing would replace the fresh selection
+            // with an older saved one, which is Memo 079 PRD-24's defect in new clothes. An UNTOUCHED
+            // live entry is not the user's work, it is the AI preselection the seed just built, and it
+            // yields. That distinction is not a softening of the rule but the only way it can hold at
+            // all: the load is async, so the restore ALWAYS arrives at a second render that already
+            // found a freshly seeded entry under every question id. "Any live entry wins" would make
+            // the restore a no-op by construction.
+            fillPrevFromStoredQuestionState( prevById, questionStateStored.entries )
             questionNav.questions = open
             questionNav.state = seedQuestionState( open, prevById )
             questionNav.active = open.length > 0 ? 0 : -1
@@ -8251,6 +8272,53 @@
         // counted, a named predicate can.
         function isConfirmedAnswer( st ) {
             return !!( st && st.added === true && st.addedText )
+        }
+
+        // Memo 081 WI-118: map ONE stored record onto the widget state shape seedQuestionState produces.
+        // Its own named function so it can be lifted out and tested directly (extractFunction.mjs), and
+        // because this is where the whole WI-109 guarantee is cashed in:
+        //
+        // A record without a `confirmed` part carries NO answer text ANYWHERE — the intent half has no
+        // field that could hold one. So `addedText` is null not because this function chose to be
+        // careful but because there is nothing to take it from, and the restored state then fails the
+        // very same isConfirmedAnswer above that an unconfirmed selection fails today. The separation is
+        // not a rule to obey, it is a sentence that cannot be formed.
+        //
+        // Returns null for a shape it does not recognise — never a half-filled state.
+        function stateFromStoredRecord( record ) {
+            if( !record || typeof record !== 'object' ) { return null }
+            var intent = record.intent
+            if( !intent || typeof intent !== 'object' || !Array.isArray( intent.selected ) ) { return null }
+            var confirmed = record.confirmed
+            var answerText = ( confirmed && typeof confirmed.answerText === 'string' && confirmed.answerText.length > 0 )
+                ? confirmed.answerText
+                : null
+
+            return {
+                selected: intent.selected.slice(),
+                custom: Array.isArray( intent.custom ) ? intent.custom.slice() : [],
+                added: answerText !== null,
+                addedText: answerText,
+                rejected: intent.rejected === true,
+                touched: intent.touched === true
+            }
+        }
+
+        // Memo 081 WI-118: fill the merge map from the stored state for every question id whose LIVE
+        // entry is not the user's own work (see the caller for why untouched yields). Mutates the map it
+        // is handed — the same map seedQuestionState then reads, so there is exactly one merge path.
+        // Both operands are PARAMETERS, not module state: that is what makes the precedence rule
+        // testable on its own instead of only through a render.
+        function fillPrevFromStoredQuestionState( prevById, stored ) {
+            var records = stored || {}
+
+            Object.keys( records ).forEach( function( id ) {
+                var live = prevById[ id ]
+                var isOwnWork = !!( live && ( live.touched === true || live.added === true || live.rejected === true ) )
+                if( isOwnWork ) { return }
+                var restored = stateFromStoredRecord( records[ id ] )
+                if( restored ) { prevById[ id ] = restored }
+            } )
         }
 
         function collectAddedAnswers() {
@@ -8685,6 +8753,7 @@
                             setAddButtonState( qIdx, false )
                             updateSaveAnswersOnlyState()
                         }
+                        persistQuestionState()
                     }
                 } )
                 // Memo 079 reframe-freetext-click-loss: the reformulation was committed ONLY on Enter, so
@@ -8771,6 +8840,125 @@
             st.touched = true
         }
 
+        // Memo 081, WI-118: the ONE place a widget interaction becomes durable. Every mutating path joins
+        // it AFTER its mutation — selecting an option, typing a custom entry, harvesting a re-formulation,
+        // confirming, undoing, rejecting, un-rejecting — so a new interaction path is persisted by joining
+        // this call, not by remembering a save in seven places. markQuestionTouched above is the same idea
+        // at the START of a mutation; this is its counterpart at the END, and the two must not be merged: a
+        // save that ran before the assignment would store the state the user just left.
+        //
+        // It bundles: seven clicks in a row do not become seven writes. It never delays or breaks the
+        // click — the write runs on a timer and its failure surfaces as a visible message rather than an
+        // exception (the "best-effort but visible" rule UserInputCapture already follows).
+        function persistQuestionState() {
+            if( questionStateSaveTimer !== null ) { return }
+            questionStateSaveTimer = setTimeout( function() {
+                questionStateSaveTimer = null
+                flushQuestionState()
+            }, 250 )
+        }
+
+        // Build the records for the current widget state. The confirmed half is derived from
+        // isConfirmedAnswer — THE existing predicate, not a second copy of its condition. If the harvest
+        // condition ever narrows or widens, the store follows it automatically; two copies of one
+        // condition are exactly where a later change touches one of them and they drift apart.
+        //
+        // It reports its comparison set: `seen` how many states were examined, `skipped` how many carry
+        // no question id and are therefore neither stored nor restored (the same rule prevById follows).
+        // A silent drop would be expensive here, because a half-filled store looks like an empty one.
+        function buildQuestionStateRecords() {
+            var questions = questionNav.questions || []
+            var state = questionNav.state || []
+            var entries = {}
+            var counted = { seen: 0, skipped: 0 }
+
+            questions.forEach( function( q, qIdx ) {
+                var st = state[ qIdx ]
+                if( !st ) { return }
+                counted.seen = counted.seen + 1
+                if( !q || !q.id ) {
+                    counted.skipped = counted.skipped + 1
+
+                    return
+                }
+                var record = {
+                    intent: {
+                        selected: ( st.selected || [] ).slice(),
+                        custom: ( st.custom || [] ).slice(),
+                        rejected: st.rejected === true,
+                        touched: st.touched === true
+                    }
+                }
+                if( isConfirmedAnswer( st ) ) { record.confirmed = { answerText: st.addedText } }
+                entries[ q.id ] = record
+            } )
+
+            return { entries: entries, seen: counted.seen, skipped: counted.skipped }
+        }
+
+        function flushQuestionState() {
+            if( !currentDocumentId ) { return }
+            var rev = currentRevisionId()
+            if( !rev ) { return }
+            var built = buildQuestionStateRecords()
+
+            fetch( '/api/documents/' + encodeURIComponent( currentDocumentId ) + '/question-state', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify( { revisionId: rev, entries: built.entries } )
+            } )
+                .then( function( r ) { return r.ok ? r.json() : { status: false, messages: [ 'HTTP ' + r.status ] } } )
+                .then( function( data ) {
+                    if( data && data.status === true ) { return }
+                    showQuestionStateSaveError( data && data.messages ? data.messages : [] )
+                } )
+                .catch( function( err ) { showQuestionStateSaveError( [ String( err && err.message ? err.message : err ) ] ) } )
+        }
+
+        // A failed save is VISIBLE. A store that fails quietly is worse than none, because it promises
+        // that the restart is harmless — and the user only finds out when the state is already gone.
+        // German display text over English fields, like every other widget message here.
+        function showQuestionStateSaveError( messages ) {
+            var container = document.getElementById( 'question-widgets' )
+            if( !container ) { return }
+            var box = document.getElementById( 'qw-state-save-warn' )
+            if( !box ) {
+                box = document.createElement( 'div' )
+                box.className = 'qw-parse-warn'
+                box.id = 'qw-state-save-warn'
+                container.insertBefore( box, container.firstChild )
+            }
+            var detail = ( messages || [] ).join( '; ' )
+            box.textContent = '⚠ Der Antwort-Zustand konnte nicht gespeichert werden'
+                + ( detail.length > 0 ? ( ' (' + detail + ')' ) : '' )
+                + ' — nach einem Neustart des Servers ist er verloren.'
+        }
+
+        // Memo 081 WI-118: load the stored working state for THIS document+revision, then render again.
+        // The load is async and therefore cannot be finished before the first render, so it re-runs the
+        // SAME idempotent renderQuestionWidgets three other callers already run — a fourth call of the
+        // third path, never a fourth render path. Loading happens ONCE per document+revision pair: the
+        // key is claimed BEFORE the request goes out, so a repeated broadcast of the same pair cannot
+        // let a late answer overwrite a fresh selection.
+        function refreshQuestionState() {
+            if( !currentDocumentId ) { return }
+            var rev = currentRevisionId()
+            if( !rev ) { return }
+            var key = currentDocumentId + '::' + rev
+            if( questionStateStored.key === key ) { return }
+            questionStateStored.key = key
+
+            fetch( '/api/documents/' + encodeURIComponent( currentDocumentId ) + '/question-state?revisionId=' + encodeURIComponent( rev ) )
+                .then( function( r ) { return r.ok ? r.json() : { entries: {}, seen: 0, skipped: 0 } } )
+                .then( function( data ) {
+                    questionStateStored.entries = ( data && data.entries ) ? data.entries : {}
+                    questionStateStored.seen = ( data && typeof data.seen === 'number' ) ? data.seen : 0
+                    questionStateStored.skipped = ( data && typeof data.skipped === 'number' ) ? data.skipped : 0
+                    renderQuestionWidgets( lastQuestionSchema )
+                } )
+                .catch( function() {} )
+        }
+
         // PRD-F3 (Memo 080 Kap 18, S4): does the CONFIRMED selection say exactly what the AI had
         // preselected? This is the provenance datum the `preselected` column exists for — "the user went
         // with the recommendation" — and it is written only for an answer the user actually confirmed.
@@ -8810,6 +8998,7 @@
                 updateSaveAnswersOnlyState()
             }
             refreshOptionMarkers( qIdx )
+            persistQuestionState()
         }
 
         function refreshOptionMarkers( qIdx ) {
@@ -8992,6 +9181,7 @@
                 setAddButtonState( qIdx, false )
                 updateSaveAnswersOnlyState()
             }
+            persistQuestionState()
         }
 
         function submitQuestionAnswer( qIdx ) {
@@ -9029,6 +9219,7 @@
             setAddButtonState( qIdx, true )
             // PRD-028: a collected answer enables the "ohne Transcript speichern" path.
             updateSaveAnswersOnlyState()
+            persistQuestionState()
         }
 
         // PRD-006 (Kap 9, AC-07): explicit undo of a confirmed answer. Resets the added
@@ -9042,6 +9233,7 @@
             st.addedText = null
             setAddButtonState( qIdx, false )
             updateSaveAnswersOnlyState()
+            persistQuestionState()
         }
 
         // PRD-005 (#22): "+ Frage" — open the transcript modal pre-filled with a
@@ -9074,6 +9266,7 @@
                 if( tog ) { tog.textContent = '+' }
                 setRejectButtonState( qIdx, true )
             }
+            persistQuestionState()
         }
 
         // PRD-006 (AC-08): "Ablehnen rückgängig" — restore a rejected card to normal.
@@ -9092,6 +9285,7 @@
             }
             // The selection survived the reject, so the markers just need a redraw.
             refreshOptionMarkers( qIdx )
+            persistQuestionState()
         }
 
         function toggleRejectQuestion( qIdx ) {
@@ -10090,6 +10284,10 @@
                         // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): load this revision's annotations
                         // and run the render pass now that the document + revision are known.
                         refreshAnnotations()
+                        // PRD-31 (Memo 081, WI-118): same place, same reason — currentFileName is only
+                        // assigned in THIS branch, and currentRevisionId() reads it, so a load started
+                        // before this point would ask for the PREVIOUS revision's state.
+                        refreshQuestionState()
                     }
                 }
             }

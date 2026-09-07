@@ -24,6 +24,7 @@ import { TranscriptRegistry } from './TranscriptRegistry.mjs'
 import { UserInputCapture } from './UserInputCapture.mjs'
 import { RequirementsStore } from './RequirementsStore.mjs'
 import { AnnotationStore } from './AnnotationStore.mjs'
+import { QuestionStateStore } from './QuestionStateStore.mjs'
 import { BlockMeta } from './BlockMeta.mjs'
 import { BlockSections } from './BlockSections.mjs'
 import { RevisionLogic } from './RevisionLogic.mjs'
@@ -2904,6 +2905,94 @@ ${ VendorAssets.scriptTags().tags }
                 const listed = await AnnotationStore.list( { 'memoDir': location[ 'memoDir' ], revisionId, researchFile } )
 
                 sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'annotations': listed[ 'annotations' ] } )
+
+                return
+            }
+
+            // PRD-31 (Memo 081 Kap 19, WI-118): the WORKING state of the question widget, read side. Same
+            // shape and same ordering rule as the /annotations route above — the suffix is more specific,
+            // so this MUST be matched BEFORE the generic /api/documents/<id> GET below, which would
+            // otherwise swallow "<id>/question-state" as the id.
+            //
+            // This is NOT the answer ledger. `user_input_answers` holds the SUBMITTED decision and is not
+            // touched by either branch here; this one holds what comes before it, so a server restart no
+            // longer empties the widget. The two-part record (intent / confirmed) keeps an unconfirmed
+            // selection from ever coming back as an answer — see QuestionStateStore's head comment.
+            //
+            // The comparison set travels with the answer: `seen` says how many records the file carried,
+            // `skipped` how many were dropped as malformed. A caller that gets entries without those two
+            // numbers cannot tell an empty store from an unreadable one.
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/question-state' ) && req.method === 'GET' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/question-state'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                const location = MemoView.resolveMemoDir( { 'memoPath': result[ 'document' ][ 'memoPath' ] } )
+
+                if( !location[ 'status' ] ) {
+                    // Mirror of the annotations route at :2893 — a document without a registered memoPath
+                    // gets the empty answer WITH a reason, never a guessed directory.
+                    sendJson( res, 200, { 'status': false, 'documentId': documentId, 'revisionId': null, 'entries': {}, 'seen': 0, 'skipped': 0, 'messages': [ 'no memoPath registered for this document' ] } )
+
+                    return
+                }
+
+                const params = new URLSearchParams( req.url.split( '?' )[ 1 ] || '' )
+                const revisionId = params.get( 'revisionId' ) || ''
+                const state = await QuestionStateStore.read( { 'memoDir': location[ 'memoDir' ], revisionId } )
+
+                sendJson( res, 200, { 'status': state[ 'status' ], 'documentId': documentId, 'revisionId': revisionId, 'entries': state[ 'entries' ], 'seen': state[ 'seen' ], 'skipped': state[ 'skipped' ], 'messages': state[ 'messages' ] } )
+
+                return
+            }
+
+            // PRD-31 (Memo 081 Kap 19, WI-118): the WORKING state of the question widget, write side.
+            // FAIL-LOUD: a rejected revision id or a failed write answers status:false WITH the store's
+            // messages, and the client makes them visible. A save that fails in silence would promise the
+            // user that the restart was harmless.
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/question-state' ) && req.method === 'PUT' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/question-state'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    sendJson( res, 404, { 'error': result[ 'messages' ].join( '; ' ) } )
+
+                    return
+                }
+
+                const { body, aborted } = await readBody( req )
+
+                // PRD-V5 (WI-136): the peer went away mid-body — never answer on a dead socket.
+                if( aborted === true ) { return }
+
+                let parsed
+
+                try {
+                    parsed = JSON.parse( body )
+                } catch {
+                    sendJson( res, 400, { 'error': 'Invalid JSON body' } )
+
+                    return
+                }
+
+                const location = MemoView.resolveMemoDir( { 'memoPath': result[ 'document' ][ 'memoPath' ] } )
+
+                if( !location[ 'status' ] ) {
+                    sendJson( res, 200, { 'status': false, 'written': 0, 'skipped': 0, 'messages': [ 'no memoPath registered for this document' ] } )
+
+                    return
+                }
+
+                const saved = await QuestionStateStore.write( { 'memoDir': location[ 'memoDir' ], 'revisionId': parsed[ 'revisionId' ], 'entries': parsed[ 'entries' ] } )
+
+                sendJson( res, 200, { 'status': saved[ 'status' ], 'written': saved[ 'written' ], 'skipped': saved[ 'skipped' ], 'messages': saved[ 'messages' ] } )
 
                 return
             }

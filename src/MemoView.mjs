@@ -89,6 +89,38 @@ const makeBundleReader = ( path ) => {
 const getCssBundle = makeBundleReader( APP_CSS_PATH )
 const getClientBundle = makeBundleReader( APP_CLIENT_JS_PATH )
 
+// Memo 081 (WI-068): the delivered page used to be built ONCE per process and closed over by
+// #createHttpHandler, while the WebSocket read getClientBundle().hash LIVE on every connect. Two
+// readings of the same value at two different times: after any edit to app.client.mjs the client saw
+// "new build", called location.reload() — and got the very same frozen page back. Measured before this
+// change, against a real server: 5985 of 5985 browser-equivalent cycles in 12.0 s triggered another
+// reload, 100 %. The loop never ends by itself, and it leaves neither a JS error nor a failed request,
+// which is why it stayed invisible for nine weeks.
+//
+// The page therefore follows the mtime-invalidated pattern of makeBundleReader above: rebuilt only
+// when its FINGERPRINT changed. `html` and `csp` are ALWAYS renewed together — the CSP header carries
+// a sha256 over the very inline scripts the body contains (WI-103), so a page rebuilt without its
+// header would ship a script the browser refuses to run. The handshake would then go quiet because it
+// is broken, not because the two sides agree: a green symptom over a bigger defect.
+//
+// COST. #buildHtmlPage assembles a multi-kilobyte template, runs two sha256 computations and asks
+// VendorAssets — doing all that per request would be exactly the waste the two readers above exist to
+// avoid. `buildCount` is returned so a test can prove the cap instead of trusting the claim.
+const makePageReader = ( { fingerprint, build } ) => {
+    let cache = { fingerprint: null, html: '', csp: '', buildCount: 0 }
+
+    return () => {
+        const mark = fingerprint()
+
+        if( mark !== cache.fingerprint ) {
+            const { html, csp } = build()
+            cache = { fingerprint: mark, html, csp, buildCount: cache.buildCount + 1 }
+        }
+
+        return cache
+    }
+}
+
 // PRD-V11 (Memo 080 Kap 19, WI-100): the honest half of `view up`. A pure port probe (`nc -z`) only
 // proves that SOMETHING listens — a server process running code that is older than the source on disk
 // passes it, green. So the server publishes the hash it BOOTED with next to the hash the source on
@@ -217,8 +249,11 @@ class MemoView {
 
         MemoView.#currentDirectoryState = state
 
-        const { html, csp } = MemoView.#buildHtmlPage( { port: portNumber } )
-        const { handler } = MemoView.#createHttpHandler( { html, csp, state } )
+        // Memo 081 (WI-068): hand over the page READER, not one built page. Both start paths are
+        // treated alike — a live page on one of them and a frozen one on the other would be the
+        // parallel-path form this project resolves elsewhere.
+        const getPage = MemoView.#createPageReader( { port: portNumber } )
+        const { handler } = MemoView.#createHttpHandler( { getPage, state } )
 
         const server = createServer( handler )
 
@@ -1042,8 +1077,11 @@ class MemoView {
 
         MemoView.#currentDirectoryState = state
 
-        const { html, csp } = MemoView.#buildHtmlPage( { port: portNumber } )
-        const { handler } = MemoView.#createHttpHandler( { html, csp, state } )
+        // Memo 081 (WI-068): hand over the page READER, not one built page. Both start paths are
+        // treated alike — a live page on one of them and a frozen one on the other would be the
+        // parallel-path form this project resolves elsewhere.
+        const getPage = MemoView.#createPageReader( { port: portNumber } )
+        const { handler } = MemoView.#createHttpHandler( { getPage, state } )
 
         const server = createServer( handler )
 
@@ -2036,6 +2074,48 @@ class MemoView {
     }
 
 
+    // Memo 081 (WI-068): the cache key of the page reader. It has to name EVERY mutable value that
+    // #buildHtmlPage embeds below, because a value that enters the page but not the fingerprint would
+    // be served from a cache that matches no state any more — the same two-timepoints defect one step
+    // further on. Counted against the whole body of #buildHtmlPage, five values enter the page:
+    //   - getClientBundle().hash  — mutable, stands here (this is the defect WI-068 names)
+    //   - the config flag         — mutable in principle, stands here (MemoView.#config itself is still
+    //                               booted exactly once, so today it only ever changes across restarts)
+    //   - VendorAssets.scriptTags — a static register, hashed in anyway so a later dynamic register
+    //                               cannot reopen this hole silently
+    //   - port                    — fixed for the life of the process; carried because the reader is
+    //                               created per port and a wrong port would poison connect-src
+    //   - csp                     — not an input but a RESULT of the two bootstrap texts, so it is
+    //                               renewed with them by construction and must NOT be keyed separately
+    // The config read below repeats the expression in #buildHtmlPage on purpose (that method keeps its
+    // body unchanged). What stops the two from drifting apart is T-E in
+    // tests/unit/BuildHashHandshakePRD29.test.mjs, which flips the flag and asserts the delivered page
+    // follows.
+    static #pageFingerprint( { port } ) {
+        let showOnlyFullRevisions = true
+
+        if( MemoView.#config !== null ) {
+            const { value } = MemoView.#config.get( { key: 'showOnlyFullRevisions' } )
+            showOnlyFullRevisions = value
+        }
+
+        const { tags } = VendorAssets.scriptTags()
+        const vendorMark = createHash( 'sha1' ).update( tags ).digest( 'hex' ).slice( 0, 12 )
+
+        return `${ port }|${ getClientBundle().hash }|${ showOnlyFullRevisions }|${ vendorMark }`
+    }
+
+
+    // The per-port page reader that BOTH start paths hand to #createHttpHandler. One reader per server,
+    // so its build counter measures exactly that server and nothing else.
+    static #createPageReader( { port } ) {
+        return makePageReader( {
+            'fingerprint': () => { return MemoView.#pageFingerprint( { port } ) },
+            'build': () => { return MemoView.#buildHtmlPage( { port } ) }
+        } )
+    }
+
+
     static #buildHtmlPage( { port } ) {
         const faviconColor = PORT_COLORS[ port ] || '8b949e'
 
@@ -2411,7 +2491,25 @@ ${ VendorAssets.scriptTags().tags }
     }
 
 
-    static #createHttpHandler( { html, csp, state } ) {
+    // Test seam ONLY (Memo 081, WI-068): hand out a page reader so a case can prove the build cap and
+    // the html/csp coupling against the REAL #buildHtmlPage, without starting a server. Never called
+    // from the server paths.
+    static createPageReaderForTests( { port } ) {
+        return { getPage: MemoView.#createPageReader( { port } ) }
+    }
+
+
+    // Test seam ONLY (Memo 081, WI-068): install or drop a config double, so a case can prove that the
+    // page fingerprint reacts to the flag #buildHtmlPage embeds. Never called from the server paths —
+    // the server still boots its config exactly once, in startServer.
+    static setConfigForTests( { config } ) {
+        MemoView.#config = config
+
+        return { installed: config !== null }
+    }
+
+
+    static #createHttpHandler( { getPage, state } ) {
         const mimeTypes = {
             '.png': 'image/png',
             '.jpg': 'image/jpeg',
@@ -4459,11 +4557,21 @@ ${ VendorAssets.scriptTags().tags }
             }
 
             // WI-103 (Memo 080 Kap 15): the Sicherheits-Kopf rides on the page response — the only
-            // response that can execute anything. `csp` was computed together with the HTML, so its two
+            // response that can execute anything. `csp` is computed together with the HTML, so its two
             // inline-script hashes describe exactly the blocks this body carries.
+            //
+            // Memo 081 (WI-068): ONE call, inside the request, and both values out of its single
+            // result. Never two calls and never one of them out of a closure — between two calls the
+            // bundle can change, and then the header would describe a different text than the body
+            // carries. That is bit for bit the failure form WI-103 abolished, only rarer in time.
+            const { html, csp, buildCount } = getPage()
+
             res.writeHead( 200, {
                 'Content-Type': 'text/html; charset=utf-8',
-                'Content-Security-Policy': csp
+                'Content-Security-Policy': csp,
+                // Memo 081 (WI-068): the build cap is measurable from outside instead of asserted —
+                // N requests without a bundle change have to show exactly ONE build.
+                'X-Memo-View-Page-Builds': String( buildCount )
             } )
             res.end( html )
         }
@@ -4578,6 +4686,11 @@ ${ VendorAssets.scriptTags().tags }
             // serving right now. The client compares this against the hash its page was rendered with
             // (window.__MEMO_VIEW_BUILD__) and reloads on mismatch — a restarted server that shipped a
             // newer bundle auto-refreshes open tabs instead of leaving them on the stale client.
+            //
+            // Memo 081 (WI-068): this live read was never the fault and is unchanged. What changed is
+            // the OTHER side — the page now reads the same value live too, so a restart is no longer
+            // the only occasion on which the two can agree. A bundle edit under a running server used
+            // to leave them permanently apart, and the client reloaded on every single connect.
             if( ws.readyState === 1 ) {
                 ws.send( JSON.stringify( { 'type': 'build', 'id': getClientBundle().hash } ) )
             }

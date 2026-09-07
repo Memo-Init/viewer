@@ -9705,9 +9705,52 @@
                 // bundle hash on connect. If this page was rendered from an OLDER bundle, reload to
                 // pick up the new client (this is what stops a restarted server's stale tabs from
                 // polling the removed /api/session + /api/cockpit routes).
+                //
+                // Memo 081 (WI-068): the reload is throttled to ONCE per build-ID pair. The server side
+                // of this defect is fixed (the page is no longer frozen at boot), but the throttle is
+                // not a second fix of the same case — it closes the CLASS. An unconditional reload on
+                // mismatch turns ANY future source of disagreement — an interposed cache, a tab out of
+                // the bfcache, a second process on the same port — back into the measured 100 % loop.
+                // If a reload does NOT resolve the mismatch, the assumption "one reload fetches the new
+                // client" is refuted, and then the right move is the one /api/health makes: report the
+                // disagreement, do not act on it. The marker has to survive the reload that it throttles
+                // (a reload discards every variable in memory), so it lives in sessionStorage, and it
+                // carries BOTH ids so a later, genuinely new build is not throttled along with it.
+                // The decision itself is a PURE function, deliberately: a reload cannot be observed
+                // from inside the page that performs it, so the only way to prove both directions —
+                // it throttles, and it does not throttle too much — is to decide separately from
+                // acting. `attempt` names the PAIR (old id -> new id), not just the new id: a later,
+                // genuinely new build must not be throttled along with the one before it.
+                function decideBuildReload( pageBuild, serverId, lastAttempt ) {
+                    if( !serverId || !pageBuild || serverId === pageBuild ) { return { action: 'none', attempt: null } }
+
+                    var attempt = pageBuild + '->' + serverId
+
+                    if( lastAttempt === attempt ) { return { action: 'warn', attempt: attempt } }
+
+                    return { action: 'reload', attempt: attempt }
+                }
+
                 if( data.type === 'build' ) {
-                    if( data.id && window.__MEMO_VIEW_BUILD__ && data.id !== window.__MEMO_VIEW_BUILD__ ) {
+                    var lastAttempt = null
+
+                    // A sandboxed or storage-blocked context throws on access. This is not a silent
+                    // default: with no storage there is no throttle to read, and falling back to the
+                    // pre-081 behaviour (reload once) is the honest answer.
+                    try { lastAttempt = sessionStorage.getItem( 'memoViewBuildReload' ) } catch ( err ) { lastAttempt = null }
+
+                    var decision = decideBuildReload( window.__MEMO_VIEW_BUILD__, data.id, lastAttempt )
+
+                    if( decision.action === 'reload' ) {
+                        try { sessionStorage.setItem( 'memoViewBuildReload', decision.attempt ) } catch ( err ) { /* storage blocked — reload once, unthrottled */ }
                         location.reload()
+                    }
+
+                    if( decision.action === 'warn' ) {
+                        // The measured defect left NO JS error and NO failed request — it was invisible
+                        // to every error console. From here on it is not.
+                        console.warn( 'memo-view: build handshake still disagrees after a reload — page was rendered with ' + window.__MEMO_VIEW_BUILD__ + ', server is serving ' + data.id + '. Not reloading again.' )
+                        statusEl.title = 'Server verbunden, aber der Build weicht ab: Seite ' + window.__MEMO_VIEW_BUILD__ + ', Server ' + data.id + '. Server neu starten.'
                     }
 
                     return

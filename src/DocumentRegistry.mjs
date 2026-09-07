@@ -158,7 +158,16 @@ class DocumentRegistry {
         // the POST /api/documents door-gate can validate it. #scanRevisions sorts newest-first, so
         // revisions[0] is the latest. Never throws — a missing document or unreadable file returns
         // found:false and the caller simply skips the validation gate (fail-open, never blocks).
-        const struct = { 'found': false, 'content': '', 'fileName': '' }
+        //
+        // Memo 081, WI-080: the "latest revision" can be ANY of the three types — a `REV-NN-prepare.md`
+        // written by memo-revision-generate is the youngest file of its folder until the revision itself
+        // lands, so registering inside that window hands the gate a prepare file. The type therefore
+        // travels WITH the content instead of leaving the caller to guess it: #classifyRevisionType
+        // already derived it at scan time and stored it on the record, and this method used to drop it
+        // on the floor. Nothing is derived here — no second regular expression, no second rule.
+        // `null` while `found` is false is deliberate: no revision means no type, and 'full' at that
+        // spot would be a silent default.
+        const struct = { 'found': false, 'content': '', 'fileName': '', 'revisionType': null }
 
         const document = this.#documents.get( documentId )
         if( document === undefined ) { return struct }
@@ -173,6 +182,7 @@ class DocumentRegistry {
             struct[ 'found' ] = true
             struct[ 'content' ] = content
             struct[ 'fileName' ] = latest[ 'fileName' ]
+            struct[ 'revisionType' ] = latest[ 'revisionType' ]
         } catch {
             return struct
         }

@@ -2739,17 +2739,46 @@ ${ VendorAssets.scriptTags().tags }
                 // memo stays registered (visible on refresh) — the AI reads the messages, fixes the
                 // revision, and re-registers (then 200 + live broadcast). Companion to the read-only
                 // /api/validate pre-submit check (the discipline the writing skills now follow).
+                //
+                // Memo 081, WI-080: the file name goes WITH the content now. It was always here — the
+                // error line four rows down prints it — and it was the one consumer that needed it who
+                // never got it, so a `REV-NN-prepare.md` (the youngest file of its folder in the window
+                // between memo-revision-generate and memo-revision-execute) was measured against the
+                // FULL schema and answered 422 with thirteen findings a prepare file can never satisfy.
+                // The check is not switched off for prepare files — 54 of 161 breach their OWN schema
+                // and stay red; they are simply measured against the right one.
+                //
+                // Two derivations meet here: the registry's (#classifyRevisionType, at scan time) and
+                // the validator's (#revisionTypeOf, from the same name under a stricter pattern). They
+                // are NOT reconciled here — a disagreement is a finding, not a reason to carry on, and
+                // it is reported with BOTH values in the same form /api/health reports a stale process.
                 const latestRevision = await MemoView.#registry.getLatestRevision( { documentId: result[ 'documentId' ] } )
 
                 if( latestRevision[ 'found' ] === true ) {
-                    const { validation } = MemoView.#computeValidation( { content: latestRevision[ 'content' ] } )
+                    const { validation } = MemoView.#computeValidation( { 'content': latestRevision[ 'content' ], 'fileName': latestRevision[ 'fileName' ] } )
+                    const registryType = latestRevision[ 'revisionType' ]
+                    const appliedType = validation === null || typeof validation !== 'object' ? null : validation[ 'revisionType' ]
+                    const divergent = registryType !== null && appliedType !== null && registryType !== appliedType
+
+                    if( divergent === true ) {
+                        process.stdout.write( `  Revision-type divergence for ${ latestRevision[ 'fileName' ] }: the registry scan says "${ registryType }", the validator says "${ appliedType }" — reported, not resolved\n` )
+                    }
 
                     if( validation !== null && typeof validation === 'object' && validation[ 'status' ] === false ) {
-                        sendJson( res, 422, {
-                            'error': `Latest revision (${ latestRevision[ 'fileName' ] }) failed validation — fix it and re-register`,
+                        // Additive: no existing field is dropped. `revisionType` names WHICH schema was
+                        // applied and `checked` names HOW MUCH it compared — a refusal that states
+                        // neither is what made this defect take three months to read.
+                        const answer = {
+                            'error': `Latest revision (${ latestRevision[ 'fileName' ] }) failed validation against the "${ appliedType }" schema — fix it and re-register`,
                             'messages': validation[ 'messages' ],
-                            'documentId': result[ 'documentId' ]
-                        } )
+                            'documentId': result[ 'documentId' ],
+                            'revisionType': appliedType,
+                            'checked': validation[ 'checked' ]
+                        }
+
+                        if( divergent === true ) { answer[ 'registryRevisionType' ] = registryType }
+
+                        sendJson( res, 422, answer )
 
                         return
                     }
@@ -4470,7 +4499,10 @@ ${ VendorAssets.scriptTags().tags }
                 }
 
                 const { content } = parsed
-                const { validation } = MemoView.#computeValidation( { content } )
+                // Memo 081, WI-080: `null` on purpose, not by omission. This route judges a raw body a
+                // writer is about to submit — there is no file yet, so the document's own signals are
+                // the RIGHT stage to decide the type here, not the accidental one.
+                const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': null } )
                 const safe = ( validation !== null && typeof validation === 'object' )
                     ? validation
                     : { 'status': false, 'messages': [ 'MEMO-002 doc: Document is empty or not a string' ], 'info': [] }
@@ -5015,9 +5047,13 @@ ${ VendorAssets.scriptTags().tags }
                     // The three helpers are called in the SAME form as the four other content-send sites,
                     // so the source-structural gate of PRD-040 counts this one with them instead of
                     // finding a fifth site that computes its validation some other way.
+                    // Memo 081, WI-080: the file name is the one field where this site DIFFERS, and it
+                    // differs honestly — the body above is assembled here, no revision file exists, and
+                    // the `ws.send` below already says `'fileName': null`. Passing `null` states that;
+                    // omitting the argument would look like the oversight this change removes.
                     const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                    const { validation } = MemoView.#computeValidation( { content } )
+                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': null } )
 
                     if( ws.readyState === 1 ) {
                         ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': null, 'memoName': memoName, 'documentId': linked[ 'documentId' ], 'diff': null, questionSchema, vorwort, validation } ) )
@@ -5094,7 +5130,7 @@ ${ VendorAssets.scriptTags().tags }
                                 if( ws.readyState === 1 ) {
                                     const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                                    const { validation } = MemoView.#computeValidation( { content } )
+                                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': revFileName } )
                                     ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'diff': diff, questionSchema, vorwort, validation } ) )
                                 }
                             } )
@@ -5138,7 +5174,7 @@ ${ VendorAssets.scriptTags().tags }
                                     const { memoName } = MemoView.#resolveMemoName( { absolutePath: revPath } )
                                     const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                                    const { validation } = MemoView.#computeValidation( { content } )
+                                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': revFileName } )
 
                                     ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'documentId': msg.documentId, 'diff': diff, questionSchema, vorwort, validation } ) )
 
@@ -5199,7 +5235,7 @@ ${ VendorAssets.scriptTags().tags }
                         const { memoName } = MemoView.#resolveMemoName( { absolutePath: state.absolutePath } )
                         const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                         const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                        const { validation } = MemoView.#computeValidation( { content } )
+                        const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': fileName } )
                         const message = JSON.stringify( { 'type': 'content', content, fileName, memoName, diff, questionSchema, vorwort, validation } )
 
                         if( ws.readyState === 1 ) {
@@ -5354,7 +5390,7 @@ ${ VendorAssets.scriptTags().tags }
 
         const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
         const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-        const { validation } = MemoView.#computeValidation( { content } )
+        const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': fileName } )
         const message = JSON.stringify( { 'type': 'content', content, fileName, preserveScroll, memoName, diff, questionSchema, vorwort, validation } )
 
         clients.forEach( ( ws ) => {
@@ -5365,7 +5401,7 @@ ${ VendorAssets.scriptTags().tags }
     }
 
 
-    static #computeValidation( { content } ) {
+    static #computeValidation( { content, fileName } ) {
         // PRD-040 (Memo 016, Kap 13): the deterministic MemoValidator runs as a GATE in the
         // server before delivering `content` to the View/AI. The result `{ status, messages,
         // info }` is attached as a `validation` field to every content WebSocket message.
@@ -5375,8 +5411,18 @@ ${ VendorAssets.scriptTags().tags }
         // decision documented). MemoValidator.validate never throws (PRD-036); the try/catch
         // is defensive so an unexpected error never blocks content delivery — `validation`
         // becomes null and the server keeps running.
+        //
+        // Memo 081, WI-080: `fileName` is handed through because MemoValidator derives the revision
+        // type in TWO stages — the file-name suffix first, the document's own signals only as a
+        // fallback (MemoValidator.#revisionTypeOf). Every call site here used to omit the name, so the
+        // fallback was not a fallback but the ONLY stage the viewer ever reached: measured over the
+        // stock, 35 of 161 prepare files were then judged against the `full` schema and produced 341 of
+        // their 503 findings that a prepare file can never satisfy. The parameter is NOT optional and
+        // carries NO default — a site that genuinely has no file (a raw transcript body, a body
+        // assembled from the db, the empty state of a document without revisions) passes `null` and
+        // says why. A silent default here would be the very omission this change removes.
         try {
-            const validation = MemoValidator.validate( { doc: content } )
+            const validation = MemoValidator.validate( { 'doc': content, fileName } )
 
             return { validation }
         } catch {
@@ -5800,7 +5846,9 @@ ${ VendorAssets.scriptTags().tags }
                 return false
             }
 
-            const { validation } = MemoView.#computeValidation( { content: markdown } )
+            // Memo 081, WI-080: `null` on purpose. This body is assembled from the database, so no file
+            // name exists to derive a type from — the document's own signals are the right stage here.
+            const { validation } = MemoView.#computeValidation( { 'content': markdown, 'fileName': null } )
 
             return validation !== null && typeof validation === 'object' && validation[ 'status' ] === true
         } catch {

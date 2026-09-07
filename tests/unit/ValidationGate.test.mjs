@@ -30,8 +30,12 @@ describe( 'PRD-040 gate wiring (source-structural)', () => {
     it( 'a centralised #computeValidation helper exists with defensive try/catch', async () => {
         const src = await readFile( memoViewPath, 'utf-8' )
 
-        expect( src ).toMatch( /static #computeValidation\( \{ content \} \)/ )
-        expect( src ).toMatch( /try \{\s*const validation = MemoValidator\.validate\( \{ doc: content \} \)/ )
+        // Memo 081, WI-080 (PRD-36): the helper takes the file name too, and hands it on. Both strings
+        // are SHARPENED, not loosened — the first pins the two-parameter signature (no default, no
+        // optional marker), the second pins that the name actually reaches MemoValidator. A helper that
+        // accepted the name and dropped it would satisfy the old assertion and defeat the whole change.
+        expect( src ).toMatch( /static #computeValidation\( \{ content, fileName \} \)/ )
+        expect( src ).toMatch( /try \{\s*const validation = MemoValidator\.validate\( \{ 'doc': content, fileName \} \)/ )
         expect( src ).toMatch( /'validation': null/ )
     } )
 
@@ -59,14 +63,20 @@ describe( 'PRD-040 gate wiring (source-structural)', () => {
 
     it( 'every site that carries validation first computes it via #computeValidation', async () => {
         const src = await readFile( memoViewPath, 'utf-8' )
-        const computeCount = ( src.match( /MemoView\.#computeValidation\( \{ content \} \)/g ) || [] ).length
+        const calls = ( src.match( /MemoView\.#computeValidation\( \{ [^}]*\} \)/g ) || [] )
+        const withNull = calls.filter( ( call ) => /'fileName': null/.test( call ) === true )
+        const withName = calls.filter( ( call ) => /'fileName': null/.test( call ) === false )
 
-        // 5 content-send sites (PRD-040 + the empty state of PRD-35) + 1 read-only /api/validate route
-        // (PRD-005, Memo 019). The route reuses the same centralised, defensive validator helper instead
-        // of calling MemoValidator.validate directly, so the gate behaviour stays consistent everywhere.
-        // The new site deliberately calls the helper in the identical form — a fifth site that computed
-        // its validation differently would pass the count above and defeat exactly this check.
-        expect( computeCount ).toBe( 6 )
+        // Memo 081, WI-080 (PRD-36): the old count pinned the number 6 against a single exact literal
+        // (`{ content }`). That number happened to equal the number of sites written in that one form —
+        // the door-gate and dbBodyServeable were never in it, so the assertion silently compared 6 of 8.
+        // It is SHARPENED here into a total against its two named parts: ALL 8 call sites, 5 of which
+        // hand a file name on and 3 of which have no file at all and say so with an explicit null (the
+        // raw /api/validate body, the empty state of a document without revisions, the body assembled
+        // from the db). A ninth site, or a site that silently omitted the argument, breaks this.
+        expect( calls.length ).toBe( 8 )
+        expect( withName.length ).toBe( 5 )
+        expect( withNull.length ).toBe( 3 )
     } )
 } )
 

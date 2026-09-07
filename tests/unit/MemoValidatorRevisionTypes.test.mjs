@@ -102,8 +102,11 @@ describe( 'MemoValidator revision types — derivation (A6)', () => {
 
 
     it( 'without a filename a document with no signal stays "full" — the pre-change behaviour', () => {
-        // The 7 MemoView.#computeValidation call sites pass no fileName; they must keep the old
-        // schema, otherwise this change would silently reinterpret every viewer validation.
+        // Memo 081, WI-080 (PRD-36): this comment used to read "the 7 MemoView.#computeValidation call
+        // sites pass no fileName" — that stopped being true. Five of the eight sites now hand the name
+        // on, three genuinely have no file and pass an explicit null. The ASSERTION below is untouched
+        // and stays right: it measures MemoValidator's stage-2 fallback, which is exactly what those
+        // three null sites still rely on, and which this change does not alter.
         const result = MemoValidator.validate( { doc: FULL_DOC_MINIMAL } )
 
         expect( result[ 'revisionType' ] ).toBe( 'full' )

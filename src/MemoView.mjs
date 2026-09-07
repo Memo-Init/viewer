@@ -1905,6 +1905,120 @@ class MemoView {
     }
 
 
+    // Memo 081, WI-066: parse a document deep link. Two accepted forms — /doc/{documentId} and
+    // /doc/{documentId}/{revisionLabel}, where the label is the revision file name WITHOUT the .md
+    // suffix (REV-16, REV-06-update, REV-02-prepare, v0.4 — FOUR shapes, counted over the 2385
+    // registered revisions of the real stock, not the three the memo names). The definition is the file
+    // name, never a shape list, so nobody has to maintain that list when a fifth shape appears.
+    // Built exactly like canonicalTranscriptLocation above: a path that does not parse is a RESULT
+    // ({ status: false }), never a throw, so each caller decides for itself — the HTTP route answers
+    // 404, the WebSocket connect falls back to its unchanged auto-select branch. ONE parser for both
+    // callers: a second, slightly different reading of the same URL is the parallel path this project
+    // resolves elsewhere.
+    // This checks the FORM, not the existence — that keeps it testable without a server. Existence is
+    // the business of resolveDeepLinkTarget below, which has the registry.
+    static parseDeepLinkPath( { pathname } ) {
+        const struct = { 'status': false, 'documentId': null, 'fileName': null }
+
+        if( typeof pathname !== 'string' ) { return struct }
+
+        const pathPart = pathname.split( '?' )[ 0 ]
+
+        if( pathPart !== '/doc' && pathPart.startsWith( '/doc/' ) !== true ) { return struct }
+
+        // '/doc/a/b'.split( '/' ) -> [ '', 'doc', 'a', 'b' ]; slice( 2 ) leaves the payload segments.
+        const rawSegments = pathPart.split( '/' ).slice( 2 )
+
+        if( rawSegments.length === 0 || rawSegments.length > 2 ) { return struct }
+
+        const decoded = rawSegments
+            .map( ( segment ) => MemoView.#decodeDeepLinkSegment( { segment } )[ 'value' ] )
+
+        if( decoded.some( ( value ) => value === null ) ) { return struct }
+
+        struct[ 'status' ] = true
+        struct[ 'documentId' ] = decoded[ 0 ]
+        struct[ 'fileName' ] = decoded.length === 2 ? `${ decoded[ 1 ] }.md` : null
+
+        return struct
+    }
+
+
+    // One URL segment of a deep link, decoded and screened. Returns { value: null } for everything a
+    // segment must never be, so the caller reads ONE condition instead of five. Rejected: an empty
+    // segment, a broken percent sequence (decodeURIComponent THROWS on it — the same trap Mesh 2a
+    // closed for the request path, and the WebSocket upgrade does NOT run through that mesh), the two
+    // relative path names, and any segment that carries a path separator or a NUL AFTER decoding —
+    // %2F is how a separator gets smuggled past a check that only looks at the raw text.
+    static #decodeDeepLinkSegment( { segment } ) {
+        const struct = { 'value': null }
+
+        if( typeof segment !== 'string' || segment.length === 0 ) { return struct }
+
+        let decoded = null
+
+        try {
+            decoded = decodeURIComponent( segment )
+        } catch {
+            return struct
+        }
+
+        if( decoded.length === 0 || decoded === '.' || decoded === '..' ) { return struct }
+
+        if( /[/\\\0]/.test( decoded ) === true ) { return struct }
+
+        struct[ 'value' ] = decoded
+
+        return struct
+    }
+
+
+    // Memo 081, WI-066: parse AND resolve — the single place that turns a URL into a target the
+    // registry actually holds. Both callers go through here (the HTTP route and the WebSocket connect),
+    // so a socket can never read the same address differently from the page that opened it.
+    //
+    // `status: true` means THE ADDRESS IS VALID, which is not the same as "there is something to
+    // select": a document with zero revisions (7 of 385 in the real stock) is addressable under its
+    // short form and answers 200, but has no revision to open — it returns fileName: null and says so
+    // instead of inventing one. The short form's preselection is `revisions[ 0 ][ 'fileName' ]`, the
+    // SAME expression the auto-select fallback applies, read off the SAME registry order — not a second
+    // preselection rule beside it. When PRD-35 changes that rule, the short form follows by itself.
+    static resolveDeepLinkTarget( { pathname } ) {
+        const struct = { 'status': false, 'documentId': null, 'fileName': null }
+        const parsed = MemoView.parseDeepLinkPath( { pathname } )
+
+        if( parsed[ 'status' ] !== true ) { return struct }
+
+        // No registry means the single-directory start path: an address there answers 404 rather than a
+        // page that can never find what it names. No silent default.
+        if( !MemoView.#registry ) { return struct }
+
+        const detail = MemoView.#registry.getDocument( { 'documentId': parsed[ 'documentId' ] } )
+
+        if( detail[ 'status' ] !== true ) { return struct }
+
+        const revisions = detail[ 'document' ][ 'revisions' ]
+
+        if( parsed[ 'fileName' ] !== null ) {
+            const known = revisions.some( ( revision ) => revision[ 'fileName' ] === parsed[ 'fileName' ] )
+
+            if( known !== true ) { return struct }
+
+            struct[ 'status' ] = true
+            struct[ 'documentId' ] = parsed[ 'documentId' ]
+            struct[ 'fileName' ] = parsed[ 'fileName' ]
+
+            return struct
+        }
+
+        struct[ 'status' ] = true
+        struct[ 'documentId' ] = parsed[ 'documentId' ]
+        struct[ 'fileName' ] = revisions.length > 0 ? revisions[ 0 ][ 'fileName' ] : null
+
+        return struct
+    }
+
+
     // Memo 075 Phase 3 (PRD-P3-02): the M072 helpers resolveActiveMemoDir + listMarkedMemos were removed
     // together with the /api/session + /api/cockpit routes and the global viewer-head they backed (Kap 18:
     // wrong interpretation — a single global "activeMemo" is wrong for a shared server with several CC
@@ -4643,7 +4757,41 @@ ${ VendorAssets.scriptTags().tags }
             // view mode.
             // PRD-V1 (Memo 080): /dbtables joins the SPA routes so a direct reload of the raw-table view
             // serves the same shell instead of 404-ing.
-            const isSpaRoute = url === '/' || url === '/memos' || url === '/specs' || url === '/dbtables'
+            //
+            // Memo 081, WI-066: a document deep link — /doc/{documentId}[/{revisionLabel}] — joins them
+            // too, but only AFTER it has been checked against the registry: an unknown id or an unknown
+            // label answers 404 BECAUSE IT WAS LOOKED UP, not because it fell into the collective 404
+            // below like every other unknown path did before this route existed.
+            //
+            // The page itself is served UNCHANGED — same getPage() result, same CSP header, same build
+            // counter. This route only DECIDES between 200 and 404; it selects nothing and writes
+            // nothing. A per-request value baked into the page would collide with the page cache PRD-29
+            // installed (its fingerprint is deliberately request-independent), and a third inline script
+            // would collide with the CSP hash list from WI-103. Two independent reasons, one conclusion:
+            // the client reads its target from location.pathname itself, exactly as initRoute already
+            // reads the view mode, and the SOCKET performs the selection (same registry calls a click
+            // uses) so a deep link stays one decision made in one place.
+            //
+            // Memo 081, WI-066 (angrenzender Defekt): /transcripts WITHOUT a slash joins the list as
+            // well. pathForMode() produces exactly that path and setMode() pushes it into the address
+            // bar, so a reload in the transcripts view hit a 404 text page — a path the application
+            // generates itself and could not serve itself. The switch stays an enumeration of
+            // EQUALITIES, never a prefix match, so the earlier /transcripts/{id} route keeps its
+            // traffic.
+            const isDocRoute = url === '/doc' || url.startsWith( '/doc/' )
+
+            if( isDocRoute === true ) {
+                const { status: addressResolves } = MemoView.resolveDeepLinkTarget( { 'pathname': req.url } )
+
+                if( addressResolves !== true ) {
+                    res.writeHead( 404, { 'Content-Type': 'text/plain; charset=utf-8' } )
+                    res.end( `Not Found: ${ url }` )
+
+                    return
+                }
+            }
+
+            const isSpaRoute = url === '/' || url === '/memos' || url === '/specs' || url === '/dbtables' || url === '/transcripts' || isDocRoute
 
             if( !isSpaRoute ) {
                 res.writeHead( 404, { 'Content-Type': 'text/plain; charset=utf-8' } )
@@ -4753,7 +4901,10 @@ ${ VendorAssets.scriptTags().tags }
         // on the WebSocket SERVER must not be an unhandled 'error' event either.
         wss.on( 'error', () => {} )
 
-        wss.on( 'connection', ( ws ) => {
+        // Memo 081, WI-066: the second argument is the upgrade REQUEST, which the ws library has always
+        // delivered here — it carries the path the page was opened under and is the only transport a
+        // deep link has into this handler.
+        wss.on( 'connection', ( ws, req ) => {
             clients.add( ws )
 
             // PRD-016 (Memo 016, E3): mark the socket alive on connect and on every pong; the
@@ -4809,6 +4960,39 @@ ${ VendorAssets.scriptTags().tags }
             if( MemoView.#registry ) {
                 const { tree, latest } = MemoView.buildDocumentListPayload()
                 ws.send( JSON.stringify( { 'type': 'documentList', tree, latest } ) )
+
+                // Memo 081, WI-066: a URL is an EXPLICIT instruction, the auto-select below is the
+                // fallback for "no instruction". An instruction beats a fallback — so the deep-link
+                // branch runs FIRST and, unlike the fallback, does NOT test !state.absolutePath: that
+                // guard belongs to the fallback, not to a named target. It uses the SAME parser as the
+                // HTTP route, so the socket can never read the address differently from the page that
+                // opened it, and the SAME registry calls a click uses (selectRevision ->
+                // getSelectedRevisionPath -> state.absolutePath -> content) — a deep link is exactly a
+                // click the server performs, not a new class of state change. Setting state.absolutePath
+                // here is what makes the fallback below stand down; its own condition is untouched.
+                const linked = MemoView.resolveDeepLinkTarget( { 'pathname': req === undefined || req === null ? null : req.url } )
+
+                if( linked[ 'status' ] === true && linked[ 'fileName' ] !== null ) {
+                    const { status: linkSelected } = MemoView.#registry.selectRevision( { 'documentId': linked[ 'documentId' ], 'fileName': linked[ 'fileName' ] } )
+
+                    if( linkSelected === true ) {
+                        const { absolutePath: linkedPath } = MemoView.#registry.getSelectedRevisionPath( { 'documentId': linked[ 'documentId' ] } )
+
+                        if( linkedPath ) {
+                            state.absolutePath = linkedPath
+
+                            const { tree: linkedTree, latest: linkedLatest } = MemoView.buildDocumentListPayload()
+                            ws.send( JSON.stringify( { 'type': 'documentList', 'tree': linkedTree, 'latest': linkedLatest } ) )
+
+                            // The content message is assembled by the EXISTING #broadcastContent, aimed
+                            // at this one socket. The three hand-rolled copies of that assembly in this
+                            // file are a class this PRD does not own; adding a fourth would have been
+                            // the cheap way and the wrong one.
+                            MemoView.#readFileContent( { 'absolutePath': linkedPath } )
+                                .then( ( { content } ) => MemoView.#broadcastContent( { 'clients': [ ws ], content, 'fileName': basename( linkedPath ), 'absolutePath': linkedPath } ) )
+                        }
+                    }
+                }
 
                 const { documents } = MemoView.#registry.getDocuments()
 

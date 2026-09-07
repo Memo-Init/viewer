@@ -469,12 +469,69 @@
         // correct viewer surface, so renderSessionHead/refreshSessionHead and renderCockpit/refreshCockpit
         // (with /api/session and /api/cockpit) no longer exist here.
 
+        // Memo 081, WI-066: the ONE address builder of this client. Every link in the sidebar and every
+        // pushState goes through it, so there is a single spelling of a document address. The label is
+        // the revision file name without .md — the same value renderRevEntry already shows as revLabel.
+        function docPathFor( documentId, fileName ) {
+            var base = '/doc/' + encodeURIComponent( String( documentId == null ? '' : documentId ) )
+            if( !fileName ) { return base }
+            return base + '/' + encodeURIComponent( String( fileName ).replace( /\.md$/, '' ) )
+        }
+
+        // Memo 081, WI-066: the ONE address reader, mirroring the server's parseDeepLinkPath. Used by
+        // popstate and by the initial route — not three ad-hoc split() calls that could drift apart.
+        // Returns null for anything that is not a document address; a caller decides what that means.
+        function parseDocPath( pathname ) {
+            var path = String( pathname == null ? '' : pathname ).split( '?' )[ 0 ]
+            if( path !== '/doc' && path.indexOf( '/doc/' ) !== 0 ) { return null }
+            var segments = path.split( '/' ).slice( 2 )
+            if( segments.length === 0 || segments.length > 2 ) { return null }
+            var decoded = []
+            var broken = false
+            segments.forEach( function( segment ) {
+                if( !segment ) { broken = true; return }
+                var value = null
+                try { value = decodeURIComponent( segment ) } catch ( err ) { broken = true; return }
+                if( !value || value === '.' || value === '..' || /[/\\]/.test( value ) ) { broken = true; return }
+                decoded.push( value )
+            } )
+            if( broken || decoded.length !== segments.length ) { return null }
+            return { documentId: decoded[ 0 ], fileName: decoded.length === 2 ? decoded[ 1 ] + '.md' : null }
+        }
+
+        // Memo 081, WI-066: the document address currently shown, so the memos tab keeps pointing at the
+        // open document instead of erasing the deep link when the user clicks the tab they are on.
+        var currentDocPath = null
+
+        // Memo 081, WI-066: "echter Link" means the browser's own gestures still work. Only the plain
+        // left click is intercepted; middle click and Cmd/Ctrl/Shift/Alt keep their default (new tab,
+        // new window, save target). Half the meaning of a link lives in these gestures.
+        function isPlainLeftClick( ev ) {
+            if( !ev ) { return true }
+            if( ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey ) { return false }
+            if( typeof ev.button === 'number' && ev.button !== 0 ) { return false }
+            return true
+        }
+
         window.selectRevision = function( documentId, fileName ) {
             // PRD-009 (Memo 016 Kap 7, F4): explicitly picking a memo/revision returns home to
             // prose — the incoming content broadcast must NOT be gated off by a stale open panel.
             currentContentView = 'prose'
             if( currentWs && currentWs.readyState === 1 ) {
                 currentWs.send( JSON.stringify( { 'type': 'selectRevision', 'documentId': documentId, 'fileName': fileName } ) )
+            }
+            // Memo 081, WI-066: the address follows the selection. Same condition setMode already
+            // carries — push ONLY when the path actually differs, so picking the same revision twice
+            // leaves ONE history entry, not two. That single condition also settles the way back: when
+            // popstate calls this, the browser has ALREADY moved the address bar to the restored path,
+            // the paths are equal, and nothing is pushed. So there is no second parameter and no second
+            // selection route — the guard that prevents double entries is the same guard that prevents
+            // the stack from growing on Back.
+            // The signature is deliberately NOT widened: ViewStatePanelsPRD009 pins the first 300
+            // characters of this function from the outside and had 6 characters of slack left.
+            currentDocPath = docPathFor( documentId, fileName )
+            if( window.location.pathname !== currentDocPath ) {
+                window.history.pushState( { mode: 'memos', documentId: documentId, fileName: fileName }, '', currentDocPath )
             }
         }
 
@@ -1750,8 +1807,15 @@
                         + ( revCounted ? revMeta.open : '' ) + '</span>'
                 }
 
+                // Memo 081, WI-066: the row becomes a real link. The <li> keeps its data-doc/data-rev
+                // attributes — the existing binding and the existing tests hang off them — and only the
+                // SHELL around the unchanged inner content changes. display:contents leaves the flex row
+                // exactly as it was, so app.css is not touched; inline style attributes are this
+                // client's established form and are covered by style-src 'self' 'unsafe-inline'.
                 var entryHtml = '<li class="' + cls + '" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" data-state="' + escapeAttr( rev.revisionType || 'full' ) + '">'
+                entryHtml += '<a class="rev-mini-link" href="' + escapeAttr( docPathFor( doc.documentId, rev.fileName ) ) + '" style="display:contents">'
                 entryHtml += inner
+                entryHtml += '</a>'
                 entryHtml += '</li>'
                 return entryHtml
             }
@@ -1805,7 +1869,9 @@
                 var rolloutSubLabel = rolloutSubLabelFor( doc.lifecycleState )
                 var queueLifecycleDisplay = rolloutSubLabel || queueLifecycle
 
+                // Memo 081, WI-066: same shell, same reasoning as the revision row above.
                 var html = '<li class="queue-card" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '">'
+                html += '<a class="queue-card-link" href="' + escapeAttr( docPathFor( doc.documentId, rev.fileName ) ) + '" style="display:contents">'
                 html += '<span class="queue-card-bar" aria-hidden="true"></span>'
                 html += '<span class="queue-card-info" data-queue-info>'
                 // Zeile 1: Memo-Titel + Minuten-Chip + Fragen-Chip.
@@ -1830,7 +1896,7 @@
                 if( !sameNsAsPrev ) { html += '<span class="queue-card-ns" data-queue-ns>' + escapeAttr( doc.projectId || '' ) + '</span>' }
                 if( rev.mtime ) { html += '<span class="queue-card-date" data-queue-date>\u00b7 ' + escapeAttr( rev.mtime ) + '</span>' }
                 html += '</span>'
-                html += '</span></li>'
+                html += '</span></a></li>'
                 return html
             }
 
@@ -1854,7 +1920,12 @@
                 var memoHeadFinalized = memoFinalizedFrom( doc.memoStatus )
                 var memoHeadRevStatus = memoHeadFinalized ? 'eingeloggt' : 'offen'
                 memoHtml += '<span class="mh-icon">' + statusIconFor( memoHeadRevStatus, memoHeadFinalized ) + '</span>'
-                memoHtml += '<span class="mh-name">' + escapeAttr( doc.memoName ) + '</span>'
+                // Memo 081, WI-066: the memo name becomes a TARGET while the row stays a SWITCH. Beleg
+                // 29.2 named "the memo name in the tree is only a toggle, not a target" as one of three
+                // reasons a fresh browser context cannot reach a document; this is that reason closed.
+                // The short form /doc/{documentId} is what makes it possible — a memo head has no single
+                // revision to point at.
+                memoHtml += '<span class="mh-name"><a href="' + escapeAttr( docPathFor( doc.documentId, null ) ) + '" style="display:contents">' + escapeAttr( doc.memoName ) + '</a></span>'
                 // Fix (#81): the full-width break keeps the memo name on line 1 to itself so the
                 // status cluster wraps to line 2 — a long name stays fully readable.
                 // PRD-005 (Memo 024 Kap 4, F4=A): the break is now UNCONDITIONAL — every memo
@@ -2018,9 +2089,25 @@
             // generated markup — the last thing on the page that forced 'unsafe-inline' into script-src
             // and thereby made the Sicherheits-Kopf worth less than the header it is written in. Bound
             // here instead, the policy needs no script exception at all.
+            // Memo 081, WI-066: the row now carries a real href, so the handler takes the EVENT and
+            // decides. A plain left click keeps today's in-app selection without a page load
+            // (preventDefault, then the unchanged selectRevision call); middle click and
+            // Cmd/Ctrl/Shift/Alt fall through to the browser and open a new tab. Letting those through
+            // is not a detail — it is the difference between a link and a string that looks like one.
             navEl.querySelectorAll( 'li[data-doc][data-rev]' ).forEach( function( el ) {
-                el.addEventListener( 'click', function() {
+                el.addEventListener( 'click', function( ev ) {
+                    if( !isPlainLeftClick( ev ) ) { return }
+                    if( ev && typeof ev.preventDefault === 'function' ) { ev.preventDefault() }
                     selectRevision( el.getAttribute( 'data-doc' ), el.getAttribute( 'data-rev' ) )
+                } )
+            } )
+
+            // Memo 081, WI-066: the memo name navigates, the rest of the head keeps toggling. Same
+            // stopPropagation convention the other inner interactive children of .memo-head already use
+            // — no preventDefault here, so the name really does navigate to its own address.
+            navEl.querySelectorAll( '.mh-name a[href]' ).forEach( function( el ) {
+                el.addEventListener( 'click', function( ev ) {
+                    if( ev && typeof ev.stopPropagation === 'function' ) { ev.stopPropagation() }
                 } )
             } )
 
@@ -2666,6 +2753,11 @@
             if( mode === 'transcripts' ) { return '/transcripts' }
             if( mode === 'specs' ) { return '/specs' }
             if( mode === 'dbtables' ) { return '/dbtables' }
+            // Memo 081, WI-066: with a document open, the memos view IS that document's address.
+            // Without this, clicking the tab you are already on, or coming back from Specs, would
+            // overwrite the deep link with a generic /memos — the address would not survive its own
+            // application.
+            if( currentDocPath ) { return currentDocPath }
             return '/memos'
         }
 
@@ -3193,11 +3285,32 @@
         window.addEventListener( 'popstate', function( ev ) {
             var mode = ( ev.state && ev.state.mode ) ? ev.state.mode : modeForPath( window.location.pathname )
             applyMode( mode )
+            // Memo 081, WI-066: a restored document address selects again. selectRevision pushes only
+            // on a differing path, and popstate runs AFTER the browser moved the address bar — so the
+            // paths are equal here and nothing is pushed. No extra flag is needed for that.
+            // Only the LONG form re-selects. The short form deliberately does NOT: it names a document
+            // without naming a revision, so re-selecting would have to resolve "newest" a second time
+            // in the client, push the resulting long form, and thereby grow the stack the user just
+            // walked back through — pressing Back again would land on the same short form and repeat it.
+            // A second preselection rule (PRD-35's subject) plus an endless Back loop is a steep price
+            // for re-resolving an address that already shows a revision of the very document it names.
+            // Named limitation, not an oversight.
+            var restored = parseDocPath( window.location.pathname )
+            if( restored ) {
+                currentDocPath = window.location.pathname
+                if( restored.fileName ) { selectRevision( restored.documentId, restored.fileName ) }
+            }
         } )
 
         // Initial route: derive the mode from the current path (default -> memos / current memo).
         ;( function initRoute() {
             var initialMode = modeForPath( window.location.pathname )
+            // Memo 081, WI-066: a document address is REMEMBERED here, not acted on. The selection for
+            // the initial address is made by the server on socket connect, over the same registry calls
+            // a click uses — selecting a second time from here would be a competing decider for the same
+            // display. What this line prevents is the opposite failure: a later mode toggle silently
+            // replacing the address the page was opened under.
+            if( parseDocPath( window.location.pathname ) ) { currentDocPath = window.location.pathname }
             window.history.replaceState( { mode: initialMode }, '', window.location.pathname )
             applyMode( initialMode )
         } )()
@@ -10014,7 +10127,11 @@
 
         function connect() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-            const ws = new WebSocket( protocol + '//' + location.host )
+            // Memo 081, WI-066: the socket carries the CURRENT path so the server can honour a document
+            // address on connect. A path in a WebSocket URL is legal and the upgrade ignores it — it is
+            // transport, nothing else. Read live at every (re)connect, never frozen at start: a value
+            // taken once and used later is the two-timepoints form PRD-29 just removed from this file.
+            const ws = new WebSocket( protocol + '//' + location.host + window.location.pathname )
             currentWs = ws
 
             ws.onopen = function() {

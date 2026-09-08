@@ -6,6 +6,37 @@ import { join } from 'node:path'
 import { DocumentRegistry } from '../../src/DocumentRegistry.mjs'
 
 
+// Memo 081, PRD-39 (Phasen-Abnahme C1-4, P-3): wait for the CONDITION, never for a clock.
+//
+// THE DEFECT THIS REPLACES, MEASURED. A fixed 300 ms deadline stood where an ASYNCHRONOUS filesystem
+// watcher event was awaited. Measured 2026-09-08 against the unchanged stand 58a34bc, isolated runs of
+// this file: 0 of 8 red on a quiet machine, 2 of 8 red with twelve busy processes on four cores. The
+// C1-4 acceptance measured 1 of 16 over the same tree and the PRD generation measured 2 of 4 in the full
+// suite. Those numbers are not in contradiction — they are four points on a LOAD curve, because a clock
+// competes with every other suite for the same event loop and under load it loses.
+//
+// A deadline that waits for the condition passes as fast as the watcher is and fails only when the
+// watcher really did not fire — and it reports HOW LONG it waited and WHAT it last saw, so the next
+// failure is diagnosable instead of merely red. No `while`/`for` (node-sop baseline): the retry is
+// recursive and each step yields, so the synchronous stack never grows.
+async function waitForCondition( { probe, timeoutMs, stepMs } ) {
+    const started = Date.now()
+
+    const attempt = async () => {
+        const { done, seen } = probe()
+        const waitedMs = Date.now() - started
+        if( done === true || waitedMs >= timeoutMs ) {
+            return { ok: done === true, waitedMs, seen }
+        }
+        await new Promise( ( resolve ) => setTimeout( resolve, stepMs ) )
+
+        return attempt()
+    }
+
+    return attempt()
+}
+
+
 describe( 'DocumentRegistry', () => {
     let tempDir
     let registry
@@ -848,7 +879,19 @@ describe( 'DocumentRegistry', () => {
 
             await writeFile( filePath, '| **Status** | Finalisiert |' )
 
-            await new Promise( ( r ) => setTimeout( r, 300 ) )
+            const settled = await waitForCondition( {
+                probe: () => {
+                    const seen = registry.getDocument( { documentId } )['document']['memoStatus']
+
+                    return { done: seen === 'Finalisiert', seen }
+                },
+                timeoutMs: 5000,
+                stepMs: 25
+            } )
+
+            // The waited time and the last seen value ride IN the assertion, so a genuine watcher failure
+            // says how long it waited and what it saw instead of only "false is not true".
+            expect( `${ settled.seen } after ${ settled.waitedMs } ms` ).toBe( `Finalisiert after ${ settled.waitedMs } ms` )
 
             const after = registry.getDocument( { documentId } )
 

@@ -3,7 +3,7 @@ import { readFile, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 import { readEmittedScript, extractFunctionSources } from '../helpers/extractFunction.mjs'
 import { BlockSections, KINDS, SUFFIX_SEPARATORS } from '../../src/BlockSections.mjs'
@@ -24,7 +24,31 @@ import { MemoView } from '../../src/MemoView.mjs'
 // this repo out alone, so they are guarded with existsSync and SKIPPED with a reason — never silently
 // passed. Everything else is repo-local and always runs.
 const HERE = dirname( fileURLToPath( import.meta.url ) )
-const CORE_REGISTER = resolve( HERE, '..', '..', '..', 'core', 'cli', 'src', 'BlockSections.mjs' )
+
+// Memo 081, PRD-39: WHICH core register this compares against was never a question while the two trees
+// were identical — and it became one the moment a rollout changed the register in a WORKTREE. HERE is
+// tests/unit of repos/viewer-wt-081, and '..','..','..','core' resolved to repos/core — the MAIN TREE,
+// on main, not the branch this test's own code is on. The comparison would have been red by
+// construction, and the reason would have looked like a broken register instead of a broken path.
+//
+// The rule is not "add repos/core-wt-081 too". It is: a test that reads ACROSS the repo boundary reads
+// the boundary that belongs to ITS OWN tree. The sibling is derived from this tree's own directory name
+// and the plain name is the fallback — and the case NAMES the file it compared, so a comparison can
+// never again be green about a stand nobody asked for.
+function coreRegisterCandidates( { viewerRoot } ) {
+    const name = basename( viewerRoot )
+    const suffix = name.startsWith( 'viewer' ) === true ? name.slice( 'viewer'.length ) : ''
+    const names = [ 'core' + suffix, 'core' ]
+        .filter( ( entry, index, all ) => all.indexOf( entry ) === index )
+
+    return names
+        .map( ( entry ) => resolve( viewerRoot, '..', entry, 'cli', 'src', 'BlockSections.mjs' ) )
+}
+
+
+const VIEWER_ROOT = resolve( HERE, '..', '..' )
+const CORE_CANDIDATES = coreRegisterCandidates( { viewerRoot: VIEWER_ROOT } )
+const CORE_REGISTER = CORE_CANDIDATES.find( ( candidate ) => existsSync( candidate ) ) ?? CORE_CANDIDATES[ CORE_CANDIDATES.length - 1 ]
 const MEMO_ROOT = resolve( HERE, '..', '..', '..', '..', '.memo', 'memos' )
 const REAL_REV18 = join( MEMO_ROOT, '080-db-vollausbau-und-laufzeit-transparenz', 'revisions', 'REV-18.md' )
 const withCore = existsSync( CORE_REGISTER ) ? it : it.skip
@@ -48,6 +72,10 @@ const EXPECTED = [
     [ 'openItems', 'Offene Punkte', 'optional', [] ],
     [ 'topics', 'Topics', 'generated', [] ],
     [ 'workItems', 'Work-Items', 'generated', [] ],
+    // Memo 081, PRD-39 / WI-116: the 19th entry. It is an ADDITION — `prdAssignment` stays in the
+    // register right below it, because 411 `### PRD-Zuordnung` headings stand in the stock and dropping
+    // the entry would make all of them unparseable. Only the CONTRACT loses the heading, not the register.
+    [ 'dependencies', 'Abhaengigkeiten', 'generated', [] ],
     [ 'prdAssignment', 'PRD-Zuordnung', 'generated', [] ],
     [ 'evidence', 'Belege', 'generated', [] ],
     [ 'factualAccount', 'Faktenlage', 'legacy', [ 'Problem-Beschreibung' ] ],
@@ -192,13 +220,13 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
 
     // ---- the register itself ----
     describe( 'register', () => {
-        it( 'is closed: 18 entries, counted per kind, compared entry for entry', () => {
+        it( 'is closed: 19 entries, counted per kind, compared entry for entry', () => {
             const { sections } = BlockSections.all()
 
             expect( sections.length ).toBe( EXPECTED.length )
             expect( sections.length ).toBeGreaterThan( 0 )
             expect( KINDS.map( ( kind ) => [ kind, sections.filter( ( entry ) => entry.kind === kind ).length ] ) )
-                .toEqual( [ [ 'required', 3 ], [ 'optional', 8 ], [ 'generated', 4 ], [ 'legacy', 3 ] ] )
+                .toEqual( [ [ 'required', 3 ], [ 'optional', 8 ], [ 'generated', 5 ], [ 'legacy', 3 ] ] )
             expect( sections.map( ( entry ) => [ entry.field, entry.heading, entry.kind, entry.aliases ] ) ).toEqual( EXPECTED )
         } )
 
@@ -206,7 +234,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             const labels = BlockSections.all().sections
                 .flatMap( ( entry ) => [ entry.heading ].concat( entry.aliases ) )
 
-            expect( labels.length ).toBe( 19 )
+            expect( labels.length ).toBe( 20 )
             expect( labels.filter( ( label ) => label.toLowerCase() === 'diagramm' ) ).toEqual( [] )
             expect( BlockSections.match( { text: 'Diagramm' } ).matched ).toBe( false )
         } )
@@ -228,7 +256,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             const declared = parseClientList( client, 'BLOCK_BODY_HEADINGS' )
             const { labels } = BlockSections.labels()
 
-            expect( labels.length ).toBe( 19 )
+            expect( labels.length ).toBe( 20 )
             expect( declared.length ).toBe( labels.length )
             expect( declared ).toEqual( labels )
 
@@ -358,7 +386,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             expect( blocks[ 0 ].topics ).toEqual( [ 'T012' ] )
         } )
 
-        it( 'exposes EVERY writable register field as a flat key and all 18 under sections', () => {
+        it( 'exposes EVERY writable register field as a flat key and all 19 under sections', () => {
             const doc = [ '## K', '', '```block-meta', '{ "topics": ["T001"] }', '```', '', '### Bewertung', '', 'B', '' ].join( '\n' )
             const { blocks } = BlockMeta.parse( { doc } )
             const { fields } = BlockSections.writableFields()
@@ -367,7 +395,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
                 .filter( ( field ) => Object.prototype.hasOwnProperty.call( blocks[ 0 ], field ) !== true )
             expect( missing ).toEqual( [] )
             expect( fields.length ).toBe( 14 )
-            expect( Object.keys( blocks[ 0 ].sections ).length ).toBe( 18 )
+            expect( Object.keys( blocks[ 0 ].sections ).length ).toBe( 19 )
             // The fence's own topics axis is NOT overwritten by the generated section of the same name.
             expect( blocks[ 0 ].topics ).toEqual( [ 'T001' ] )
             expect( blocks[ 0 ].sections.topics ).toBe( null )
@@ -401,7 +429,33 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
 
 
     // ---- the two cross-boundary cases ----
+
+    // The derivation itself, both directions — the CLASS, not the case. A worktree name must produce the
+    // worktree sibling, a plain name the plain sibling, and the plain name must stay the fallback so a
+    // checkout without the sibling worktree still resolves somewhere nameable.
+    it( 'the core sibling is derived from this tree own directory name, both directions', () => {
+        const fromWorktree = coreRegisterCandidates( { viewerRoot: '/x/repos/viewer-wt-081' } )
+        const fromPlain = coreRegisterCandidates( { viewerRoot: '/x/repos/viewer' } )
+        const fromForeign = coreRegisterCandidates( { viewerRoot: '/x/repos/something-else' } )
+
+        expect( fromWorktree ).toEqual( [
+            resolve( '/x/repos/core-wt-081/cli/src/BlockSections.mjs' ),
+            resolve( '/x/repos/core/cli/src/BlockSections.mjs' )
+        ] )
+        expect( fromPlain ).toEqual( [ resolve( '/x/repos/core/cli/src/BlockSections.mjs' ) ] )
+        expect( fromForeign ).toEqual( [ resolve( '/x/repos/core/cli/src/BlockSections.mjs' ) ] )
+
+        // GEGENPROBE: the derivation must NOT hand back the main tree for a worktree — that is exactly
+        // the defect this replaces, and a candidate list that starts with `repos/core` would reinstate it.
+        expect( fromWorktree[ 0 ] ).not.toContain( '/repos/core/' )
+        expect( CORE_CANDIDATES.length ).toBeGreaterThan( 0 )
+    } )
+
     withCore( 'the viewer register and the core register are byte-identical below the header', async () => {
+        // A parity check that does not say WHICH two files it compared cannot be told apart from one that
+        // compared nothing — or from one that compared a stand nobody asked for.
+        console.log( `[parity] viewer=${ resolve( HERE, '..', '..', 'src', 'BlockSections.mjs' ) } core=${ CORE_REGISTER } (candidates: ${ CORE_CANDIDATES.join( ', ' ) })` )
+
         const mirror = await import( CORE_REGISTER )
         const here = BlockSections.all().sections
         const there = mirror.BlockSections.all().sections

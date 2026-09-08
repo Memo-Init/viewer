@@ -59,6 +59,34 @@ const SUFFIX_SEPARATORS = [ ': ', ' (' ]
 const REQUIRED_FIELDS = [ 'field', 'heading', 'kind' ]
 
 
+// Memo 081, WI-116 (REV-16:4165): `### PRD-Zuordnung` leaves the CHAPTER CONTRACT and
+// `### Abhaengigkeiten` takes its place — the consequence of F23=A and F24=A, where PRDs are cut in
+// the PLANNING phase from the work-item edge graph. A chapter that claims a PRD assignment while it
+// is being written assigns something that does not exist yet.
+//
+// THIS IS AN ADDITION, NOT A RENAME, AND THE MEASUREMENT SAYS WHY. Across 533 revision files the
+// stock carries 411 `### PRD-Zuordnung` headings in 16 files and 242 `### Abhaengigkeiten` headings
+// in 6 — and the register recognised the second group ZERO times, so 242 headings the contract has
+// prescribed since REV-12 were invisible to the parser, to the collapse pass and to every count.
+// Renaming the entry would have touched 24 files in the core repo, among them the live CLI domain
+// `memo prd ingest|render|verify` whose subject really IS the PRD assignment. Demoting it to
+// `legacy` would have been worse still: `legacy` is WRITABLE, so the entry would enter sortOrder()
+// and shift the persisted `block_section.sort` ordinal of every section behind it — the exact
+// regression the ESTABLISHED_SORT comment below describes, and one assertSortOrder does NOT catch
+// because it only holds the four established head positions.
+//
+// NO SEMANTIC EQUATION, same restraint as Faktenlage/Ist-Zustand above: `Abhaengigkeiten` is NOT
+// declared an alias of `PRD-Zuordnung`. One assigns PRDs, the other names work-item edges. Both stay
+// RECOGNISED; only one is in the contract (CHAPTER_CONTRACT below).
+//
+// NO UMLAUT FOLDING, AND THAT IS A MEASUREMENT TOO. `### Abhängigkeiten` is NOT recognised: over the
+// same 533 files the umlaut spelling occurs 0 times at this level (242 use `ae`, and `Lösungsansatz`
+// likewise stands 0 times against 1 for `Loesungsansatz`). Folding umlauts inside #probe would change
+// recognition for all 19 labels at once — for three readers that share it — against a measured need
+// of zero. The DOCUMENT level does carry both spellings, because there the alias list is explicit and
+// per-heading (MemoValidator REVISION_SCHEMA.sectionAliases, WI-120); that is a different mechanism
+// in a different place, not a second opinion about the same one.
+//
 // The register itself. Every entry is mandatory in all four keys; `aliases` is always a list, never
 // null. Declaration order is the canonical order: required, optional, generated, legacy.
 const SECTIONS = [
@@ -75,6 +103,7 @@ const SECTIONS = [
     { field: 'openItems', heading: 'Offene Punkte', kind: 'optional', aliases: [] },
     { field: 'topics', heading: 'Topics', kind: 'generated', aliases: [] },
     { field: 'workItems', heading: 'Work-Items', kind: 'generated', aliases: [] },
+    { field: 'dependencies', heading: 'Abhaengigkeiten', kind: 'generated', aliases: [] },  // Memo 081, WI-116 — rationale above
     { field: 'prdAssignment', heading: 'PRD-Zuordnung', kind: 'generated', aliases: [] },
     { field: 'evidence', heading: 'Belege', kind: 'generated', aliases: [] },
     { field: 'factualAccount', heading: 'Faktenlage', kind: 'legacy', aliases: [ 'Problem-Beschreibung' ] },
@@ -135,12 +164,74 @@ const DOCUMENT_SECTIONS = [
     { section: 'Vorwort', required: true, source: 'hand-geschrieben, in der Prosa-Tabelle', headings: [ 'Vorwort', 'Claude-Vorwort' ], fields: [] },
     { section: 'Offene Fragen', required: true, source: 'Fragen-Tabelle mit Status offen', headings: [ 'Offene Fragen' ], fields: [] },
     { section: 'Beantwortete Fragen', required: true, source: 'Fragen-Tabelle mit Status beantwortet, getrennt nach Herkunft', headings: [ 'Beantwortete Fragen' ], fields: [] },
-    { section: 'Phasen und Phasen-Hinweise', required: true, source: 'Phasen-Tabelle', headings: [ 'Phasen', 'Phase-Hints' ], fields: [] },
+    // Memo 081, WI-120 (REV-16:5322-5327, :5521-5522): after F24=A the two document positions are called
+    // `## Abhaengigkeiten` and `## Abhaengigkeits-Hinweise`. The old spellings stay ACCEPTED and are not
+    // a transitional state — measured over 533 revision files, `## Phasen` stands in 356 of them and
+    // `## Abhaengigkeiten` in 0, so the old spelling is the MAJORITY and the alias gets no expiry (F19:
+    // convention from V2 on, no migration of the stock). `headings` was always a LIST for exactly this
+    // (see the key description above); the form is used, not extended. The SECTION NAME stays
+    // `Phasen und Phasen-Hinweise` — it is a stable handle, not display text, and renaming it would run
+    // WARN-020 against a different key.
+    // THE ORDER INSIDE `headings` IS NOT COSMETIC: `headings[0]` is what a reader takes as the heading
+    // this position is WRITTEN as, and both assemblers still emit `## Phasen` from a hardcoded string
+    // (DoltDbAssembler / RevisionAssembler). Putting the new name first would make the register claim
+    // something the code does not do. Switching the RENDER to the new heading belongs with the render
+    // half of WI-116/WI-120 (WI-091, Memo 082); until then the register accepts four spellings and names
+    // the emitted one first.
+    { section: 'Phasen und Phasen-Hinweise', required: true, source: 'Phasen-Tabelle', headings: [ 'Phasen', 'Phase-Hints', 'Abhaengigkeiten', 'Abhaengigkeits-Hinweise' ], fields: [] },
     { section: 'Finalisierungs-Checkliste', required: true, source: 'fester Satz plus Ergebnis-Tabelle', headings: [ 'Finalisierungs-Checkliste' ], fields: [] },
     { section: 'Anhaenge', required: true, source: 'Referenz-Tabelle', headings: [ 'Ancillary Files' ], fields: [] },
     { section: 'Einstiegspunkte', required: true, source: 'hand-geschrieben, in der Prosa-Tabelle', headings: [ 'Rollout-Entry-Points' ], fields: [] },
     { section: 'Lessons-Learned', required: true, source: 'Lessons-Tabelle (waechst auch nach der Finalisierung)', headings: [ 'Lessons-Learned' ], fields: [] }
 ]
+
+
+// Memo 081, WI-116 / T061 (REV-16:3393-3402): the CHAPTER contract — which `### ` headings a numbered
+// chapter `## N. Titel [Kategorie]` must carry, in this order. It sits HERE and only here because the
+// contract was measured to exist THREE times and to be right ONCE: the memo lists it with
+// `### Abhaengigkeiten`, RevisionFormScore.CONTRACT_SECTIONS listed five of them with
+// `### PRD-Zuordnung`, and BlockSections knew the toolkit but not which part of it is DUTY.
+//
+// THE REGISTER IS A SUPERSET OF THE CONTRACT, AND THAT IS THE POINT. SECTIONS says what is RECOGNISED
+// (19 entries, the 411 `PRD-Zuordnung` headings of the stock included); CHAPTER_CONTRACT says what is
+// REQUIRED. WI-116 removes a heading from the second list, never from the first — dropping it from the
+// first would make 411 existing headings unparseable overnight.
+//
+// `**Gelesen als:**` is deliberately ABSENT. The memo counts it as building block 3 of nine, but it is a
+// BOLD LEAD-IN inside `### User-Auftrag` (REV-16:3396), not a level-three heading, so a list of headings
+// cannot carry it. Its form is checked where it lives — PRD-41, WI-115. Eight headings against nine
+// building blocks is therefore a definition, not a gap.
+//
+// `registered` IS A MEASURED EXCEPTION AND IT IS CAPPED AT ONE. Seven of the eight contract headings are
+// block sections in SECTIONS above. `### Kontext` is NOT, and this was found by the load-time gate below
+// on its first run, not argued into existence. It cannot be repaired here, and both ways out were
+// measured before this datum was written:
+//   - as a WRITABLE entry (`required`/`optional`) it enters sortOrder() and shifts the persisted
+//     `block_section.sort` ordinal of the ten writable sections behind it — the exact database
+//     regression the ESTABLISHED_SORT comment describes and assertSortOrder does not catch;
+//   - as `generated` it becomes non-writable, so MemoBlock (BODY_SECTIONS = writableFields) would REFUSE
+//     to write a section the contract makes MANDATORY and the memo calls "the only place for prose".
+// So it stands in the CONTRACT (the memo requires it, REV-16:3393, and the stock carries 279 such
+// headings) and not in the REGISTER, and the gate holds the exception to exactly this one heading: a
+// second unregistered contract heading breaks the import. Closing it properly is a write-path change
+// (the same defect class as the 242 unrecognised `### Abhaengigkeiten` this PRD closes), not a contract
+// change — it is reported as a restschuld rather than half-done here.
+const CHAPTER_CONTRACT = [
+    { heading: 'Kontext', required: true, repeatable: false, registered: false },
+    { heading: 'User-Auftrag', required: true, repeatable: false, registered: true },
+    { heading: 'Ist-Zustand', required: true, repeatable: false, registered: true },
+    { heading: 'Soll-Zustand', required: true, repeatable: true, registered: true },
+    { heading: 'Belege', required: true, repeatable: false, registered: true },
+    { heading: 'Topics', required: true, repeatable: false, registered: true },
+    { heading: 'Work-Items', required: true, repeatable: false, registered: true },
+    { heading: 'Abhaengigkeiten', required: true, repeatable: false, registered: true }
+]
+
+const CONTRACT_FIELDS = [ 'required', 'repeatable', 'registered' ]
+
+// The closed list of contract headings the register deliberately does NOT carry. It is a list so the
+// gate can compare against it, and it is written out so that widening it is a visible edit.
+const UNREGISTERED_CONTRACT = [ 'Kontext' ]
 
 
 // The verdict of a text that is not in the register. It is built fresh on every return (never a
@@ -308,6 +399,79 @@ class BlockSections {
     }
 
 
+    // The CHAPTER contract (Memo 081, WI-116), as a defensive copy — same form as documentSections():
+    // pure, no file access, a fresh list on every call. `repeatable` is a DATUM of the list rather than a
+    // special case in the counter: `### Soll-Zustand` may stand 1..n times, every other block once.
+    static chapterContract() {
+        const contract = CHAPTER_CONTRACT
+            .map( ( entry ) => ( {
+                heading: entry[ 'heading' ],
+                required: entry[ 'required' ],
+                repeatable: entry[ 'repeatable' ],
+                registered: entry[ 'registered' ]
+            } ) )
+
+        return { contract }
+    }
+
+
+    // Recognise ONE heading text as a CONTRACT building block. It exists because the contract is NOT a
+    // pure subset of the register: `### Kontext` is mandatory and unregistered (see CHAPTER_CONTRACT), so
+    // a counter that asked match() alone would silently stop checking a mandatory block and report a
+    // smaller basis as a green one. Same #probe, same suffix separators, same case folding as match() —
+    // ONE recogniser living in the register, never a second one in the caller. The longest label wins, so
+    // `### Ist-Zustand` cannot be shadowed by a shorter contract heading.
+    static matchContract( { text } ) {
+        const raw = typeof text === 'string' ? text.trim() : ''
+        if( raw.length === 0 ) {
+            return { matched: false, heading: null, suffix: null }
+        }
+
+        const hits = CHAPTER_CONTRACT
+            .map( ( entry ) => ( { entry, probe: BlockSections.#probe( { raw, label: entry[ 'heading' ] } ) } ) )
+            .filter( ( candidate ) => candidate[ 'probe' ].hit === true )
+            .sort( ( a, b ) => b[ 'entry' ][ 'heading' ].length - a[ 'entry' ][ 'heading' ].length )
+        if( hits.length === 0 ) {
+            return { matched: false, heading: null, suffix: null }
+        }
+
+        const best = hits[ 0 ]
+
+        return { matched: true, heading: best[ 'entry' ][ 'heading' ], suffix: best[ 'probe' ].suffix }
+    }
+
+
+    // LOAD-TIME GATE over the contract, and the reason it exists: without it the contract would be the
+    // FOURTH diverging copy instead of the first shared one. A contract entry naming a heading the
+    // register does not know breaks the IMPORT, not some later read — and it states how many entries it
+    // held against how many register entries, because a gate that found nothing to compare has compared
+    // nothing.
+    static assertChapterContract() {
+        const incomplete = CHAPTER_CONTRACT
+            .filter( ( entry ) => typeof entry[ 'heading' ] !== 'string' || entry[ 'heading' ].length === 0 || CONTRACT_FIELDS.some( ( key ) => typeof entry[ key ] !== 'boolean' ) )
+        if( incomplete.length > 0 ) {
+            throw new Error( `BlockSections.assertChapterContract: ${ incomplete.length } contract entry/entries lack a heading or a boolean ${ CONTRACT_FIELDS.join( '/' ) } — every key is mandatory, none is defaulted` )
+        }
+
+        const misdeclared = CHAPTER_CONTRACT
+            .filter( ( entry ) => ( BlockSections.match( { text: entry[ 'heading' ] } ).matched === true ) !== entry[ 'registered' ] )
+        if( misdeclared.length > 0 ) {
+            throw new Error( `BlockSections.assertChapterContract: the contract heading(s) ${ misdeclared.map( ( entry ) => entry[ 'heading' ] ).join( ', ' ) } declare "registered" against what the register actually answers — the contract is a SUBSET of the ${ SECTIONS.length } recognised sections plus the named exceptions, never a list beside them` )
+        }
+
+        const exceptions = CHAPTER_CONTRACT
+            .filter( ( entry ) => entry[ 'registered' ] !== true )
+            .map( ( entry ) => entry[ 'heading' ] )
+        const unexpected = exceptions
+            .filter( ( heading ) => UNREGISTERED_CONTRACT.includes( heading ) !== true )
+        if( unexpected.length > 0 || exceptions.length !== UNREGISTERED_CONTRACT.length ) {
+            throw new Error( `BlockSections.assertChapterContract: the unregistered contract headings are ${ exceptions.join( ', ' ) || 'none' } but exactly ${ UNREGISTERED_CONTRACT.join( ', ' ) } is declared — a heading that leaves the register must be a visible edit, never a quiet one` )
+        }
+
+        return { ok: true, checked: CHAPTER_CONTRACT.length, registered: CHAPTER_CONTRACT.length - exceptions.length, exceptions: exceptions.length, register: SECTIONS.length }
+    }
+
+
     // The completeness gate. `field`, `heading` and `kind` must be non-empty strings, `kind` one of
     // KINDS and `aliases` a list. There is no fallback: an incomplete entry is a defect in the
     // register, and a silently defaulted kind would let the write path fill a generated section.
@@ -371,6 +535,10 @@ BlockSections.all()
 // fields with the four established names on their stored positions. Widening the register again must
 // break the import here, not silently move an ordinal that databases already carry.
 BlockSections.assertSortOrder()
+// LOAD-TIME GATE, third half (Memo 081, WI-116): every heading of the chapter contract must resolve in
+// the register. A contract that names a heading nobody recognises would be a fourth divergent copy of
+// the very list this register exists to unify.
+BlockSections.assertChapterContract()
 
 
 export { BlockSections, KINDS, WRITABLE_KINDS, SUFFIX_SEPARATORS, ESTABLISHED_SORT }

@@ -84,7 +84,9 @@ describe( 'MemoValidator document level — the catalogue (A14, A17)', () => {
         // against this catalogue that range was already taken by the two codes below, so the family
         // moved to the next free block. This case is what makes that collision impossible to
         // re-introduce silently: the two numbers keep their meaning and their theme.
-        expect( catalog.length ).toBe( 34 )
+        // 35 since Memo 081 / PRD-39 added WARN-040 (the chapter-contract count) — additive, a WARNING,
+        // and it took the next free block precisely because the occupied numbers were measured first.
+        expect( catalog.length ).toBe( 35 )
         expect( added.length ).toBe( 2 )
         expect( added.map( ( entry ) => [ entry[ 'code' ], entry[ 'severity' ], entry[ 'theme' ] ] ) ).toEqual( [
             [ 'WARN-020', 'WARNING', 'dokument-ebene' ],

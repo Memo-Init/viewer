@@ -8091,7 +8091,7 @@
         // MemoView.isBlockBodyHeading. It used to carry the LEGACY alias "problem-beschreibung" while
         // the canonical name was already "faktenlage" — a drift that hid nothing here but would hide
         // content the moment the parser renamed a section (Beleg 2.7).
-        var BLOCK_BODY_HEADINGS = [ 'user-auftrag', 'ist-zustand', 'soll-zustand', 'bewertung', 'abgrenzung', 'entscheidung', 'messung', 'beispiel', 'risiko', 'gegenargument', 'offene punkte', 'topics', 'work-items', 'prd-zuordnung', 'belege', 'faktenlage', 'problem-beschreibung', 'loesungsansatz', 'offene fragen' ]
+        var BLOCK_BODY_HEADINGS = [ 'user-auftrag', 'ist-zustand', 'soll-zustand', 'bewertung', 'abgrenzung', 'entscheidung', 'messung', 'beispiel', 'risiko', 'gegenargument', 'offene punkte', 'topics', 'work-items', 'abhaengigkeiten', 'prd-zuordnung', 'belege', 'faktenlage', 'problem-beschreibung', 'loesungsansatz', 'offene fragen' ]
         // The two suffix forms the register accepts (": " 25x and " (" 1x in REV-18). Same list, same
         // order as BlockSections SUFFIX_SEPARATORS — the parity test compares this line too, so the
         // browser cannot decide differently from the server mirror.

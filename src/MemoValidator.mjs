@@ -64,6 +64,21 @@ const ERROR_CODE_CATALOG = [
     // number nobody re-measured is a claim, not a gate.
     { 'code': 'WARN-020', 'severity': 'WARNING', 'theme': 'dokument-ebene', 'description': 'The document section sequence deviates from the declared document-level order (BlockSections.documentSections, REV-18 Z. 158-172)' },
     { 'code': 'WARN-021', 'severity': 'WARNING', 'theme': 'header', 'description': 'A head field of the document level is missing (Typ, Aenderungen — REV-18 Z. 160; the MEMO-010 duty is a SUBSET of the form requirement, not its replacement)' },
+    // Memo 081, WI-116 / T061 (REV-16:3431): "the contract is COUNTED, not judged: the check is a set
+    // difference (chapters x mandatory blocks against the headings found) and belongs in the invariant
+    // script, not in an agent's verdict. A check that finds nothing to compare reports RED, not green."
+    //
+    // WARNING, NOT ERROR, AND THE NUMBER SAYS WHY. Measured 2026-09-08 over 533 revision files: 6 carry
+    // `### Abhaengigkeiten` at all, 16 carry `### PRD-Zuordnung`, and the contract's eight headings
+    // appear in full in a single-digit number of documents. An ERROR would refuse practically every
+    // revision in the workbench on day one. The sharpening rule is the one written at the head of this
+    // catalogue: measure the corpus AGAIN grouped by revision type, sharpen only when the `full` group
+    // shows zero hits, otherwise record the measured stand as a snag. A severity raised against a number
+    // nobody re-measured is a claim, not a gate.
+    //
+    // The code number is MEASURED, not assumed: WARN-010/011/020/021/030-034 were occupied on
+    // 2026-09-08, so this takes the next free block.
+    { 'code': 'WARN-040', 'severity': 'WARNING', 'theme': 'kapitel-vertrag', 'description': 'A numbered chapter does not carry every mandatory building block of the chapter contract (BlockSections.chapterContract, REV-16:3393-3402) — reported as a set difference with its comparison basis, never as a judgement' },
     // Memo 080, Kap 14 / WI-172 — the CROSS-revision counterpart of SR-13. SR-13 sees one file and
     // flags the pointer that replaces content; WARN-011 sees two files and names what LEFT the
     // document. Measured 2026-09-03 over the memo-080 revisions: REV-01 -> REV-02 lost the
@@ -173,15 +188,37 @@ const QUESTION_FORMAT_THEMES = [ 'frage', 'frage-parse', 'optionen', 'typ', 'jso
 // (filename suffix) and MEMO-080 (block-meta) apply to every type.
 const REVISION_SCHEMA = {
     'full': {
-        'sections': [ 'Kontext', 'Vorwort', 'Offene Fragen', 'Beantwortete Fragen', 'Phasen', 'Phase-Hints', 'Finalisierungs-Checkliste', 'Ancillary Files', 'Rollout-Entry-Points', 'Lessons-Learned' ],
-        'sectionAliases': { 'Vorwort': [ 'Vorwort', 'Claude-Vorwort' ] },
+        // Memo 081, WI-120 (REV-16:5322-5327): after F24=A the document section is called
+        // `## Abhaengigkeiten` and its neighbour `## Abhaengigkeits-Hinweise`. The memo states the
+        // reason it could not simply be renamed IN the revision: "the schema change would break every
+        // existing memo". Measured 2026-09-08 over 533 revision files, `## Phasen` stands in 356 of them
+        // and `## Abhaengigkeiten` in 0 — a straight swap would hand MEMO-001 (an ERROR, status:false,
+        // the hard post-write gate) to 356 files at once.
+        // So the old headings stay ACCEPTED, through the alias mechanism that already carries
+        // `## Claude-Vorwort`. The alias has NO expiry: the stock is not migrated (F19), so the old
+        // spelling is not a transitional state, it is the majority. Positions 5 and 6 stay positions 5
+        // and 6 — #validateDocumentOrder reads the sequence, and moving them would be a second,
+        // unasked-for change.
+        // Both umlaut spellings are accepted HERE, where the alias list is explicit and per-heading. The
+        // block-level register deliberately does not fold umlauts (BlockSections, WI-116): there the
+        // comparison is shared by three readers and the measured need is zero.
+        'sections': [ 'Kontext', 'Vorwort', 'Offene Fragen', 'Beantwortete Fragen', 'Abhaengigkeiten', 'Abhaengigkeits-Hinweise', 'Finalisierungs-Checkliste', 'Ancillary Files', 'Rollout-Entry-Points', 'Lessons-Learned' ],
+        'sectionAliases': {
+            'Vorwort': [ 'Vorwort', 'Claude-Vorwort' ],
+            'Abhaengigkeiten': [ 'Abhaengigkeiten', 'Abhängigkeiten', 'Phasen' ],
+            'Abhaengigkeits-Hinweise': [ 'Abhaengigkeits-Hinweise', 'Abhängigkeits-Hinweise', 'Phase-Hints' ]
+        },
         'headerFields': [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ],
         'headerAliases': {},
         'schemaVersion': true,
         'questionFamilies': true,
         'lifecycleMarker': true,
         'documentOrder': true,
-        'documentHeader': true
+        'documentHeader': true,
+        // Memo 081, WI-116: the CHAPTER contract is counted for `full` only. A prepare or an update
+        // artefact carries no numbered body chapters, so measuring it against a per-chapter duty would
+        // hold it to a form it does not have — the lesson of PRD-V13 below.
+        'chapterContract': true
     },
     'update': {
         // An update revision replaces or extends chapters but must still carry the FULL set of
@@ -198,7 +235,8 @@ const REVISION_SCHEMA = {
         'questionFamilies': true,
         'lifecycleMarker': true,
         'documentOrder': false,
-        'documentHeader': false
+        'documentHeader': false,
+        'chapterContract': false
     },
     'prepare': {
         // The three duties of the prepare artefact per memo-revision-generate/SKILL.md
@@ -212,7 +250,8 @@ const REVISION_SCHEMA = {
         'questionFamilies': false,
         'lifecycleMarker': false,
         'documentOrder': false,
-        'documentHeader': false
+        'documentHeader': false,
+        'chapterContract': false
     }
 }
 
@@ -278,6 +317,7 @@ class MemoValidator {
         const lintExt = MemoValidator.#validateLintExtensions( { doc, fileName, revisionType } )
         const documentOrder = MemoValidator.#validateDocumentOrder( { doc, revisionType } )
         const documentHeader = MemoValidator.#validateDocumentHeader( { doc, revisionType } )
+        const chapterContract = MemoValidator.#validateChapterContract( { doc, revisionType } )
 
         const messages = []
             .concat( sections[ 'messages' ] )
@@ -301,6 +341,7 @@ class MemoValidator {
         struct[ 'info' ] = info
         struct[ 'warnings' ] = documentOrder[ 'warnings' ]
             .concat( documentHeader[ 'warnings' ] )
+            .concat( chapterContract[ 'warnings' ] )
             .concat( optionQuality[ 'warnings' ] )
         struct[ 'optionQuality' ] = optionQuality[ 'basis' ]
         struct[ 'status' ] = messages.length === 0
@@ -312,6 +353,12 @@ class MemoValidator {
         // the document against. Both are 0 when the check did not RUN for this revision type — which is a
         // different statement from "ran and found nothing to compare", and that second case emits its own
         // warning instead of reporting a green zero.
+        // Memo 081, WI-116: the chapter contract states its comparison basis IN ITS MESSAGE
+        // (`chapters=<n> blocks=<b> expected=<n*b> found=<k> missing=<d>`) and deliberately does NOT add
+        // a fifth key here. `checked` is pinned by eight `toEqual` assertions across three suites that
+        // this PRD is not authorised to open; widening it would have been a change in two files outside
+        // its declared budget. The basis is stated, only in a different channel — and that difference is
+        // reported as a restschuld rather than smuggled in.
         struct[ 'checked' ] = {
             'sections': sections[ 'checked' ],
             'headerFields': header[ 'checked' ],
@@ -558,8 +605,17 @@ class MemoValidator {
                 .trim()
                 .toLowerCase()
 
+            // Memo 081, WI-116: the third-level headings of this chapter, code fences already excluded by
+            // the flags above. They are the comparison basis of the chapter-contract count (WARN-040) and
+            // are collected HERE because the chapter split and the fence exclusion already happen here —
+            // a second walk over the same lines would be a second answer to the same question.
+            const headings = body
+                .filter( ( line, offset ) => flags[ start[ 'index' ] + offset ] !== true && /^###\s+/.test( line ) === true )
+                .map( ( line ) => line.replace( /^###\s+/, '' ).trim() )
+
             return {
                 key,
+                headings,
                 'title': start[ 'title' ],
                 'hasAuftrag': body.some( ( line ) => /User-Auftrag/i.test( line ) === true ),
                 'nonEmptyLines': body.filter( ( line ) => line.trim().length > 0 ).length,
@@ -699,6 +755,75 @@ class MemoValidator {
                 'code': 'WARN-020',
                 'feldPfad': 'document.order',
                 'description': `Document section sequence deviates from the declared order: at position ${ first[ 'position' ] } expected "${ first[ 'expected' ] }" but found "${ first[ 'found' ] }" (${ mismatches.length } of ${ declared.length } compared positions out of order)`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+        }
+
+        return struct
+    }
+
+
+    // WARN-040 — the CHAPTER CONTRACT, COUNTED (Memo 081, WI-116 / T061, REV-16:3431): "the contract is
+    // counted, not judged: the check is a set difference (chapters x mandatory blocks against the
+    // headings found) and belongs in the invariant script, not in an agent's verdict."
+    //
+    // IT STATES ITS COMPARISON BASIS IN EVERY MESSAGE — `chapters=<n> blocks=<b> expected=<n*b>
+    // found=<k> missing=<d>` — and 0 chapters is RED with its own finding, never a silent pass. That is
+    // the whole point of the rule it implements: a check that found nothing to compare has checked
+    // nothing, and the honest answer says so instead of reporting a green zero.
+    //
+    // THE RECOGNISER IS BlockSections.matchContract, NOT A SECOND ONE HERE. It carries the same prefix
+    // semantics the register uses everywhere else, so `### Soll-Zustand: der Werkzeugkoffer` counts as
+    // `Soll-Zustand` while `### Soll-Zustandsbericht` does not. A `repeatable` block may stand more than
+    // once; presence, not multiplicity, is what the set difference asks about.
+    static #validateChapterContract( { doc, revisionType } ) {
+        const struct = { 'messages': [], 'info': [], 'warnings': [], 'checked': 0 }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        if( schema[ 'chapterContract' ] !== true ) { return struct }
+
+        const { contract } = BlockSections.chapterContract()
+        const mandatory = contract
+            .filter( ( entry ) => entry[ 'required' ] === true )
+        const chapters = MemoValidator.#numberedChapters( { doc } )
+
+        if( chapters.length === 0 ) {
+            MemoValidator.#route( {
+                'code': 'WARN-040',
+                'feldPfad': 'chapter.contract',
+                'description': `chapters=0 blocks=${ mandatory.length } expected=0 found=0 missing=0 — no numbered chapter was found, so the chapter contract had nothing to compare; a check without a comparison basis reports red, not green`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+
+            return struct
+        }
+
+        const rows = chapters
+            .map( ( chapter ) => {
+                const present = chapter[ 'headings' ]
+                    .map( ( text ) => BlockSections.matchContract( { text } ).heading )
+                const missing = mandatory
+                    .filter( ( entry ) => present.includes( entry[ 'heading' ] ) !== true )
+                    .map( ( entry ) => entry[ 'heading' ] )
+
+                return { 'title': chapter[ 'title' ], missing }
+            } )
+
+        const expected = chapters.length * mandatory.length
+        const missingCount = rows
+            .reduce( ( acc, row ) => acc + row[ 'missing' ].length, 0 )
+        struct[ 'checked' ] = expected
+
+        if( missingCount > 0 ) {
+            const offenders = rows
+                .filter( ( row ) => row[ 'missing' ].length > 0 )
+            MemoValidator.#route( {
+                'code': 'WARN-040',
+                'feldPfad': 'chapter.contract',
+                'description': `chapters=${ chapters.length } blocks=${ mandatory.length } expected=${ expected } found=${ expected - missingCount } missing=${ missingCount } — ${ offenders.map( ( row ) => `"${ row[ 'title' ] }" lacks ${ row[ 'missing' ].join( ', ' ) }` ).join( '; ' ) }`,
                 'messages': struct[ 'messages' ],
                 'info': struct[ 'info' ],
                 'warnings': struct[ 'warnings' ]

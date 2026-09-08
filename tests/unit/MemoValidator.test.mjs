@@ -191,8 +191,14 @@ describe( 'MemoValidator required sections (MEMO-001, PRD-002 — 10 sections)',
         { 'heading': 'Vorwort', 'feldPfad': 'section.Vorwort' },
         { 'heading': 'Offene Fragen', 'feldPfad': 'section.OffeneFragen' },
         { 'heading': 'Beantwortete Fragen', 'feldPfad': 'section.BeantworteteFragen' },
-        { 'heading': 'Phasen', 'feldPfad': 'section.Phasen' },
-        { 'heading': 'Phase-Hints', 'feldPfad': 'section.Phase-Hints' },
+        // Memo 081, PRD-39 / WI-120: the SCHEMA position is now called `Abhaengigkeiten` /
+        // `Abhaengigkeits-Hinweise`, and the old spellings stay accepted as aliases without an expiry —
+        // 356 of 533 revision files in the stock carry `## Phasen`. So the heading REMOVED from the
+        // document is still the old one (that is what the fixture writes), while the feldPfad the code
+        // reports is the new position name. Splitting the two is the point: a case that derived both
+        // from one string could not tell a renamed position from a broken check.
+        { 'heading': 'Phasen', 'feldPfad': 'section.Abhaengigkeiten' },
+        { 'heading': 'Phase-Hints', 'feldPfad': 'section.Abhaengigkeits-Hinweise' },
         { 'heading': 'Finalisierungs-Checkliste', 'feldPfad': 'section.Finalisierungs-Checkliste' },
         { 'heading': 'Ancillary Files', 'feldPfad': 'section.AncillaryFiles' },
         { 'heading': 'Rollout-Entry-Points', 'feldPfad': 'section.Rollout-Entry-Points' },

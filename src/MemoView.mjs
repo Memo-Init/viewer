@@ -346,6 +346,16 @@ class MemoView {
 
 
     static #registry = null
+    // Memo 081, WI-106/WI-107: viewerId -> { scope, lastDocumentSignature, lastTranscriptSignature }.
+    // The scope is per CONNECTION (a scope is a property of one reader) and so is the last signature
+    // the change-gate compared against — a shared "last sent" would hold back a catalogue from a socket
+    // that never received it.
+    static #viewerState = new Map()
+    static #viewerSequence = 0
+    // Memo 081, WI-106: a gate without a counter is the send-side twin of a filter that does not say
+    // how much it removed. Reported on /api/health, which is where a running server already answers
+    // what it is doing.
+    static #catalogGate = { 'heldSends': 0, 'heldBytes': 0, 'sentSends': 0, 'sentBytes': 0 }
     static #transcriptRegistry = null
     static #serverInstance = null
     static #wssInstance = null
@@ -1006,16 +1016,11 @@ class MemoView {
                 return
             }
 
+            // Memo 081, WI-106: a filesystem change is a REAL catalogue change — this trigger keeps its
+            // occasion and only gains the gate and the per-recipient scope. What lost its occasion is
+            // the click (the selectRevision handler), and only that one.
             if( MemoView.#wssInstance && MemoView.#registry ) {
-                const { tree, latest } = MemoView.buildDocumentListPayload()
-                const message = JSON.stringify( { 'type': 'documentList', tree, latest } )
-
-                MemoView.#wssInstance.clients
-                    .forEach( ( ws ) => {
-                        if( ws.readyState === 1 ) {
-                            ws.send( message )
-                        }
-                    } )
+                MemoView.broadcastDocumentList( { 'clients': MemoView.#wssInstance.clients } )
             }
         }
 
@@ -1025,30 +1030,14 @@ class MemoView {
         const transcriptHost = `http://localhost:${portNumber}`
         const onTranscriptChange = () => {
             if( MemoView.#wssInstance && MemoView.#transcriptRegistry ) {
-                const { tree } = MemoView.#transcriptRegistry.getTranscriptTree()
-                const message = JSON.stringify( { 'type': 'transcriptList', tree } )
-
-                MemoView.#wssInstance.clients
-                    .forEach( ( ws ) => {
-                        if( ws.readyState === 1 ) {
-                            ws.send( message )
-                        }
-                    } )
+                MemoView.broadcastTranscriptList( { 'clients': MemoView.#wssInstance.clients } )
 
                 // BUGFIX (fix/transcript-abschliessen-queue): an Einloggen/Ausloggen change flips a
                 // revision's derived revisionStatus, which decides queue membership. Re-broadcast the
                 // enriched documentList so the abgeschlossene Revision leaves the queue live, without
                 // a manual reload (Soll-Semantik #4).
                 if( MemoView.#registry ) {
-                    const { tree: docTree, latest } = MemoView.buildDocumentListPayload()
-                    const docMessage = JSON.stringify( { 'type': 'documentList', 'tree': docTree, latest } )
-
-                    MemoView.#wssInstance.clients
-                        .forEach( ( ws ) => {
-                            if( ws.readyState === 1 ) {
-                                ws.send( docMessage )
-                            }
-                        } )
+                    MemoView.broadcastDocumentList( { 'clients': MemoView.#wssInstance.clients } )
                 }
             }
         }
@@ -2596,7 +2585,14 @@ ${ VendorAssets.scriptTags().tags }
 
     // The route's call site: the recorded boot against the source tree as it is on disk right now.
     static healthPayload( { nowMs } ) {
-        return MemoView.buildHealthPayload( { boot: MemoView.#boot, current: getServerSource(), nowMs } )
+        const { payload } = MemoView.buildHealthPayload( { boot: MemoView.#boot, current: getServerSource(), nowMs } )
+        // Memo 081, WI-106: THE GATE COUNTS, and it says so where a running server already answers what
+        // it is doing. A gate without a counter is the send-side twin of a filter that never says how
+        // much it removed — the exact class PRD-35 closed for the tree. buildHealthPayload stays pure
+        // and untouched; the counters are a reading of the live process, which is what this wrapper is.
+        payload[ 'catalogGate' ] = MemoView.catalogGateStats()[ 'stats' ]
+
+        return { payload }
     }
 
 
@@ -2793,26 +2789,10 @@ ${ VendorAssets.scriptTags().tags }
                 }
 
                 if( MemoView.#wssInstance ) {
-                    const { tree, latest } = MemoView.buildDocumentListPayload()
-                    const message = JSON.stringify( { 'type': 'documentList', tree, latest } )
-
-                    MemoView.#wssInstance.clients
-                        .forEach( ( ws ) => {
-                            if( ws.readyState === 1 ) {
-                                ws.send( message )
-                            }
-                        } )
+                    MemoView.broadcastDocumentList( { 'clients': MemoView.#wssInstance.clients } )
 
                     if( MemoView.#transcriptRegistry ) {
-                        const { tree: tTree } = MemoView.#transcriptRegistry.getTranscriptTree()
-                        const tMessage = JSON.stringify( { 'type': 'transcriptList', 'tree': tTree } )
-
-                        MemoView.#wssInstance.clients
-                            .forEach( ( ws ) => {
-                                if( ws.readyState === 1 ) {
-                                    ws.send( tMessage )
-                                }
-                            } )
+                        MemoView.broadcastTranscriptList( { 'clients': MemoView.#wssInstance.clients } )
                     }
                 }
 
@@ -2946,7 +2926,8 @@ ${ VendorAssets.scriptTags().tags }
                     return
                 }
 
-                const { absolutePath } = MemoView.#registry.getSelectedRevisionPath( { documentId } )
+                // Memo 081, WI-106: a REST call has no viewer (see getPrimaryRevisionPath).
+                const { absolutePath } = MemoView.#registry.getPrimaryRevisionPath( { documentId } )
 
                 if( !absolutePath ) {
                     sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'blocks': [], 'errors': [] } )
@@ -3246,7 +3227,9 @@ ${ VendorAssets.scriptTags().tags }
                     // different shapes depending on which route asked. One builder now, and it declares
                     // itself as uncounted instead of passing for a memo with zero questions.
                     'questions': doc['questions'] || DocumentRegistry.undeclaredQuestionCounts(),
-                    'selectedRevision': doc['selectedRevision'],
+                    // Memo 081, WI-106: `selectedRevision` is gone from this answer. A REST call is not a
+                    // look — it has no viewer — and the field used to report whatever socket had clicked
+                    // last. An answer that depends on a stranger's click is worse than no answer.
                     'revisionCount': revisions.length,
                     'revisions': revisions
                 } )
@@ -3281,15 +3264,7 @@ ${ VendorAssets.scriptTags().tags }
                 }
 
                 if( MemoView.#wssInstance ) {
-                    const { tree, latest } = MemoView.buildDocumentListPayload()
-                    const message = JSON.stringify( { 'type': 'documentList', tree, latest } )
-
-                    MemoView.#wssInstance.clients
-                        .forEach( ( ws ) => {
-                            if( ws.readyState === 1 ) {
-                                ws.send( message )
-                            }
-                        } )
+                    MemoView.broadcastDocumentList( { 'clients': MemoView.#wssInstance.clients } )
                 }
 
                 sendJson( res, 200, { 'status': 'ok' } )
@@ -3311,7 +3286,14 @@ ${ VendorAssets.scriptTags().tags }
                     return
                 }
 
-                const { tree: documents, latest } = MemoView.buildDocumentListPayload()
+                // Memo 081, WI-106: this route is the declared FULL snapshot ("a GET snapshot of the
+                // full tree"), so it names every project as its scope instead of relying on a default.
+                // The viewer is this one request; it holds no selection, which is why the answer carries
+                // none. An empty scope here would silently turn a documented full mirror into a stub.
+                const { viewerId } = MemoView.attachViewer( { 'ws': null } )
+                const { scope: fullScope } = MemoView.#registry.projectIds()
+                const { tree: documents, latest } = MemoView.buildDocumentListPayload( { 'scope': fullScope, viewerId } )
+                MemoView.releaseViewer( { viewerId } )
                 const transcripts = MemoView.#transcriptRegistry
                     ? MemoView.#transcriptRegistry.getTranscriptTree()[ 'tree' ]
                     : {}
@@ -4949,6 +4931,12 @@ ${ VendorAssets.scriptTags().tags }
         wss.on( 'connection', ( ws, req ) => {
             clients.add( ws )
 
+            // Memo 081, WI-106: the connection gets an identity BEFORE anything is sent, because from
+            // here on every catalogue payload is built for somebody: the scope decides its depth and the
+            // viewer decides whose selection is in it. Without an identity a socket would fall back to
+            // exactly the two process-wide answers this work item removes.
+            MemoView.attachViewer( { ws } )
+
             // PRD-016 (Memo 016, E3): mark the socket alive on connect and on every pong; the
             // heartbeat sweep above flips isAlive to false before each ping and terminates any
             // client that did not answer the previous one.
@@ -4960,7 +4948,10 @@ ${ VendorAssets.scriptTags().tags }
             // guard), so a socket that connected without a registry AND without a selected revision
             // never got a close handler and leaked in the `clients` Set. Register it unconditionally
             // here so every socket is removed on disconnect regardless of registry/state.
-            ws.on( 'close', () => { clients.delete( ws ) } )
+            ws.on( 'close', () => {
+                clients.delete( ws )
+                MemoView.releaseViewer( { 'viewerId': ws.viewerId } )
+            } )
 
             // Memo 081 (WI-079): a socket whose peer vanished mid-write emits 'error' (EPIPE/ECONNRESET).
             // An EventEmitter 'error' without a listener THROWS — and since this one fires on the raw
@@ -4969,7 +4960,10 @@ ${ VendorAssets.scriptTags().tags }
             // context/). A dropped client is normal operation, never a reason to take the server down:
             // drop it from the broadcast set and keep serving. Errors are swallowed deliberately — the
             // peer is already gone, there is nobody left to report to.
-            ws.on( 'error', () => { clients.delete( ws ) } )
+            ws.on( 'error', () => {
+                clients.delete( ws )
+                MemoView.releaseViewer( { 'viewerId': ws.viewerId } )
+            } )
 
             // PRD-009 (Memo 076 H6, WI-080): tell the fresh socket which client bundle the server is
             // serving right now. The client compares this against the hash its page was rendered with
@@ -4985,11 +4979,7 @@ ${ VendorAssets.scriptTags().tags }
             }
 
             if( MemoView.#transcriptRegistry ) {
-                const { tree: tTree } = MemoView.#transcriptRegistry.getTranscriptTree()
-
-                if( ws.readyState === 1 ) {
-                    ws.send( JSON.stringify( { 'type': 'transcriptList', 'tree': tTree } ) )
-                }
+                MemoView.sendTranscriptList( { ws } )
             }
 
             // PRD-P3-01 (Memo 075 Phase 3, WI-009): seed the fresh socket with the current client
@@ -5009,8 +4999,7 @@ ${ VendorAssets.scriptTags().tags }
             let addressedDocumentId = null
 
             if( MemoView.#registry ) {
-                const { tree, latest } = MemoView.buildDocumentListPayload()
-                ws.send( JSON.stringify( { 'type': 'documentList', tree, latest } ) )
+                MemoView.sendDocumentList( { ws } )
 
                 // Memo 081, WI-066: a URL is an EXPLICIT instruction, the auto-select below is the
                 // fallback for "no instruction". An instruction beats a fallback — so the deep-link
@@ -5023,7 +5012,16 @@ ${ VendorAssets.scriptTags().tags }
                 // here is what makes the fallback below stand down; its own condition is untouched.
                 const linked = MemoView.resolveDeepLinkTarget( { 'pathname': req === undefined || req === null ? null : req.url } )
 
-                if( linked[ 'status' ] === true ) { addressedDocumentId = linked[ 'documentId' ] }
+                if( linked[ 'status' ] === true ) {
+                    addressedDocumentId = linked[ 'documentId' ]
+                    // Memo 081, WI-106: the address is the FIRST source of this socket's scope — the
+                    // reader named a project by naming a document in it, so its revision lists ship
+                    // without being asked for. The catalogue that already went out above was the head
+                    // level; the send below carries the depth.
+                    const addressed = MemoView.#registry.getDocument( { 'documentId': linked[ 'documentId' ] } )
+                    MemoView.noteDeepLinkProject( { 'viewerId': ws.viewerId, 'projectId': addressed[ 'status' ] === true ? addressed[ 'document' ][ 'projectId' ] : null } )
+                    MemoView.sendTranscriptList( { ws } )
+                }
 
                 // Memo 081, WI-025 (PRD-35): the address resolves but the document holds no revision —
                 // 7 of 385 in the real stock. `status: true` says the address is valid, `fileName: null`
@@ -5061,16 +5059,15 @@ ${ VendorAssets.scriptTags().tags }
                 }
 
                 if( linked[ 'status' ] === true && linked[ 'fileName' ] !== null ) {
-                    const { status: linkSelected } = MemoView.#registry.selectRevision( { 'documentId': linked[ 'documentId' ], 'fileName': linked[ 'fileName' ] } )
+                    const { status: linkSelected } = MemoView.#registry.selectRevision( { 'documentId': linked[ 'documentId' ], 'fileName': linked[ 'fileName' ], 'viewerId': ws.viewerId } )
 
                     if( linkSelected === true ) {
-                        const { absolutePath: linkedPath } = MemoView.#registry.getSelectedRevisionPath( { 'documentId': linked[ 'documentId' ] } )
+                        const { absolutePath: linkedPath } = MemoView.#registry.getSelectedRevisionPath( { 'documentId': linked[ 'documentId' ], 'viewerId': ws.viewerId } )
 
                         if( linkedPath ) {
                             state.absolutePath = linkedPath
 
-                            const { tree: linkedTree, latest: linkedLatest } = MemoView.buildDocumentListPayload()
-                            ws.send( JSON.stringify( { 'type': 'documentList', 'tree': linkedTree, 'latest': linkedLatest } ) )
+                            MemoView.sendDocumentList( { ws } )
 
                             // The content message is assembled by the EXISTING #broadcastContent, aimed
                             // at this one socket. The three hand-rolled copies of that assembly in this
@@ -5092,15 +5089,24 @@ ${ VendorAssets.scriptTags().tags }
                 const autoTarget = MemoView.#registry.resolveAutoSelectTarget()
 
                 if( autoTarget[ 'status' ] === true && !state.absolutePath && addressedDocumentId === null ) {
-                    MemoView.#registry.selectRevision( { 'documentId': autoTarget[ 'documentId' ], 'fileName': autoTarget[ 'fileName' ] } )
+                    MemoView.#registry.selectRevision( { 'documentId': autoTarget[ 'documentId' ], 'fileName': autoTarget[ 'fileName' ], 'viewerId': ws.viewerId } )
 
-                    const { absolutePath: revPath } = MemoView.#registry.getSelectedRevisionPath( { 'documentId': autoTarget[ 'documentId' ] } )
+                    // Memo 081, WI-106: the server just opened a document for this reader, so its project
+                    // is in the reader's scope for the same reason an expanded one is — he is looking at
+                    // it. Without this the sidebar would show its not-loaded row under the very memo whose
+                    // content is on screen.
+                    const autoDoc = MemoView.#registry.getDocument( { 'documentId': autoTarget[ 'documentId' ] } )
+
+                    if( autoDoc[ 'status' ] === true ) {
+                        MemoView.extendViewerScope( { 'viewerId': ws.viewerId, 'projectIds': [ autoDoc[ 'document' ][ 'projectId' ] ] } )
+                    }
+
+                    const { absolutePath: revPath } = MemoView.#registry.getSelectedRevisionPath( { 'documentId': autoTarget[ 'documentId' ], 'viewerId': ws.viewerId } )
 
                     if( revPath ) {
                         state.absolutePath = revPath
 
-                        const { tree: updatedTree, latest: updatedLatest } = MemoView.buildDocumentListPayload()
-                        ws.send( JSON.stringify( { 'type': 'documentList', tree: updatedTree, latest: updatedLatest } ) )
+                        MemoView.sendDocumentList( { ws } )
 
                         MemoView.#readFileContent( { absolutePath: revPath } )
                             .then( async ( { content } ) => {
@@ -5128,10 +5134,10 @@ ${ VendorAssets.scriptTags().tags }
                         const msg = JSON.parse( raw.toString() )
 
                         if( msg.type === 'selectRevision' && MemoView.#registry ) {
-                            const { status } = MemoView.#registry.selectRevision( { documentId: msg.documentId, fileName: msg.fileName } )
+                            const { status } = MemoView.#registry.selectRevision( { documentId: msg.documentId, fileName: msg.fileName, 'viewerId': ws.viewerId } )
 
                             if( status ) {
-                                const { absolutePath: revPath } = MemoView.#registry.getSelectedRevisionPath( { documentId: msg.documentId } )
+                                const { absolutePath: revPath } = MemoView.#registry.getSelectedRevisionPath( { documentId: msg.documentId, 'viewerId': ws.viewerId } )
 
                                 if( revPath ) {
                                     state.absolutePath = revPath
@@ -5145,12 +5151,17 @@ ${ VendorAssets.scriptTags().tags }
 
                                     ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'documentId': msg.documentId, 'diffAvailable': diffAvailable, 'diffInfo': diffInfo, questionSchema, vorwort, validation } ) )
 
-                                    const { tree, latest } = MemoView.buildDocumentListPayload()
-                                    clients.forEach( ( c ) => {
-                                        if( c.readyState === 1 ) {
-                                            c.send( JSON.stringify( { 'type': 'documentList', tree, latest } ) )
-                                        }
-                                    } )
+                                    // Memo 081, WI-106 (REV-16:2645): A CLICK IS NOT A CATALOGUE EVENT. This
+                                    // site used to send the FULL catalogue of all nine projects to EVERY
+                                    // connected socket because ONE of them picked a revision — 855 456 B
+                                    // per foreign click, measured. It now serves the one socket that
+                                    // clicked, because that socket's own payload really did change: its
+                                    // active row moved. Everybody else's catalogue did not change, and the
+                                    // gate would hold their send anyway — but sending it at all is the
+                                    // wrong occasion, not just wasted bytes. The four event-driven
+                                    // triggers (file, db, POST, DELETE) keep their occasion; only this one
+                                    // loses it.
+                                    MemoView.sendDocumentList( { ws } )
                                 }
                             }
                         }
@@ -5164,6 +5175,26 @@ ${ VendorAssets.scriptTags().tags }
                         // ECHOES documentId and fileName so a late reply on a revision the reader has already
                         // left can be discarded instead of painting a foreign diff — without those two fields
                         // this branch would recreate the very class N1 belongs to.
+                        // Memo 081, WI-106/WI-107: the client asks for the DEPTH of a project when it
+                        // opens one. ONE message serves BOTH catalogues, because there is one scope —
+                        // two messages would be two definitions, and two definitions drift
+                        // (REV-16:2686 asks for one in so many words). The answer goes to THIS socket
+                        // only: a scope is a property of one reader. It is sent with `force`, so an
+                        // explicit question is answered even when the bytes are unchanged — a gate that
+                        // swallows a question is the same defect as a catalogue that arrives unasked.
+                        if( msg.type === 'requestProjectScope' ) {
+                            const extended = MemoView.extendViewerScope( { 'viewerId': ws.viewerId, 'projectIds': msg.projectIds } )
+
+                            if( ws.readyState === 1 && extended[ 'rejected' ].length > 0 ) {
+                                ws.send( JSON.stringify( { 'type': 'projectScopeRejected', 'rejected': extended[ 'rejected' ], 'messages': extended[ 'messages' ] } ) )
+                            }
+
+                            if( extended[ 'accepted' ].length > 0 ) {
+                                MemoView.sendDocumentList( { ws, 'force': true } )
+                                MemoView.sendTranscriptList( { ws, 'force': true } )
+                            }
+                        }
+
                         if( msg.type === 'requestDiff' && MemoView.#registry ) {
                             const { absolutePath, reason } = MemoView.resolveRevisionPath( { documentId: msg.documentId, fileName: msg.fileName } )
                             const answer = absolutePath === null
@@ -5811,7 +5842,9 @@ ${ VendorAssets.scriptTags().tags }
     // revision markdown via BlockMeta.parse, never writes. Returns a deduped, order-stable list so the
     // route can lint these names against the store id index (B5). An absent revision yields [].
     static async #collectBlockRequirementNames( { documentId } ) {
-        const { absolutePath } = MemoView.#registry.getSelectedRevisionPath( { documentId } )
+        // Memo 081, WI-106: same case as the /blocks route — no viewer, so the newest revision by name
+        // instead of whatever another socket had selected.
+        const { absolutePath } = MemoView.#registry.getPrimaryRevisionPath( { documentId } )
 
         if( !absolutePath ) { return [] }
 
@@ -6600,19 +6633,386 @@ ${ VendorAssets.scriptTags().tags }
     // documentList payload. Every documentList broadcast/response goes through here so the queue
     // and badges reflect the loggedIn state without per-call-site duplication. Returns the same
     // shape as DocumentRegistry.getDocumentTree() with revisionStatus joined from the transcripts.
-    static buildDocumentListPayload() {
-        const empty = { 'tree': {}, 'latest': [] }
+    // Memo 081, WI-106/WI-107: the payload is now built FOR SOMEBODY. `scope` decides the depth (which
+    // projects ship their revision lists), `viewerId` decides whose selection is laid over the shared
+    // tree. Both are required and neither has a fallback: a missing scope used to mean "everything",
+    // which is the measured defect (855 456 B to every socket on every foreign click), and a missing
+    // viewer used to mean "whatever the process selected last", which is N1.
+    static buildDocumentListPayload( { scope, viewerId } ) {
+        const empty = { 'tree': {}, 'latest': [], 'comparison': null }
 
         if( !MemoView.#registry ) { return empty }
 
-        const { tree, latest } = MemoView.#registry.getDocumentTree()
+        const { tree: fullTree, latest, comparison } = MemoView.#registry.getDocumentTree()
+        const { tree } = MemoView.scopeDocumentTree( { 'tree': fullTree, scope } )
 
         if( MemoView.#transcriptRegistry ) {
             const { tree: transcriptTree } = MemoView.#transcriptRegistry.getTranscriptTree()
             MemoView.enrichRevisionStatus( { tree, transcriptTree } )
         }
 
-        return { tree, latest }
+        // Memo 081, WI-106: the ONE place a selection re-enters a catalogue payload — per viewer, on a
+        // tree that was built without one. The field keeps its name because it keeps its meaning for the
+        // client ("the row this reader has open"); what changed is that the answer is no longer the same
+        // for everybody. `null` is written explicitly so a document this viewer never opened is
+        // distinguishable from one whose key was forgotten.
+        const { selections } = MemoView.#registry.getSelectedRevisions( { viewerId } )
+
+        Object.keys( tree )
+            .forEach( ( projectId ) => {
+                ( tree[ projectId ][ 'memos' ] || [] )
+                    .forEach( ( doc ) => {
+                        doc[ 'selectedRevision' ] = selections[ doc[ 'documentId' ] ] === undefined ? null : selections[ doc[ 'documentId' ] ]
+                    } )
+            } )
+
+        return { tree, latest, comparison }
+    }
+
+
+    // Memo 081, WI-106/WI-107: THE scope of a socket, and there is exactly one producer of it. It is
+    // NOT guessed: in this order the project of the deep link this socket resolved, the projects the
+    // reader expanded, and the projectId the client registered with (registerClient — the field already
+    // exists and already drives the active dot in the sidebar). No source present means an EMPTY scope,
+    // which yields the head level; falling back to "everything" would reinstate the full catalogue under
+    // a new name, and it would do so silently.
+    //
+    // One producer, one request message, both catalogues. Two definitions would drift, and REV-16:2686
+    // asks for one in so many words ("der Projekt-Scope wird einmal definiert und dann auf beide
+    // Kataloge angewandt").
+    static resolveSocketScope( { deepLinkProjectId, expandedProjectIds, registeredProjectId } ) {
+        const candidates = [ deepLinkProjectId ]
+            .concat( Array.isArray( expandedProjectIds ) ? expandedProjectIds : [] )
+            .concat( [ registeredProjectId ] )
+            .filter( ( id ) => typeof id === 'string' && id.length > 0 )
+
+        const scope = candidates
+            .filter( ( id, index ) => candidates.indexOf( id ) === index )
+
+        return { scope }
+    }
+
+
+    // Memo 081, WI-106 (REV-16:2644): ONE scope definition, applied to BOTH catalogues — this is the
+    // first of the two applications. The sentence "a client sees one project" is not what the sidebar
+    // does: it renders ALL projects, every one collapsed on first paint, it DROPS a project whose memo
+    // list arrives empty and it takes the header count from that same list. So a cut by MEMBERSHIP
+    // would delete eight of nine project heads. What a collapsed project actually shows is its name,
+    // its memo count and its active dot; the revision lists — measured 512 921 of 854 116 B, 60.1 % of
+    // the tree — it never shows. The scope is therefore DEPTH, not membership: every project keeps its
+    // head, the revision lists are requested.
+    //
+    // An empty scope means EMPTY (head level of every project), never "everything". A fallback to the
+    // full catalogue would reinstate the measured defect under a new name and do it silently; a missing
+    // list is not an empty one either, so it throws rather than guess in either direction.
+    static scopeDocumentTree( { tree, scope } ) {
+        if( !Array.isArray( scope ) ) { throw new Error( 'scopeDocumentTree: scope must be an array of projectId (use [] for the head level)' ) }
+
+        const inScope = new Set( scope.filter( ( id ) => typeof id === 'string' && id.length > 0 ) )
+        const source = ( tree && typeof tree === 'object' ) ? tree : {}
+
+        Object.keys( source )
+            .forEach( ( projectId ) => {
+                if( inScope.has( projectId ) ) { return }
+
+                ;( source[ projectId ][ 'memos' ] || [] )
+                    .forEach( ( doc ) => {
+                        doc[ 'revisionsIncluded' ] = false
+                        doc[ 'revisions' ] = []
+                    } )
+            } )
+
+        return { 'tree': source }
+    }
+
+
+    // Memo 081, WI-107: the SAME scope, applied at the transcript catalogue's own depth. A transcript
+    // entry's depth is what only the Transcripts view needs to list and open it — url, mtime, type,
+    // sequence, ungebunden. Measured over 1415 entries those five fields carry 192 262 of 449 282 B
+    // (42.8 %). Outside the scope they are left out and `included: false` says so; transcriptId,
+    // revisionId, words and loggedIn stay, because the MEMOS sidebar derives its minute chip, its
+    // per-revision transcript dot and its logged-in state from them for EVERY memo it renders — and a
+    // scope that made those numbers wrong would be the display twin of the defect it removes.
+    static scopeTranscriptTree( { tree, scope } ) {
+        if( !Array.isArray( scope ) ) { throw new Error( 'scopeTranscriptTree: scope must be an array of projectId (use [] for the head level)' ) }
+
+        const inScope = new Set( scope.filter( ( id ) => typeof id === 'string' && id.length > 0 ) )
+        const source = ( tree && typeof tree === 'object' ) ? tree : {}
+        const scoped = {}
+
+        Object.keys( source )
+            .forEach( ( projectId ) => {
+                if( inScope.has( projectId ) ) {
+                    scoped[ projectId ] = source[ projectId ]
+
+                    return
+                }
+
+                const node = source[ projectId ] || {}
+                const reduced = {}
+
+                Object.keys( node )
+                    .forEach( ( memoId ) => {
+                        const entries = Array.isArray( node[ memoId ] ) ? node[ memoId ] : []
+                        reduced[ memoId ] = entries
+                            .map( ( entry ) => {
+                                return {
+                                    'transcriptId': entry[ 'transcriptId' ],
+                                    'revisionId': entry[ 'revisionId' ],
+                                    'words': entry[ 'words' ],
+                                    'loggedIn': entry[ 'loggedIn' ],
+                                    'included': false
+                                }
+                            } )
+                    } )
+
+                scoped[ projectId ] = reduced
+            } )
+
+        return { 'tree': scoped }
+    }
+
+
+    // Memo 081, WI-106: a connection gets an identity here and hands it back on close. Without the
+    // release the per-viewer stores would grow for the lifetime of the process — view state leaks are
+    // invisible until they are large, so the count is measurable (countViewers / catalogGateStats).
+    static attachViewer( { ws, registeredProjectId } ) {
+        MemoView.#viewerSequence += 1
+        const viewerId = `viewer-${ MemoView.#viewerSequence }`
+
+        MemoView.#viewerState.set( viewerId, {
+            'scope': new Set(),
+            'registeredProjectId': typeof registeredProjectId === 'string' ? registeredProjectId : null,
+            'lastDocumentSignature': null,
+            'lastTranscriptSignature': null
+        } )
+
+        if( ws !== null && ws !== undefined ) { ws.viewerId = viewerId }
+
+        return { viewerId, 'viewers': MemoView.#viewerState.size }
+    }
+
+
+    static releaseViewer( { viewerId } ) {
+        const released = MemoView.#viewerState.delete( viewerId )
+
+        if( MemoView.#registry && typeof viewerId === 'string' && viewerId.length > 0 ) {
+            MemoView.#registry.releaseViewer( { viewerId } )
+        }
+
+        return { released, 'viewers': MemoView.#viewerState.size }
+    }
+
+
+    static viewerCount() {
+        return { 'viewers': MemoView.#viewerState.size }
+    }
+
+
+    // Memo 081, WI-106/WI-107: the client asks for the DEPTH of a project when it opens one. The scope
+    // grows and never shrinks for the life of the connection — a scope that shrank on collapse would
+    // re-fetch on every open/close cycle. An unknown projectId is REJECTED AND NAMED, never quietly
+    // dropped: a request that disappears is indistinguishable from one that was answered with nothing.
+    static extendViewerScope( { viewerId, projectIds } ) {
+        const struct = { 'status': false, 'scope': [], 'accepted': [], 'rejected': [], 'messages': [] }
+        const state = MemoView.#viewerState.get( viewerId )
+
+        if( state === undefined ) {
+            struct[ 'messages' ].push( `viewerId: Not found: ${ viewerId }` )
+
+            return struct
+        }
+
+        const known = new Set()
+
+        if( MemoView.#registry ) {
+            const { tree } = MemoView.#registry.getDocumentTree()
+            Object.keys( tree ).forEach( ( projectId ) => known.add( projectId ) )
+        }
+
+        if( MemoView.#transcriptRegistry ) {
+            const { tree } = MemoView.#transcriptRegistry.getTranscriptTree()
+            Object.keys( tree ).forEach( ( projectId ) => known.add( projectId ) )
+        }
+
+        ;( Array.isArray( projectIds ) ? projectIds : [] )
+            .forEach( ( projectId ) => {
+                if( typeof projectId !== 'string' || projectId.length === 0 || !known.has( projectId ) ) {
+                    struct[ 'rejected' ].push( projectId )
+                    struct[ 'messages' ].push( `projectId: Unknown project: ${ projectId }` )
+
+                    return
+                }
+
+                state[ 'scope' ].add( projectId )
+                struct[ 'accepted' ].push( projectId )
+            } )
+
+        struct[ 'status' ] = struct[ 'accepted' ].length > 0
+        struct[ 'scope' ] = [ ...state[ 'scope' ] ]
+
+        return struct
+    }
+
+
+    // Memo 081, WI-106: the scope a socket currently has, assembled by the ONE producer above from the
+    // three sources it names. Read on every send so a deep link that arrives after the connect message
+    // is already in it.
+    static viewerScope( { viewerId } ) {
+        const state = MemoView.#viewerState.get( viewerId )
+
+        if( state === undefined ) { return { 'scope': [] } }
+
+        return MemoView.resolveSocketScope( {
+            'deepLinkProjectId': state[ 'deepLinkProjectId' ] === undefined ? null : state[ 'deepLinkProjectId' ],
+            'expandedProjectIds': [ ...state[ 'scope' ] ],
+            'registeredProjectId': state[ 'registeredProjectId' ]
+        } )
+    }
+
+
+    static noteDeepLinkProject( { viewerId, projectId } ) {
+        const state = MemoView.#viewerState.get( viewerId )
+
+        if( state === undefined ) { return { 'status': false } }
+
+        state[ 'deepLinkProjectId' ] = typeof projectId === 'string' && projectId.length > 0 ? projectId : null
+
+        return { 'status': true }
+    }
+
+
+    // Memo 081, WI-106 (REV-16:2645): THE DECISION THIS NEEDS HAS EXISTED SINCE MEMO 016 —
+    // sidebarSignatureChanged — with ZERO callers in the server. It was never the mechanism that was
+    // missing, it was a payload it could bite on: measured before the selection moved out of the
+    // catalogue, six consecutive broadcasts produced six DIFFERENT payloads of identical length
+    // (855 456 B each), so a gate would have passed all six and saved 0 of 5 132 736 B. With the
+    // selection gone, the catalogue only changes when the catalogue changes.
+    //
+    // `force` exists for ONE case and is never a convenience: an explicit requestProjectScope must be
+    // answered even when the bytes are identical. A gate that swallows a question is the same defect as
+    // a catalogue that arrives unasked.
+    static sendDocumentList( { ws, force } ) {
+        const struct = { 'sent': false, 'bytes': 0, 'held': false }
+
+        if( !MemoView.#registry || ws === null || ws === undefined || ws.readyState !== 1 ) { return struct }
+
+        const viewerId = ws.viewerId
+
+        if( typeof viewerId !== 'string' || viewerId.length === 0 ) { return struct }
+
+        const { scope } = MemoView.viewerScope( { viewerId } )
+        const { tree, latest, comparison } = MemoView.buildDocumentListPayload( { scope, viewerId } )
+        const message = JSON.stringify( { 'type': 'documentList', tree, latest, comparison } )
+        const state = MemoView.#viewerState.get( viewerId )
+        const { changed } = MemoView.sidebarSignatureChanged( { 'prev': state === undefined ? null : state[ 'lastDocumentSignature' ], 'next': message } )
+
+        if( changed !== true && force !== true ) {
+            MemoView.#catalogGate[ 'heldSends' ] += 1
+            MemoView.#catalogGate[ 'heldBytes' ] += Buffer.byteLength( message, 'utf8' )
+            struct[ 'held' ] = true
+
+            return struct
+        }
+
+        if( state !== undefined ) { state[ 'lastDocumentSignature' ] = message }
+
+        ws.send( message )
+        MemoView.#catalogGate[ 'sentSends' ] += 1
+        MemoView.#catalogGate[ 'sentBytes' ] += Buffer.byteLength( message, 'utf8' )
+        struct[ 'sent' ] = true
+        struct[ 'bytes' ] = Buffer.byteLength( message, 'utf8' )
+
+        return struct
+    }
+
+
+    static sendTranscriptList( { ws, force } ) {
+        const struct = { 'sent': false, 'bytes': 0, 'held': false }
+
+        if( !MemoView.#transcriptRegistry || ws === null || ws === undefined || ws.readyState !== 1 ) { return struct }
+
+        const viewerId = ws.viewerId
+
+        if( typeof viewerId !== 'string' || viewerId.length === 0 ) { return struct }
+
+        const { scope } = MemoView.viewerScope( { viewerId } )
+        const { tree: fullTree } = MemoView.#transcriptRegistry.getTranscriptTree()
+        const { tree } = MemoView.scopeTranscriptTree( { 'tree': fullTree, scope } )
+        const message = JSON.stringify( { 'type': 'transcriptList', tree } )
+        const state = MemoView.#viewerState.get( viewerId )
+        const { changed } = MemoView.sidebarSignatureChanged( { 'prev': state === undefined ? null : state[ 'lastTranscriptSignature' ], 'next': message } )
+
+        if( changed !== true && force !== true ) {
+            MemoView.#catalogGate[ 'heldSends' ] += 1
+            MemoView.#catalogGate[ 'heldBytes' ] += Buffer.byteLength( message, 'utf8' )
+            struct[ 'held' ] = true
+
+            return struct
+        }
+
+        if( state !== undefined ) { state[ 'lastTranscriptSignature' ] = message }
+
+        ws.send( message )
+        MemoView.#catalogGate[ 'sentSends' ] += 1
+        MemoView.#catalogGate[ 'sentBytes' ] += Buffer.byteLength( message, 'utf8' )
+        struct[ 'sent' ] = true
+        struct[ 'bytes' ] = Buffer.byteLength( message, 'utf8' )
+
+        return struct
+    }
+
+
+    // Memo 081, WI-106: a broadcast is N per-recipient sends, not one payload copied N times. It has to
+    // be — the scope and the selection differ per socket, so there IS no shared payload any more.
+    static broadcastDocumentList( { clients } ) {
+        const result = { 'sent': 0, 'held': 0, 'bytes': 0 }
+
+        ;( clients === null || clients === undefined ? [] : [ ...clients ] )
+            .forEach( ( client ) => {
+                const { sent, held, bytes } = MemoView.sendDocumentList( { 'ws': client } )
+                if( sent === true ) { result[ 'sent' ] += 1; result[ 'bytes' ] += bytes }
+                if( held === true ) { result[ 'held' ] += 1 }
+            } )
+
+        return result
+    }
+
+
+    static broadcastTranscriptList( { clients } ) {
+        const result = { 'sent': 0, 'held': 0, 'bytes': 0 }
+
+        ;( clients === null || clients === undefined ? [] : [ ...clients ] )
+            .forEach( ( client ) => {
+                const { sent, held, bytes } = MemoView.sendTranscriptList( { 'ws': client } )
+                if( sent === true ) { result[ 'sent' ] += 1; result[ 'bytes' ] += bytes }
+                if( held === true ) { result[ 'held' ] += 1 }
+            } )
+
+        return result
+    }
+
+
+    static catalogGateStats() {
+        const gate = MemoView.#catalogGate
+
+        return {
+            'stats': {
+                'heldSends': gate[ 'heldSends' ],
+                'heldBytes': gate[ 'heldBytes' ],
+                'sentSends': gate[ 'sentSends' ],
+                'sentBytes': gate[ 'sentBytes' ],
+                'viewers': MemoView.#viewerState.size
+            }
+        }
+    }
+
+
+    // Test seam ONLY: a counter that never resets cannot be measured twice in one process.
+    static resetCatalogGateForTests() {
+        MemoView.#catalogGate = { 'heldSends': 0, 'heldBytes': 0, 'sentSends': 0, 'sentBytes': 0 }
+
+        return { 'reset': true }
     }
 
 

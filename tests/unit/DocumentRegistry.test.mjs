@@ -142,7 +142,12 @@ describe( 'DocumentRegistry', () => {
             const result = await registry.addDocument( { projectId: 'proj', memoPath: revisionsDir } )
             const { document } = registry.getDocument( { documentId: result['documentId'] } )
 
-            expect( document['selectedRevision'] ).toBeNull()
+            // Memo 081, WI-106: the document no longer HOLDS a selection at all — it moved to the
+            // viewer (selectRevision requires a viewerId). The statement of this case is unchanged
+            // ("a fresh document has nothing selected") and is now checked where the answer lives:
+            // no field on the record, and no selection for a viewer that has not selected.
+            expect( document['selectedRevision'] ).toBeUndefined()
+            expect( registry.getSelectedRevisions( { viewerId: 'v-fresh' } )['selections'] ).toEqual( {} )
             expect( document['revisions'].length ).toBe( 2 )
             // Revisions sorted by mtime desc (then REV-Number desc as tie-breaker, PRD-007)
             const fileNames = document['revisions'].map( ( r ) => r['fileName'] )
@@ -247,13 +252,14 @@ describe( 'DocumentRegistry', () => {
             await writeFile( join( dir, 'v0.2.md' ), '# B' )
 
             const addResult = await registry.addDocument( { projectId: 'proj', memoPath: dir } )
-            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'v0.1.md' } )
+            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'v0.1.md', viewerId: 'v-1' } )
 
             expect( selectResult['status'] ).toBe( true )
 
-            const { document } = registry.getDocument( { documentId: addResult['documentId'] } )
+            // Memo 081, WI-106: same statement, read from the viewer instead of from the document.
+            const { selections } = registry.getSelectedRevisions( { viewerId: 'v-1' } )
 
-            expect( document['selectedRevision'] ).toBe( 'v0.1.md' )
+            expect( selections[ addResult['documentId'] ] ).toBe( 'v0.1.md' )
         } )
 
 
@@ -263,7 +269,7 @@ describe( 'DocumentRegistry', () => {
             await writeFile( join( dir, 'v0.1.md' ), '# A' )
 
             const addResult = await registry.addDocument( { projectId: 'proj', memoPath: dir } )
-            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'v9.9.md' } )
+            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'v9.9.md', viewerId: 'v-1' } )
 
             expect( selectResult['status'] ).toBe( false )
         } )
@@ -309,11 +315,11 @@ describe( 'DocumentRegistry', () => {
 
             const addResult = await registry.addDocument( { projectId: 'proj', memoPath: dir } )
             // Server does not auto-select; UI must call selectRevision explicitly.
-            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'REV-01.md' } )
+            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'REV-01.md', viewerId: 'v-1' } )
 
             expect( selectResult['status'] ).toBe( true )
 
-            const { status, absolutePath } = registry.getSelectedRevisionPath( { documentId: addResult['documentId'] } )
+            const { status, absolutePath } = registry.getSelectedRevisionPath( { documentId: addResult['documentId'], viewerId: 'v-1' } )
 
             expect( status ).toBe( true )
             expect( absolutePath ).toContain( 'REV-01.md' )
@@ -321,7 +327,7 @@ describe( 'DocumentRegistry', () => {
 
 
         it( 'returns false for non-existent document', () => {
-            const { status } = registry.getSelectedRevisionPath( { documentId: 'nope' } )
+            const { status } = registry.getSelectedRevisionPath( { documentId: 'nope', viewerId: 'v-1' } )
 
             expect( status ).toBe( false )
         } )

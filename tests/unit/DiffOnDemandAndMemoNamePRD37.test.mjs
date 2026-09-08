@@ -430,7 +430,16 @@ describe( 'PRD-37 — am LAUFENDEN Server: Name unter Gleichzeitigkeit, Diff auf
         // jedes anderen Dokuments loeschen (DocumentRegistry.mjs:549) — genau der Mechanismus, aus dem
         // die null-Haelfte von N1 entstand.
         expect( report[ 'selectionBeforeRequest' ] ).toBe( report[ 'selectionAfterRequest' ] )
-        expect( report[ 'selectionAfterRequest' ] ).toBe( 'proj--001-alpha' )
+        // Memo 081, WI-106 (PRD-38): der Erwartungswert ist gewachsen, weil eine Auswahl keine andere
+        // mehr loescht — der Socket behaelt BEIDE Dokumente, die dieser Fall gewaehlt hat. Frueher
+        // stand hier genau EINES, weil jede neue Auswahl die uebrigen geloescht hat; das war der
+        // Defekt. Auf ein exaktes Mengen-Gleichheits-Urteil wird bewusst verzichtet: die Auto-Auswahl
+        // beim Verbindungsaufbau (resolveAutoSelectTarget, neuestes aktives Dokument) faellt bei drei
+        // im selben Millisekunden-Fenster geschriebenen Wegwerf-Memos nicht immer gleich aus —
+        // gemessen in zwei Laeufen einmal MIT und einmal OHNE proj--003-solo. Der Kern des Falls
+        // (vorher === nachher) steht unveraendert darueber.
+        expect( report[ 'selectionAfterRequest' ] ).toContain( 'proj--001-alpha' )
+        expect( report[ 'selectionAfterRequest' ] ).toContain( 'proj--002-beta' )
     } )
 } )
 
@@ -538,20 +547,30 @@ const main = async () => {
     report[ 'diffAvailableWithPrevious' ] = withPrevious[ 'diffAvailable' ]
     report[ 'contentMemoName' ] = withPrevious[ 'memoName' ]
 
-    report[ 'selectionBeforeRequest' ] = ( await ( await fetch( base + '/api/documents' ) ).json() )[ 'documents' ]
-        .filter( ( doc ) => doc[ 'selectedRevision' ] !== null )
-        .map( ( doc ) => doc[ 'documentId' ] )
-        .join( ',' )
+    // Memo 081, WI-106 (PRD-38): die Auswahl ist nicht mehr prozessweit, also gibt es sie in der
+    // REST-Antwort nicht mehr — ein REST-Aufruf hat keinen Betrachter. Die AUSSAGE dieses Falls ist
+    // unveraendert ("eine Diff-Anfrage bewegt die Auswahl nicht"); sie wird jetzt an der Flaeche
+    // gemessen, die die Auswahl heute traegt: dem documentList dieses Sockets. Ein ausdrueckliches
+    // requestProjectScope erzwingt die Antwort auch bei unveraenderten Bytes.
+    const socketSelection = async () => {
+        const list = await ask( socket, { 'type': 'requestProjectScope', 'projectIds': [ 'proj' ] }, 'documentList' )
+
+        return Object.keys( list[ 'tree' ] )
+            .reduce( ( acc, projectId ) => acc.concat( list[ 'tree' ][ projectId ][ 'memos' ] || [] ), [] )
+            .filter( ( doc ) => doc[ 'selectedRevision' ] !== null )
+            .map( ( doc ) => doc[ 'documentId' ] )
+            .sort()
+            .join( ',' )
+    }
+
+    report[ 'selectionBeforeRequest' ] = await socketSelection()
 
     const validDiff = await ask( socket, { 'type': 'requestDiff', 'documentId': 'proj--001-alpha', 'fileName': 'REV-02.md' }, 'diff' )
     report[ 'validDiff' ] = { 'type': validDiff[ 'type' ], 'documentId': validDiff[ 'documentId' ], 'fileName': validDiff[ 'fileName' ], 'hasDiff': validDiff[ 'diff' ][ 'hasDiff' ] }
     report[ 'diffKeys' ] = Object.keys( validDiff[ 'diff' ] )
     report[ 'previousBlockTexts' ] = validDiff[ 'diff' ][ 'previousBlockTexts' ]
 
-    report[ 'selectionAfterRequest' ] = ( await ( await fetch( base + '/api/documents' ) ).json() )[ 'documents' ]
-        .filter( ( doc ) => doc[ 'selectedRevision' ] !== null )
-        .map( ( doc ) => doc[ 'documentId' ] )
-        .join( ',' )
+    report[ 'selectionAfterRequest' ] = await socketSelection()
 
     const foreign = await ask( socket, { 'type': 'requestDiff', 'documentId': 'proj--003-solo', 'fileName': 'REV-02.md' }, 'diff' )
     report[ 'foreignDiff' ] = { 'diff': foreign[ 'diff' ], 'reason': foreign[ 'reason' ], 'documentId': foreign[ 'documentId' ] }

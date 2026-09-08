@@ -403,6 +403,12 @@
         // kind of per-session view state, and computeSidebarSignature has to see it or the next
         // documentList broadcast silently folds the row back up.
         const revealedMemos = new Set()
+        // Memo 081, WI-106/WI-107: which projects this connection has asked for depth for, and which
+        // request is still in flight. Both drive the markup (a project waiting for its revision lists
+        // shows a named loading row), so both are part of computeSidebarSignature — a signature blind
+        // to them would skip exactly the redraw the answer to our own question triggers.
+        const scopedProjects = new Set()
+        const pendingScopeProjects = new Set()
         // PRD-016 (Memo 016 Kap 6.1): namespaces default to COLLAPSED. We track which
         // namespaces have already been seeded into collapsedProjects so a later re-render
         // never re-collapses a group the user has manually expanded.
@@ -1722,6 +1728,21 @@
             }
         }
 
+        // Memo 081, WI-106/WI-107: ONE requester for ONE message, used by both the memos tree and the
+        // transcripts tree. The server answers this socket with the new depth of BOTH catalogues; the
+        // client never asks twice for the same project (scopedProjects) and never asks while an answer
+        // is outstanding (pendingScopeProjects).
+        function requestProjectScope( projectIds ) {
+            var wanted = ( projectIds || [] ).filter( function( id ) {
+                return typeof id === 'string' && id.length > 0 && !scopedProjects.has( id ) && !pendingScopeProjects.has( id )
+            } )
+            if( wanted.length === 0 ) { return false }
+            if( !currentWs || currentWs.readyState !== 1 ) { return false }
+            wanted.forEach( function( id ) { pendingScopeProjects.add( id ) } )
+            currentWs.send( JSON.stringify( { 'type': 'requestProjectScope', 'projectIds': wanted } ) )
+            return true
+        }
+
         function renderSidebarMemos() {
             var navEl = document.getElementById( 'doc-sidebar-body' )
             if( !navEl ) { return }
@@ -1809,6 +1830,9 @@
             }
 
             function renderRevEntry( doc, rev ) {
+                // Memo 081, WI-106: `doc.selectedRevision` is no longer a fact of the document but of THIS
+                // connection — the server lays this viewer's own selection over the shared tree. The
+                // comparison is unchanged; what changed is that two readers now get two answers.
                 var isSelected = rev.fileName === doc.selectedRevision
                 var cls = 'rev-mini'
                 if( isSelected ) { cls += ' rev-mini-active' }
@@ -2044,8 +2068,36 @@
                 // not configured. An empty `hidden` renders NOTHING: a "0 ausgeblendet" line under every
                 // memo would be noise, and from the outside it is indistinguishable from "nothing was
                 // filtered" anyway.
+                // Memo 081, WI-106: a memo whose project is OUT OF SCOPE carries `revisionsIncluded:
+                // false` and an empty list. Rendering that as an empty revision list would show "nothing
+                // here" for a memo with 27 revisions — a missing basis dressed up as a result, which is
+                // the display twin of the vacuum-green gate this project keeps taking apart. It gets a
+                // NAMED row instead, and the number in it comes from revisionCounts (shipped to 385 of
+                // 385 documents since PRD-35 and, until now, read by nobody here).
+                var counts = ( doc.revisionCounts && typeof doc.revisionCounts === 'object' ) ? doc.revisionCounts : null
+                var registered = ( counts && typeof counts.registered === 'number' )
+                    ? counts.registered
+                    : ( typeof doc.revisionCount === 'number' ? doc.revisionCount : null )
+                if( doc.revisionsIncluded === false ) {
+                    // The muted "rev-hidden-note" styling is reused deliberately: app.css is not touched
+                    // by this change, and a row that states a missing basis should read like the other
+                    // quiet meta row of this list, not like a revision.
+                    memoHtml += '<li class="rev-hidden-note rev-not-loaded" data-rev-not-loaded="' + escapeAttr( doc.documentId ) + '"'
+                        + ' data-rev-registered="' + ( registered === null ? '' : registered ) + '">'
+                        + escapeHtml( registered === null ? 'Revisionen noch nicht geladen' : ( registered + ' Revisionen \u00b7 noch nicht geladen' ) )
+                        + '</li>'
+                    memoHtml += '</ul></div>'
+                    return memoHtml
+                }
                 var partition = partitionRevisionsByConfigFilter( doc.revisions )
-                var isRevealed = revealedMemos.has( doc.documentId )
+                // Memo 081, Phasen-Abnahme C1-3 § 2.4: a deep link to a HIDDEN revision used to show its
+                // content with no row anywhere and zero active markers in the whole tree — the reader saw
+                // content without a position. Neither PRD-33 nor PRD-35 owns that state; it appears only
+                // when they are composed. It closes here because the server now knows, PER CONNECTION,
+                // what THIS reader is looking at (doc.selectedRevision is this socket's own selection) and
+                // can say so without pushing that selection onto everybody else.
+                var viewedIsHidden = partition.hidden.some( function( rev ) { return rev.fileName === doc.selectedRevision } )
+                var isRevealed = revealedMemos.has( doc.documentId ) || viewedIsHidden
                 var shown = isRevealed ? ( doc.revisions || [] ) : partition.kept
                 ;( shown ).forEach( function( rev ) {
                     memoHtml += renderRevEntry( doc, rev )
@@ -2140,8 +2192,11 @@
                     memos = projectNode.memos || []
                 }
 
-                if( memos.length === 0 ) { return }
-
+                // Memo 081, WI-106: a project with an empty memo list used to VANISH from the sidebar
+                // (the `return` that stood here), while its header count was taken from that same list.
+                // Both are derivations from what arrived, and with a scoped catalogue a derivation from
+                // what arrived is a statement about what was SENT wearing the label of what EXISTS. The
+                // head is rendered either way and the count comes from the tree's own figure.
                 var isCollapsed = collapsedProjects.has( projectId )
                 var bodyDisplay = isCollapsed ? 'none' : 'block'
                 var boxCls = 'ns-box' + ( isCollapsed ? ' ns-box-collapsed' : '' )
@@ -2149,7 +2204,8 @@
 
                 html += '<div class="' + boxCls + '" data-namespace="' + escapeAttr( projectId ) + '" data-active="' + ( isActive ? 'true' : 'false' ) + '">'
                 html += '<div class="ns-header" data-project="' + escapeAttr( projectId ) + '" title="Namespace ein-/ausklappen">'
-                html += nsHeaderInner( projectId, memos.length, isCollapsed )
+                var memoCount = ( projectNode && typeof projectNode.memoCount === 'number' ) ? projectNode.memoCount : memos.length
+                html += nsHeaderInner( projectId, memoCount, isCollapsed )
                 html += '</div>'
                 html += '<div class="ns-body" data-project-list="' + escapeAttr( projectId ) + '" style="display:' + bodyDisplay + '">'
                 memos.forEach( function( doc ) {
@@ -2203,9 +2259,17 @@
                         collapsedProjects.add( projectId )
                     }
                     var nowCollapsed = collapsedProjects.has( projectId )
+                    // Memo 081, WI-106/WI-107: opening a project is the moment its depth is needed —
+                    // the revision lists are 60.1 % of the catalogue and a collapsed project never
+                    // shows them. The request is additive: an opened project stays in the scope until
+                    // the connection ends, so open/close does not re-fetch on every click.
+                    if( !nowCollapsed ) { requestProjectScope( [ projectId ] ) }
                     var bodyEl = navEl.querySelector( '.ns-body[data-project-list="' + projectId + '"]' )
                     var boxEl = navEl.querySelector( '.ns-box[data-namespace="' + projectId + '"]' )
-                    var memoCount = bodyEl ? bodyEl.querySelectorAll( '.memo-group' ).length : 0
+                    var headerNode = ( lastTree || {} )[ projectId ]
+                    var memoCount = ( headerNode && typeof headerNode.memoCount === 'number' )
+                        ? headerNode.memoCount
+                        : ( bodyEl ? bodyEl.querySelectorAll( '.memo-group' ).length : 0 )
                     if( bodyEl ) { bodyEl.style.display = nowCollapsed ? 'none' : 'block' }
                     if( boxEl ) { boxEl.classList.toggle( 'ns-box-collapsed', nowCollapsed ) }
                     el.innerHTML = nsHeaderInner( projectId, memoCount, nowCollapsed )
@@ -2285,6 +2349,12 @@
                 // collapse sets are in it — it drives the markup, so a signature blind to it would skip
                 // exactly the redraw the user asked for.
                 r: Array.from( revealedMemos ).sort(),
+                // Memo 081, WI-106: the scope state drives the markup (loaded lists vs a named loading
+                // row), so it belongs in the signature for the same reason the collapse sets do —
+                // otherwise the no-op skip drops exactly the redraw our own requestProjectScope asked
+                // for, and the loading row would never resolve.
+                s: Array.from( scopedProjects ).sort(),
+                q: Array.from( pendingScopeProjects ).sort(),
                 full: cfg.showOnlyFullRevisions === true
             }
             if( currentMode === 'transcripts' ) {
@@ -2549,6 +2619,12 @@
                         collapsedTranscriptProjects.add( projectId )
                     }
                     var nowCollapsed = collapsedTranscriptProjects.has( projectId )
+                    // Memo 081, WI-107: THE SAME request, the same one message. Opening a project in the
+                    // Transcripts tree needs the fields only this view uses (url, mtime, type, sequence)
+                    // — measured 192 262 of 449 282 B over 1415 entries. One scope serves both trees; a
+                    // second request message for the transcript side would be the second definition the
+                    // memo forbids, and two definitions drift.
+                    if( !nowCollapsed ) { requestProjectScope( [ projectId ] ) }
                     var boxEl = el.closest( '.ns-box' )
                     var bodyEl = boxEl ? boxEl.querySelector( '.ns-body' ) : null
                     var leafCount = boxEl ? boxEl.querySelectorAll( '.transcript-entry' ).length : 0
@@ -10355,6 +10431,24 @@
                 if( data.type === 'documentList' ) {
                     lastTree = data.tree || {}
                     lastLatest = data.latest || []
+                    // Memo 081, WI-106: book the depth this payload actually brought — read off the
+                    // payload itself (revisionsIncluded), never off the request we sent. A request that
+                    // was answered with less than it asked for must leave the loading row standing, and
+                    // a pending flag cleared by hope instead of by evidence is how a spinner becomes
+                    // permanent.
+                    Object.keys( lastTree ).forEach( function( pId ) {
+                        var node = lastTree[ pId ]
+                        var list = ( node && node.memos ) ? node.memos : ( Array.isArray( node ) ? node : [] )
+                        var included = list.length > 0 && list.every( function( m ) { return m && m.revisionsIncluded === true } )
+                        if( included ) { scopedProjects.add( pId ) } else { scopedProjects.delete( pId ) }
+                        pendingScopeProjects.delete( pId )
+                    } )
+                    // Memo 081, D1: `comparison` now reaches this message (it was built by PRD-35 and
+                    // dropped two lines later by its only caller, so the payload carried three keys and
+                    // no explanation). It is deliberately NOT stashed in a client variable here:
+                    // measured, `lastLatest` has no rendered surface in this client at all — it feeds
+                    // computeSidebarSignature and nothing else — so a reader would be a variable nobody
+                    // reads, which is the defect D1 describes rather than its repair.
                     if( currentMode === 'memos' ) {
                         renderSidebar()
                     }

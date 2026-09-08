@@ -63,6 +63,10 @@ class DocumentRegistry {
     #watchers = new Map()
     #dbDebounceTimers = new Map()
     #onChangeCallback = null
+    // Memo 081, WI-106: viewerId -> ( documentId -> fileName ). The selection used to live ON the
+    // document, which made one reader's click a fact about everybody's catalogue (selectRevision).
+    // Here it is a fact about one connection, and two readers of the same document never meet.
+    #viewerSelections = new Map()
 
 
     static create( { onChange } ) {
@@ -134,8 +138,7 @@ class DocumentRegistry {
             // Memo 081 (WI-064): a freshly registered document has not been counted yet, and says so.
             // #refreshParsedFields overwrites this a few lines below; until it does, the field must not
             // read like a memo with zero questions.
-            'questions': DocumentRegistry.undeclaredQuestionCounts(),
-            'selectedRevision': null
+            'questions': DocumentRegistry.undeclaredQuestionCounts()
         }
 
         this.#documents.set( documentId, document )
@@ -252,7 +255,6 @@ class DocumentRegistry {
                     // revision from the queue.
                     'answerRecordsComplete': doc['answerRecordsComplete'] === true,
                     'revisionCount': revisions.length,
-                    'selectedRevision': doc['selectedRevision'],
                     'revisions': revisions
                 }
 
@@ -279,6 +281,11 @@ class DocumentRegistry {
     }
 
 
+    // Memo 081, WI-106: the tree answers "what is there" and answers it in FULL — the scope is a
+    // property of a transport, not of the stock, and it is applied one layer up (MemoView
+    // .scopeDocumentTree, next to the transcript pruner, so ONE scope produces both cuts and neither
+    // can drift from the other). What changed here is what the entry does NOT carry any more: the
+    // selection. That field made one reader's click a fact about everybody's catalogue.
     getDocumentTree() {
         const tree = {}
 
@@ -346,15 +353,26 @@ class DocumentRegistry {
                     // the first place (the tree keeps `full`, the latest list keeps `full || update`, and
                     // until now neither said it was a selection).
                     'revisionCounts': DocumentRegistry.#countRevisions( { 'revisions': mappedRevisions, 'countedIn': doc['memoPath'] } ),
-                    'selectedRevision': doc['selectedRevision'],
                     // PRD-016/017: memo-level activity timestamp = the newest revision mtime.
                     // null when no revision carries an mtime (no Silent-Default on invented time).
                     'latestMtimeMs': DocumentRegistry.#latestMtimeMs( { revisions: mappedRevisions } ),
+                    // Memo 081, WI-106: "not shipped" and "none there" are TWO statements, and the entry
+                    // makes both of them. The full tree includes everything and says so; the transport
+                    // pruner flips this flag and empties the list, and the two counts above are computed
+                    // from the REAL list and stay right either way — so a consumer that reads them can
+                    // never report what was SENT and call it what EXISTS. Same shape as the `basis` flag
+                    // of questionCounts/revisionCounts (PRD-30, PRD-35), written off rather than invented.
+                    'revisionsIncluded': true,
                     'revisions': mappedRevisions
                 }
 
                 const bucket = entry['documentKind'] === 'plan' ? 'plans' : 'memos'
                 tree[ projectId ][ bucket ].push( entry )
+                // Memo 081, WI-106: the project head states its own size instead of leaving the client
+                // to count the list it happened to receive. Today the two agree — the scope is depth,
+                // so every project ships all its memos — and that is precisely why the derivation had
+                // to go now rather than the day it starts disagreeing.
+                tree[ projectId ]['memoCount'] = tree[ projectId ]['memos'].length
             } )
 
         // PRD-017 (Memo 016 Kap 6.2): the Memos list is sorted NEWEST ON TOP (most recent
@@ -366,9 +384,15 @@ class DocumentRegistry {
                 tree[ projectId ]['memos'] = sorted
             } )
 
-        const { latest } = this.getLatestRevisions( { limit: LATEST_LIMIT } )
+        // Memo 081, D1 (Phasen-Abnahme C1-3 § 4): PRD-35 built { considered, kept, removed, filter } so a
+        // contradiction would become a distinction. Two lines later this single caller destructured only
+        // `{ latest }` and the field never reached the wire — measured at the socket, the documentList
+        // message carried exactly three keys: type, tree, latest. An explanation nobody can read is not
+        // an explanation. The caller keeps it, the payload builder passes it through, the message
+        // carries it.
+        const { latest, comparison } = this.getLatestRevisions( { limit: LATEST_LIMIT } )
 
-        return { tree, latest }
+        return { tree, latest, comparison }
     }
 
 
@@ -527,7 +551,25 @@ class DocumentRegistry {
     }
 
 
-    selectRevision( { documentId, fileName } ) {
+    // Memo 081, WI-106 (REV-16:2645): "a selection is an event of ONE client; it changes nothing about
+    // the catalogue of the others." That sentence was a critique, not a description — the selection was
+    // WRITTEN INTO the shared catalogue, and worse, selecting document A cleared the selection of every
+    // other document. Measured consequences, three of them from one line:
+    //   1. the catalogue differed after every single click, so a change-gate saved 0 % of 5 132 736 B
+    //      across six broadcasts (all six payloads byte-different, identical length);
+    //   2. with six concurrent sockets 21 of 26 content answers carried a foreign or null memoName,
+    //      because the resolver searched a selection another socket had just cleared (PRD-37, N1);
+    //   3. a deep link to a hidden revision could not be marked active in the sidebar without pushing
+    //      that same selection onto every other reader.
+    // A selection is a property of a LOOK, not of a document. It moves to the connection; the registry
+    // keeps the documents. Two readers now hold two selections of the SAME document without meeting.
+    //
+    // `viewerId` is required and there is no fallback. A selection without a viewer is exactly the
+    // state this removes, and a silent "process-wide" default would be its resurrection under a new
+    // name — so the method throws instead of accepting one.
+    selectRevision( { documentId, fileName, viewerId } ) {
+        DocumentRegistry.#assertViewerId( { viewerId, 'method': 'selectRevision' } )
+
         const struct = { 'status': false, 'messages': [] }
 
         if( !this.#documents.has( documentId ) ) {
@@ -546,37 +588,126 @@ class DocumentRegistry {
             return struct
         }
 
-        this.#documents
-            .forEach( ( otherDoc, otherDocumentId ) => {
-                if( otherDocumentId !== documentId ) {
-                    otherDoc['selectedRevision'] = null
-                }
-            } )
+        if( !this.#viewerSelections.has( viewerId ) ) { this.#viewerSelections.set( viewerId, new Map() ) }
 
-        doc['selectedRevision'] = fileName
+        this.#viewerSelections.get( viewerId ).set( documentId, fileName )
         struct['status'] = true
 
         return struct
     }
 
 
-    getSelectedRevisionPath( { documentId } ) {
+    getSelectedRevisionPath( { documentId, viewerId } ) {
+        DocumentRegistry.#assertViewerId( { viewerId, 'method': 'getSelectedRevisionPath' } )
+
         const struct = { 'status': false, 'absolutePath': null }
 
         if( !this.#documents.has( documentId ) ) {
             return struct
         }
 
-        const doc = this.#documents.get( documentId )
+        const selections = this.#viewerSelections.get( viewerId )
+        const fileName = selections === undefined ? undefined : selections.get( documentId )
 
-        if( !doc['selectedRevision'] ) {
+        if( fileName === undefined ) {
             return struct
         }
 
         struct['status'] = true
-        struct['absolutePath'] = resolve( doc['memoPath'], doc['selectedRevision'] )
+        struct['absolutePath'] = resolve( this.#documents.get( documentId )['memoPath'], fileName )
 
         return struct
+    }
+
+
+    // Memo 081, WI-106: what THIS reader is looking at, as a plain object the payload builder can lay
+    // over the shared tree. The tree itself no longer carries a selection (getDocumentTree), so this is
+    // the only way a socket learns its own active row — and the only way it cannot learn anybody
+    // else's. It is also what closes the seam gap of the C1-3 acceptance: a deep link to a HIDDEN
+    // revision used to show content with no row and zero active markers anywhere in the tree, because
+    // the one field that could have said "this reader is here" was shared and would have said it to
+    // everyone.
+    getSelectedRevisions( { viewerId } ) {
+        DocumentRegistry.#assertViewerId( { viewerId, 'method': 'getSelectedRevisions' } )
+
+        const selections = this.#viewerSelections.get( viewerId )
+        const result = {}
+
+        if( selections !== undefined ) {
+            selections.forEach( ( fileName, documentId ) => { result[ documentId ] = fileName } )
+        }
+
+        return { 'selections': result }
+    }
+
+
+    // Memo 081, WI-106: a store that grows per connection and never shrinks is a leak, and a leak of
+    // view state is invisible until it is large. The connection close hands its viewer back here.
+    releaseViewer( { viewerId } ) {
+        DocumentRegistry.#assertViewerId( { viewerId, 'method': 'releaseViewer' } )
+
+        const released = this.#viewerSelections.delete( viewerId )
+
+        return { released, 'viewers': this.#viewerSelections.size }
+    }
+
+
+    // Memo 081, WI-106: the measurable side of the line above — a test and the health route can both
+    // state how many viewers the store holds, before, during and after a series of connections.
+    countViewers() {
+        return { 'viewers': this.#viewerSelections.size }
+    }
+
+
+    // Memo 081, WI-106: the two HTTP routes that read a revision of a document have NO viewer — a REST
+    // call is not a look. They used to read the process-wide selection, which is the removed defect
+    // seen from the server side: the answer depended on what some other reader had clicked last. The
+    // honest viewer-independent answer is the document's NEWEST revision, and it says so by name
+    // instead of borrowing somebody's selection. Same rule resolveAutoSelectTarget prints, same
+    // ordering the tree is built from (#scanRevisions sorts newest first).
+    getPrimaryRevisionPath( { documentId } ) {
+        const struct = { 'status': false, 'absolutePath': null, 'fileName': null, 'rule': 'newest-revision' }
+
+        if( !this.#documents.has( documentId ) ) {
+            return struct
+        }
+
+        const doc = this.#documents.get( documentId )
+        const revisions = Array.isArray( doc['revisions'] ) ? doc['revisions'] : []
+
+        if( revisions.length === 0 ) {
+            return struct
+        }
+
+        struct['status'] = true
+        struct['fileName'] = revisions[ 0 ]['fileName']
+        struct['absolutePath'] = resolve( doc['memoPath'], revisions[ 0 ]['fileName'] )
+
+        return struct
+    }
+
+
+    // Memo 081, WI-106: every project the registry knows — the only honest way to name "all of them"
+    // as a scope. A caller that wants the full depth has to SAY so; there is no argument value that
+    // means "everything" by omission.
+    projectIds() {
+        const seen = new Set()
+
+        this.#documents
+            .forEach( ( doc ) => {
+                if( typeof doc['projectId'] === 'string' && doc['projectId'].length > 0 ) { seen.add( doc['projectId'] ) }
+            } )
+
+        return { 'scope': [ ...seen ] }
+    }
+
+
+    static #assertViewerId( { viewerId, method } ) {
+        if( typeof viewerId !== 'string' || viewerId.length === 0 ) {
+            throw new Error( `${ method }: viewerId is required (a selection belongs to ONE viewer, never to the process)` )
+        }
+
+        return { 'status': true }
     }
 
 
@@ -2540,8 +2671,15 @@ class DocumentRegistry {
             const previousCount = doc['revisions'].length
             doc['revisions'] = revisions
 
-            if( revisions.length > previousCount && revisions.length > 0 && doc['selectedRevision'] !== null ) {
-                doc['selectedRevision'] = revisions[ 0 ]['fileName']
+            // Memo 081, WI-106: a fresh revision used to advance THE selection — there was only one.
+            // Now every viewer that was looking at this document follows to the newest file, and a
+            // viewer looking at something else is untouched. Same behaviour per reader, no reader
+            // moved by another reader's document.
+            if( revisions.length > previousCount && revisions.length > 0 ) {
+                this.#viewerSelections
+                    .forEach( ( selections ) => {
+                        if( selections.has( documentId ) ) { selections.set( documentId, revisions[ 0 ]['fileName'] ) }
+                    } )
             }
 
             await this.#refreshParsedFields( { documentId } )

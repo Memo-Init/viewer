@@ -145,13 +145,17 @@ describe( 'PRD-39 — chapter contract and schema transition', () => {
         // repo into a temp dir, one bogus contract entry is injected, and the import must throw. Without
         // this case the assertions above would also pass for a gate that never fires.
         const source = await readFile( resolve( HERE, '..', '..', 'src', 'BlockSections.mjs' ), 'utf8' )
-        const marker = "    { heading: 'Kontext', required: true, repeatable: false, registered: false },"
+        // Memo 081, WI-113: the anchor and the injected entry both carry the `overview` field the
+        // contract gained. The injected entry keeps it deliberately — WITHOUT it the gate would still
+        // throw, but on "lacks a boolean field" instead of on "declares registered against what the
+        // register answers", and this case would silently stop testing the thing it is named after.
+        const marker = "    { heading: 'Kontext', required: true, repeatable: false, registered: false, overview: true },"
 
         expect( source ).toContain( marker )
 
         const dir = await mkdtemp( join( tmpdir(), 'prd39-gate-' ) )
         const broken = join( dir, 'BlockSections.mjs' )
-        await writeFile( broken, source.replace( marker, marker + "\n    { heading: 'Erfundene-Sektion', required: true, repeatable: false, registered: true }," ) )
+        await writeFile( broken, source.replace( marker, marker + "\n    { heading: 'Erfundene-Sektion', required: true, repeatable: false, registered: true, overview: false }," ) )
 
         await expect( import( pathToFileURL( broken ).href ) ).rejects.toThrow( /assertChapterContract/ )
 

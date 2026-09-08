@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals'
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, utimes } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -302,6 +302,29 @@ describe( 'PRD-37 — am LAUFENDEN Server: Name unter Gleichzeitigkeit, Diff auf
             } )
         )
 
+        // Memo 081, PRD-43 (P-2 aus der Phasen-Abnahme C1-4): die drei Wegwerf-Memos bekommen
+        // UNTERSCHEIDBARE Schreibzeitpunkte, damit die Auto-Auswahl beim Verbindungsaufbau ein
+        // bestimmtes Ergebnis hat. Gemessen ist die Regel eine Zeile lang: resolveAutoSelectTarget
+        // nimmt das NEUESTE Dokument mit Revision (DocumentRegistry.mjs), bei gleichem Zeitstempel
+        // entscheidet die Kennung. Die drei Ordner wurden bisher mit Promise.all geschrieben und lagen
+        // damit im selben Millisekunden-Fenster — und genau daraus entstand die Nichtdeterminiertheit,
+        // wegen der die Abnahme unten von einer Mengen-Gleichheit auf zwei Enthaltensein-Pruefungen
+        // abgeschwaecht werden musste. Alpha wird ausdruecklich das JUENGSTE, solo das AELTESTE.
+        //
+        // Feste Zeitstempel, keine Wartezeit: eine Vorrichtung, die auf die Uhr wartet, tauscht die
+        // Nichtdeterminiertheit nur gegen eine langsamere.
+        const stamped = [ [ '003-solo', 3000 ], [ '002-beta', 2000 ], [ '001-alpha', 1000 ] ]
+        await Promise.all(
+            stamped.map( async ( entry ) => {
+                const [ dir, secondsAgo ] = entry
+                const when = new Date( Date.now() - ( secondsAgo * 1000 ) )
+                const revisions = join( project, '.memo', 'memos', dir, 'revisions' )
+                const files = Object.keys( memos.find( ( memo ) => memo[ 'dir' ] === dir )[ 'files' ] )
+
+                await Promise.all( files.map( ( fileName ) => utimes( join( revisions, fileName ), when, when ) ) )
+            } )
+        )
+
         const configPath = join( root, '.sessions', 'config.json' )
         await mkdir( join( root, '.sessions' ), { 'recursive': true } )
         await writeFile( configPath, JSON.stringify( { 'projects': [ { 'projectId': 'proj', 'projectRoot': project } ] }, null, 4 ), 'utf8' )
@@ -432,14 +455,19 @@ describe( 'PRD-37 — am LAUFENDEN Server: Name unter Gleichzeitigkeit, Diff auf
         expect( report[ 'selectionBeforeRequest' ] ).toBe( report[ 'selectionAfterRequest' ] )
         // Memo 081, WI-106 (PRD-38): der Erwartungswert ist gewachsen, weil eine Auswahl keine andere
         // mehr loescht — der Socket behaelt BEIDE Dokumente, die dieser Fall gewaehlt hat. Frueher
-        // stand hier genau EINES, weil jede neue Auswahl die uebrigen geloescht hat; das war der
-        // Defekt. Auf ein exaktes Mengen-Gleichheits-Urteil wird bewusst verzichtet: die Auto-Auswahl
-        // beim Verbindungsaufbau (resolveAutoSelectTarget, neuestes aktives Dokument) faellt bei drei
-        // im selben Millisekunden-Fenster geschriebenen Wegwerf-Memos nicht immer gleich aus —
-        // gemessen in zwei Laeufen einmal MIT und einmal OHNE proj--003-solo. Der Kern des Falls
-        // (vorher === nachher) steht unveraendert darueber.
-        expect( report[ 'selectionAfterRequest' ] ).toContain( 'proj--001-alpha' )
-        expect( report[ 'selectionAfterRequest' ] ).toContain( 'proj--002-beta' )
+        // stand hier genau EINES, weil jede neue Auswahl die uebrigen geloescht hat; das war der Defekt.
+        //
+        // Memo 081, PRD-43 (P-2 der Phasen-Abnahme C1-4): die MENGEN-GLEICHHEIT ist zurueck. Hier
+        // standen zwischenzeitlich zwei Enthaltensein-Pruefungen — die schwaechere der beiden Formen:
+        // sie erkennen ein FEHLENDES Dokument, ein ZUSAETZLICHES nicht. Der Grund fuer die
+        // Abschwaechung war eine gemessene Nichtdeterminiertheit der Auto-Auswahl; die ist oben in
+        // beforeAll beseitigt, indem die drei Wegwerf-Memos unterscheidbare Zeitstempel bekommen.
+        // Damit ist die Auswahl vorhersagbar und darf wieder exakt geprueft werden.
+        expect( report[ 'selectionAfterRequest' ] ).toBe( 'proj--001-alpha,proj--002-beta' )
+        // Und der ausdrueckliche Ausschluss steht daneben, weil er die Aussage benennt, um die es
+        // geht: solo ist zu diesem Zeitpunkt NICHT gewaehlt. Er faellt auch dann, wenn die Gleichheit
+        // oben eines Tages gegen einen anderen Bestand gefahren wird.
+        expect( report[ 'selectionAfterRequest' ] ).not.toContain( 'proj--003-solo' )
     } )
 } )
 

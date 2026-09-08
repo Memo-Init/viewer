@@ -676,12 +676,10 @@
         /* PRD-001 (#16-18): raw question markdown bodies hidden once widgets render. */
         #content .raw-question-hidden { display: none; }
 
-        /* PRD-015 (D6): a block's structured H3 body sections below a block-meta card are collapsed
-           out of the prose — the Block-Card already carries the machine-links. Memo 080 / PRD-B1: which
-           H3 counts as a body section is decided by the ONE register (BlockSections), no longer by
-           three hand-typed names; the collapse itself is unchanged. This rule is the reason a rename
-           that is not carried through makes content DISAPPEAR (REV-18, Beleg 2.7). */
-        #content .block-body-hidden { display: none; }
+        /* PRD-015 (D6) held a `.block-body-hidden { display: none }` rule here. Memo 081 / WI-113
+           removed it: a section that is display:none is not collapsed, it is INVISIBLE — there is no
+           toggle, so it can never be reopened, and no line a figure could sit on. The six chapter
+           sections now fold through <details class="chapter-section">, styled below. */
 
         /* PRD-002 (#12/#15): caps section labels (style analog .sb-group-header). */
         #content .section-caps-label,
@@ -2870,6 +2868,51 @@
 
         #content .table-collapsible > table {
             margin-top: 4px;
+        }
+
+        /* Memo 081 / WI-113: the six chapter sections fold through the SAME mechanism as the tables —
+           <details>/<summary> — but under their OWN selector: a section and a table are two different
+           things and may look different. Unlike the tables (F10=A, open by default) these start CLOSED:
+           the reader first sees WHAT IS GOING ON, and only on a click WHAT IS IN IT. Both rules stand
+           side by side, so opening a section reveals an already-open table inside it. */
+        #content .chapter-section {
+            margin: 10px 0;
+            border-left: 2px solid var(--border, #30363d);
+            padding-left: 10px;
+        }
+
+        #content .chapter-section > .chapter-section-summary {
+            cursor: pointer;
+            list-style: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-muted, #8b949e);
+            padding: 3px 0;
+            user-select: none;
+        }
+
+        #content .chapter-section > .chapter-section-summary::-webkit-details-marker {
+            display: none;
+        }
+
+        #content .chapter-section > .chapter-section-summary::before {
+            content: '▸';
+            display: inline-block;
+            color: var(--accent);
+        }
+
+        #content .chapter-section[open] > .chapter-section-summary::before {
+            content: '▾';
+        }
+
+        /* Memo 081 / WI-114: a table whose heading is already visible inside the same fold frame carries
+           NO label. The toggle stays — an unlabelled summary is still the control that opens the table —
+           but it must not occupy a full text line it has no text for. */
+        #content .bare-table-summary {
+            padding: 0;
+            min-height: 14px;
         }
 
         /* PRD-018 (WI-T013-4/5/8, F10=A): the chapter topic-pille header + cross-link line, injected

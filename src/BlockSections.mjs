@@ -216,18 +216,35 @@ const DOCUMENT_SECTIONS = [
 // second unregistered contract heading breaks the import. Closing it properly is a write-path change
 // (the same defect class as the 242 unrecognised `### Abhaengigkeiten` this PRD closes), not a contract
 // change — it is reported as a restschuld rather than half-done here.
+// Memo 081, WI-113 (REV-16:4110-4111): `overview` says whether a section belongs to the OVERVIEW LEVEL
+// and therefore stays OPEN. `### Kontext` and `### User-Auftrag` do — they ARE that level: someone
+// scrolling a document to see "what is going on" reads exactly those two and nothing else, and the user
+// confirmed the per-chapter context line explicitly. The other six fold into a <details> whose <summary>
+// is a computed figure line.
+//
+// IT IS A PROPERTY OF THE SECTION, NOT OF THE RENDERER, which is why it stands here beside the heading
+// rather than in a list the browser keeps. The renderer READS it.
+//
+// AND IT IS DELIBERATELY NOT `BLOCK_BODY_HEADINGS`. That literal is the derived copy of the whole
+// VOCABULARY — 20 labels — and it currently collapses `user-auftrag`, which the memo explicitly wants
+// open. Using the vocabulary as the fold list would fold twelve sections nobody asked to fold and one
+// the memo asks to leave alone. A list that answers two questions answers at least one of them wrongly;
+// that is the defect this register already took apart once for the headings themselves.
 const CHAPTER_CONTRACT = [
-    { heading: 'Kontext', required: true, repeatable: false, registered: false },
-    { heading: 'User-Auftrag', required: true, repeatable: false, registered: true },
-    { heading: 'Ist-Zustand', required: true, repeatable: false, registered: true },
-    { heading: 'Soll-Zustand', required: true, repeatable: true, registered: true },
-    { heading: 'Belege', required: true, repeatable: false, registered: true },
-    { heading: 'Topics', required: true, repeatable: false, registered: true },
-    { heading: 'Work-Items', required: true, repeatable: false, registered: true },
-    { heading: 'Abhaengigkeiten', required: true, repeatable: false, registered: true }
+    { heading: 'Kontext', required: true, repeatable: false, registered: false, overview: true },
+    { heading: 'User-Auftrag', required: true, repeatable: false, registered: true, overview: true },
+    { heading: 'Ist-Zustand', required: true, repeatable: false, registered: true, overview: false },
+    { heading: 'Soll-Zustand', required: true, repeatable: true, registered: true, overview: false },
+    { heading: 'Belege', required: true, repeatable: false, registered: true, overview: false },
+    { heading: 'Topics', required: true, repeatable: false, registered: true, overview: false },
+    { heading: 'Work-Items', required: true, repeatable: false, registered: true, overview: false },
+    { heading: 'Abhaengigkeiten', required: true, repeatable: false, registered: true, overview: false }
 ]
 
-const CONTRACT_FIELDS = [ 'required', 'repeatable', 'registered' ]
+// `overview` rides in this list so the load-time gate below demands it as a BOOLEAN on every entry. A
+// contract entry that simply omitted it would otherwise read as "not an overview section" by accident —
+// a default nobody wrote down, on the datum that decides whether a section is visible.
+const CONTRACT_FIELDS = [ 'required', 'repeatable', 'registered', 'overview' ]
 
 // The closed list of contract headings the register deliberately does NOT carry. It is a list so the
 // gate can compare against it, and it is written out so that widening it is a visible edit.
@@ -480,7 +497,8 @@ class BlockSections {
                 heading: entry[ 'heading' ],
                 required: entry[ 'required' ],
                 repeatable: entry[ 'repeatable' ],
-                registered: entry[ 'registered' ]
+                registered: entry[ 'registered' ],
+                overview: entry[ 'overview' ]
             } ) )
 
         return { contract }

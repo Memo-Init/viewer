@@ -5,7 +5,8 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { basename, dirname, join, resolve } from 'node:path'
 
-import { readEmittedScript, extractFunctionSources } from '../helpers/extractFunction.mjs'
+import { readEmittedScript, extractFunctionSources, sliceDeclaration } from '../helpers/extractFunction.mjs'
+import { makeNode, makeRoot, makeDocument } from '../helpers/domSurrogate.mjs'
 import { BlockSections, KINDS, SUFFIX_SEPARATORS } from '../../src/BlockSections.mjs'
 import { BlockMeta } from '../../src/BlockMeta.mjs'
 import { MemoView } from '../../src/MemoView.mjs'
@@ -167,36 +168,17 @@ async function readFencedRevisions() {
 }
 
 
-// A minimal DOM node with the surface hideBlockBodySections walks: classList, tagName, textContent and
-// the nextElementSibling chain. Same approach as BlockViewPRD014 — there is no jsdom in this project
-// (M11), so the traversal is driven against a shim instead of being asserted on source form alone.
-function makeNode( tag, text, classes ) {
-    const node = {
-        tagName: String( tag ).toUpperCase(),
-        textContent: text === undefined ? '' : text,
-        nextElementSibling: null,
-        _classes: new Set( classes === undefined ? [] : classes )
-    }
-    node.classList = {
-        add: ( ...names ) => names.forEach( ( name ) => node._classes.add( name ) ),
-        contains: ( name ) => node._classes.has( name )
-    }
-
-    return node
-}
-
-
-function chain( nodes ) {
-    nodes.forEach( ( node, index ) => { node.nextElementSibling = index + 1 < nodes.length ? nodes[ index + 1 ] : null } )
-
-    return nodes
-}
+// Memo 081, WI-113: the local shim is gone, the shared one in tests/helpers/domSurrogate.mjs took its
+// place. The reason is the change under test: the pass no longer SETS A CLASS on nodes it finds, it
+// MOVES them into a <details>, so the surrogate needs parentNode / insertBefore / appendChild / closest
+// / querySelectorAll on top of the sibling chain. Two suites drive that pass, and a shim typed twice is
+// two shims that can drift apart. Same approach as before — there is no jsdom in this project (M11).
 
 
 describe( 'BlockSections register + the three lists derived from it — Memo 080 PRD-B1 (WI-184)', () => {
     let client = ''
     let clientIsBlockBodyHeading = null
-    let clientHideBlockBodySections = null
+    let clientFoldBlockBodySections = null
 
     beforeAll( async () => {
         client = await readEmittedScript()
@@ -211,10 +193,19 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
         expect( lists.split( '\n' ).length ).toBe( 2 )
         clientIsBlockBodyHeading = new Function( lists + '\n' + source + '\nreturn isBlockBodyHeading' )()
 
-        // The collapse pass itself, lifted with everything it walks. `contentEl` is the closure variable
-        // it reads the cards from, so it is injected as a parameter — the rest is the real browser code.
-        const pass = await extractFunctionSources( [ 'hideBlockBodySections', 'isBlockBodyHeading', 'headingLevel', 'hiddenSiblingsAfter' ] )
-        clientHideBlockBodySections = new Function( 'contentEl', lists + '\n' + pass.source + '\nreturn hideBlockBodySections()' )
+        // The fold pass itself, lifted with everything it walks. `contentEl` is the closure variable it
+        // reads the cards from and `document` is the factory it builds the <details> with, so both are
+        // injected as parameters — the rest is the real browser code, and the five module-scope literals
+        // are the REAL declarations rather than re-typed copies (sliceDeclaration), so this suite cannot
+        // stay green against a list the browser no longer has.
+        const foldLists = [ 'BLOCK_BODY_SUFFIXES', 'CHAPTER_FOLD_SECTIONS', 'CHAPTER_FIGURE_KINDS', 'EVIDENCE_ART_VALUES', 'EVIDENCE_TAGS' ]
+            .map( ( name ) => sliceDeclaration( client, name ) )
+            .join( '\n' )
+        const pass = await extractFunctionSources( [
+            'foldBlockBodySections', 'chapterFoldLabel', 'foldOneSection', 'chapterSectionFigure',
+            'countSectionUnits', 'distributionOf', 'artValueOfRow', 'headingLevel', 'hiddenSiblingsAfter'
+        ] )
+        clientFoldBlockBodySections = new Function( 'contentEl', 'document', foldLists + '\n' + pass.source + '\nreturn foldBlockBodySections()' )
     } )
 
 
@@ -316,17 +307,24 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             expect( clientIsBlockBodyHeading( { tagName: 'H2', textContent: 'Faktenlage' } ) ).toBe( false )
             expect( clientIsBlockBodyHeading( { tagName: 'DIV', textContent: 'Faktenlage' } ) ).toBe( false )
 
-            // Region: the collapse still starts from the cards and from nothing else (M11 — no jsdom, so
-            // the boundary is asserted on the source form, exactly as PRD-015 already did).
-            expect( client ).toContain( 'function hideBlockBodySections(' )
+            // Region: the fold still starts from the cards and from nothing else, and it still stops at
+            // the next card and at the next H2. Memo 081, WI-113 renamed the pass (it folds now, it does
+            // not hide) — the three boundary lines it is asserted on are unchanged, character for
+            // character, which is the point of listing them here.
+            expect( client ).toContain( 'function foldBlockBodySections(' )
             expect( client ).toContain( "var cards = contentEl.querySelectorAll( '.block-meta-card' )" )
             expect( client ).toContain( "if( node.classList && node.classList.contains( 'block-meta-card' ) ) { return }" )
             expect( client ).toContain( 'if( headingLevel( node ) === 2 ) { return }' )
         } )
 
-        it( 'the collapse pass marks ONLY inside a card and ONLY at level 3 — walked, not argued', () => {
-            // Card region: card -> H3 Ist-Zustand -> P -> H3 Soll-Zustand: die Regel -> P -> H2 (stop)
-            // Outside: H3 Ist-Zustand (same text!) and an H2 Faktenlage — neither may be marked.
+        // Memo 081, WI-113: the SAME statement against the new mechanism. What this case proved before —
+        // only inside a card, only at level 3, level-aware range, prefix-aware heading — it proves now,
+        // measured on where the nodes ENDED UP instead of on a class that was set on them. It is
+        // strictly stronger in one respect: a class could be set on a node and change nothing, whereas
+        // a node inside a <details> is a node the reader can actually fold away and reopen.
+        it( 'the fold pass folds ONLY inside a card and ONLY at level 3 — walked, not argued', () => {
+            // Card region: card -> H3 Ist-Zustand -> P -> H3 Soll-Zustand: die Regel -> P -> H3 prose
+            //              -> H2 (stop) -> H3 Ist-Zustand (same text, OUTSIDE) -> H2 Faktenlage
             const insideHeadingA = makeNode( 'H3', 'Ist-Zustand' )
             const insideBodyA = makeNode( 'P', 'gemessen' )
             const insideHeadingB = makeNode( 'H3', 'Soll-Zustand: die Regel' )
@@ -336,18 +334,32 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             const outsideHeading = makeNode( 'H3', 'Ist-Zustand' )
             const outsideH2 = makeNode( 'H2', 'Faktenlage' )
             const card = makeNode( 'DIV', '', [ 'block-meta-card' ] )
-            chain( [ card, insideHeadingA, insideBodyA, insideHeadingB, insideBodyB, insideProse, stop, outsideHeading, outsideH2 ] )
+            const root = makeRoot( [ card, insideHeadingA, insideBodyA, insideHeadingB, insideBodyB, insideProse, stop, outsideHeading, outsideH2 ] )
 
-            clientHideBlockBodySections( { querySelectorAll: ( selector ) => ( selector === '.block-meta-card' ? [ card ] : [] ) } )
+            clientFoldBlockBodySections( root, makeDocument() )
 
-            const marked = [ insideHeadingA, insideBodyA, insideHeadingB, insideBodyB, insideProse, stop, outsideHeading, outsideH2 ]
-                .filter( ( node ) => node.classList.contains( 'block-body-hidden' ) )
-            expect( marked ).toEqual( [ insideHeadingA, insideBodyA, insideHeadingB, insideBodyB ] )
-            expect( marked.length ).toBe( 4 )
-            expect( outsideHeading.classList.contains( 'block-body-hidden' ) ).toBe( false )
-            expect( outsideH2.classList.contains( 'block-body-hidden' ) ).toBe( false )
-            expect( insideProse.classList.contains( 'block-body-hidden' ) ).toBe( false )
-            expect( stop.classList.contains( 'block-body-hidden' ) ).toBe( false )
+            const folded = [ insideHeadingA, insideBodyA, insideHeadingB, insideBodyB, insideProse, stop, outsideHeading, outsideH2 ]
+                .filter( ( node ) => node.closest( '.chapter-section' ) !== null )
+            expect( folded ).toEqual( [ insideHeadingA, insideBodyA, insideHeadingB, insideBodyB ] )
+            expect( folded.length ).toBe( 4 )
+
+            // The four that must NOT move, each named — a prose H3 in the card region, the H2 that ends
+            // the region, and the H3 with the SAME TEXT outside it.
+            expect( insideProse.closest( '.chapter-section' ) ).toBe( null )
+            expect( stop.closest( '.chapter-section' ) ).toBe( null )
+            expect( outsideHeading.closest( '.chapter-section' ) ).toBe( null )
+            expect( outsideH2.closest( '.chapter-section' ) ).toBe( null )
+
+            // Two frames, not one: each heading opens its own, and both are CLOSED by default.
+            const frames = root.querySelectorAll( 'details' )
+            expect( frames.length ).toBe( 2 )
+            expect( frames.every( ( frame ) => frame.classList.contains( 'chapter-section' ) ) ).toBe( true )
+            expect( frames.some( ( frame ) => frame.classList.contains( 'open' ) ) ).toBe( false )
+
+            // The suffixed heading was reached through the PREFIX rule, and its frame carries a figure
+            // line rather than an empty summary.
+            expect( insideHeadingB.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( frames[ 1 ].querySelector( 'summary' ).textContent ).toBe( '0 Aussagen' )
         } )
 
         it( 'the block-detail modal renders the register fields, not four hand-typed names', () => {

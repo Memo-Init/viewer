@@ -164,13 +164,25 @@ describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () =>
     } )
 
 
-    it( 'D6: a hideBlockBodySections pass runs from applyContentStructure and tags block-body-hidden', () => {
-        expect( clientSource ).toContain( 'function hideBlockBodySections()' )
-        expect( clientSource ).toContain( 'hideBlockBodySections()' )
-        expect( clientSource ).toContain( 'block-body-hidden' )
+    // Memo 081, WI-113: the pass still runs from applyContentStructure and still covers the same
+    // region — but it FOLDS instead of hiding, so the mechanism it is asserted on moved from a CSS
+    // class to <details>. The statement of this case is unchanged (a pass exists, it is called from
+    // the structure hook, it marks the sections, it reuses the shared level-aware helper); only the
+    // marker it looks for is the one that exists now. `block-body-hidden` was a class that made a
+    // section INVISIBLE with no way to reopen it.
+    it( 'D6: a foldBlockBodySections pass runs from applyContentStructure and marks chapter-section', () => {
+        expect( clientSource ).toContain( 'function foldBlockBodySections()' )
+        expect( clientSource ).toContain( 'foldBlockBodySections()' )
+        expect( clientSource ).toContain( 'chapter-section' )
         expect( clientSource ).toContain( 'function isBlockBodyHeading(' )
         // it reuses the level-aware Kap-3/5 collapse helper, not its own walker.
-        expect( clientSource ).toContain( 'hiddenSiblingsAfter( node ).forEach' )
+        expect( clientSource ).toContain( 'hiddenSiblingsAfter( node )' )
+        // VAKUUM-RIEGEL: the replaced class is really gone from the emitted script as a LIVE token —
+        // every remaining textual hit is a comment explaining the removal.
+        const live = clientSource
+            .split( '\n' )
+            .filter( ( line ) => line.includes( 'block-body-hidden' ) && !/^\s*(\/\/|\/\*|\*)/.test( line ) )
+        expect( live ).toEqual( [] )
     } )
 
 
@@ -244,7 +256,11 @@ describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () =>
         const end = clientSource.indexOf( 'function updateActiveTOC(', start )
         const slice = clientSource.slice( start, end )
 
-        expect( slice ).toContain( "heading.classList.contains( 'block-body-hidden' )" )
+        // Memo 081, WI-113: the block-body half of this test now asks about the FOLD FRAME instead of
+        // the hidden class — the six chapter sections are no longer hidden, they sit inside a
+        // <details class="chapter-section">. The raw-question half is untouched. The statement is the
+        // same one: a heading the structure pass collapsed must not appear in the table of contents.
+        expect( slice ).toContain( "heading.closest( '.chapter-section' )" )
         expect( slice ).toContain( "heading.classList.contains( 'raw-question-hidden' )" )
     } )
 } )
@@ -252,8 +268,13 @@ describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () =>
 
 // CSS shape: the two new view rules must exist (block-body hidden + h3 TOC indent + tables).
 describe( 'prose-polish CSS (PRD-015, D6/D9/D11)', () => {
-    it( 'D6: .block-body-hidden collapses out of the prose', () => {
-        expect( cssSource ).toContain( '.block-body-hidden { display: none; }' )
+    // Memo 081, WI-113: `display: none` is not a collapse, it is a disappearance — there was no toggle,
+    // so a section hidden that way could never be reopened. The rule is gone and the six chapter
+    // sections fold through <details class="chapter-section">, which this case now asserts instead.
+    it( 'D6: .chapter-section folds out of the prose, and the display:none rule is gone', () => {
+        expect( cssSource ).toContain( '#content .chapter-section {' )
+        expect( cssSource ).toContain( '#content .chapter-section > .chapter-section-summary {' )
+        expect( cssSource ).not.toContain( '.block-body-hidden { display: none; }' )
     } )
 
 

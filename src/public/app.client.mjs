@@ -6610,12 +6610,14 @@
             applyMetatagChips()
             // PRD-001 (#16-18): Roh-Markdown der Frage-Sektionen ausblenden, Anchor behalten.
             hideRawQuestionBodies()
-            // PRD-015 (D6): hide a block's structured H3 body sections below a block-meta card so they
-            // neither show as raw prose H3s nor claim heading anchors. Which H3 that is comes from the
-            // ONE register (Memo 080, PRD-B1 — BLOCK_BODY_HEADINGS below), no longer from three
-            // hand-typed names. Runs after hideRawQuestionBodies (a block's own "### Offene Fragen" is
-            // already raw-question-hidden; this covers the rest).
-            hideBlockBodySections()
+            // PRD-015 (D6) + Memo 081, WI-113: fold a block's structured H3 body sections below a
+            // block-meta card into <details> frames carrying a computed figure line. WHICH sections fold
+            // comes from the ONE contract (BlockSections.chapterContract(), mirrored as
+            // CHAPTER_FOLD_SECTIONS below) — six, not the twenty labels of the vocabulary. Runs after
+            // hideRawQuestionBodies (a block's own "### Offene Fragen" is already raw-question-hidden)
+            // and BEFORE wrapTablesCollapsible, so a table can ask whether its heading is already
+            // visible inside the same frame (WI-114).
+            foldBlockBodySections()
             // PRD-018 (Memo 072 Kap 13, F10=A): the deterministic Block↔Topic UI from the STORE.
             // resolveWikiLinks + wrapTablesCollapsible are pure sync DOM surgery; applyTopicPillsFromStore
             // is async (reads /api/documents/<id>/topics) and runs fire-and-forget so it never blocks the
@@ -6655,7 +6657,9 @@
                 details.className = 'table-collapsible'
                 details.setAttribute( 'open', '' )
                 var summary = document.createElement( 'summary' )
-                summary.className = 'table-collapsible-summary'
+                // Memo 081, WI-114: an omitted label keeps the toggle but carries no text — the second
+                // class lets the stylesheet render a bare toggle instead of an empty line with padding.
+                summary.className = label.length > 0 ? 'table-collapsible-summary' : 'table-collapsible-summary bare-table-summary'
                 summary.textContent = label
                 table.parentNode.insertBefore( details, table )
                 details.appendChild( summary )
@@ -6667,20 +6671,48 @@
         // PRD-018: derive a human summary label for a collapsible table from the nearest preceding
         // heading or bold lead-in paragraph. Walks previous siblings (no while-loop — bounded recursion,
         // stops at the first heading or bold lead-in). Falls back to "Tabelle".
+        //
+        // Memo 081, WI-114 (REV-16:4139-4140): A SECTION TITLE AND A FOLD LABEL MUST NOT SHOW THE SAME
+        // TEXT. Measured before this change: the label is derived from the nearest PRECEDING heading,
+        // and in a chapter that heading is `### Belege` sitting directly above the table — so the
+        // summary read "Belege" one line under the heading "Belege", in all 41 chapters.
+        //
+        // THE RULE IS ABOUT VISIBILITY, NOT ABOUT THE WORD "Belege", and that is what makes it close the
+        // CLASS rather than the case. Testing for that word would leave `### Topics`, `### Work-Items`
+        // and `### Abhaengigkeiten` with the identical duplication — measured, their tables sit directly
+        // under their heading too, so the duplication is four sections times 41 chapters, not one.
+        // The question asked here is: is the heading the label would come from ALREADY VISIBLE inside
+        // the same fold frame? If it is, the table takes no label at all — the frame already names it,
+        // and its own summary already carries the figure.
+        //
+        // OUTSIDE A FOLD FRAME NOTHING CHANGES. Tables in the Vorwort, in the questions and in the
+        // Nachtraege keep their heading label; a rewrite that relabelled those would be unasked scope.
         function tableSummaryLabel( table ) {
             var fromSibling = function( node ) {
                 if( !node ) { return null }
-                if( headingLevel( node ) > 0 ) { return ( node.textContent || '' ).trim() }
+                if( headingLevel( node ) > 0 ) { return { text: ( node.textContent || '' ).trim(), node } }
                 if( node.tagName === 'P' ) {
                     var strong = node.querySelector( 'strong, b' )
-                    if( strong && ( strong.textContent || '' ).trim().length > 0 ) { return strong.textContent.trim() }
+                    if( strong && ( strong.textContent || '' ).trim().length > 0 ) { return { text: strong.textContent.trim(), node } }
                 }
                 return fromSibling( node.previousElementSibling )
             }
 
-            var label = fromSibling( table.previousElementSibling )
+            var found = fromSibling( table.previousElementSibling )
 
-            return ( label && label.length > 0 ) ? label : 'Tabelle'
+            if( found && headingLevel( found[ 'node' ] ) > 0 && sameFoldFrame( table, found[ 'node' ] ) ) { return '' }
+
+            return ( found && found[ 'text' ].length > 0 ) ? found[ 'text' ] : 'Tabelle'
+        }
+
+        // Two nodes share a fold frame when both sit inside the SAME <details class="chapter-section">.
+        // A null frame on either side is not a match: two tables outside every frame do not share one.
+        function sameFoldFrame( table, heading ) {
+            if( !table.closest || !heading.closest ) { return false }
+            var here = table.closest( '.chapter-section' )
+            var there = heading.closest( '.chapter-section' )
+
+            return here !== null && here === there
         }
 
 
@@ -8508,6 +8540,40 @@
         // browser cannot decide differently from the server mirror.
         var BLOCK_BODY_SUFFIXES = [ ': ', ' (' ]
 
+        // Memo 081, WI-113 (REV-16:4110-4111): the six chapter sections that FOLD, mirrored from
+        // BlockSections.chapterContract() — the entries whose `overview` is false, lower-cased, in
+        // contract order. Kept on ONE line so the parity test can read it verbatim and hold it against
+        // the register, exactly as BLOCK_BODY_HEADINGS above is held.
+        //
+        // THIS IS NOT BLOCK_BODY_HEADINGS AND MUST NOT BECOME IT. That list is the derived copy of the
+        // whole VOCABULARY (20 labels) — it answers "is this an H3 the register knows?". This one
+        // answers "does this section fold?". Measured, the two differ by thirteen: the vocabulary folds
+        // `user-auftrag`, which the memo wants OPEN, plus twelve headings nobody asked to fold.
+        var CHAPTER_FOLD_SECTIONS = [ 'ist-zustand', 'soll-zustand', 'belege', 'topics', 'work-items', 'abhaengigkeiten' ]
+
+        // The display noun of each folding section, and the dimension its distribution is measured over.
+        // `Abhaengigkeiten` counts EDGES rather than repeating its own heading (REV-16:4111 calls them
+        // Kanten). `art` reads the Art column of the section table, `evidence` the evidence tags of the
+        // section body; the other three carry no second dimension and say only how many.
+        var CHAPTER_FIGURE_KINDS = {
+            'ist-zustand': { noun: 'Befunde', dimension: 'evidence' },
+            'soll-zustand': { noun: 'Aussagen', dimension: 'evidence' },
+            'belege': { noun: 'Belege', dimension: 'art' },
+            'topics': { noun: 'Topics', dimension: null },
+            'work-items': { noun: 'Work-Items', dimension: null },
+            'abhaengigkeiten': { noun: 'Kanten', dimension: null }
+        }
+
+        // The six values the `Art` column of a Belege table carries, measured over REV-16 (399 rows:
+        // gemessen 214, gelesen 96, entschieden 53, beobachtet 17, Spezifikation 9, abgeleitet 3 — a sum
+        // of 392, so SEVEN rows carry none of them). The list is closed on purpose: a seventh value is a
+        // finding, and the remainder rule below is what makes it visible instead of swallowing it.
+        var EVIDENCE_ART_VALUES = [ 'gemessen', 'gelesen', 'entschieden', 'beobachtet', 'Spezifikation', 'abgeleitet' ]
+
+        // The five evidence tags. They are shown lower-cased because the upper case of `[GEMESSEN]` is
+        // TAG SYNTAX, not spelling — the Art values above are shown exactly as the table writes them.
+        var EVIDENCE_TAGS = [ 'GEMESSEN', 'FAKT', 'ABGELEITET', 'ANNAHME', 'VERMUTUNG' ]
+
         function isBlockBodyHeading( node ) {
             if( headingLevel( node ) !== 3 ) { return false }
             var label = ( node.textContent || '' ).trim().toLowerCase()
@@ -8519,28 +8585,207 @@
             } )
         }
 
-        // PRD-015 (D6): walk each block-meta card's body region — from the card to the next H2 or the
-        // next block-meta card (the SAME bounds as BlockMeta.#bodySections) — and collapse every H3
-        // body heading plus its level-aware sibling body. Consistent with the Kap-3/5 logic
-        // (hideRawQuestionBodies + hiddenSiblingsAfter): only h3 is detected, and the collapse range
-        // is level-aware. No while-loop (Memo-Standard) — the sibling chain is walked via recursion.
-        function hideBlockBodySections() {
+        // Memo 081, WI-113 (REV-16:4127): the fold recogniser is PREFIX-BASED, not an equality test —
+        // `### Soll-Zustand: {Aspekt}` must count as a Soll-Zustand. Measured over REV-16: 25 of the 60
+        // Soll-Zustand sections carry a suffix, so an equality test would leave 41.7 % of them unfolded
+        // and without a figure, and the reader would meet a half-folded document.
+        //
+        // The capability is NOT new: BLOCK_BODY_SUFFIXES and the shape of isBlockBodyHeading above
+        // already do exactly this for the vocabulary. This reuses that shape against the FOLD list
+        // instead of building a second recogniser beside it. Returns the matched contract label (the
+        // key into CHAPTER_FIGURE_KINDS) or null.
+        function chapterFoldLabel( node ) {
+            if( headingLevel( node ) !== 3 ) { return null }
+            var label = ( node.textContent || '' ).trim().toLowerCase()
+            var hit = CHAPTER_FOLD_SECTIONS.filter( function( heading ) {
+                if( label === heading ) { return true }
+                return BLOCK_BODY_SUFFIXES.some( function( separator ) {
+                    return label.indexOf( heading + separator ) === 0
+                } )
+            } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
+        }
+
+        // PRD-015 (D6) + Memo 081, WI-113 (REV-16:4126): walk each block-meta card's body region — from
+        // the card to the next H2 or the next block-meta card (the SAME bounds as BlockMeta.#bodySections)
+        // — and FOLD every one of the six chapter sections into a <details> whose <summary> is the
+        // computed figure line. The region and the level-aware range are unchanged; what changed is the
+        // mechanism.
+        //
+        // ONE COLLAPSE MECHANISM INSTEAD OF TWO HALVES. Measured before this change: tables collapse
+        // through <details class="table-collapsible"> with a <summary>, sections collapsed through the
+        // CSS class `block-body-hidden` — and a class has no line a figure could sit on. Worse, it could
+        // not be REOPENED: `#content .block-body-hidden { display: none }` HIDES, it does not fold. What
+        // was called "collapsed sections" was in truth "invisible sections".
+        //
+        // THE FIGURE LINE IS THE SUMMARY. That is the whole design: <details> gives the fold, <summary>
+        // gives the line, the line says what is inside. Both rules stand side by side (REV-16:4124) —
+        // the section is CLOSED by default, the table inside it stays <details open> (F10=A), so opening
+        // a section shows an open table.
+        //
+        // THE FOLD STATE IS A READER SETTING, NOT A DOCUMENT STATE (REV-16:4125). Nothing is written
+        // back into the revision and the markdown source is untouched — this pass runs over the rendered
+        // DOM, where every other post-render pass runs.
+        //
+        // No while-loop (Memo-Standard) — the sibling chain is walked via recursion. The continuation
+        // point is taken BEFORE the nodes move: once the heading and its body sit inside the <details>,
+        // `heading.nextElementSibling` no longer points into the chapter.
+        function foldBlockBodySections() {
             var cards = contentEl.querySelectorAll( '.block-meta-card' )
             cards.forEach( function( card ) {
                 var step = function( node ) {
                     if( !node ) { return }
                     if( node.classList && node.classList.contains( 'block-meta-card' ) ) { return }
                     if( headingLevel( node ) === 2 ) { return }
-                    if( isBlockBodyHeading( node ) ) {
-                        node.classList.add( 'block-body-hidden' )
-                        hiddenSiblingsAfter( node ).forEach( function( sibling ) {
-                            sibling.classList.add( 'block-body-hidden' )
-                        } )
-                    }
-                    step( node.nextElementSibling )
+
+                    var label = chapterFoldLabel( node )
+                    // Idempotent: a heading already inside a fold frame is left alone, so a second pass
+                    // over the same DOM produces no second <details> and no second figure line. Same
+                    // guard wrapTablesCollapsible uses with closest( '.table-collapsible' ).
+                    var folded = node.closest && node.closest( '.chapter-section' )
+                    if( label === null || folded ) { step( node.nextElementSibling ); return }
+
+                    var body = hiddenSiblingsAfter( node )
+                    var resume = body.length > 0 ? body[ body.length - 1 ].nextElementSibling : node.nextElementSibling
+                    foldOneSection( { heading: node, body, label } )
+                    step( resume )
                 }
                 step( card.nextElementSibling )
             } )
+        }
+
+        // Move one section into its own <details>. The heading stays INSIDE the frame: it is the anchor
+        // the table of contents and the identifier jumps address, and taking it out would break both.
+        function foldOneSection( payload ) {
+            var heading = payload[ 'heading' ]
+            var body = payload[ 'body' ]
+            var label = payload[ 'label' ]
+
+            var details = document.createElement( 'details' )
+            details.className = 'chapter-section'
+            var summary = document.createElement( 'summary' )
+            summary.className = 'chapter-section-summary'
+            summary.textContent = chapterSectionFigure( { body, label } )
+
+            heading.parentNode.insertBefore( details, heading )
+            details.appendChild( summary )
+            details.appendChild( heading )
+            body.forEach( function( sibling ) { details.appendChild( sibling ) } )
+        }
+
+        // Memo 081, WI-113 (REV-16:4133-4135): the figure line is a RENDER RESULT, never an author's
+        // duty. Nobody writes "399 Belege · 214 gemessen" into the revision; the renderer counts the
+        // section's units and the values of its Art column or its evidence tags and assembles the line.
+        // The reason is correctness, not convenience: a typed figure is a CLAIM ABOUT THE CONTENT from
+        // the next edit onwards, and nobody maintains it. A computed figure cannot drift.
+        //
+        // TYPED FIGURES IN THE DOCUMENT ARE NOT READ. The revision carries author lines like
+        // "> **9 Belege** — gemessen 5 · gelesen 4". They belong to the author, they stay in the body,
+        // and they are never a source for this line — that is the entire point of computing it.
+        //
+        // THE VACUUM RULE APPLIES TO COUNTING TOO (REV-16:4135). A section with nothing to count states
+        // "0 Belege"; it never drops the line. A MISSING figure line is a renderer defect, not an empty
+        // section, and those two must never look alike.
+        //
+        // THE COUNTING UNIT IS NAMED RATHER THAN ASSUMED: a list item and a table data row both count as
+        // one unit, because the corpus writes the same content in both forms — measured over REV-16, the
+        // Belege sections are tables throughout while Ist-/Soll-Zustand are bullet lists, and a rule that
+        // counted only one of the two would report 0 for 41 sections. A section carrying both counts both.
+        function chapterSectionFigure( payload ) {
+            var body = payload[ 'body' ]
+            var label = payload[ 'label' ]
+            var kind = CHAPTER_FIGURE_KINDS[ label ]
+            var total = countSectionUnits( body )
+            var parts = distributionOf( { body, dimension: kind[ 'dimension' ] } )
+            var head = total + ' ' + kind[ 'noun' ]
+
+            if( parts.length === 0 ) { return head }
+
+            // AND THE DISTRIBUTION STATES ITS REMAINDER, in BOTH directions. Measured over REV-16: 399
+            // evidence rows against a distribution summing to 392 — seven rows carry none of the six Art
+            // values. A line that lists the six and stops would silently drop those seven. The same
+            // statement `basis` makes for questionCounts and revisionCounts: a total that does not add
+            // up says so. The upward case is named too, because an evidence tag can sit in a paragraph
+            // that is not a counted unit, and "more marks than units" is a finding, not a rounding error.
+            var counted = parts.reduce( function( sum, part ) { return sum + part[ 'count' ] }, 0 )
+            var shown = parts.map( function( part ) { return part[ 'count' ] + ' ' + part[ 'value' ] } )
+            var rest = counted < total ? [ ( total - counted ) + ' ohne Angabe' ] : []
+            var over = counted > total ? [ ( counted - total ) + ' zusaetzlich ausgezeichnet' ] : []
+
+            return [ head ].concat( shown ).concat( rest ).concat( over ).join( ' · ' )
+        }
+
+        // List items plus table DATA rows (tbody only — a header row is not a finding). Nodes are
+        // counted through querySelectorAll on each body node, and the node itself is counted when it IS
+        // one of the two, so a bare <li> sibling is not lost.
+        function countSectionUnits( body ) {
+            return body.reduce( function( sum, node ) {
+                var items = node.querySelectorAll ? node.querySelectorAll( 'li' ).length : 0
+                var rows = node.querySelectorAll ? node.querySelectorAll( 'tbody tr' ).length : 0
+                var self = ( node.tagName === 'LI' ) ? 1 : 0
+
+                return sum + items + rows + self
+            }, 0 )
+        }
+
+        // The second dimension of the figure line. `art` reads the Art column of the section tables,
+        // `evidence` the evidence tags of the section text. Values with a count of zero are dropped —
+        // naming all six every time would bury the ones that actually occur — but the REMAINDER above
+        // is computed against the TOTAL, so nothing silently disappears with them.
+        function distributionOf( payload ) {
+            var body = payload[ 'body' ]
+            var dimension = payload[ 'dimension' ]
+
+            if( dimension === 'art' ) {
+                var rowValues = body.reduce( function( acc, node ) {
+                    var rows = node.querySelectorAll ? Array.prototype.slice.call( node.querySelectorAll( 'tbody tr' ) ) : []
+
+                    return acc.concat( rows.map( artValueOfRow ) )
+                }, [] )
+
+                return EVIDENCE_ART_VALUES
+                    .map( function( value ) {
+                        var count = rowValues.filter( function( found ) { return found === value } ).length
+
+                        return { value, count }
+                    } )
+                    .filter( function( part ) { return part[ 'count' ] > 0 } )
+            }
+
+            if( dimension === 'evidence' ) {
+                var text = body.reduce( function( acc, node ) { return acc + ' ' + ( node.textContent || '' ) }, '' )
+
+                return EVIDENCE_TAGS
+                    .map( function( tag ) {
+                        var hits = text.match( new RegExp( '\\[' + tag + '\\]', 'g' ) ) || []
+
+                        return { value: tag.toLowerCase(), count: hits.length }
+                    } )
+                    .filter( function( part ) { return part[ 'count' ] > 0 } )
+            }
+
+            return []
+        }
+
+        // The Art value of one table row, or null. A row DECLARES its Art in a cell that holds nothing
+        // but that word — never anywhere in its prose. Measured, a Belege row reads
+        // "| 38.4 | app.client.mjs:8116 | gemessen | … |", and the word `gemessen` also occurs inside
+        // neighbouring prose cells; a substring test would count those rows twice and inflate the
+        // distribution past the row count. Cell equality is the same rule the independent count over
+        // the markdown uses, which is what makes the two comparable at all.
+        function artValueOfRow( row ) {
+            var cells = row.querySelectorAll ? Array.prototype.slice.call( row.querySelectorAll( 'td, th' ) ) : []
+            var hit = cells
+                .map( function( cell ) { return ( cell.textContent || '' ).trim().toLowerCase() } )
+                .map( function( text ) {
+                    var found = EVIDENCE_ART_VALUES.filter( function( value ) { return value.toLowerCase() === text } )
+
+                    return found.length > 0 ? found[ 0 ] : null
+                } )
+                .filter( function( value ) { return value !== null } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
         }
 
         // PRD-006 (#C2): the heading level (1-4) of a DOM node, or 0 when it is not a heading.
@@ -10227,7 +10472,15 @@
                 // PRD-B1) and raw-question/vorwort bodies. They are hidden in the prose, so they must not pollute
                 // the TOC either. buildTOC always runs after applyContentStructure, so the classes
                 // are present by now.
-                if( heading.classList.contains( 'block-body-hidden' ) ) { return }
+                //
+                // Memo 081, WI-113: this READER of `block-body-hidden` was not foreseen by the order,
+                // which expected the class in two places and measured four. It is why the class could
+                // not simply be deleted: the six folding sections are no longer hidden, they are folded,
+                // so the test moves from "is this heading hidden" to "does this heading sit inside a
+                // fold frame". Without it the table of contents would gain 265 entries the reader never
+                // had — the six section headings of all 41 chapters — which is the same pollution this
+                // line was written against.
+                if( heading.closest && heading.closest( '.chapter-section' ) ) { return }
                 if( heading.classList.contains( 'raw-question-hidden' ) ) { return }
 
                 var li = document.createElement( 'li' )

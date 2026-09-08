@@ -8,17 +8,36 @@ import { DocumentRegistry } from '../../src/DocumentRegistry.mjs'
 
 // Memo 081, PRD-39 (Phasen-Abnahme C1-4, P-3): wait for the CONDITION, never for a clock.
 //
-// THE DEFECT THIS REPLACES, MEASURED. A fixed 300 ms deadline stood where an ASYNCHRONOUS filesystem
-// watcher event was awaited. Measured 2026-09-08 against the unchanged stand 58a34bc, isolated runs of
-// this file: 0 of 8 red on a quiet machine, 2 of 8 red with twelve busy processes on four cores. The
-// C1-4 acceptance measured 1 of 16 over the same tree and the PRD generation measured 2 of 4 in the full
-// suite. Those numbers are not in contradiction — they are four points on a LOAD curve, because a clock
-// competes with every other suite for the same event loop and under load it loses.
+// THE DEFECT THIS REPLACES. A fixed 300 ms deadline stood where an ASYNCHRONOUS filesystem watcher
+// event was awaited. Waiting for the condition instead passes as fast as the watcher is and fails only
+// when the watcher really did not fire. No `while`/`for` (node-sop baseline): the retry is recursive
+// and each step yields, so the synchronous stack never grows.
 //
-// A deadline that waits for the condition passes as fast as the watcher is and fails only when the
-// watcher really did not fire — and it reports HOW LONG it waited and WHAT it last saw, so the next
-// failure is diagnosable instead of merely red. No `while`/`for` (node-sop baseline): the retry is
-// recursive and each step yields, so the synchronous stack never grows.
+// WHAT THIS DOES *NOT* DO, corrected by PRD-45 against PRD-39's own claim. PRD-39 reported the case as
+// repaired ("0 of 10 red under named load"). That does not reproduce. Measured over the corpus of runs
+// below, the case ISOLATED under 12 busy processes on 4 cores (8 CPU burners + 4 file burners):
+//
+//   stand f94315c, inner deadline 5000 ms   ->  1 of 10 red
+//   the same case with the deadline at 20000 ms and Jest's frame at 60000 ms
+//                                           ->  1 of 10 red, and the red run reports
+//                                               `waitedMs=20024 seen=Entwurf` — it waited TWENTY
+//                                               SECONDS and the event never arrived
+//
+// SO THE EVENT IS LOST, NOT SLOW, and NO deadline size repairs the rate. When the watcher works it
+// answers in 25-89 ms (measured, 20 runs, quiet and loaded); when it fails it does not answer at all.
+// This wait is therefore a DIAGNOSIS, not a repair, and the flakiness of this case is open — it belongs
+// to the class named in BERICHT-PRD-45 (assertions inside a time window on an asynchronous SHARED
+// operating-system resource: file watching and fixed ports).
+//
+// THE FRAME MUST BE BIGGER THAN THE DEADLINE, and that is what PRD-45 actually changed. Jest's default
+// per-test frame is 5000 ms and this repo overrides it NOWHERE (no `testTimeout`, no `jest.setTimeout`,
+// no third `it()` argument existed before this one). The inner deadline was 5000 ms too, and the body
+// spends time before the wait even starts, so JEST ALWAYS WON THE RACE: the assertion below — the whole
+// justification for the repair — was unreachable by construction. Measured with a forced watcher
+// failure at f94315c, the case reported `thrown: "Exceeded timeout of 5000 ms for a test."` and said
+// nothing about what it saw. With the frame raised to 15000 ms the same forced failure reports
+// `Entwurf after 5001 ms`. Three times the deadline is headroom, not a guess: the observed body
+// overhead is milliseconds and the deadline is the only long wait in the case.
 async function waitForCondition( { probe, timeoutMs, stepMs } ) {
     const started = Date.now()
 
@@ -890,13 +909,17 @@ describe( 'DocumentRegistry', () => {
             } )
 
             // The waited time and the last seen value ride IN the assertion, so a genuine watcher failure
-            // says how long it waited and what it saw instead of only "false is not true".
+            // says how long it waited and what it saw instead of only "false is not true". PRD-45: this
+            // line only ever runs because the third argument below gives it a frame to run in.
             expect( `${ settled.seen } after ${ settled.waitedMs } ms` ).toBe( `Finalisiert after ${ settled.waitedMs } ms` )
 
             const after = registry.getDocument( { documentId } )
 
             expect( after['document']['memoStatus'] ).toBe( 'Finalisiert' )
-        } )
+            // PRD-45: 15000 ms is Jest's frame for THIS case — three times the 5000 ms deadline above,
+            // so the deadline expires first and the assertion above gets to speak. See the file header
+            // for the measurement; without it this case dies on Jest's own 5000 ms clock instead.
+        }, 15000 )
     } )
 
 

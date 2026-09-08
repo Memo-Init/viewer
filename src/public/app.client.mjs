@@ -8631,27 +8631,68 @@
         // No while-loop (Memo-Standard) — the sibling chain is walked via recursion. The continuation
         // point is taken BEFORE the nodes move: once the heading and its body sit inside the <details>,
         // `heading.nextElementSibling` no longer points into the chapter.
+        // PRD-45 (Memo 081, WI-113): a NUMBERED CHAPTER H2 is the second region the fold pass starts
+        // from. It is deliberately the SAME notion of "numbered chapter" matchChapterHeading already
+        // falls back on (`/^\s*\d+\./` on the trimmed text, :8088) rather than a second one beside it —
+        // two predicates that are supposed to agree are the parallel path this file rejects elsewhere.
+        //
+        // Measured over the corpus: 4689 of 9254 H2 headings carry the `N.` form. The twenty range
+        // headings (`## 2.–5. …`) match it too and the six `## 13-Klarstellung.` headings do not;
+        // measured, NEITHER group carries any of the six folding sections today, so the boundary is
+        // unobservable at the current corpus. Named rather than glossed: a section written under a
+        // `N-Wort.` heading would not fold.
+        function isNumberedChapterHeading( node ) {
+            if( headingLevel( node ) !== 2 ) { return false }
+
+            return /^\s*\d+\./.test( ( node.textContent || '' ).trim() )
+        }
+
         function foldBlockBodySections() {
-            var cards = contentEl.querySelectorAll( '.block-meta-card' )
-            cards.forEach( function( card ) {
-                var step = function( node ) {
-                    if( !node ) { return }
-                    if( node.classList && node.classList.contains( 'block-meta-card' ) ) { return }
-                    if( headingLevel( node ) === 2 ) { return }
+            // The walk is ONE function shared by both start regions rather than one per region: the
+            // stop conditions (next H2, next card) and the idempotency guard have to be identical, and
+            // a second copy would let them drift apart.
+            var step = function( node ) {
+                if( !node ) { return }
+                if( node.classList && node.classList.contains( 'block-meta-card' ) ) { return }
+                if( headingLevel( node ) === 2 ) { return }
 
-                    var label = chapterFoldLabel( node )
-                    // Idempotent: a heading already inside a fold frame is left alone, so a second pass
-                    // over the same DOM produces no second <details> and no second figure line. Same
-                    // guard wrapTablesCollapsible uses with closest( '.table-collapsible' ).
-                    var folded = node.closest && node.closest( '.chapter-section' )
-                    if( label === null || folded ) { step( node.nextElementSibling ); return }
+                var label = chapterFoldLabel( node )
+                // Idempotent: a heading already inside a fold frame is left alone, so a second pass
+                // over the same DOM produces no second <details> and no second figure line. Same
+                // guard wrapTablesCollapsible uses with closest( '.table-collapsible' ). This is also
+                // what makes the two start regions safe to overlap — whichever reaches a section
+                // first folds it, the other walks past it.
+                var folded = node.closest && node.closest( '.chapter-section' )
+                if( label === null || folded ) { step( node.nextElementSibling ); return }
 
-                    var body = hiddenSiblingsAfter( node )
-                    var resume = body.length > 0 ? body[ body.length - 1 ].nextElementSibling : node.nextElementSibling
-                    foldOneSection( { heading: node, body, label } )
-                    step( resume )
-                }
+                var body = hiddenSiblingsAfter( node )
+                var resume = body.length > 0 ? body[ body.length - 1 ].nextElementSibling : node.nextElementSibling
+                foldOneSection( { heading: node, body, label } )
+                step( resume )
+            }
+
+            // REGION 1 — a block-meta card's body, unchanged.
+            contentEl.querySelectorAll( '.block-meta-card' ).forEach( function( card ) {
                 step( card.nextElementSibling )
+            } )
+
+            // REGION 2 (PRD-45) — the numbered chapters. WITHOUT IT THE PASS REACHES NOTHING: measured
+            // over all 533 revision documents of the corpus, 7 carry a card and 23 carry at least one
+            // of the six sections, and the INTERSECTION IS EMPTY — 0 fold frames, 0 figure lines,
+            // including in REV-16, the document the order was written for. A mechanism that is correct
+            // on a constructed fixture and reaches 0 of 533 real documents is not a delivered feature.
+            //
+            // The region ends at the next H2, so the walk never enters the Vorwort or a questions
+            // block by construction. Measured, that bound is not even load-bearing today: all 2997
+            // section headings of the corpus already sit under a numbered H2, 0 under any other H2 and
+            // 0 before the first one.
+            //
+            // The list is taken BEFORE the folding starts, which is safe in both directions: an H2 is
+            // never moved (hiddenSiblingsAfter stops at level <= 3, so it is never collected into a
+            // frame), and a section that region 1 already folded is skipped by the guard above.
+            contentEl.querySelectorAll( 'h2' ).forEach( function( heading ) {
+                if( !isNumberedChapterHeading( heading ) ) { return }
+                step( heading.nextElementSibling )
             } )
         }
 

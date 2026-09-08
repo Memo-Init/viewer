@@ -179,6 +179,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
     let client = ''
     let clientIsBlockBodyHeading = null
     let clientFoldBlockBodySections = null
+    let clientIsNumberedChapterHeading = null
 
     beforeAll( async () => {
         client = await readEmittedScript()
@@ -203,9 +204,16 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             .join( '\n' )
         const pass = await extractFunctionSources( [
             'foldBlockBodySections', 'chapterFoldLabel', 'foldOneSection', 'chapterSectionFigure',
-            'countSectionUnits', 'distributionOf', 'artValueOfRow', 'headingLevel', 'hiddenSiblingsAfter'
+            'countSectionUnits', 'distributionOf', 'artValueOfRow', 'headingLevel', 'hiddenSiblingsAfter',
+            'isNumberedChapterHeading'
         ] )
         clientFoldBlockBodySections = new Function( 'contentEl', 'document', foldLists + '\n' + pass.source + '\nreturn foldBlockBodySections()' )
+
+        // PRD-45: the second start region's predicate, lifted as the REAL declaration for the same
+        // reason everything else here is — a re-typed copy of the regex would keep this suite green
+        // exactly when the browser's predicate changes underneath it.
+        const predicate = await extractFunctionSources( [ 'isNumberedChapterHeading', 'headingLevel' ] )
+        clientIsNumberedChapterHeading = new Function( predicate.source + '\nreturn isNumberedChapterHeading' )()
     } )
 
 
@@ -298,7 +306,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             expect( clientIsBlockBodyHeading( { tagName: 'H3', textContent: 'Bewertung' } ) ).toBe( true )
         } )
 
-        it( 'the reach is unchanged: level 3 only, and only inside a .block-meta-card region', () => {
+        it( 'the reach is level 3 only, and starts from a card region OR a numbered chapter', () => {
             // Level: everything but 3 stays untouched, on both sides.
             const levels = [ 1, 2, 4, 5, 6 ]
             const leaked = levels
@@ -307,14 +315,21 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             expect( clientIsBlockBodyHeading( { tagName: 'H2', textContent: 'Faktenlage' } ) ).toBe( false )
             expect( clientIsBlockBodyHeading( { tagName: 'DIV', textContent: 'Faktenlage' } ) ).toBe( false )
 
-            // Region: the fold still starts from the cards and from nothing else, and it still stops at
-            // the next card and at the next H2. Memo 081, WI-113 renamed the pass (it folds now, it does
-            // not hide) — the three boundary lines it is asserted on are unchanged, character for
-            // character, which is the point of listing them here.
+            // Region, and this is where PRD-45 CHANGED the contract this case used to assert. Until
+            // now it required the literal line `var cards = contentEl.querySelectorAll( … )` and the
+            // sentence "the fold starts from the cards and from NOTHING ELSE". That statement was
+            // measured to be the reason the whole mechanism reached nothing: over all 533 revision
+            // documents of the corpus, 7 carry a card, 23 carry one of the six sections, and the
+            // intersection is EMPTY — 0 fold frames anywhere. The pass now starts from TWO regions.
+            //
+            // The two STOP conditions are the part that genuinely did not change, so they are still
+            // asserted character for character; the start is asserted as two regions instead of one.
             expect( client ).toContain( 'function foldBlockBodySections(' )
-            expect( client ).toContain( "var cards = contentEl.querySelectorAll( '.block-meta-card' )" )
             expect( client ).toContain( "if( node.classList && node.classList.contains( 'block-meta-card' ) ) { return }" )
             expect( client ).toContain( 'if( headingLevel( node ) === 2 ) { return }' )
+            expect( client ).toContain( "contentEl.querySelectorAll( '.block-meta-card' ).forEach" )
+            expect( client ).toContain( "contentEl.querySelectorAll( 'h2' ).forEach" )
+            expect( client ).toContain( 'if( !isNumberedChapterHeading( heading ) ) { return }' )
         } )
 
         // Memo 081, WI-113: the SAME statement against the new mechanism. What this case proved before —
@@ -322,9 +337,14 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
         // measured on where the nodes ENDED UP instead of on a class that was set on them. It is
         // strictly stronger in one respect: a class could be set on a node and change nothing, whereas
         // a node inside a <details> is a node the reader can actually fold away and reopen.
-        it( 'the fold pass folds ONLY inside a card and ONLY at level 3 — walked, not argued', () => {
+        // PRD-45: the case is unchanged in its fixture and in every expectation — but its REASON moved,
+        // and saying so is the whole value of the case. The H3 after `## Naechstes Kapitel` used to stay
+        // unfolded because it was outside the CARD region. It now stays unfolded because that H2 is not
+        // a NUMBERED chapter. The assertion is the same, the statement behind it is weaker, and the case
+        // below ('a numbered chapter is the second start region') is what carries the other half.
+        it( 'the fold pass folds only at level 3, and not under an unnumbered H2 — walked, not argued', () => {
             // Card region: card -> H3 Ist-Zustand -> P -> H3 Soll-Zustand: die Regel -> P -> H3 prose
-            //              -> H2 (stop) -> H3 Ist-Zustand (same text, OUTSIDE) -> H2 Faktenlage
+            //              -> H2 (stop, UNNUMBERED) -> H3 Ist-Zustand (same text, OUTSIDE) -> H2 Faktenlage
             const insideHeadingA = makeNode( 'H3', 'Ist-Zustand' )
             const insideBodyA = makeNode( 'P', 'gemessen' )
             const insideHeadingB = makeNode( 'H3', 'Soll-Zustand: die Regel' )
@@ -360,6 +380,51 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             // line rather than an empty summary.
             expect( insideHeadingB.closest( '.chapter-section' ) ).not.toBe( null )
             expect( frames[ 1 ].querySelector( 'summary' ).textContent ).toBe( '0 Aussagen' )
+        } )
+
+        // PRD-45 (Memo 081, WI-113): the second start region, and its boundary in the SAME case, because
+        // a region that folds is only half the statement — the other half is where it stops.
+        //
+        // WHY THE REGION EXISTS AT ALL, measured rather than argued: with the card as the only start,
+        // the pass produced 0 fold frames over all 533 revision documents of the corpus, REV-16 (the
+        // document the order was written for) included. With this region it produces 2997, and REV-16
+        // gets 265 — one per section heading it actually carries.
+        it( 'a numbered chapter is the second start region, and an unnumbered one is not', () => {
+            const numbered = makeNode( 'H2', '12. Ein durchgezaehltes Kapitel' )
+            const belege = makeNode( 'H3', 'Belege' )
+            const belegeBody = makeNode( 'P', 'gemessen' )
+            const suffixed = makeNode( 'H3', 'Soll-Zustand: mit Suffix' )
+            const suffixedBody = makeNode( 'P', 'daraus folgt' )
+            const prose = makeNode( 'H3', 'Architektur' )
+            const vorwort = makeNode( 'H2', 'Vorwort' )
+            const afterVorwort = makeNode( 'H3', 'Belege' )
+            const root = makeRoot( [ numbered, belege, belegeBody, suffixed, suffixedBody, prose, vorwort, afterVorwort ] )
+
+            clientFoldBlockBodySections( root, makeDocument() )
+
+            // Folded: both section headings with their bodies. NOT folded: the prose H3, the H2 itself,
+            // and the identically named H3 under the unnumbered `## Vorwort` — the case the order asked
+            // for by name, and the one the corpus measurement found 0 instances of.
+            expect( belege.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( belegeBody.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( suffixed.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( suffixedBody.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( prose.closest( '.chapter-section' ) ).toBe( null )
+            expect( numbered.closest( '.chapter-section' ) ).toBe( null )
+            expect( vorwort.closest( '.chapter-section' ) ).toBe( null )
+            expect( afterVorwort.closest( '.chapter-section' ) ).toBe( null )
+
+            expect( root.querySelectorAll( 'details' ).length ).toBe( 2 )
+
+            // The predicate itself, at its boundary. `13-Klarstellung.` is a real corpus heading form
+            // and is deliberately NOT recognised; it carries no folding section today, which is why the
+            // boundary is unobservable at the corpus and is pinned here instead.
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', '12. Kapitel' ) ) ).toBe( true )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', '2.–5. Zusammengefasst' ) ) ).toBe( true )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', 'Vorwort' ) ) ).toBe( false )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', 'Offene Fragen' ) ) ).toBe( false )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', '13-Klarstellung. K3' ) ) ).toBe( false )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H3', '12. Kapitel' ) ) ).toBe( false )
         } )
 
         it( 'the block-detail modal renders the register fields, not four hand-typed names', () => {

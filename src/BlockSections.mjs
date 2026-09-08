@@ -234,6 +234,78 @@ const CONTRACT_FIELDS = [ 'required', 'repeatable', 'registered' ]
 const UNREGISTERED_CONTRACT = [ 'Kontext' ]
 
 
+// Memo 081, WI-115 / T077 (REV-16:4144-4154): the ORDER of the `### User-Auftrag` section. It sits
+// beside CHAPTER_CONTRACT because they answer two halves of one question — the contract says WHICH
+// sections a chapter carries, this says HOW ONE of them is built. Two sources for one contract is
+// exactly what WI-116 has just finished taking apart, and the comment above CHAPTER_CONTRACT already
+// names this file as the place: "Its form is checked where it lives — PRD-41, WI-115."
+//
+// WHAT THE MEASUREMENT SAYS, AND WHY IT IS AN ORDER RATHER THAN A TEMPLATE. Over the 41 numbered
+// chapters of REV-16 (measured 2026-09-08): 41 carry the heading, 37 carry a block quote, 30 carry a
+// source reference, 29 carry the reading, 3 carry a default sentence. So the SECTION is never
+// missing — its FORM is. The user's complaint ("das sieht noch alles sehr manuell aus") is about
+// VARIANCE, not about manual work: the content is meant to be written by hand. Fixing the order
+// fixes the impression without touching the freedom.
+//
+// THE PATTERNS LIVE HERE, NOT IN THE VALIDATOR. A recogniser typed a second time in the caller is the
+// drift this register exists against — the same rule that put match() and matchContract() here.
+//
+// `reading` IS OPTIONAL AND STAYS OPTIONAL. Only its POSITION is checked. Requiring it would make the
+// AI's reading a criterion, and REV-16:3418 says the opposite: the reading is a reading aid, and where
+// reading and quote disagree the QUOTE wins (the Memo-064 error class).
+const USER_MANDATE_ELEMENTS = [
+    // A verbatim quote in German quotation marks. The 20-character floor separates a quotation from a
+    // quoted WORD ("die »Form«"); it is a floor, not a quality judgement. The quote may SPAN several
+    // `>` lines — measured, REV-16:3323-3327 does — so the caller joins a run of quote lines before
+    // testing, and this pattern must not be anchored to a line.
+    { element: 'quote', position: 1, required: true, pattern: /„[^„]{20,}?[“”"]/ },
+    // The source reference in the form the memo prescribes (REV-16:4148): PARENTHESES carrying
+    // `file.ext:line`. The extension is not pinned to `.md` — measured, the corpus also cites
+    // `…jsonl:463` — but the PARENTHESES and the LINE NUMBER are, because they are what the memo
+    // writes down and what makes the reference machine-readable.
+    //
+    // A MEASURED SHAPE IS DELIBERATELY NOT ACCEPTED, and that is the point of the rule rather than a
+    // gap in it: `— transcripts/X.md, Zeile 26` (REV-16:3328) carries the same information in prose.
+    // Accepting it would enshrine the variance the section exists to end. It is reported, not blessed.
+    //
+    // The path separator is written with a backslash escape although a slash needs no escape inside a
+    // character class. That is not decoration: the enum-language gate in core slices an array body by
+    // stepping over regex literals, and an UNESCAPED slash inside a class ends that step early.
+    // Measured 2026-09-08, the unescaped form made the gate read this array as `quote, source` and
+    // silently miss `reading` — it under-reported instead of reporting a parse problem. The escape
+    // keeps this register out of that trap; the weakness of the gate itself is reported separately
+    // rather than papered over here.
+    //
+    // NO APOSTROPHE STANDS IN THIS ARRAY BODY, deliberately. The same gate reads a single quote as a
+    // string delimiter without skipping comments, so an English possessive inside these braces makes
+    // it extract half a sentence as a machine token. Measured here on the first attempt.
+    { element: 'source', position: 2, required: true, pattern: /\([^()]*[\w.\/+-]+\.[a-z0-9]+:\d+[^()]*\)/ },
+    { element: 'reading', position: 3, required: false, pattern: /^\s*\*\*Gelesen als:\*\*/ }
+]
+
+// THE DEFAULT SENTENCE IS FIXED HERE, NOT IN THE MEMO — and this list is the one place in this PRD
+// where the work goes BEYOND the memo, so it says so. REV-16:4151 gives an EXAMPLE ("zum Beispiel
+// «Kein woertlicher Auftrag; dieses Kapitel folgt aus {Kapitel/Frage}.»") and chapter 33
+// (:3420-3423) names a second, narrower variant for chapters born from a MEASUREMENT. An example
+// cannot be linted against.
+//
+// BOTH WORDINGS ARE MEASURED, NOT INVENTED. Over 901 revision files in the stock (2026-09-08):
+// `Kein User-Auftrag` stands in 7 files and is the wording the corpus ACTUALLY uses; the wording the
+// memo offers as an example stands in 6 files and in every one of them it is the memo quoting its own
+// example, never a chapter using it. A list carrying only the invented wording would have flagged
+// every chapter that already declares its lack of a mandate correctly — a form rule losing to the
+// corpus it was measured on.
+//
+// The list is CLOSED: a similar but unlisted sentence is a finding. Both umlaut spellings are
+// accepted — a form rule that trips over a keyboard layout has moved the defect onto the author.
+const USER_MANDATE_DEFAULTS = [
+    { variant: 'follows-from', pattern: /^\s*\*{0,2}Kein\s+w(?:oe|ö)rtlicher\s+Auftrag\*{0,2}\s*[;:.,—–-]/i },
+    { variant: 'from-measurement', pattern: /^\s*\*{0,2}Kein\s+User-Auftrag\*{0,2}\s*[;:.,—–-]/i }
+]
+
+const MANDATE_ELEMENT_FIELDS = [ 'element', 'position' ]
+
+
 // The verdict of a text that is not in the register. It is built fresh on every return (never a
 // shared object handed out twice), so a caller cannot mutate the miss of the next caller.
 const miss = () => ( { matched: false, field: null, heading: null, kind: null, suffix: null } )
@@ -415,6 +487,81 @@ class BlockSections {
     }
 
 
+    // The FORM of the `### User-Auftrag` section (Memo 081, WI-115), as a defensive copy — same shape
+    // as chapterContract(): pure, no file access, a fresh list on every call. The patterns are rebuilt
+    // as NEW RegExp objects rather than handed out: a RegExp is mutable (`lastIndex`), so passing the
+    // register's own object would let one caller move the next caller's cursor.
+    //
+    // `elements` is ordered by `position` and that order IS the rule — the caller checks the sequence
+    // against it instead of typing 1, 2, 3 a second time.
+    static userMandateForm() {
+        const elements = USER_MANDATE_ELEMENTS
+            .map( ( entry ) => ( {
+                element: entry[ 'element' ],
+                position: entry[ 'position' ],
+                required: entry[ 'required' ],
+                pattern: new RegExp( entry[ 'pattern' ].source, entry[ 'pattern' ].flags )
+            } ) )
+            .sort( ( a, b ) => a[ 'position' ] - b[ 'position' ] )
+        const defaults = USER_MANDATE_DEFAULTS
+            .map( ( entry ) => ( {
+                variant: entry[ 'variant' ],
+                pattern: new RegExp( entry[ 'pattern' ].source, entry[ 'pattern' ].flags )
+            } ) )
+
+        return { elements, defaults }
+    }
+
+
+    // LOAD-TIME GATE over the mandate form. Same duty as assertChapterContract: a half-declared form
+    // must break the IMPORT, not some later read, and the gate states how much it compared.
+    //
+    // It also binds the form to the REGISTER: the form describes `### User-Auftrag`, so that heading
+    // must be a section this register recognises. Without that bind the form could quietly describe a
+    // section nobody parses — a rule about nothing, reporting green.
+    static assertUserMandateForm() {
+        const incomplete = USER_MANDATE_ELEMENTS
+            .filter( ( entry ) => MANDATE_ELEMENT_FIELDS.some( ( key ) => entry[ key ] === undefined || entry[ key ] === null ) || typeof entry[ 'element' ] !== 'string' || entry[ 'element' ].length === 0 || Number.isInteger( entry[ 'position' ] ) !== true || typeof entry[ 'required' ] !== 'boolean' || ( entry[ 'pattern' ] instanceof RegExp ) !== true )
+        if( incomplete.length > 0 ) {
+            throw new Error( `BlockSections.assertUserMandateForm: ${ incomplete.length } element(s) lack a non-empty element name, an integer position, a boolean required or a RegExp pattern — every key is mandatory, none is defaulted` )
+        }
+
+        const positions = USER_MANDATE_ELEMENTS
+            .map( ( entry ) => entry[ 'position' ] )
+            .sort( ( a, b ) => a - b )
+        const expected = USER_MANDATE_ELEMENTS
+            .map( ( entry, index ) => index + 1 )
+        const misnumbered = positions
+            .filter( ( position, index ) => position !== expected[ index ] )
+        if( misnumbered.length > 0 || positions.length === 0 ) {
+            throw new Error( `BlockSections.assertUserMandateForm: the positions are ${ positions.join( ', ' ) || 'none' } but must be exactly 1..${ USER_MANDATE_ELEMENTS.length } without a gap or a duplicate — the order IS the rule, so a hole in it is a defect, never a default` )
+        }
+
+        // The optional element must be the LAST one. An optional element in the middle would make the
+        // sequence undecidable: a missing middle element and a shifted one look the same.
+        const optional = USER_MANDATE_ELEMENTS
+            .filter( ( entry ) => entry[ 'required' ] !== true )
+        const misplaced = optional
+            .filter( ( entry ) => entry[ 'position' ] !== USER_MANDATE_ELEMENTS.length )
+        if( misplaced.length > 0 ) {
+            throw new Error( `BlockSections.assertUserMandateForm: the optional element(s) ${ misplaced.map( ( entry ) => entry[ 'element' ] ).join( ', ' ) } do not sit last — an optional element in the middle makes "missing" and "out of order" indistinguishable` )
+        }
+
+        const brokenDefaults = USER_MANDATE_DEFAULTS
+            .filter( ( entry ) => typeof entry[ 'variant' ] !== 'string' || entry[ 'variant' ].length === 0 || ( entry[ 'pattern' ] instanceof RegExp ) !== true )
+        if( brokenDefaults.length > 0 || USER_MANDATE_DEFAULTS.length === 0 ) {
+            throw new Error( `BlockSections.assertUserMandateForm: ${ brokenDefaults.length } default sentence(s) lack a non-empty variant or a RegExp pattern, and the list must not be empty — an empty list would accept nothing and report it as a clean run` )
+        }
+
+        const { matched } = BlockSections.match( { text: 'User-Auftrag' } )
+        if( matched !== true ) {
+            throw new Error( 'BlockSections.assertUserMandateForm: the form describes "User-Auftrag" but the register does not recognise that heading — a form describing a section nobody parses is a rule about nothing' )
+        }
+
+        return { ok: true, checked: USER_MANDATE_ELEMENTS.length, required: USER_MANDATE_ELEMENTS.length - optional.length, defaults: USER_MANDATE_DEFAULTS.length }
+    }
+
+
     // Recognise ONE heading text as a CONTRACT building block. It exists because the contract is NOT a
     // pure subset of the register: `### Kontext` is mandatory and unregistered (see CHAPTER_CONTRACT), so
     // a counter that asked match() alone would silently stop checking a mandatory block and report a
@@ -539,6 +686,11 @@ BlockSections.assertSortOrder()
 // the register. A contract that names a heading nobody recognises would be a fourth divergent copy of
 // the very list this register exists to unify.
 BlockSections.assertChapterContract()
+// LOAD-TIME GATE, fourth half (Memo 081, WI-115): the form of `### User-Auftrag` must be complete, its
+// positions must be 1..n without a hole, its optional element must sit last, and the heading it
+// describes must resolve in the register. A form that describes a section nobody parses would report
+// green over nothing.
+BlockSections.assertUserMandateForm()
 
 
 export { BlockSections, KINDS, WRITABLE_KINDS, SUFFIX_SEPARATORS, ESTABLISHED_SORT }

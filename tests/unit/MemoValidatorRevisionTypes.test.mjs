@@ -340,10 +340,14 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
         'WARN-040',
         // Memo 081, WI-075 (PRD-40): the identifier family. Four codes, a NEW theme (`kennung`), and
         // the whole 1xx block was measured free before it was taken.
-        'INFO-100', 'INFO-101', 'WARN-100', 'WARN-101'
+        'INFO-100', 'INFO-101', 'WARN-100', 'WARN-101',
+        // Memo 081, WI-115 (PRD-41): the user-mandate form family. Four WARNINGs, a NEW theme
+        // (`mandate-form`), and the 2xx block was measured free before it was taken — the 1xx block
+        // had gone to `kennung` on the same day.
+        'WARN-200', 'WARN-201', 'WARN-202', 'WARN-203'
     ]
 
-    it( 'getCatalog() carries exactly 39 codes — the 19 of PRD-V13 plus the twenty later additions', () => {
+    it( 'getCatalog() carries exactly 43 codes — the 19 of PRD-V13 plus the twenty-four later additions', () => {
         const { catalog } = MemoValidator.getCatalog()
         const codes = catalog.map( ( entry ) => entry[ 'code' ] ).sort()
 
@@ -353,7 +357,7 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
             'MEMO-034', 'MEMO-035', 'MEMO-036', 'MEMO-037', 'MEMO-038', 'MEMO-039', 'MEMO-040',
             'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010', 'WARN-011', 'WARN-020',
             'WARN-021', 'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'WARN-034', 'WARN-040',
-            'WARN-100', 'WARN-101'
+            'WARN-100', 'WARN-101', 'WARN-200', 'WARN-201', 'WARN-202', 'WARN-203'
         ] )
     } )
 
@@ -376,13 +380,17 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
         // The twenty additions, in catalogue order: three WARNINGs (PRD-R1/R4), the FOURTH WARNING of
         // Memo 081 / PRD-39 (WARN-040, the chapter-contract count, which stands next to the other two
         // document-level codes), then the six option-quality ERRORs, five WARNINGs and one INFO of PRD-F4,
-        // and finally the identifier family of Memo 081 / PRD-40: two INFOs then two WARNINGs.
+        // then the identifier family of Memo 081 / PRD-40: two INFOs then two WARNINGs,
+        // and finally the user-mandate form family of Memo 081 / PRD-41: four WARNINGs. All four are
+        // WARNINGs by measurement, not by taste — 15 of 41 chapters in REV-16 and 25 of 25 in memo 080
+        // REV-18 would fail an ERROR on the day the rule is introduced.
         expect( catalog.filter( ( entry ) => ADDED_SINCE_PRD_V13.includes( entry[ 'code' ] ) ).map( ( entry ) => entry[ 'severity' ] ) )
             .toEqual( [
                 'WARNING', 'WARNING', 'WARNING', 'WARNING',
                 'ERROR', 'ERROR', 'ERROR', 'ERROR', 'ERROR', 'ERROR',
                 'WARNING', 'WARNING', 'WARNING', 'WARNING', 'WARNING', 'INFO',
-                'INFO', 'INFO', 'WARNING', 'WARNING'
+                'INFO', 'INFO', 'WARNING', 'WARNING',
+                'WARNING', 'WARNING', 'WARNING', 'WARNING'
             ] )
     } )
 } )

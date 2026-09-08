@@ -118,7 +118,11 @@ describe( 'PRD-040 gate emitted message (serialisation / safety)', () => {
         // the option-quality family). The assertion stays EXACT.
         // Memo 081, WI-075 widens it by ONE more: `idResolution`, the comparison basis of the
         // identifier family. The assertion stays EXACT — a ninth key would still fail.
-        expect( Object.keys( parsed[ 'validation' ] ).sort() ).toEqual( [ 'checked', 'idResolution', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'warnings' ] )
+        // Memo 081, WI-115 widens it by ONE more: `userMandate`, the basis of the mandate-form family.
+        // It must survive serialisation like the other two, because the client reads the hull and a
+        // basis that does not cross the wire is a basis nobody has. The assertion stays EXACT — a tenth
+        // key would still fail.
+        expect( Object.keys( parsed[ 'validation' ] ).sort() ).toEqual( [ 'checked', 'idResolution', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'userMandate', 'warnings' ] )
         expect( typeof parsed[ 'validation' ][ 'status' ] ).toBe( 'boolean' )
         expect( parsed[ 'validation' ][ 'revisionType' ] ).toBe( 'full' )
     } )

@@ -89,7 +89,12 @@ describe( 'MemoValidator.validate — result shape & status (PRD-036)', () => {
         // identifier family — did it run, was a stock available, how many distinct references it held
         // against that stock and how they came out. Same reasoning as `optionQuality`: a key of its own,
         // not a member of `checked`. The assertion stays EXACT (a ninth key would still fail).
-        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'idResolution', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'warnings' ] )
+        // Memo 081, WI-115 widens it by ONE more: `userMandate`, the comparison basis of the
+        // mandate-form family — how many numbered chapters were examined and how many carry the
+        // section, a quote, a source reference, a default sentence. Same reasoning a third time: a key
+        // of its own, riding in every result including the refusal. The assertion stays EXACT (a tenth
+        // key would still fail).
+        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'idResolution', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'userMandate', 'warnings' ] )
         expect( Array.isArray( result[ 'messages' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'info' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'warnings' ] ) ).toBe( true )

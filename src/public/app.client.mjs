@@ -6621,7 +6621,14 @@
             // is async (reads /api/documents/<id>/topics) and runs fire-and-forget so it never blocks the
             // sync render. Order: [[…]] links first (before tables reparent nodes), then collapse tables,
             // then the store-driven chapter pill + cross-link line.
+            // Memo 081, WI-076: the identifier pass runs at exactly ONE call point, immediately after
+            // the [[wiki-link]] pass it was modelled on, on EVERY content render — a pass that only ran
+            // on the first load would be gone after the next revision click. It is async (the stock
+            // arrives over the network) and shares that ONE request with applyTopicPillsFromStore
+            // below; the cache is cleared here so each render still reads the store fresh.
+            resetTopicStoreCache()
             resolveWikiLinks()
+            resolveIdLinks( currentDocumentId )
             wrapTablesCollapsible()
             // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): the annotation render pass. Runs on EVERY
             // render path (this method is the common post-render hook, incl. after renderDiffView), and
@@ -6684,8 +6691,17 @@
         // the tree is walked via recursion, each matching text node replaced by a fragment of anchors.
         var WIKI_LINK_RE = /\[\[([^\[\]]+)\]\]/g
 
+        // Memo 081, WI-076 (REV-16:3062): THE SKIP SET IS SHARED, NOT COPIED. It IS the opt-out of
+        // T060 — an identifier (or a [[slug]]) written inside a code span or a fence is text and stays
+        // text — and the identifier pass below is required to use "the SAME skip set". Two skip sets
+        // that are supposed to agree are the parallel path T060 rejects in its own reasoning, so the
+        // list was lifted out of resolveWikiLinks to module scope and both passes read THIS one.
+        // The diagram containers are NOT in here on purpose: they are <div>s, so they are caught by
+        // the isDiagramContainer predicate both passes call next to this lookup, not by a tag name.
+        var CONTENT_SKIP_TAGS = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true }
+
         function resolveWikiLinks() {
-            var skip = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true }
+            var skip = CONTENT_SKIP_TAGS
             var textNodes = []
             var collect = function( node ) {
                 node.childNodes.forEach( function( child ) {
@@ -6743,6 +6759,379 @@
             } )
 
             return a
+        }
+
+
+        // ====================================================================
+        // Memo 081, WI-076 (REV-16:3046-3062, T055/T060): IDENTIFIERS IN THE RENDERED DOCUMENT.
+        //
+        // resolveIdLinks() is built NEXT TO the [[wiki-link]] pass, as an additive post-render pass
+        // with the SAME skip set (CONTENT_SKIP_TAGS above) — "no new route, no second renderer"
+        // (REV-16:3055). The wiki pass is the template down to the details: text nodes collected by
+        // recursion (no while loop), CODE/PRE/A/SCRIPT/STYLE skipped by tag, diagram containers
+        // skipped by predicate, each hit replaced by a fragment.
+        //
+        // THE MARK ADDS NO MARKUP TO THE TEXT. The visible label stays the bare identifier: the
+        // reference syntax is "the bare identifier in running prose, no additional markup"
+        // (REV-16:3061), and a mark that wrapped it in brackets would reintroduce exactly that.
+        //
+        // CLASS 3 IS NOT RECOGNIZED, AND THAT IS A DECISION (F12 = A, REV-16:3046). `F7`, `P1`, `C01`,
+        // `K1` stay plain text. The reason is measured and lives in the vocabulary itself: 6694 `F`
+        // hits across the five corpora are not separable in running prose from formula symbols, figure
+        // numbers and keyboard keys. The honest limit of the old vocabulary, not an oversight.
+        // ====================================================================
+
+        // The recognized identifier vocabulary, MIRRORED from src/IdRegister.mjs (WI-075 / PRD-40).
+        // The browser cannot import the module — the same situation BLOCK_BODY_HEADINGS is in, and the
+        // same answer: one readable literal line, held against the module by a parity case that reads
+        // THIS line back and fails under an injected divergence.
+        //
+        // ONLY THE TABLE IS MIRRORED, NEVER THE EXPRESSION. idTokenSource() below rebuilds the
+        // alternation from these rows with the same algorithm IdRegister uses, and the parity case
+        // compares the RESULT against the module's ID_TOKEN_SOURCE character for character. Two typed
+        // expressions would be two truths; one typed table and two builders are one.
+        var ID_VOCABULARY_MIRROR = [ { prefix: 'M', separator: 'none', min: 3, max: 4 }, { prefix: 'MNT', separator: 'required', min: 3, max: 4 }, { prefix: 'T', separator: 'none', min: 3, max: 4 }, { prefix: 'B', separator: 'none', min: 3, max: 4 }, { prefix: 'G', separator: 'none', min: 3, max: 4 }, { prefix: 'WI', separator: 'required', min: 3, max: 4 }, { prefix: 'RES', separator: 'required', min: 3, max: 4 }, { prefix: 'PRD', separator: 'required', min: 1, max: 4 }, { prefix: 'REQ', separator: 'required', min: 3, max: 4 }, { prefix: 'PLAN', separator: 'required', min: 3, max: 4 }, { prefix: 'ANM', separator: 'required', min: 3, max: 4 }, { prefix: 'LL', separator: 'required', min: 3, max: 4 }, { prefix: 'REV', separator: 'required', min: 2, max: 4 }, { prefix: 'SR', separator: 'required', min: 2, max: 3 } ]
+
+        // The optional scope prefix of a QUALIFIED, memo-foreign reference — `M080-T096`, `M080/WI-221`
+        // (F20 = A). Mirrored from IdRegister.SCOPE_PREFIX_SOURCE and parity-checked with it.
+        var ID_SCOPE_PREFIX_SOURCE = '(?:M\\d{3,4}[-/])?'
+
+        // The separator sources, mirrored from IdRegister.SEPARATOR_SOURCE.
+        var ID_SEPARATOR_SOURCE = { 'required': '-', 'optional': '-?', 'none': '' }
+
+        // The prefixes the CLIENT stock can carry — the topic store's three corners plus the memo
+        // catalogue the sidebar already holds. This is the load-bearing half of the stock: it says
+        // which KINDS this view can look up, and that is what tells a missing entry apart from a kind
+        // the browser cannot resolve at all. Without it every `PRD-42` and `REV-16` in the prose would
+        // be handed to the author as HIS broken reference, which is a defect the machine made.
+        var ID_STOCK_PREFIXES = [ 'T', 'B', 'WI', 'M' ]
+
+        // idTokenSource — the alternation, rebuilt from ID_VOCABULARY_MIRROR with the algorithm of
+        // IdRegister.buildSource: group by (separator, digit span) in order of first appearance;
+        // inside a group sort prefixes by LENGTH DESCENDING then alphabetically so a longer prefix can
+        // never be shadowed; sort the groups by their longest prefix, descending. Both orders are
+        // computed, never hand-kept.
+        function idTokenSource() {
+            var groups = []
+            ID_VOCABULARY_MIRROR.forEach( function( row ) {
+                var key = row.separator + '|' + row.min + '|' + row.max
+                var found = groups.find( function( group ) { return group.key === key } )
+                if( !found ) {
+                    found = { key: key, members: [] }
+                    groups.push( found )
+                }
+                found.members.push( row )
+            } )
+
+            return groups
+                .map( function( group ) {
+                    var prefixes = group.members
+                        .map( function( row ) { return row.prefix } )
+                        .sort( function( a, b ) { return b.length - a.length || a.localeCompare( b ) } )
+                    var head = group.members[ 0 ]
+                    var digits = head.min === head.max ? ( '\\d{' + head.min + '}' ) : ( '\\d{' + head.min + ',' + head.max + '}' )
+
+                    return { longest: prefixes[ 0 ].length, source: '(?:' + prefixes.join( '|' ) + ')' + ID_SEPARATOR_SOURCE[ head.separator ] + digits }
+                } )
+                .sort( function( a, b ) { return b.longest - a.longest || a.source.localeCompare( b.source ) } )
+                .map( function( group ) { return group.source } )
+                .join( '|' )
+        }
+
+
+        // idRecognizedPrefixes — the mirrored prefix list, in table order. What the parity case holds
+        // against IdRegister.prefixes( { recognized: true } ).
+        function idRecognizedPrefixes() {
+            return ID_VOCABULARY_MIRROR.map( function( row ) { return row.prefix } )
+        }
+
+
+        // idTokenPattern — a FRESH global expression per pass. Global regexes carry lastIndex, and a
+        // shared instance walked by two consumers skips hits; the wiki pass resets lastIndex by hand
+        // for the same reason. A new object per pass makes that impossible rather than careful.
+        function idTokenPattern() {
+            return new RegExp( '\\b' + ID_SCOPE_PREFIX_SOURCE + '(?:' + idTokenSource() + ')\\b', 'g' )
+        }
+
+
+        // idSplitToken — a matched token into scope, identifier, prefix and digits. Mirrors
+        // IdRegister.#splitToken including its measured rule: A MEMO CANNOT BE SCOPED INSIDE ANOTHER
+        // MEMO — `M080/M081` in prose means "M080 and M081", not "M081 within M080". Returns null when
+        // the token does not decompose, so a shape the expression matched but the table cannot name is
+        // dropped rather than marked under a guessed prefix.
+        function idSplitToken( token ) {
+            var scoped = /^M(\d{3,4})[-/](.+)$/.exec( token )
+            var anchored = new RegExp( '^(?:' + idTokenSource() + ')$' )
+            var targetsMemo = scoped !== null && /^M\d{3,4}$/.test( scoped[ 2 ] ) === true
+            var qualified = scoped !== null && targetsMemo !== true && anchored.test( scoped[ 2 ] ) === true
+            var scope = qualified === true ? ( 'M' + scoped[ 1 ] ) : null
+            var id = qualified === true ? scoped[ 2 ] : ( targetsMemo === true ? ( 'M' + scoped[ 1 ] ) : token )
+            var parts = /^([A-Z]+)-?(\d+)$/.exec( id )
+
+            if( parts === null ) { return null }
+
+            return { token: token, id: id, scope: scope, qualified: qualified, prefix: parts[ 1 ], key: ( scope === null ? '' : ( scope + '-' ) ) + id }
+        }
+
+
+        // idMemoCatalogue — the memos this viewer knows, from the sidebar tree it already holds. No
+        // second fetch: flattenTreeMemos() is the same flattening computeQueue uses. `M081` is derived
+        // from the memo FOLDER NAME, exactly as the server derives it (MemoView.#memoIdOf).
+        function idMemoCatalogue() {
+            var entries = []
+            flattenTreeMemos().forEach( function( doc ) {
+                if( !doc || typeof doc !== 'object' ) { return }
+                var hit = /^(\d{3,4})-/.exec( String( doc.memoName == null ? '' : doc.memoName ) )
+                if( hit === null ) { return }
+                entries.push( { memo: 'M' + hit[ 1 ], documentId: doc.documentId, memoName: doc.memoName } )
+            } )
+
+            return entries
+        }
+
+
+        // buildIdStock — the stock the three display states are decided against, folded out of the
+        // topic-store payload the client ALREADY fetches plus the memo catalogue it already holds.
+        //
+        // A NULL PAYLOAD IS NOT AN EMPTY STOCK. `null` in, `null` out — and the caller then marks
+        // NOTHING and says why. An empty stock would report every identifier as broken and claim to
+        // have measured, which is the vacuum-green gate with its sign flipped. An empty but PRESENT
+        // payload is a different statement and yields a real stock with zero entries: then every
+        // T/B/WI reference is genuinely unresolved, and that is the truth about that memo.
+        function buildIdStock( payload ) {
+            if( !payload || typeof payload !== 'object' ) { return null }
+
+            var topics = Array.isArray( payload.topics ) ? payload.topics : []
+            var blocks = Array.isArray( payload.blocks ) ? payload.blocks : []
+            var workItems = Array.isArray( payload.workItems ) ? payload.workItems : []
+            var chapterOfTopic = {}
+            var titleOf = {}
+            topics.forEach( function( topic ) {
+                if( !topic || typeof topic.id !== 'string' ) { return }
+                chapterOfTopic[ topic.id ] = ( typeof topic.chapter === 'string' && topic.chapter.length > 0 ) ? topic.chapter : null
+                titleOf[ topic.id ] = topic.title || ''
+            } )
+
+            var ids = []
+            topics.forEach( function( topic ) {
+                if( !topic || typeof topic.id !== 'string' ) { return }
+                ids.push( { id: topic.id, title: titleOf[ topic.id ], chapter: chapterOfTopic[ topic.id ] } )
+            } )
+            blocks.forEach( function( block ) {
+                if( !block || typeof block.blockId !== 'string' ) { return }
+                // A block has no chapter of its own — it inherits the chapter of the first topic that
+                // stands in it. The forward edge topic.blockId is the ONE checked edge the store view
+                // uses; block.topicIds is deliberately not read as a second truth.
+                var owner = topics.find( function( topic ) { return topic && topic.blockId === block.blockId && chapterOfTopic[ topic.id ] !== null } )
+
+                ids.push( { id: block.blockId, title: '', chapter: owner === undefined ? null : chapterOfTopic[ owner.id ] } )
+            } )
+            workItems.forEach( function( item ) {
+                if( !item || typeof item.id !== 'string' ) { return }
+                var chapter = ( typeof item.topicId === 'string' && chapterOfTopic[ item.topicId ] !== undefined ) ? chapterOfTopic[ item.topicId ] : null
+                ids.push( { id: item.id, title: item.title || '', chapter: chapter } )
+            } )
+
+            var catalogue = idMemoCatalogue()
+            var localMemo = null
+            catalogue.forEach( function( entry ) {
+                if( entry.documentId === currentDocumentId ) { localMemo = entry.memo }
+            } )
+
+            return { memo: localMemo, prefixes: ID_STOCK_PREFIXES, ids: ids, catalogue: catalogue }
+        }
+
+
+        // idVerdictOf — the display state of ONE reference. Four states from the memo (REV-16:3048-3052)
+        // and a fifth the memo does not name but PRD-40 already minted for the write side:
+        //
+        //   local        the identifier stands in THIS memo's stock -> anchor, jumps to its chapter
+        //   foreign      a qualified `M080-…` (or a bare `M080`) whose memo the catalogue knows ->
+        //                anchor to the deep link /doc/{documentId} (WI-066, built as PRD-33). It lands
+        //                at the TOP of that document, NOT at the chapter: the client does not hold the
+        //                foreign memo's stock and fetching it per identifier would be a request per
+        //                link. The tooltip SAYS SO instead of pretending the jump hit a chapter.
+        //   unresolved   covered kind, no entry -> muted mark, NO anchor, tooltip naming the reason.
+        //                "the mark IS the finding" (REV-16:3052).
+        //   ambiguous    covered kind, MORE than one entry — the more dangerous class, kept apart from
+        //                unresolved for the same reason IdRegister keeps it apart.
+        //   no-carrier   this view carries no stock for the KIND at all (REV, PRD, RES, REQ, …). NOT
+        //                the author's defect and never shown as one — a quiet mark whose tooltip says
+        //                the browser cannot look this kind up. Reporting it as `unresolved` would hand
+        //                the author a defect the machine made, which is exactly why PRD-40 split the
+        //                two verdicts in the first place.
+        function idVerdictOf( entry, stock ) {
+            var memoOf = function( memo ) {
+                return stock.catalogue.find( function( item ) { return item.memo === memo } )
+            }
+
+            if( entry.qualified === true ) {
+                var target = memoOf( entry.scope )
+                if( target === undefined ) {
+                    return { state: 'unresolved', hint: entry.token + ' — Memo ' + entry.scope.slice( 1 ) + ' ist in diesem Katalog nicht bekannt' }
+                }
+
+                return { state: 'foreign', href: '/doc/' + encodeURIComponent( target.documentId ), hint: entry.token + ' — liegt in Memo ' + entry.scope.slice( 1 ) + '. Der Sprung trifft das Dokument, nicht das Kapitel.' }
+            }
+
+            if( entry.prefix === 'M' ) {
+                var known = memoOf( entry.id )
+                if( known === undefined ) {
+                    return { state: 'unresolved', hint: entry.token + ' — Memo ' + entry.id.slice( 1 ) + ' ist in diesem Katalog nicht bekannt' }
+                }
+                if( known.documentId === currentDocumentId ) {
+                    return { state: 'foreign', href: '/doc/' + encodeURIComponent( known.documentId ), hint: entry.token + ' — dieses Memo. Der Sprung fuehrt an den Anfang des Dokuments.' }
+                }
+
+                return { state: 'foreign', href: '/doc/' + encodeURIComponent( known.documentId ), hint: entry.token + ' — liegt in Memo ' + entry.id.slice( 1 ) + '. Der Sprung trifft das Dokument, nicht das Kapitel.' }
+            }
+
+            if( stock.prefixes.indexOf( entry.prefix ) === -1 ) {
+                return { state: 'no-carrier', hint: entry.token + ' — fuer diese Art fuehrt die Ansicht keinen Bestand. Nicht geprueft, kein Befund am Text.' }
+            }
+
+            var matches = stock.ids.filter( function( item ) { return item.id === entry.id } )
+
+            if( matches.length === 0 ) {
+                return { state: 'unresolved', hint: entry.token + ' — kein Eintrag im Bestand dieses Memos' }
+            }
+            if( matches.length > 1 ) {
+                return { state: 'ambiguous', hint: entry.token + ' — ' + matches.length + ' Eintraege tragen diese Kennung' }
+            }
+
+            var found = matches[ 0 ]
+            var label = found.title && found.title.length > 0 ? ( ' „' + found.title + '"' ) : ''
+            if( found.chapter === null ) {
+                return { state: 'resolved', hint: entry.token + label + ' — im Bestand, aber ohne Kapitel-Bindung. Kein Sprungziel.' }
+            }
+
+            return { state: 'local', chapter: found.chapter, hint: entry.token + label + ' — Kapitel „' + found.chapter + '"' }
+        }
+
+
+        // buildIdMark — one mark. An ANCHOR only where a jump target exists; everything else is a span,
+        // because a link that does not move is a promise the display cannot keep. No state is designed
+        // to alarm: the unresolved mark is muted, not red — the author has not made a mistake, he has
+        // not yet applied a convention this very revision introduces.
+        function buildIdMark( entry, verdict, headings ) {
+            var target = verdict.state === 'local' ? matchChapterHeading( headings, verdict.chapter ) : null
+            var node = ( verdict.state === 'foreign' || target !== null ) ? document.createElement( 'a' ) : document.createElement( 'span' )
+            node.className = 'id-ref id-ref-' + ( target === null && verdict.state === 'local' ? 'resolved' : verdict.state )
+            node.setAttribute( 'data-id-ref', entry.key )
+            node.setAttribute( 'title', verdict.hint )
+            node.textContent = entry.token
+
+            if( verdict.state === 'foreign' ) {
+                // classifyLinkHref reads a leading "/" as a ROUTE and interceptLinks leaves those
+                // alone, so the deep link navigates natively — no WS message, no second handler.
+                node.setAttribute( 'href', verdict.href )
+
+                return node
+            }
+
+            if( target !== null ) {
+                node.setAttribute( 'href', '#' )
+                node.addEventListener( 'click', function( e ) {
+                    e.preventDefault()
+                    if( target.scrollIntoView ) { target.scrollIntoView( { behavior: 'smooth', block: 'start' } ) }
+                } )
+            }
+
+            return node
+        }
+
+
+        // renderIdStockNote — the FOURTH state, and it is not optional. If "stock missing" and
+        // "everything resolved" both looked unremarkable, a failed fetch would read as a clean
+        // document. That is the most expensive confusion this project knows, and renderFormHints keeps
+        // the same three-way distinction for the same reason. This note is written NEXT TO that band
+        // and never into it — the hint band belongs to the server's validator, not to this pass.
+        function renderIdStockNote( stock, counted ) {
+            var existing = contentEl.querySelector( '.id-ref-note' )
+            if( existing ) { existing.parentNode.removeChild( existing ) }
+            if( stock !== null && counted > 0 ) { return }
+
+            var note = document.createElement( 'div' )
+            note.className = 'id-ref-note'
+            note.textContent = stock === null
+                ? 'Kennungen: Bestand nicht geladen — keine Kennung wurde geprueft.'
+                : 'Kennungen: Bestand geladen, keine Kennung im Text gefunden.'
+            contentEl.insertBefore( note, contentEl.firstChild )
+        }
+
+
+        // resolveIdLinks — THE pass. Async because the stock arrives over the network; it shares the
+        // ONE in-flight topic-store request with applyTopicPillsFromStore (loadTopicStore) rather than
+        // issuing a second fetch. Idempotent: an element already carrying an `id-ref` class is not
+        // descended into, so a second run over the same tree produces no nested marks — the form
+        // wrapTablesCollapsible already uses with `closest( '.table-collapsible' )`.
+        //
+        // Returns the counted result so a measurement can state HOW MUCH it looked at. Occurrences and
+        // distinct references are TWO statements and an answer that gives only one of them is
+        // ambiguous, so both are carried.
+        async function resolveIdLinks( documentId ) {
+            var payload = documentId ? await loadTopicStore( documentId ) : null
+
+            // The reader switched documents while the stock was in flight: marking now would decorate
+            // the NEW document with the OLD memo's stock. Bail instead.
+            if( documentId !== currentDocumentId ) { return { ran: false, reason: 'document changed while the stock was loading', occurrences: 0, distinct: 0, states: {} } }
+
+            var stock = buildIdStock( payload )
+            if( stock === null ) {
+                renderIdStockNote( null, 0 )
+
+                return { ran: true, available: false, reason: 'no stock — nothing was marked and nothing was checked', occurrences: 0, distinct: 0, states: {} }
+            }
+
+            var pattern = idTokenPattern()
+            var textNodes = []
+            var collect = function( node ) {
+                node.childNodes.forEach( function( child ) {
+                    if( child.nodeType === 3 ) {
+                        pattern.lastIndex = 0
+                        if( pattern.test( child.nodeValue || '' ) ) { textNodes.push( child ) }
+
+                        return
+                    }
+                    if( child.nodeType !== 1 ) { return }
+                    if( CONTENT_SKIP_TAGS[ child.tagName ] ) { return }
+                    if( isDiagramContainer( child ) ) { return }
+                    if( child.classList && child.classList.contains( 'id-ref' ) ) { return }
+                    collect( child )
+                } )
+            }
+            collect( contentEl )
+
+            var headings = contentEl.querySelectorAll( 'h2' )
+            var counted = { occurrences: 0, states: {}, keys: {} }
+            textNodes.forEach( function( node ) {
+                var text = String( node.nodeValue )
+                pattern.lastIndex = 0
+                var hits = Array.from( text.matchAll( pattern ) )
+                var frag = document.createDocumentFragment()
+                var cursor = hits.reduce( function( position, hit ) {
+                    if( hit.index > position ) { frag.appendChild( document.createTextNode( text.slice( position, hit.index ) ) ) }
+                    var entry = idSplitToken( hit[ 0 ] )
+                    if( entry === null ) {
+                        frag.appendChild( document.createTextNode( hit[ 0 ] ) )
+
+                        return hit.index + hit[ 0 ].length
+                    }
+                    var verdict = idVerdictOf( entry, stock )
+                    frag.appendChild( buildIdMark( entry, verdict, headings ) )
+                    counted.occurrences = counted.occurrences + 1
+                    counted.keys[ entry.key ] = true
+                    counted.states[ verdict.state ] = ( counted.states[ verdict.state ] || 0 ) + 1
+
+                    return hit.index + hit[ 0 ].length
+                }, 0 )
+                if( cursor < text.length ) { frag.appendChild( document.createTextNode( text.slice( cursor ) ) ) }
+                node.parentNode.replaceChild( frag, node )
+            } )
+
+            renderIdStockNote( stock, counted.occurrences )
+
+            return { ran: true, available: true, reason: null, occurrences: counted.occurrences, distinct: Object.keys( counted.keys ).length, states: counted.states, comparedStockEntries: stock.ids.length, comparedStockPrefixes: stock.prefixes.length, comparedCatalogue: stock.catalogue.length }
         }
 
 
@@ -7567,17 +7956,39 @@
         // deps · research). Fire-and-forget from applyContentStructure (the store read is async; the sync
         // DOM surgery does not block on it). Idempotent: a heading already carrying a pill-header is left
         // alone (no duplicate on a re-render race).
+        // Memo 081, WI-076: the ONE in-flight topic-store request of a render pass. Two consumers now
+        // need the same payload — the pill/section injection below and the identifier pass
+        // (resolveIdLinks) — and the memo is explicit that the second must not add a fetch of its own
+        // ("no second fetch, no new route", REV-16:3055). The promise is cached per documentId and
+        // cleared at the start of each content render, so a render still reads the store FRESH while
+        // the two consumers inside one render share exactly one request.
+        //
+        // A FAILURE RESOLVES TO null, IT DOES NOT REJECT. null is a real answer here: it says "no
+        // stock", which is a different statement from an empty store, and the identifier pass turns it
+        // into a named absence rather than into a document full of false findings.
+        var topicStorePending = {}
+
+        function resetTopicStoreCache() {
+            topicStorePending = {}
+        }
+
+        function loadTopicStore( documentId ) {
+            if( !documentId ) { return Promise.resolve( null ) }
+            if( topicStorePending[ documentId ] ) { return topicStorePending[ documentId ] }
+
+            topicStorePending[ documentId ] = fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/topics' )
+                .then( function( resp ) { return resp.ok ? resp.json() : null } )
+                .catch( function() { return null } )
+
+            return topicStorePending[ documentId ]
+        }
+
+
         async function applyTopicPillsFromStore( documentId ) {
             if( !documentId ) { return }
 
-            var payload = null
-            try {
-                var resp = await fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/topics' )
-                if( !resp.ok ) { return }
-                payload = await resp.json()
-            } catch( err ) {
-                return
-            }
+            var payload = await loadTopicStore( documentId )
+            if( payload === null || typeof payload !== 'object' ) { return }
 
             var topics = ( payload && Array.isArray( payload.topics ) ) ? payload.topics : []
             // PRD-V8 (Memo 080 Kap 16, T080): the same payload now carries the (chapter, block)

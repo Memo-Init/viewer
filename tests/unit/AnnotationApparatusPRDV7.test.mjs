@@ -213,16 +213,32 @@ describe( 'PRD-V7 — the shape the PRD fixes (source cuts)', () => {
     } )
 
 
+    // Memo 081, PRD-42 (WI-076): the ASSERTION is unchanged — the wiki pass's skip set still holds its
+    // five entries including CODE and A, and it is still a DIFFERENT set from the annotation one above.
+    // What changed is WHERE that set is written: PRD-42 added a second post-render pass (resolveIdLinks)
+    // which the memo requires to use "the SAME skip set" (REV-16:3055), so the literal moved out of the
+    // function body to the module-scope CONTENT_SKIP_TAGS both passes now read. Two skip sets that are
+    // supposed to agree are exactly the parallel path that requirement rejects.
+    //
+    // The case follows the binding instead of assuming the old location, and it still measures the same
+    // five entries — old expectation: one `var skip = { … }` literal inside resolveWikiLinks with 5
+    // entries; new expectation: one `var skip = CONTENT_SKIP_TAGS` binding inside resolveWikiLinks plus
+    // exactly one module-scope declaration carrying those same 5 entries.
     it( 'A2 — the OTHER skip list (resolveWikiLinks) is untouched: still 5 entries incl. CODE and A', () => {
         const from = client.indexOf( 'function resolveWikiLinks(' )
         expect( from ).toBeGreaterThan( -1 )
         const block = client.slice( from, client.indexOf( 'function buildWikiLink(', from ) )
-        const line = block.split( '\n' ).filter( ( row ) => row.includes( 'var skip = {' ) )
+        const binding = block.split( '\n' ).filter( ( row ) => row.includes( 'var skip = ' ) )
 
-        expect( line.length ).toBe( 1 )
-        expect( line[ 0 ].includes( "'CODE': true" ) ).toBe( true )
-        expect( line[ 0 ].includes( "'A': true" ) ).toBe( true )
-        expect( line[ 0 ].split( ': true' ).length - 1 ).toBe( 5 )
+        expect( binding.length ).toBe( 1 )
+        expect( binding[ 0 ].trim() ).toBe( 'var skip = CONTENT_SKIP_TAGS' )
+
+        const declaration = client.split( '\n' ).filter( ( row ) => row.trim().startsWith( 'var CONTENT_SKIP_TAGS = {' ) )
+
+        expect( declaration.length ).toBe( 1 )
+        expect( declaration[ 0 ].includes( "'CODE': true" ) ).toBe( true )
+        expect( declaration[ 0 ].includes( "'A': true" ) ).toBe( true )
+        expect( declaration[ 0 ].split( ': true' ).length - 1 ).toBe( 5 )
     } )
 
 

@@ -6,6 +6,56 @@ import { join } from 'node:path'
 import { DocumentRegistry } from '../../src/DocumentRegistry.mjs'
 
 
+// Memo 081, PRD-39 (Phasen-Abnahme C1-4, P-3): wait for the CONDITION, never for a clock.
+//
+// THE DEFECT THIS REPLACES. A fixed 300 ms deadline stood where an ASYNCHRONOUS filesystem watcher
+// event was awaited. Waiting for the condition instead passes as fast as the watcher is and fails only
+// when the watcher really did not fire. No `while`/`for` (node-sop baseline): the retry is recursive
+// and each step yields, so the synchronous stack never grows.
+//
+// WHAT THIS DOES *NOT* DO, corrected by PRD-45 against PRD-39's own claim. PRD-39 reported the case as
+// repaired ("0 of 10 red under named load"). That does not reproduce. Measured over the corpus of runs
+// below, the case ISOLATED under 12 busy processes on 4 cores (8 CPU burners + 4 file burners):
+//
+//   stand f94315c, inner deadline 5000 ms   ->  1 of 10 red
+//   the same case with the deadline at 20000 ms and Jest's frame at 60000 ms
+//                                           ->  1 of 10 red, and the red run reports
+//                                               `waitedMs=20024 seen=Entwurf` — it waited TWENTY
+//                                               SECONDS and the event never arrived
+//
+// SO THE EVENT IS LOST, NOT SLOW, and NO deadline size repairs the rate. When the watcher works it
+// answers in 25-89 ms (measured, 20 runs, quiet and loaded); when it fails it does not answer at all.
+// This wait is therefore a DIAGNOSIS, not a repair, and the flakiness of this case is open — it belongs
+// to the class named in BERICHT-PRD-45 (assertions inside a time window on an asynchronous SHARED
+// operating-system resource: file watching and fixed ports).
+//
+// THE FRAME MUST BE BIGGER THAN THE DEADLINE, and that is what PRD-45 actually changed. Jest's default
+// per-test frame is 5000 ms and this repo overrides it NOWHERE (no `testTimeout`, no `jest.setTimeout`,
+// no third `it()` argument existed before this one). The inner deadline was 5000 ms too, and the body
+// spends time before the wait even starts, so JEST ALWAYS WON THE RACE: the assertion below — the whole
+// justification for the repair — was unreachable by construction. Measured with a forced watcher
+// failure at f94315c, the case reported `thrown: "Exceeded timeout of 5000 ms for a test."` and said
+// nothing about what it saw. With the frame raised to 15000 ms the same forced failure reports
+// `Entwurf after 5001 ms`. Three times the deadline is headroom, not a guess: the observed body
+// overhead is milliseconds and the deadline is the only long wait in the case.
+async function waitForCondition( { probe, timeoutMs, stepMs } ) {
+    const started = Date.now()
+
+    const attempt = async () => {
+        const { done, seen } = probe()
+        const waitedMs = Date.now() - started
+        if( done === true || waitedMs >= timeoutMs ) {
+            return { ok: done === true, waitedMs, seen }
+        }
+        await new Promise( ( resolve ) => setTimeout( resolve, stepMs ) )
+
+        return attempt()
+    }
+
+    return attempt()
+}
+
+
 describe( 'DocumentRegistry', () => {
     let tempDir
     let registry
@@ -142,7 +192,12 @@ describe( 'DocumentRegistry', () => {
             const result = await registry.addDocument( { projectId: 'proj', memoPath: revisionsDir } )
             const { document } = registry.getDocument( { documentId: result['documentId'] } )
 
-            expect( document['selectedRevision'] ).toBeNull()
+            // Memo 081, WI-106: the document no longer HOLDS a selection at all — it moved to the
+            // viewer (selectRevision requires a viewerId). The statement of this case is unchanged
+            // ("a fresh document has nothing selected") and is now checked where the answer lives:
+            // no field on the record, and no selection for a viewer that has not selected.
+            expect( document['selectedRevision'] ).toBeUndefined()
+            expect( registry.getSelectedRevisions( { viewerId: 'v-fresh' } )['selections'] ).toEqual( {} )
             expect( document['revisions'].length ).toBe( 2 )
             // Revisions sorted by mtime desc (then REV-Number desc as tie-breaker, PRD-007)
             const fileNames = document['revisions'].map( ( r ) => r['fileName'] )
@@ -247,13 +302,14 @@ describe( 'DocumentRegistry', () => {
             await writeFile( join( dir, 'v0.2.md' ), '# B' )
 
             const addResult = await registry.addDocument( { projectId: 'proj', memoPath: dir } )
-            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'v0.1.md' } )
+            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'v0.1.md', viewerId: 'v-1' } )
 
             expect( selectResult['status'] ).toBe( true )
 
-            const { document } = registry.getDocument( { documentId: addResult['documentId'] } )
+            // Memo 081, WI-106: same statement, read from the viewer instead of from the document.
+            const { selections } = registry.getSelectedRevisions( { viewerId: 'v-1' } )
 
-            expect( document['selectedRevision'] ).toBe( 'v0.1.md' )
+            expect( selections[ addResult['documentId'] ] ).toBe( 'v0.1.md' )
         } )
 
 
@@ -263,7 +319,7 @@ describe( 'DocumentRegistry', () => {
             await writeFile( join( dir, 'v0.1.md' ), '# A' )
 
             const addResult = await registry.addDocument( { projectId: 'proj', memoPath: dir } )
-            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'v9.9.md' } )
+            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'v9.9.md', viewerId: 'v-1' } )
 
             expect( selectResult['status'] ).toBe( false )
         } )
@@ -309,11 +365,11 @@ describe( 'DocumentRegistry', () => {
 
             const addResult = await registry.addDocument( { projectId: 'proj', memoPath: dir } )
             // Server does not auto-select; UI must call selectRevision explicitly.
-            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'REV-01.md' } )
+            const selectResult = registry.selectRevision( { documentId: addResult['documentId'], fileName: 'REV-01.md', viewerId: 'v-1' } )
 
             expect( selectResult['status'] ).toBe( true )
 
-            const { status, absolutePath } = registry.getSelectedRevisionPath( { documentId: addResult['documentId'] } )
+            const { status, absolutePath } = registry.getSelectedRevisionPath( { documentId: addResult['documentId'], viewerId: 'v-1' } )
 
             expect( status ).toBe( true )
             expect( absolutePath ).toContain( 'REV-01.md' )
@@ -321,7 +377,7 @@ describe( 'DocumentRegistry', () => {
 
 
         it( 'returns false for non-existent document', () => {
-            const { status } = registry.getSelectedRevisionPath( { documentId: 'nope' } )
+            const { status } = registry.getSelectedRevisionPath( { documentId: 'nope', viewerId: 'v-1' } )
 
             expect( status ).toBe( false )
         } )
@@ -666,7 +722,13 @@ describe( 'DocumentRegistry', () => {
         } )
 
 
-        it( 'maps "Option C" to exactly one preselected index for single', () => {
+        // Memo 081, WI-025 (PRD-35): these three cases asserted the coupling this work item dissolves —
+        // that the AI recommendation lands IN the selection field. The markdown path has no syntax for
+        // an explicit author selection at all, so 405 of 2909 markdown questions carried a preselection
+        // the author had no way to withdraw. The derivation is unchanged and is asserted here as before;
+        // what changed is the field it writes to. Each case now states BOTH halves of the split, so a
+        // regression that quietly reconnects the two fields fails here.
+        it( 'maps "Option C" to exactly one aiRecommended index for single, and preselects nothing', () => {
             const { question } = buildQuestion( {
                 body: '**AI-Empfehlung:** Option C\n\nA) a B) b C) c'
             } )
@@ -674,29 +736,33 @@ describe( 'DocumentRegistry', () => {
             const cIndex = keys.indexOf( 'C' )
 
             expect( question[ 'typ' ] ).toBe( 'single' )
-            expect( question[ 'preselected' ] ).toEqual( [ cIndex ] )
+            expect( question[ 'aiRecommended' ] ).toEqual( [ cIndex ] )
+            expect( question[ 'preselected' ] ).toEqual( [] )
         } )
 
 
-        it( 'maps "A+B" to both preselected indices for multi', () => {
+        it( 'maps "A+B" to both aiRecommended indices for multi, and preselects nothing', () => {
             const { question } = buildQuestion( {
                 body: '**Typ:** multi\n**AI-Empfehlung:** A+B\n\nA) a B) b C) c'
             } )
             const keys = keysOf( { question } )
 
             expect( question[ 'typ' ] ).toBe( 'multi' )
-            expect( question[ 'preselected' ] ).toEqual( [ keys.indexOf( 'A' ), keys.indexOf( 'B' ) ] )
+            expect( question[ 'aiRecommended' ] ).toEqual( [ keys.indexOf( 'A' ), keys.indexOf( 'B' ) ] )
+            expect( question[ 'preselected' ] ).toEqual( [] )
         } )
 
 
-        it( 'yields empty preselected for an unmatchable / missing recommendation', () => {
+        it( 'yields empty aiRecommended for an unmatchable / missing recommendation', () => {
             const none = buildQuestion( { body: 'A) a B) b' } )
             const unmatched = buildQuestion( {
                 body: '**AI-Empfehlung:** keine klare Wahl\n\nA) a B) b'
             } )
 
-            expect( none.question[ 'preselected' ] ).toEqual( [] )
-            expect( unmatched.question[ 'preselected' ] ).toEqual( [] )
+            // Held against aiRecommended, not preselected: on this path preselected is empty by
+            // construction now, so asserting it here would be a case that can no longer fail.
+            expect( none.question[ 'aiRecommended' ] ).toEqual( [] )
+            expect( unmatched.question[ 'aiRecommended' ] ).toEqual( [] )
         } )
     } )
 
@@ -782,7 +848,7 @@ describe( 'DocumentRegistry', () => {
             const { document } = registry.getDocument( { documentId: addResult['documentId'] } )
 
             expect( document['memoStatus'] ).toBe( 'Finalisiert' )
-            expect( document['questions'] ).toEqual( { open: 2, answered: 1, deferred: 0 } )
+            expect( document['questions'] ).toMatchObject( { open: 2, answered: 1, deferred: 0 } )
         } )
 
 
@@ -796,12 +862,12 @@ describe( 'DocumentRegistry', () => {
             const { documents } = registry.getDocuments()
 
             expect( documents[0]['memoStatus'] ).toBe( 'Finalisiert' )
-            expect( documents[0]['questions'] ).toEqual( { open: 1, answered: 0, deferred: 0 } )
+            expect( documents[0]['questions'] ).toMatchObject( { open: 1, answered: 0, deferred: 0 } )
 
             const { tree } = registry.getDocumentTree()
 
             expect( tree['proj']['memos'][0]['memoStatus'] ).toBe( 'Finalisiert' )
-            expect( tree['proj']['memos'][0]['questions'] ).toEqual( { open: 1, answered: 0, deferred: 0 } )
+            expect( tree['proj']['memos'][0]['questions'] ).toMatchObject( { open: 1, answered: 0, deferred: 0 } )
         } )
 
 
@@ -832,12 +898,28 @@ describe( 'DocumentRegistry', () => {
 
             await writeFile( filePath, '| **Status** | Finalisiert |' )
 
-            await new Promise( ( r ) => setTimeout( r, 300 ) )
+            const settled = await waitForCondition( {
+                probe: () => {
+                    const seen = registry.getDocument( { documentId } )['document']['memoStatus']
+
+                    return { done: seen === 'Finalisiert', seen }
+                },
+                timeoutMs: 5000,
+                stepMs: 25
+            } )
+
+            // The waited time and the last seen value ride IN the assertion, so a genuine watcher failure
+            // says how long it waited and what it saw instead of only "false is not true". PRD-45: this
+            // line only ever runs because the third argument below gives it a frame to run in.
+            expect( `${ settled.seen } after ${ settled.waitedMs } ms` ).toBe( `Finalisiert after ${ settled.waitedMs } ms` )
 
             const after = registry.getDocument( { documentId } )
 
             expect( after['document']['memoStatus'] ).toBe( 'Finalisiert' )
-        } )
+            // PRD-45: 15000 ms is Jest's frame for THIS case — three times the 5000 ms deadline above,
+            // so the deadline expires first and the assertion above gets to speak. See the file header
+            // for the measurement; without it this case dies on Jest's own 5000 ms clock instead.
+        }, 15000 )
     } )
 
 

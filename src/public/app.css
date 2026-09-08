@@ -676,12 +676,10 @@
         /* PRD-001 (#16-18): raw question markdown bodies hidden once widgets render. */
         #content .raw-question-hidden { display: none; }
 
-        /* PRD-015 (D6): a block's structured H3 body sections below a block-meta card are collapsed
-           out of the prose — the Block-Card already carries the machine-links. Memo 080 / PRD-B1: which
-           H3 counts as a body section is decided by the ONE register (BlockSections), no longer by
-           three hand-typed names; the collapse itself is unchanged. This rule is the reason a rename
-           that is not carried through makes content DISAPPEAR (REV-18, Beleg 2.7). */
-        #content .block-body-hidden { display: none; }
+        /* PRD-015 (D6) held a `.block-body-hidden { display: none }` rule here. Memo 081 / WI-113
+           removed it: a section that is display:none is not collapsed, it is INVISIBLE — there is no
+           toggle, so it can never be reopened, and no line a figure could sit on. The six chapter
+           sections now fold through <details class="chapter-section">, styled below. */
 
         /* PRD-002 (#12/#15): caps section labels (style analog .sb-group-header). */
         #content .section-caps-label,
@@ -2192,6 +2190,20 @@
             opacity: 0.85;
             font-style: italic;
         }
+        /* PRD-22 (Memo 081 Kap 19, WI-130): the loud edge before sending. SAME warning colour as the
+           placeholder above — field marking and send-edge state one fact, and two colours would read
+           as two different things. Deliberately NOT .t-error: an omitted intent is not an error, and
+           the error channel is cleared on every save attempt. */
+        .t-notice {
+            padding: 8px 10px;
+            margin: 6px 0;
+            border: 1px solid var(--warn, #d08a2c);
+            border-radius: 6px;
+            color: var(--warn, #d08a2c);
+            font-size: 12px;
+            line-height: 1.45;
+            white-space: pre-line;
+        }
         .pp-questions-empty { font-size: 11px; color: var(--text-muted); font-style: italic; }
         .pp-footer {
             display: flex;
@@ -2858,6 +2870,51 @@
             margin-top: 4px;
         }
 
+        /* Memo 081 / WI-113: the six chapter sections fold through the SAME mechanism as the tables —
+           <details>/<summary> — but under their OWN selector: a section and a table are two different
+           things and may look different. Unlike the tables (F10=A, open by default) these start CLOSED:
+           the reader first sees WHAT IS GOING ON, and only on a click WHAT IS IN IT. Both rules stand
+           side by side, so opening a section reveals an already-open table inside it. */
+        #content .chapter-section {
+            margin: 10px 0;
+            border-left: 2px solid var(--border, #30363d);
+            padding-left: 10px;
+        }
+
+        #content .chapter-section > .chapter-section-summary {
+            cursor: pointer;
+            list-style: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-muted, #8b949e);
+            padding: 3px 0;
+            user-select: none;
+        }
+
+        #content .chapter-section > .chapter-section-summary::-webkit-details-marker {
+            display: none;
+        }
+
+        #content .chapter-section > .chapter-section-summary::before {
+            content: '▸';
+            display: inline-block;
+            color: var(--accent);
+        }
+
+        #content .chapter-section[open] > .chapter-section-summary::before {
+            content: '▾';
+        }
+
+        /* Memo 081 / WI-114: a table whose heading is already visible inside the same fold frame carries
+           NO label. The toggle stays — an unlabelled summary is still the control that opens the table —
+           but it must not occupy a full text line it has no text for. */
+        #content .bare-table-summary {
+            padding: 0;
+            min-height: 14px;
+        }
+
         /* PRD-018 (WI-T013-4/5/8, F10=A): the chapter topic-pille header + cross-link line, injected
            deterministically from the STORE (topic `chapter` field), NOT from block-meta fences. */
         #content .topic-pill-header {
@@ -3391,3 +3448,21 @@
         .fn-entry-orphan { margin-left: 6px; padding: 0 4px; border-radius: 4px; background: rgba(210, 153, 34, .18); color: #d29922; font-size: 11px; white-space: nowrap; }
         .fn-backref { margin-left: 6px; color: var(--text-muted, #8b949e); text-decoration: none; }
         .fn-backref:hover { color: var(--accent-bright, #3fb950); }
+
+        /* Memo 081, WI-076 (REV-16:3048-3052): identifiers in the rendered document. Five states that
+           must never look alike, built from the existing variables only — no new colour scheme, and
+           .wiki-link is deliberately untouched: the two passes share their mechanics, not their look.
+           NO STATE IS DESIGNED TO ALARM. The unresolved mark is muted, not red: the author has made no
+           mistake, he has not yet applied a convention this very revision introduces. */
+        #content .id-ref { border-bottom: 1px dotted transparent; }
+        #content a.id-ref-local { color: var(--link, #4493f8); text-decoration: none; border-bottom: 1px dotted var(--link, #4493f8); cursor: pointer; }
+        #content a.id-ref-local:hover { color: var(--link-bright, #58a6ff); border-bottom-style: solid; }
+        #content a.id-ref-foreign { color: var(--link, #4493f8); text-decoration: none; border-bottom: 1px dashed var(--link, #4493f8); cursor: pointer; }
+        #content a.id-ref-foreign:hover { color: var(--link-bright, #58a6ff); border-bottom-style: solid; }
+        #content .id-ref-resolved { color: var(--text-2, #c9d1d9); border-bottom: 1px dotted var(--text-muted, #8b949e); cursor: help; }
+        #content .id-ref-unresolved { color: var(--text-muted, #8b949e); border-bottom: 1px dotted var(--warning, #d29922); cursor: help; }
+        #content .id-ref-ambiguous { color: var(--text-muted, #8b949e); border-bottom: 1px dashed var(--warning, #d29922); cursor: help; }
+        #content .id-ref-no-carrier { color: inherit; border-bottom: 1px dotted var(--border-subtle, rgba(110, 118, 129, 0.4)); cursor: help; }
+        /* The fourth state of the memo, made visible: "no stock loaded" and "everything resolved" must
+           not look the same, so the absence gets a line of its own instead of silence. */
+        #content .id-ref-note { margin: 0 0 12px; padding: 6px 10px; border: 1px solid var(--border, #30363d); border-radius: 6px; background: rgba(110, 118, 129, .08); color: var(--text-muted, #8b949e); font-size: 12px; }

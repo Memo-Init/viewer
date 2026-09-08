@@ -19,6 +19,9 @@ describe( 'Memo 079 reframe-freetext-click-loss', () => {
     const savedQuestionNav = globalThis.questionNav
     const savedSetAddButtonState = globalThis.setAddButtonState
     const savedUpdateSaveAnswersOnlyState = globalThis.updateSaveAnswersOnlyState
+    // PRD-31 (Memo 081, WI-118): harvestReformulationInputs joins the persistence seam at its end, so
+    // the lifted function needs that collaborator stubbed like the two above.
+    const savedPersistQuestionState = globalThis.persistQuestionState
 
 
     afterEach( () => {
@@ -26,6 +29,7 @@ describe( 'Memo 079 reframe-freetext-click-loss', () => {
         globalThis.questionNav = savedQuestionNav
         globalThis.setAddButtonState = savedSetAddButtonState
         globalThis.updateSaveAnswersOnlyState = savedUpdateSaveAnswersOnlyState
+        globalThis.persistQuestionState = savedPersistQuestionState
     } )
 
 
@@ -36,6 +40,7 @@ describe( 'Memo 079 reframe-freetext-click-loss', () => {
         globalThis.document = { querySelector: ( sel ) => ( sel.includes( 'qw-card' ) ? card : null ) }
         globalThis.setAddButtonState = () => {}
         globalThis.updateSaveAnswersOnlyState = () => {}
+        globalThis.persistQuestionState = () => {}
 
         return { input }
     }

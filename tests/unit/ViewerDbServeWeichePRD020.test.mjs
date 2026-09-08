@@ -209,8 +209,10 @@ describe( 'Viewer DB-first serve weiche (Memo 079, PRD-20)', () => {
 
             const { registry } = DocumentRegistry.create( {} )
             const { documentId } = await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-served-db', 'revisions' ) } )
-            registry.selectRevision( { documentId, fileName: 'REV-01.md' } )
-            const { absolutePath } = registry.getSelectedRevisionPath( { documentId } )
+            // Memo 081, WI-106: a selection belongs to a viewer now; this case needs one revision path
+            // and names the viewer it asks as. The served-source decision under test is untouched.
+            registry.selectRevision( { documentId, fileName: 'REV-01.md', viewerId: 'v-serve' } )
+            const { absolutePath } = registry.getSelectedRevisionPath( { documentId, viewerId: 'v-serve' } )
 
             const { raw, branch } = await servedSource( { absolutePath } )
 
@@ -226,8 +228,10 @@ describe( 'Viewer DB-first serve weiche (Memo 079, PRD-20)', () => {
 
             const { registry } = DocumentRegistry.create( {} )
             const { documentId } = await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-served-file', 'revisions' ) } )
-            registry.selectRevision( { documentId, fileName: 'REV-01.md' } )
-            const { absolutePath } = registry.getSelectedRevisionPath( { documentId } )
+            // Memo 081, WI-106: a selection belongs to a viewer now; this case needs one revision path
+            // and names the viewer it asks as. The served-source decision under test is untouched.
+            registry.selectRevision( { documentId, fileName: 'REV-01.md', viewerId: 'v-serve' } )
+            const { absolutePath } = registry.getSelectedRevisionPath( { documentId, viewerId: 'v-serve' } )
 
             const { raw, branch } = await servedSource( { absolutePath } )
 
@@ -242,8 +246,10 @@ describe( 'Viewer DB-first serve weiche (Memo 079, PRD-20)', () => {
 
             const { registry } = DocumentRegistry.create( {} )
             const { documentId } = await registry.addDocument( { projectId: 'memo-init', memoPath: join( root, '079-served-identity', 'revisions' ) } )
-            registry.selectRevision( { documentId, fileName: 'REV-01.md' } )
-            const { absolutePath } = registry.getSelectedRevisionPath( { documentId } )
+            // Memo 081, WI-106: a selection belongs to a viewer now; this case needs one revision path
+            // and names the viewer it asks as. The served-source decision under test is untouched.
+            registry.selectRevision( { documentId, fileName: 'REV-01.md', viewerId: 'v-serve' } )
+            const { absolutePath } = registry.getSelectedRevisionPath( { documentId, viewerId: 'v-serve' } )
 
             const { raw } = await servedSource( { absolutePath } )
             const { dbPath } = DoltDbAssembler.resolveDbPath( { memoDir: join( root, '079-served-identity' ) } )

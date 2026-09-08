@@ -122,7 +122,7 @@ describe( 'Question lifecycle — Memo 080, PRD-F1', () => {
     it( 'A15 — the label states the third figure when it is non-zero and stays quiet when it is zero', async () => {
         const { normalizeQuestions, questionsLabel } = await extractFunctions( [ 'normalizeQuestions', 'questionsLabel' ] )
 
-        expect( normalizeQuestions( null ) ).toEqual( { open: 0, answered: 0, deferred: 0 } )
+        expect( normalizeQuestions( null ) ).toMatchObject( { open: 0, answered: 0, deferred: 0 } )
         expect( questionsLabel( { open: 1, answered: 1, deferred: 2 } ) ).toBe( '1 beantwortet · 1 offen · 2 zurückgestellt' )
         // a memo without a retired stock reads exactly as it did before — the figure is information, not noise.
         expect( questionsLabel( { open: 3, answered: 4, deferred: 0 } ) ).toBe( '4 beantwortet · 3 offen' )

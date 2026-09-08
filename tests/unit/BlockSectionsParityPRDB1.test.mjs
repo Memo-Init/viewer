@@ -3,9 +3,10 @@ import { readFile, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
-import { readEmittedScript, extractFunctionSources } from '../helpers/extractFunction.mjs'
+import { readEmittedScript, extractFunctionSources, sliceDeclaration } from '../helpers/extractFunction.mjs'
+import { makeNode, makeRoot, makeDocument } from '../helpers/domSurrogate.mjs'
 import { BlockSections, KINDS, SUFFIX_SEPARATORS } from '../../src/BlockSections.mjs'
 import { BlockMeta } from '../../src/BlockMeta.mjs'
 import { MemoView } from '../../src/MemoView.mjs'
@@ -24,7 +25,31 @@ import { MemoView } from '../../src/MemoView.mjs'
 // this repo out alone, so they are guarded with existsSync and SKIPPED with a reason — never silently
 // passed. Everything else is repo-local and always runs.
 const HERE = dirname( fileURLToPath( import.meta.url ) )
-const CORE_REGISTER = resolve( HERE, '..', '..', '..', 'core', 'cli', 'src', 'BlockSections.mjs' )
+
+// Memo 081, PRD-39: WHICH core register this compares against was never a question while the two trees
+// were identical — and it became one the moment a rollout changed the register in a WORKTREE. HERE is
+// tests/unit of repos/viewer-wt-081, and '..','..','..','core' resolved to repos/core — the MAIN TREE,
+// on main, not the branch this test's own code is on. The comparison would have been red by
+// construction, and the reason would have looked like a broken register instead of a broken path.
+//
+// The rule is not "add repos/core-wt-081 too". It is: a test that reads ACROSS the repo boundary reads
+// the boundary that belongs to ITS OWN tree. The sibling is derived from this tree's own directory name
+// and the plain name is the fallback — and the case NAMES the file it compared, so a comparison can
+// never again be green about a stand nobody asked for.
+function coreRegisterCandidates( { viewerRoot } ) {
+    const name = basename( viewerRoot )
+    const suffix = name.startsWith( 'viewer' ) === true ? name.slice( 'viewer'.length ) : ''
+    const names = [ 'core' + suffix, 'core' ]
+        .filter( ( entry, index, all ) => all.indexOf( entry ) === index )
+
+    return names
+        .map( ( entry ) => resolve( viewerRoot, '..', entry, 'cli', 'src', 'BlockSections.mjs' ) )
+}
+
+
+const VIEWER_ROOT = resolve( HERE, '..', '..' )
+const CORE_CANDIDATES = coreRegisterCandidates( { viewerRoot: VIEWER_ROOT } )
+const CORE_REGISTER = CORE_CANDIDATES.find( ( candidate ) => existsSync( candidate ) ) ?? CORE_CANDIDATES[ CORE_CANDIDATES.length - 1 ]
 const MEMO_ROOT = resolve( HERE, '..', '..', '..', '..', '.memo', 'memos' )
 const REAL_REV18 = join( MEMO_ROOT, '080-db-vollausbau-und-laufzeit-transparenz', 'revisions', 'REV-18.md' )
 const withCore = existsSync( CORE_REGISTER ) ? it : it.skip
@@ -48,6 +73,10 @@ const EXPECTED = [
     [ 'openItems', 'Offene Punkte', 'optional', [] ],
     [ 'topics', 'Topics', 'generated', [] ],
     [ 'workItems', 'Work-Items', 'generated', [] ],
+    // Memo 081, PRD-39 / WI-116: the 19th entry. It is an ADDITION — `prdAssignment` stays in the
+    // register right below it, because 411 `### PRD-Zuordnung` headings stand in the stock and dropping
+    // the entry would make all of them unparseable. Only the CONTRACT loses the heading, not the register.
+    [ 'dependencies', 'Abhaengigkeiten', 'generated', [] ],
     [ 'prdAssignment', 'PRD-Zuordnung', 'generated', [] ],
     [ 'evidence', 'Belege', 'generated', [] ],
     [ 'factualAccount', 'Faktenlage', 'legacy', [ 'Problem-Beschreibung' ] ],
@@ -139,36 +168,18 @@ async function readFencedRevisions() {
 }
 
 
-// A minimal DOM node with the surface hideBlockBodySections walks: classList, tagName, textContent and
-// the nextElementSibling chain. Same approach as BlockViewPRD014 — there is no jsdom in this project
-// (M11), so the traversal is driven against a shim instead of being asserted on source form alone.
-function makeNode( tag, text, classes ) {
-    const node = {
-        tagName: String( tag ).toUpperCase(),
-        textContent: text === undefined ? '' : text,
-        nextElementSibling: null,
-        _classes: new Set( classes === undefined ? [] : classes )
-    }
-    node.classList = {
-        add: ( ...names ) => names.forEach( ( name ) => node._classes.add( name ) ),
-        contains: ( name ) => node._classes.has( name )
-    }
-
-    return node
-}
-
-
-function chain( nodes ) {
-    nodes.forEach( ( node, index ) => { node.nextElementSibling = index + 1 < nodes.length ? nodes[ index + 1 ] : null } )
-
-    return nodes
-}
+// Memo 081, WI-113: the local shim is gone, the shared one in tests/helpers/domSurrogate.mjs took its
+// place. The reason is the change under test: the pass no longer SETS A CLASS on nodes it finds, it
+// MOVES them into a <details>, so the surrogate needs parentNode / insertBefore / appendChild / closest
+// / querySelectorAll on top of the sibling chain. Two suites drive that pass, and a shim typed twice is
+// two shims that can drift apart. Same approach as before — there is no jsdom in this project (M11).
 
 
 describe( 'BlockSections register + the three lists derived from it — Memo 080 PRD-B1 (WI-184)', () => {
     let client = ''
     let clientIsBlockBodyHeading = null
-    let clientHideBlockBodySections = null
+    let clientFoldBlockBodySections = null
+    let clientIsNumberedChapterHeading = null
 
     beforeAll( async () => {
         client = await readEmittedScript()
@@ -183,22 +194,38 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
         expect( lists.split( '\n' ).length ).toBe( 2 )
         clientIsBlockBodyHeading = new Function( lists + '\n' + source + '\nreturn isBlockBodyHeading' )()
 
-        // The collapse pass itself, lifted with everything it walks. `contentEl` is the closure variable
-        // it reads the cards from, so it is injected as a parameter — the rest is the real browser code.
-        const pass = await extractFunctionSources( [ 'hideBlockBodySections', 'isBlockBodyHeading', 'headingLevel', 'hiddenSiblingsAfter' ] )
-        clientHideBlockBodySections = new Function( 'contentEl', lists + '\n' + pass.source + '\nreturn hideBlockBodySections()' )
+        // The fold pass itself, lifted with everything it walks. `contentEl` is the closure variable it
+        // reads the cards from and `document` is the factory it builds the <details> with, so both are
+        // injected as parameters — the rest is the real browser code, and the five module-scope literals
+        // are the REAL declarations rather than re-typed copies (sliceDeclaration), so this suite cannot
+        // stay green against a list the browser no longer has.
+        const foldLists = [ 'BLOCK_BODY_SUFFIXES', 'CHAPTER_FOLD_SECTIONS', 'CHAPTER_FIGURE_KINDS', 'EVIDENCE_ART_VALUES', 'EVIDENCE_TAGS' ]
+            .map( ( name ) => sliceDeclaration( client, name ) )
+            .join( '\n' )
+        const pass = await extractFunctionSources( [
+            'foldBlockBodySections', 'chapterFoldLabel', 'foldOneSection', 'chapterSectionFigure',
+            'countSectionUnits', 'distributionOf', 'artValueOfRow', 'headingLevel', 'hiddenSiblingsAfter',
+            'isNumberedChapterHeading'
+        ] )
+        clientFoldBlockBodySections = new Function( 'contentEl', 'document', foldLists + '\n' + pass.source + '\nreturn foldBlockBodySections()' )
+
+        // PRD-45: the second start region's predicate, lifted as the REAL declaration for the same
+        // reason everything else here is — a re-typed copy of the regex would keep this suite green
+        // exactly when the browser's predicate changes underneath it.
+        const predicate = await extractFunctionSources( [ 'isNumberedChapterHeading', 'headingLevel' ] )
+        clientIsNumberedChapterHeading = new Function( predicate.source + '\nreturn isNumberedChapterHeading' )()
     } )
 
 
     // ---- the register itself ----
     describe( 'register', () => {
-        it( 'is closed: 18 entries, counted per kind, compared entry for entry', () => {
+        it( 'is closed: 19 entries, counted per kind, compared entry for entry', () => {
             const { sections } = BlockSections.all()
 
             expect( sections.length ).toBe( EXPECTED.length )
             expect( sections.length ).toBeGreaterThan( 0 )
             expect( KINDS.map( ( kind ) => [ kind, sections.filter( ( entry ) => entry.kind === kind ).length ] ) )
-                .toEqual( [ [ 'required', 3 ], [ 'optional', 8 ], [ 'generated', 4 ], [ 'legacy', 3 ] ] )
+                .toEqual( [ [ 'required', 3 ], [ 'optional', 8 ], [ 'generated', 5 ], [ 'legacy', 3 ] ] )
             expect( sections.map( ( entry ) => [ entry.field, entry.heading, entry.kind, entry.aliases ] ) ).toEqual( EXPECTED )
         } )
 
@@ -206,7 +233,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             const labels = BlockSections.all().sections
                 .flatMap( ( entry ) => [ entry.heading ].concat( entry.aliases ) )
 
-            expect( labels.length ).toBe( 19 )
+            expect( labels.length ).toBe( 20 )
             expect( labels.filter( ( label ) => label.toLowerCase() === 'diagramm' ) ).toEqual( [] )
             expect( BlockSections.match( { text: 'Diagramm' } ).matched ).toBe( false )
         } )
@@ -228,7 +255,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             const declared = parseClientList( client, 'BLOCK_BODY_HEADINGS' )
             const { labels } = BlockSections.labels()
 
-            expect( labels.length ).toBe( 19 )
+            expect( labels.length ).toBe( 20 )
             expect( declared.length ).toBe( labels.length )
             expect( declared ).toEqual( labels )
 
@@ -279,7 +306,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             expect( clientIsBlockBodyHeading( { tagName: 'H3', textContent: 'Bewertung' } ) ).toBe( true )
         } )
 
-        it( 'the reach is unchanged: level 3 only, and only inside a .block-meta-card region', () => {
+        it( 'the reach is level 3 only, and starts from a card region OR a numbered chapter', () => {
             // Level: everything but 3 stays untouched, on both sides.
             const levels = [ 1, 2, 4, 5, 6 ]
             const leaked = levels
@@ -288,17 +315,36 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             expect( clientIsBlockBodyHeading( { tagName: 'H2', textContent: 'Faktenlage' } ) ).toBe( false )
             expect( clientIsBlockBodyHeading( { tagName: 'DIV', textContent: 'Faktenlage' } ) ).toBe( false )
 
-            // Region: the collapse still starts from the cards and from nothing else (M11 — no jsdom, so
-            // the boundary is asserted on the source form, exactly as PRD-015 already did).
-            expect( client ).toContain( 'function hideBlockBodySections(' )
-            expect( client ).toContain( "var cards = contentEl.querySelectorAll( '.block-meta-card' )" )
+            // Region, and this is where PRD-45 CHANGED the contract this case used to assert. Until
+            // now it required the literal line `var cards = contentEl.querySelectorAll( … )` and the
+            // sentence "the fold starts from the cards and from NOTHING ELSE". That statement was
+            // measured to be the reason the whole mechanism reached nothing: over all 533 revision
+            // documents of the corpus, 7 carry a card, 23 carry one of the six sections, and the
+            // intersection is EMPTY — 0 fold frames anywhere. The pass now starts from TWO regions.
+            //
+            // The two STOP conditions are the part that genuinely did not change, so they are still
+            // asserted character for character; the start is asserted as two regions instead of one.
+            expect( client ).toContain( 'function foldBlockBodySections(' )
             expect( client ).toContain( "if( node.classList && node.classList.contains( 'block-meta-card' ) ) { return }" )
             expect( client ).toContain( 'if( headingLevel( node ) === 2 ) { return }' )
+            expect( client ).toContain( "contentEl.querySelectorAll( '.block-meta-card' ).forEach" )
+            expect( client ).toContain( "contentEl.querySelectorAll( 'h2' ).forEach" )
+            expect( client ).toContain( 'if( !isNumberedChapterHeading( heading ) ) { return }' )
         } )
 
-        it( 'the collapse pass marks ONLY inside a card and ONLY at level 3 — walked, not argued', () => {
-            // Card region: card -> H3 Ist-Zustand -> P -> H3 Soll-Zustand: die Regel -> P -> H2 (stop)
-            // Outside: H3 Ist-Zustand (same text!) and an H2 Faktenlage — neither may be marked.
+        // Memo 081, WI-113: the SAME statement against the new mechanism. What this case proved before —
+        // only inside a card, only at level 3, level-aware range, prefix-aware heading — it proves now,
+        // measured on where the nodes ENDED UP instead of on a class that was set on them. It is
+        // strictly stronger in one respect: a class could be set on a node and change nothing, whereas
+        // a node inside a <details> is a node the reader can actually fold away and reopen.
+        // PRD-45: the case is unchanged in its fixture and in every expectation — but its REASON moved,
+        // and saying so is the whole value of the case. The H3 after `## Naechstes Kapitel` used to stay
+        // unfolded because it was outside the CARD region. It now stays unfolded because that H2 is not
+        // a NUMBERED chapter. The assertion is the same, the statement behind it is weaker, and the case
+        // below ('a numbered chapter is the second start region') is what carries the other half.
+        it( 'the fold pass folds only at level 3, and not under an unnumbered H2 — walked, not argued', () => {
+            // Card region: card -> H3 Ist-Zustand -> P -> H3 Soll-Zustand: die Regel -> P -> H3 prose
+            //              -> H2 (stop, UNNUMBERED) -> H3 Ist-Zustand (same text, OUTSIDE) -> H2 Faktenlage
             const insideHeadingA = makeNode( 'H3', 'Ist-Zustand' )
             const insideBodyA = makeNode( 'P', 'gemessen' )
             const insideHeadingB = makeNode( 'H3', 'Soll-Zustand: die Regel' )
@@ -308,18 +354,77 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             const outsideHeading = makeNode( 'H3', 'Ist-Zustand' )
             const outsideH2 = makeNode( 'H2', 'Faktenlage' )
             const card = makeNode( 'DIV', '', [ 'block-meta-card' ] )
-            chain( [ card, insideHeadingA, insideBodyA, insideHeadingB, insideBodyB, insideProse, stop, outsideHeading, outsideH2 ] )
+            const root = makeRoot( [ card, insideHeadingA, insideBodyA, insideHeadingB, insideBodyB, insideProse, stop, outsideHeading, outsideH2 ] )
 
-            clientHideBlockBodySections( { querySelectorAll: ( selector ) => ( selector === '.block-meta-card' ? [ card ] : [] ) } )
+            clientFoldBlockBodySections( root, makeDocument() )
 
-            const marked = [ insideHeadingA, insideBodyA, insideHeadingB, insideBodyB, insideProse, stop, outsideHeading, outsideH2 ]
-                .filter( ( node ) => node.classList.contains( 'block-body-hidden' ) )
-            expect( marked ).toEqual( [ insideHeadingA, insideBodyA, insideHeadingB, insideBodyB ] )
-            expect( marked.length ).toBe( 4 )
-            expect( outsideHeading.classList.contains( 'block-body-hidden' ) ).toBe( false )
-            expect( outsideH2.classList.contains( 'block-body-hidden' ) ).toBe( false )
-            expect( insideProse.classList.contains( 'block-body-hidden' ) ).toBe( false )
-            expect( stop.classList.contains( 'block-body-hidden' ) ).toBe( false )
+            const folded = [ insideHeadingA, insideBodyA, insideHeadingB, insideBodyB, insideProse, stop, outsideHeading, outsideH2 ]
+                .filter( ( node ) => node.closest( '.chapter-section' ) !== null )
+            expect( folded ).toEqual( [ insideHeadingA, insideBodyA, insideHeadingB, insideBodyB ] )
+            expect( folded.length ).toBe( 4 )
+
+            // The four that must NOT move, each named — a prose H3 in the card region, the H2 that ends
+            // the region, and the H3 with the SAME TEXT outside it.
+            expect( insideProse.closest( '.chapter-section' ) ).toBe( null )
+            expect( stop.closest( '.chapter-section' ) ).toBe( null )
+            expect( outsideHeading.closest( '.chapter-section' ) ).toBe( null )
+            expect( outsideH2.closest( '.chapter-section' ) ).toBe( null )
+
+            // Two frames, not one: each heading opens its own, and both are CLOSED by default.
+            const frames = root.querySelectorAll( 'details' )
+            expect( frames.length ).toBe( 2 )
+            expect( frames.every( ( frame ) => frame.classList.contains( 'chapter-section' ) ) ).toBe( true )
+            expect( frames.some( ( frame ) => frame.classList.contains( 'open' ) ) ).toBe( false )
+
+            // The suffixed heading was reached through the PREFIX rule, and its frame carries a figure
+            // line rather than an empty summary.
+            expect( insideHeadingB.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( frames[ 1 ].querySelector( 'summary' ).textContent ).toBe( '0 Aussagen' )
+        } )
+
+        // PRD-45 (Memo 081, WI-113): the second start region, and its boundary in the SAME case, because
+        // a region that folds is only half the statement — the other half is where it stops.
+        //
+        // WHY THE REGION EXISTS AT ALL, measured rather than argued: with the card as the only start,
+        // the pass produced 0 fold frames over all 533 revision documents of the corpus, REV-16 (the
+        // document the order was written for) included. With this region it produces 2997, and REV-16
+        // gets 265 — one per section heading it actually carries.
+        it( 'a numbered chapter is the second start region, and an unnumbered one is not', () => {
+            const numbered = makeNode( 'H2', '12. Ein durchgezaehltes Kapitel' )
+            const belege = makeNode( 'H3', 'Belege' )
+            const belegeBody = makeNode( 'P', 'gemessen' )
+            const suffixed = makeNode( 'H3', 'Soll-Zustand: mit Suffix' )
+            const suffixedBody = makeNode( 'P', 'daraus folgt' )
+            const prose = makeNode( 'H3', 'Architektur' )
+            const vorwort = makeNode( 'H2', 'Vorwort' )
+            const afterVorwort = makeNode( 'H3', 'Belege' )
+            const root = makeRoot( [ numbered, belege, belegeBody, suffixed, suffixedBody, prose, vorwort, afterVorwort ] )
+
+            clientFoldBlockBodySections( root, makeDocument() )
+
+            // Folded: both section headings with their bodies. NOT folded: the prose H3, the H2 itself,
+            // and the identically named H3 under the unnumbered `## Vorwort` — the case the order asked
+            // for by name, and the one the corpus measurement found 0 instances of.
+            expect( belege.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( belegeBody.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( suffixed.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( suffixedBody.closest( '.chapter-section' ) ).not.toBe( null )
+            expect( prose.closest( '.chapter-section' ) ).toBe( null )
+            expect( numbered.closest( '.chapter-section' ) ).toBe( null )
+            expect( vorwort.closest( '.chapter-section' ) ).toBe( null )
+            expect( afterVorwort.closest( '.chapter-section' ) ).toBe( null )
+
+            expect( root.querySelectorAll( 'details' ).length ).toBe( 2 )
+
+            // The predicate itself, at its boundary. `13-Klarstellung.` is a real corpus heading form
+            // and is deliberately NOT recognised; it carries no folding section today, which is why the
+            // boundary is unobservable at the corpus and is pinned here instead.
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', '12. Kapitel' ) ) ).toBe( true )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', '2.–5. Zusammengefasst' ) ) ).toBe( true )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', 'Vorwort' ) ) ).toBe( false )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', 'Offene Fragen' ) ) ).toBe( false )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H2', '13-Klarstellung. K3' ) ) ).toBe( false )
+            expect( clientIsNumberedChapterHeading( makeNode( 'H3', '12. Kapitel' ) ) ).toBe( false )
         } )
 
         it( 'the block-detail modal renders the register fields, not four hand-typed names', () => {
@@ -358,7 +463,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
             expect( blocks[ 0 ].topics ).toEqual( [ 'T012' ] )
         } )
 
-        it( 'exposes EVERY writable register field as a flat key and all 18 under sections', () => {
+        it( 'exposes EVERY writable register field as a flat key and all 19 under sections', () => {
             const doc = [ '## K', '', '```block-meta', '{ "topics": ["T001"] }', '```', '', '### Bewertung', '', 'B', '' ].join( '\n' )
             const { blocks } = BlockMeta.parse( { doc } )
             const { fields } = BlockSections.writableFields()
@@ -367,7 +472,7 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
                 .filter( ( field ) => Object.prototype.hasOwnProperty.call( blocks[ 0 ], field ) !== true )
             expect( missing ).toEqual( [] )
             expect( fields.length ).toBe( 14 )
-            expect( Object.keys( blocks[ 0 ].sections ).length ).toBe( 18 )
+            expect( Object.keys( blocks[ 0 ].sections ).length ).toBe( 19 )
             // The fence's own topics axis is NOT overwritten by the generated section of the same name.
             expect( blocks[ 0 ].topics ).toEqual( [ 'T001' ] )
             expect( blocks[ 0 ].sections.topics ).toBe( null )
@@ -401,7 +506,33 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
 
 
     // ---- the two cross-boundary cases ----
+
+    // The derivation itself, both directions — the CLASS, not the case. A worktree name must produce the
+    // worktree sibling, a plain name the plain sibling, and the plain name must stay the fallback so a
+    // checkout without the sibling worktree still resolves somewhere nameable.
+    it( 'the core sibling is derived from this tree own directory name, both directions', () => {
+        const fromWorktree = coreRegisterCandidates( { viewerRoot: '/x/repos/viewer-wt-081' } )
+        const fromPlain = coreRegisterCandidates( { viewerRoot: '/x/repos/viewer' } )
+        const fromForeign = coreRegisterCandidates( { viewerRoot: '/x/repos/something-else' } )
+
+        expect( fromWorktree ).toEqual( [
+            resolve( '/x/repos/core-wt-081/cli/src/BlockSections.mjs' ),
+            resolve( '/x/repos/core/cli/src/BlockSections.mjs' )
+        ] )
+        expect( fromPlain ).toEqual( [ resolve( '/x/repos/core/cli/src/BlockSections.mjs' ) ] )
+        expect( fromForeign ).toEqual( [ resolve( '/x/repos/core/cli/src/BlockSections.mjs' ) ] )
+
+        // GEGENPROBE: the derivation must NOT hand back the main tree for a worktree — that is exactly
+        // the defect this replaces, and a candidate list that starts with `repos/core` would reinstate it.
+        expect( fromWorktree[ 0 ] ).not.toContain( '/repos/core/' )
+        expect( CORE_CANDIDATES.length ).toBeGreaterThan( 0 )
+    } )
+
     withCore( 'the viewer register and the core register are byte-identical below the header', async () => {
+        // A parity check that does not say WHICH two files it compared cannot be told apart from one that
+        // compared nothing — or from one that compared a stand nobody asked for.
+        console.log( `[parity] viewer=${ resolve( HERE, '..', '..', 'src', 'BlockSections.mjs' ) } core=${ CORE_REGISTER } (candidates: ${ CORE_CANDIDATES.join( ', ' ) })` )
+
         const mirror = await import( CORE_REGISTER )
         const here = BlockSections.all().sections
         const there = mirror.BlockSections.all().sections

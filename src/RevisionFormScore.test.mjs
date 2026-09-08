@@ -25,8 +25,16 @@ const substanceParagraph = ( { seed } ) => `Dieser Absatz traegt echte Substanz 
 
 // A well-formed chapter: all five contract sections, a verbatim user quote, an evidence level with
 // a citation, a Belege table that declares that citation, a work-item id and a table.
+// Memo 081, PRD-39 / WI-116: the chapter contract grew from FIVE building blocks to EIGHT and lost
+// `### PRD-Zuordnung` to `### Abhaengigkeiten` (REV-16:3393-3402, :4165). This fixture is what "a healthy
+// chapter" means for K8, so it carries the eight blocks the contract now names — otherwise the calibration
+// would measure a document the contract itself calls incomplete.
 const chapter = ( { number, title, citation } ) => [
     `## ${ number }. ${ title } [Code]`,
+    '',
+    '### Kontext',
+    '',
+    `Dieses Kapitel setzt den Rahmen fuer ${ title }.`,
     '',
     '### User-Auftrag',
     '',
@@ -50,11 +58,19 @@ const chapter = ( { number, title, citation } ) => [
     '|---|---|---|---|',
     `| ${ citation } | Der Bestand ist gemessen | \`src/Probe.mjs:12\` | WI-157 |`,
     '',
-    '### PRD-Zuordnung',
+    '### Topics',
     '',
-    '| PRD | Topics | Work-Items |',
+    '- T102 — Form-Kennzahlen',
+    '',
+    '### Work-Items',
+    '',
+    '- WI-157 — die Kennzahl selbst',
+    '',
+    '### Abhaengigkeiten',
+    '',
+    '| Work-Item | haengt an | Begruendung |',
     '|---|---|---|',
-    '| PRD-Q1 | T102 | WI-157 |',
+    '| WI-157 | keine | Keine Kanten zu anderen Kapiteln. |',
     ''
 ].join( '\n' )
 
@@ -516,11 +532,14 @@ describe( 'the metrics behave as chapter 25 calibrated them', () => {
         expect( scoreOf( { doc } ).metrics.K9.value ).toBe( 0 )
     } )
 
-    test( 'K8 needs all five contract sections — four of five is not fulfilled', () => {
-        const four = healthyDoc.replace( /^### PRD-Zuordnung$/m, '### Anhang' )
+    test( 'K8 needs all eight contract sections — seven of eight is not fulfilled', () => {
+        // Memo 081, PRD-39 / WI-116: the contract counts EIGHT blocks (was five) and `### Abhaengigkeiten`
+        // replaced `### PRD-Zuordnung` in it. The list is derived from BlockSections.chapterContract(), so
+        // this case is held against the register rather than against a typed number.
+        const seven = healthyDoc.replace( /^### Abhaengigkeiten$/m, '### Anhang' )
 
         expect( scoreOf( { doc: healthyDoc } ).metrics.K8.value ).toBe( 100 )
-        expect( scoreOf( { doc: four } ).metrics.K8.value ).toBe( 50 )
+        expect( scoreOf( { doc: seven } ).metrics.K8.value ).toBe( 50 )
     } )
 
     test( 'K7 needs a verbatim quote with substance, not a quoted single term', () => {

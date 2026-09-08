@@ -102,8 +102,11 @@ describe( 'MemoValidator revision types — derivation (A6)', () => {
 
 
     it( 'without a filename a document with no signal stays "full" — the pre-change behaviour', () => {
-        // The 7 MemoView.#computeValidation call sites pass no fileName; they must keep the old
-        // schema, otherwise this change would silently reinterpret every viewer validation.
+        // Memo 081, WI-080 (PRD-36): this comment used to read "the 7 MemoView.#computeValidation call
+        // sites pass no fileName" — that stopped being true. Five of the eight sites now hand the name
+        // on, three genuinely have no file and pass an explicit null. The ASSERTION below is untouched
+        // and stays right: it measures MemoValidator's stage-2 fallback, which is exactly what those
+        // three null sites still rely on, and which this change does not alter.
         const result = MemoValidator.validate( { doc: FULL_DOC_MINIMAL } )
 
         expect( result[ 'revisionType' ] ).toBe( 'full' )
@@ -331,19 +334,30 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
     const ADDED_SINCE_PRD_V13 = [
         'WARN-011', 'WARN-020', 'WARN-021',
         'MEMO-034', 'MEMO-035', 'MEMO-036', 'MEMO-037', 'MEMO-038', 'MEMO-039',
-        'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'WARN-034', 'INFO-020'
+        'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'WARN-034', 'INFO-020',
+        // Memo 081, PRD-39 / WI-116: the chapter-contract count. WARN-010/011/020/021/030-034 were
+        // measured as occupied on 2026-09-08, so it took the next free block.
+        'WARN-040',
+        // Memo 081, WI-075 (PRD-40): the identifier family. Four codes, a NEW theme (`kennung`), and
+        // the whole 1xx block was measured free before it was taken.
+        'INFO-100', 'INFO-101', 'WARN-100', 'WARN-101',
+        // Memo 081, WI-115 (PRD-41): the user-mandate form family. Four WARNINGs, a NEW theme
+        // (`mandate-form`), and the 2xx block was measured free before it was taken — the 1xx block
+        // had gone to `kennung` on the same day.
+        'WARN-200', 'WARN-201', 'WARN-202', 'WARN-203'
     ]
 
-    it( 'getCatalog() carries exactly 34 codes — the 19 of PRD-V13 plus the fifteen later additions', () => {
+    it( 'getCatalog() carries exactly 43 codes — the 19 of PRD-V13 plus the twenty-four later additions', () => {
         const { catalog } = MemoValidator.getCatalog()
         const codes = catalog.map( ( entry ) => entry[ 'code' ] ).sort()
 
         expect( codes ).toEqual( [
-            'INFO-010', 'INFO-020', 'MEMO-001', 'MEMO-002', 'MEMO-010', 'MEMO-020a', 'MEMO-020b',
+            'INFO-010', 'INFO-020', 'INFO-100', 'INFO-101', 'MEMO-001', 'MEMO-002', 'MEMO-010', 'MEMO-020a', 'MEMO-020b',
             'MEMO-020c', 'MEMO-020d', 'MEMO-025', 'MEMO-030', 'MEMO-031', 'MEMO-032', 'MEMO-033',
             'MEMO-034', 'MEMO-035', 'MEMO-036', 'MEMO-037', 'MEMO-038', 'MEMO-039', 'MEMO-040',
             'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010', 'WARN-011', 'WARN-020',
-            'WARN-021', 'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'WARN-034'
+            'WARN-021', 'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'WARN-034', 'WARN-040',
+            'WARN-100', 'WARN-101', 'WARN-200', 'WARN-201', 'WARN-202', 'WARN-203'
         ] )
     } )
 
@@ -363,13 +377,20 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
             [ 'MEMO-033', 'ERROR' ], [ 'MEMO-040', 'ERROR' ], [ 'MEMO-050', 'ERROR' ], [ 'MEMO-060', 'ERROR' ],
             [ 'MEMO-070', 'ERROR' ], [ 'MEMO-080', 'ERROR' ], [ 'WARN-010', 'WARNING' ]
         ] )
-        // The fifteen additions, in catalogue order: three WARNINGs (PRD-R1/R4), then the six
-        // option-quality ERRORs, five WARNINGs and one INFO of PRD-F4.
+        // The twenty additions, in catalogue order: three WARNINGs (PRD-R1/R4), the FOURTH WARNING of
+        // Memo 081 / PRD-39 (WARN-040, the chapter-contract count, which stands next to the other two
+        // document-level codes), then the six option-quality ERRORs, five WARNINGs and one INFO of PRD-F4,
+        // then the identifier family of Memo 081 / PRD-40: two INFOs then two WARNINGs,
+        // and finally the user-mandate form family of Memo 081 / PRD-41: four WARNINGs. All four are
+        // WARNINGs by measurement, not by taste — 15 of 41 chapters in REV-16 and 25 of 25 in memo 080
+        // REV-18 would fail an ERROR on the day the rule is introduced.
         expect( catalog.filter( ( entry ) => ADDED_SINCE_PRD_V13.includes( entry[ 'code' ] ) ).map( ( entry ) => entry[ 'severity' ] ) )
             .toEqual( [
-                'WARNING', 'WARNING', 'WARNING',
+                'WARNING', 'WARNING', 'WARNING', 'WARNING',
                 'ERROR', 'ERROR', 'ERROR', 'ERROR', 'ERROR', 'ERROR',
-                'WARNING', 'WARNING', 'WARNING', 'WARNING', 'WARNING', 'INFO'
+                'WARNING', 'WARNING', 'WARNING', 'WARNING', 'WARNING', 'INFO',
+                'INFO', 'INFO', 'WARNING', 'WARNING',
+                'WARNING', 'WARNING', 'WARNING', 'WARNING'
             ] )
     } )
 } )

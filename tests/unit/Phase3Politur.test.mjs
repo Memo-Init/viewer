@@ -48,7 +48,14 @@ describe( 'Memo 022 Phase 3 — Feinschliff', () => {
 
         it( 'defines revisionPassesConfigFilter and applies it before rendering the revisions', () => {
             expect( emittedScript.includes( 'function revisionPassesConfigFilter' ) ).toBe( true )
-            expect( emittedScript.includes( '.filter( revisionPassesConfigFilter ).forEach( function( rev )' ) ).toBe( true )
+            // Memo 081, WI-070: the predicate is unchanged and still decides what the tree shows — it is
+            // applied inside partitionRevisionsByConfigFilter now, which additionally returns what it
+            // took away so the sidebar can print the number instead of shrinking silently. The old
+            // pinned string was a CALL FORM, not a behaviour; the behaviour is asserted here and, in
+            // both directions, in RevisionTreeAndPreselectionPRD35.test.mjs (T-E).
+            expect( emittedScript.includes( 'function partitionRevisionsByConfigFilter' ) ).toBe( true )
+            expect( emittedScript.includes( 'var kept = list.filter( revisionPassesConfigFilter )' ) ).toBe( true )
+            expect( emittedScript.includes( 'partitionRevisionsByConfigFilter( doc.revisions )' ) ).toBe( true )
         } )
 
         it( 'filter logic: ON -> only full passes; OFF -> all pass; missing type -> full (Fallback)', () => {

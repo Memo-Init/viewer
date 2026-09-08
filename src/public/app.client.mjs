@@ -332,7 +332,21 @@
         let currentWs = null
         const history = []
         let currentDiff = null
-        let showDiff = true
+        // Memo 081, WI-105: showDiff used to start at true and be RESET on every incoming content
+        // message (showDiff = hasDiff), so the reader's decision survived exactly until the next click
+        // and the view was open by default on every single one. That is why "the diff is sent even
+        // though nobody looks at it" was not the everyday case — and why a requestDiff message alone
+        // would have saved nothing: the client would have asked back immediately. The preference is the
+        // reader's now and persists across revisions; diffAvailable only decides whether the toggle is
+        // OFFERED, never whether it is ON.
+        let showDiff = false
+        // The announcement of the current revision (server: diffAvailable/diffInfo) and the pair the
+        // diff on screen belongs to. currentDiffKey is what makes a LATE answer discardable: a reply
+        // naming a revision the reader has already left is dropped instead of painted.
+        let diffAvailable = false
+        let diffInfo = null
+        let currentDiffKey = null
+        let requestedDiffKey = null
         let lastContent = ''
         let lastQuestionSchema = []
         let lastVorwort = ''
@@ -383,6 +397,18 @@
         const RECONNECT_MAX_MS = 30000
         const collapsedProjects = new Set()
         const collapsedMemos = new Set()
+        // Memo 081 (WI-070): which memos have their HIDDEN revisions revealed. Default empty — the
+        // configured view stays what it was (showOnlyFullRevisions, § S3); what changes is that the
+        // hidden ones are reachable at all. Kept beside the two collapse sets on purpose: it is the same
+        // kind of per-session view state, and computeSidebarSignature has to see it or the next
+        // documentList broadcast silently folds the row back up.
+        const revealedMemos = new Set()
+        // Memo 081, WI-106/WI-107: which projects this connection has asked for depth for, and which
+        // request is still in flight. Both drive the markup (a project waiting for its revision lists
+        // shows a named loading row), so both are part of computeSidebarSignature — a signature blind
+        // to them would skip exactly the redraw the answer to our own question triggers.
+        const scopedProjects = new Set()
+        const pendingScopeProjects = new Set()
         // PRD-016 (Memo 016 Kap 6.1): namespaces default to COLLAPSED. We track which
         // namespaces have already been seeded into collapsedProjects so a later re-render
         // never re-collapses a group the user has manually expanded.
@@ -469,12 +495,69 @@
         // correct viewer surface, so renderSessionHead/refreshSessionHead and renderCockpit/refreshCockpit
         // (with /api/session and /api/cockpit) no longer exist here.
 
+        // Memo 081, WI-066: the ONE address builder of this client. Every link in the sidebar and every
+        // pushState goes through it, so there is a single spelling of a document address. The label is
+        // the revision file name without .md — the same value renderRevEntry already shows as revLabel.
+        function docPathFor( documentId, fileName ) {
+            var base = '/doc/' + encodeURIComponent( String( documentId == null ? '' : documentId ) )
+            if( !fileName ) { return base }
+            return base + '/' + encodeURIComponent( String( fileName ).replace( /\.md$/, '' ) )
+        }
+
+        // Memo 081, WI-066: the ONE address reader, mirroring the server's parseDeepLinkPath. Used by
+        // popstate and by the initial route — not three ad-hoc split() calls that could drift apart.
+        // Returns null for anything that is not a document address; a caller decides what that means.
+        function parseDocPath( pathname ) {
+            var path = String( pathname == null ? '' : pathname ).split( '?' )[ 0 ]
+            if( path !== '/doc' && path.indexOf( '/doc/' ) !== 0 ) { return null }
+            var segments = path.split( '/' ).slice( 2 )
+            if( segments.length === 0 || segments.length > 2 ) { return null }
+            var decoded = []
+            var broken = false
+            segments.forEach( function( segment ) {
+                if( !segment ) { broken = true; return }
+                var value = null
+                try { value = decodeURIComponent( segment ) } catch ( err ) { broken = true; return }
+                if( !value || value === '.' || value === '..' || /[/\\]/.test( value ) ) { broken = true; return }
+                decoded.push( value )
+            } )
+            if( broken || decoded.length !== segments.length ) { return null }
+            return { documentId: decoded[ 0 ], fileName: decoded.length === 2 ? decoded[ 1 ] + '.md' : null }
+        }
+
+        // Memo 081, WI-066: the document address currently shown, so the memos tab keeps pointing at the
+        // open document instead of erasing the deep link when the user clicks the tab they are on.
+        var currentDocPath = null
+
+        // Memo 081, WI-066: "echter Link" means the browser's own gestures still work. Only the plain
+        // left click is intercepted; middle click and Cmd/Ctrl/Shift/Alt keep their default (new tab,
+        // new window, save target). Half the meaning of a link lives in these gestures.
+        function isPlainLeftClick( ev ) {
+            if( !ev ) { return true }
+            if( ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey ) { return false }
+            if( typeof ev.button === 'number' && ev.button !== 0 ) { return false }
+            return true
+        }
+
         window.selectRevision = function( documentId, fileName ) {
             // PRD-009 (Memo 016 Kap 7, F4): explicitly picking a memo/revision returns home to
             // prose — the incoming content broadcast must NOT be gated off by a stale open panel.
             currentContentView = 'prose'
             if( currentWs && currentWs.readyState === 1 ) {
                 currentWs.send( JSON.stringify( { 'type': 'selectRevision', 'documentId': documentId, 'fileName': fileName } ) )
+            }
+            // Memo 081, WI-066: the address follows the selection. Same condition setMode already
+            // carries — push ONLY when the path actually differs, so picking the same revision twice
+            // leaves ONE history entry, not two. That single condition also settles the way back: when
+            // popstate calls this, the browser has ALREADY moved the address bar to the restored path,
+            // the paths are equal, and nothing is pushed. So there is no second parameter and no second
+            // selection route — the guard that prevents double entries is the same guard that prevents
+            // the stack from growing on Back.
+            // The signature is deliberately NOT widened: ViewStatePanelsPRD009 pins the first 300
+            // characters of this function from the outside and had 6 characters of slack left.
+            currentDocPath = docPathFor( documentId, fileName )
+            if( window.location.pathname !== currentDocPath ) {
+                window.history.pushState( { mode: 'memos', documentId: documentId, fileName: fileName }, '', currentDocPath )
             }
         }
 
@@ -504,9 +587,59 @@
         // used to leave "offen" and appear nowhere — a silent difference between the parsed stock and the
         // shown one. It now changes column instead of vanishing, and the label states it whenever it is
         // non-zero (a constant "· 0 zurueckgestellt" on every memo would be noise, not information).
+        // Memo 081 (WI-064/WI-069): the fallback below used to manufacture a zero that was
+        // indistinguishable from a measured one, and four display sites rendered it as "0". It now carries
+        // the server's declaration through — `basis` and `comparison` (source, countedIn, counted, note).
+        // A payload without a declaration is treated as UNDECLARED, not as good: an old server, a document
+        // that was never counted and a memo with zero questions are three different statements, and the
+        // display can finally tell them apart.
         function normalizeQuestions( questions ) {
             var q = questions || { open: 0, answered: 0, deferred: 0 }
-            return { open: q.open || 0, answered: q.answered || 0, deferred: q.deferred || 0 }
+            var declared = q.comparison && typeof q.basis === 'boolean'
+            var comparison = declared
+                ? { source: q.comparison.source, countedIn: q.comparison.countedIn, counted: q.comparison.counted, note: q.comparison.note }
+                : { source: 'none', countedIn: null, counted: 0, note: 'Ohne Deklaration geliefert — die Zahl nennt ihre Menge nicht' }
+            return {
+                open: q.open || 0,
+                answered: q.answered || 0,
+                deferred: q.deferred || 0,
+                basis: declared ? q.basis : false,
+                comparison: comparison
+            }
+        }
+
+        // Memo 081 (WI-064, Ä7): the ONE filter that decides which questions are open. renderQuestionWidgets
+        // owned this expression alone, so the Zone-2 header and the popup label counted a different stock
+        // than the cards they sit above. `status` (not `!answered`) is the axis PRD-F1 (Memo 080) settled on
+        // — a retired question changes column, it is not answered. Two copies of one condition are exactly
+        // where the next divergence starts, so both call sites read this one.
+        function openQuestionsOf( schema ) {
+            return ( schema || [] ).filter( function( q ) { return q && q.status === 'open' } )
+        }
+
+        // The counted stock of a rendered revision: open + answered elements of its question schema. This is
+        // the ORACLE the Zone-2 header and the popup label answer to — "how many cards does the revision I am
+        // looking at render?" — as opposed to the registry's per-memo figure. Both are legitimate; they answer
+        // different questions, and Memo 081 asks that the difference be visible rather than smoothed over.
+        // Memo 081 (WI-064/WI-069, Ä6): the set behind a per-memo figure, in plain words, for the title
+        // attribute of every element that shows that figure. This is the cheapest form of the rule the memo
+        // binds the rollout to — a number states what it was held against — and it is the difference between
+        // "no open questions" and "nobody looked". `source` and `countedIn` stay machine values underneath;
+        // only this sentence is German, because it is what the reader sees.
+        function questionCountTitle( qMeta ) {
+            if( !qMeta.basis ) {
+                return 'Nicht gezählt' + ( qMeta.comparison.note ? ( ' — ' + qMeta.comparison.note ) : '' )
+            }
+            var where = qMeta.comparison.countedIn || 'unbenannter Quelle'
+            var kind = qMeta.comparison.source === 'db' ? 'Datenbank' : 'Datei'
+            return 'Gezählt in ' + where + ' (' + kind + ') — ' + qMeta.comparison.counted + ' Fragen, davon ' + qMeta.open + ' offen'
+        }
+
+        function countQuestionsOf( schema ) {
+            var list = schema || []
+            var open = openQuestionsOf( list ).length
+            var answered = list.filter( function( q ) { return q && q.status === 'answered' } ).length
+            return { open: open, answered: answered, total: open + answered, elements: list.length }
         }
 
         function questionsLabel( questions ) {
@@ -530,16 +663,29 @@
 
         // PRD-013: look up { projectId, doc } for a memoName from the memos tree. Needed for
         // the sticky-header button to read doc.revisions (Soll-Nummern-Logik) + projectId.
-        function lookupMemoEntry( memoName ) {
+        function findMemoEntry( matches ) {
             var found = null
             Object.keys( lastTree || {} ).forEach( function( projectId ) {
                 var node = lastTree[ projectId ]
                 var memos = ( node && node.memos ) ? node.memos : ( Array.isArray( node ) ? node : [] )
                 memos.forEach( function( m ) {
-                    if( !found && m.memoName === memoName ) { found = { projectId: projectId, doc: m } }
+                    if( !found && matches( m ) ) { found = { projectId: projectId, doc: m } }
                 } )
             } )
             return found
+        }
+
+        function lookupMemoEntry( memoName ) {
+            return findMemoEntry( function( m ) { return m.memoName === memoName } )
+        }
+
+        // Memo 081 (WI-064): the same lookup keyed on documentId. renderQuestionWidgets needs the memo's
+        // registry figure, and it runs BEFORE `currentMemoName` is adopted in the content handler —
+        // `currentDocumentId` is adopted before the render pipeline, for exactly this reason. Looking the
+        // memo up by name there would have compared this revision's cards against the PREVIOUSLY viewed
+        // memo's count, which is the defect this PRD exists to remove, one level deeper.
+        function lookupMemoEntryById( documentId ) {
+            return findMemoEntry( function( m ) { return m.documentId === documentId } )
         }
 
         // PRD-013 (Memo 016 Kap 3) Soll-Nummern-Logik: next = (highest existing REV)+1,
@@ -1054,8 +1200,11 @@
                 answered: answered,
                 total: total,
                 open: open,
-                answeredLabel: answered + ' von ' + total + ' beantwortet',
-                openLabel: open + ' offen'
+                // Memo 081 (WI-064): mirrors MemoView.promptStatusLine 1:1 — an explicit basis:false
+                // renders "nicht gezählt" where the old model rendered "0 von 0 beantwortet".
+                counted: opts.basis !== false,
+                answeredLabel: opts.basis === false ? 'nicht gezählt' : answered + ' von ' + total + ' beantwortet',
+                openLabel: opts.basis === false ? 'nicht gezählt' : open + ' offen'
             }
         }
 
@@ -1250,11 +1399,17 @@
             // Transcript ist immer Teil des Prompts. Einziger Eintrittspunkt: "Prompt bearbeiten".
             var memoEntry = memoName ? lookupMemoEntry( memoName ) : null
 
-            // Fragen-Counts: gleiche Quelle wie die Sidebar (doc.questions {open, answered}),
-            // damit Zone 2 und Sidebar nie auseinanderlaufen.
+            // Fragen-Counts. Memo 081 (WI-064, S2): Zone 2 sits above a rendered revision, so it counts THAT
+            // revision's question schema — the very array renderQuestionWidgets filters. The old code read the
+            // per-memo registry figure instead, which is why the header could say "0 von 0" while fifteen
+            // cards stood below it: two sets, one number, and no way to see which one was meant. The registry
+            // figure is still read (qMeta) — not to display, but to hold the two against each other.
             var qMeta = normalizeQuestions( memoEntry ? memoEntry.doc.questions : null )
-            var psAnswered = qMeta.answered
-            var psTotal = qMeta.answered + qMeta.open
+            // No revision on screen means no set was counted — not a memo with zero questions.
+            var psView = viewedRevision ? countQuestionsOf( lastQuestionSchema ) : null
+            var psBasis = psView !== null
+            var psAnswered = psBasis ? psView.answered : 0
+            var psTotal = psBasis ? psView.total : 0
 
             // Minuten-Leitkennzahl (Kap 9.4): gemessene Sprech-Dauer aus dem Transcript-Record
             // (viewedTranscript.spokenMinutes), sonst Fallback auf die wordCount-Schaetzung.
@@ -1276,8 +1431,18 @@
                 spokenMinutes: psSpoken,
                 questionsAnswered: psAnswered,
                 questionsTotal: psTotal,
-                transcriptUrl: transcriptUrl
+                transcriptUrl: transcriptUrl,
+                basis: psBasis
             } )
+            // Memo 081 (WI-064): the set behind the number, spelled out on the element that shows it. The
+            // title is the smallest place where a figure can name what it counted, and it costs no layout.
+            // Both sets, on the element that shows one of them. The header answers "what does the revision
+            // in front of me render?", the memo overview answers "what does this memo carry?" — they may
+            // legitimately differ, and the title is where the reader can see both without a banner.
+            var psTitle = psBasis
+                ? ( 'Gezählt in ' + ( viewedRevision || 'der angezeigten Revision' ) + ' — ' + psView.elements + ' Fragen im Schema, davon ' + psView.open + ' offen'
+                    + ' · Memo-Übersicht: ' + questionCountTitle( qMeta ) )
+                : 'Nicht gezählt — es ist keine Revision geöffnet · Memo-Übersicht: ' + questionCountTitle( qMeta )
 
             var statusRow = '<div class="hdr-zone hdr-zone-2" data-zone="2"><div class="prompt-statuszeile" id="prompt-statuszeile">'
 
@@ -1325,8 +1490,10 @@
             statusRow += '<span class="ps-ico" aria-hidden="true">\u2611</span>'
             statusRow += '<span class="ps-label">Fragen</span>'
             statusRow += '<span class="ps-sep">\u00b7</span>'
-            statusRow += '<span class="ps-answered" data-zone2-answered>' + escapeAttr( ps.answeredLabel ) + '</span>'
-            statusRow += '<span class="ps-qmark" data-zone2-qmark>'
+            statusRow += '<span class="ps-answered" data-zone2-answered data-zone2-basis="' + ( psBasis ? '1' : '0' ) + '"'
+                + ' data-zone2-counted="' + ( psBasis ? psView.elements : 0 ) + '"'
+                + ' title="' + escapeAttr( psTitle ) + '">' + escapeAttr( ps.answeredLabel ) + '</span>'
+            statusRow += '<span class="ps-qmark" data-zone2-qmark title="' + escapeAttr( psTitle ) + '">'
                 + '<span class="ps-qmark-sign" aria-hidden="true">?</span>'
                 + '<span>' + escapeAttr( ps.openLabel ) + '</span>'
                 + '</span>'
@@ -1561,6 +1728,21 @@
             }
         }
 
+        // Memo 081, WI-106/WI-107: ONE requester for ONE message, used by both the memos tree and the
+        // transcripts tree. The server answers this socket with the new depth of BOTH catalogues; the
+        // client never asks twice for the same project (scopedProjects) and never asks while an answer
+        // is outstanding (pendingScopeProjects).
+        function requestProjectScope( projectIds ) {
+            var wanted = ( projectIds || [] ).filter( function( id ) {
+                return typeof id === 'string' && id.length > 0 && !scopedProjects.has( id ) && !pendingScopeProjects.has( id )
+            } )
+            if( wanted.length === 0 ) { return false }
+            if( !currentWs || currentWs.readyState !== 1 ) { return false }
+            wanted.forEach( function( id ) { pendingScopeProjects.add( id ) } )
+            currentWs.send( JSON.stringify( { 'type': 'requestProjectScope', 'projectIds': wanted } ) )
+            return true
+        }
+
         function renderSidebarMemos() {
             var navEl = document.getElementById( 'doc-sidebar-body' )
             if( !navEl ) { return }
@@ -1614,7 +1796,43 @@
                 return revType === 'full'
             }
 
+            // Memo 081, WI-070: THE FILTER REPORTS WHAT IT TOOK AWAY. The predicate above is unchanged —
+            // what changes is that its loss becomes a number. Measured before this change: 13 of 27
+            // registered revisions of memo 081 vanished from the tree without a single digit, and over
+            // the whole corpus 184 of 524 (35.1 %). A filter that does not say how much it removed is
+            // the display twin of a vacuum-green gate, and the same sidebar showed an update revision
+            // under "Letzte Revisionen" while hiding it here — two truths about one stock, neither
+            // declaring itself a selection. Returns the partition, so the caller renders the rest
+            // instead of quietly shrinking the list.
+            function partitionRevisionsByConfigFilter( revisions ) {
+                var list = Array.isArray( revisions ) ? revisions : []
+                var kept = list.filter( revisionPassesConfigFilter )
+                var hidden = list.filter( function( rev ) { return revisionPassesConfigFilter( rev ) !== true } )
+                var byType = hidden.reduce( function( acc, rev ) {
+                    var type = ( rev && rev.revisionType ) ? rev.revisionType : 'full'
+                    acc[ type ] = ( acc[ type ] || 0 ) + 1
+                    return acc
+                }, {} )
+
+                return { kept: kept, hidden: hidden, byType: byType, considered: list.length }
+            }
+
+            // The German display text for the hidden row. Field and class names stay English, the label
+            // speaks the language of the rest of the sidebar ("Warteschlange", "Basis-Snapshot") — a
+            // German label over an English field is two artefacts, not mixed language in one.
+            function hiddenRevisionsLabel( partition ) {
+                var order = [ 'prepare', 'update', 'full' ]
+                var parts = order
+                    .filter( function( type ) { return ( partition.byType[ type ] || 0 ) > 0 } )
+                    .map( function( type ) { return partition.byType[ type ] + ' ' + type } )
+
+                return partition.hidden.length + ' ausgeblendet (' + parts.join( ', ' ) + ')'
+            }
+
             function renderRevEntry( doc, rev ) {
+                // Memo 081, WI-106: `doc.selectedRevision` is no longer a fact of the document but of THIS
+                // connection — the server lays this viewer's own selection over the shared tree. The
+                // comparison is unchanged; what changed is that two readers now get two answers.
                 var isSelected = rev.fileName === doc.selectedRevision
                 var cls = 'rev-mini'
                 if( isSelected ) { cls += ' rev-mini-active' }
@@ -1651,13 +1869,36 @@
                 // 6. Fragen-Chip rechts (offene Revisionen). Prepare zeigt stattdessen die Note.
                 if( rev.revisionType === 'prepare' ) {
                     inner += '<span class="rev-mini-note">Basis-Snapshot</span>'
+                } else if( rev.revisionType === 'update' ) {
+                    // Memo 081, WI-070: an update row can now actually appear in the tree (revealed via
+                    // the hidden-count row), so it says what it is. Without this a revealed update row
+                    // would be indistinguishable from a full revision — the type would live only in the
+                    // data-state attribute, which is a hook, not a display.
+                    inner += '<span class="rev-mini-note">Update</span>'
                 } else {
-                    var revOpen = isSelected ? ( ( doc.questions || {} ).open || 0 ) : 0
-                    inner += '<span class="rev-mini-chip" data-rev-chip><span class="rev-mini-chip-q">?</span>' + revOpen + '</span>'
+                    // Memo 081 (WI-064, A6 Gegenprobe): a SIXTH reader of doc.questions, which the PRD's
+                    // inventory of display sites did not list. It rendered a hard "0" for every revision
+                    // that is not the selected one — a zero that never counted anything, on every row of
+                    // the tree. Same rule as its five siblings: only a counted figure is shown as a number.
+                    var revMeta = normalizeQuestions( doc.questions )
+                    var revCounted = isSelected && revMeta.basis === true
+                    var revChipTitle = isSelected
+                        ? questionCountTitle( revMeta )
+                        : 'Nicht gezählt — gezählt wird die ausgewählte Revision'
+                    inner += '<span class="rev-mini-chip" data-rev-chip data-basis="' + ( revCounted ? '1' : '0' ) + '"'
+                        + ' title="' + escapeAttr( revChipTitle ) + '"><span class="rev-mini-chip-q">?</span>'
+                        + ( revCounted ? revMeta.open : '' ) + '</span>'
                 }
 
+                // Memo 081, WI-066: the row becomes a real link. The <li> keeps its data-doc/data-rev
+                // attributes — the existing binding and the existing tests hang off them — and only the
+                // SHELL around the unchanged inner content changes. display:contents leaves the flex row
+                // exactly as it was, so app.css is not touched; inline style attributes are this
+                // client's established form and are covered by style-src 'self' 'unsafe-inline'.
                 var entryHtml = '<li class="' + cls + '" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" data-state="' + escapeAttr( rev.revisionType || 'full' ) + '">'
+                entryHtml += '<a class="rev-mini-link" href="' + escapeAttr( docPathFor( doc.documentId, rev.fileName ) ) + '" style="display:contents">'
                 entryHtml += inner
+                entryHtml += '</a>'
                 entryHtml += '</li>'
                 return entryHtml
             }
@@ -1684,8 +1925,12 @@
                 var doc = pair.doc
                 var rev = pair.rev
                 var revLabel = String( rev.fileName || '' ).replace( /\.md$/, '' )
-                var openCount = ( doc.questions || {} ).open
-                var openNum = ( typeof openCount === 'number' && openCount > 0 ) ? openCount : 0
+                // Memo 081 (WI-069, Ä6): the queue card is a PER-MEMO figure — it has no viewed revision to
+                // count — so it keeps the registry source and names it instead. "? 0" was the reported
+                // symptom here; with basis:false the card now shows a bare "?" and its title says why.
+                var qCard = normalizeQuestions( doc.questions )
+                var openNum = qCard.open
+                var cardTitle = questionCountTitle( qCard )
                 // BUGFIX (fix/transcript-abschliessen-queue): the queue now holds 'offen' AND
                 // 'transcript-eingetragen' revisions (only 'eingeloggt' drops out). Map the raw enum
                 // to a readable status word so the card line reads "REV-NN · offen" or
@@ -1707,7 +1952,9 @@
                 var rolloutSubLabel = rolloutSubLabelFor( doc.lifecycleState )
                 var queueLifecycleDisplay = rolloutSubLabel || queueLifecycle
 
+                // Memo 081, WI-066: same shell, same reasoning as the revision row above.
                 var html = '<li class="queue-card" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '">'
+                html += '<a class="queue-card-link" href="' + escapeAttr( docPathFor( doc.documentId, rev.fileName ) ) + '" style="display:contents">'
                 html += '<span class="queue-card-bar" aria-hidden="true"></span>'
                 html += '<span class="queue-card-info" data-queue-info>'
                 // Zeile 1: Memo-Titel + Minuten-Chip + Fragen-Chip.
@@ -1715,7 +1962,9 @@
                 html += '<span class="queue-card-title" data-queue-title>' + escapeAttr( doc.memoName || '' ) + '</span>'
                 html += '<span class="queue-card-spacer"></span>'
                 html += '<span class="queue-card-minutes" data-queue-minutes="' + queueMemoMinutes + '" title="Gesamte gesprochene Transcript-Dauer">\uD83C\uDF99 ' + queueMemoMinutes + ' Min</span>'
-                html += '<span class="queue-card-chip" data-queue-chip><span class="queue-card-chip-q">?</span>' + openNum + '</span>'
+                html += '<span class="queue-card-chip" data-queue-chip data-basis="' + ( qCard.basis ? '1' : '0' ) + '"'
+                    + ' title="' + escapeAttr( cardTitle ) + '"><span class="queue-card-chip-q">?</span>'
+                    + ( qCard.basis ? openNum : '' ) + '</span>'
                 html += '</span>'
                 // Zeile 2: REV-NN · offen + Lifecycle-Status des Memos (PRD-004-Modell). Memo 079 M4: the
                 // label shows the distinct rollout sub-label when present; data-queue-lifecycle keeps the
@@ -1730,7 +1979,7 @@
                 if( !sameNsAsPrev ) { html += '<span class="queue-card-ns" data-queue-ns>' + escapeAttr( doc.projectId || '' ) + '</span>' }
                 if( rev.mtime ) { html += '<span class="queue-card-date" data-queue-date>\u00b7 ' + escapeAttr( rev.mtime ) + '</span>' }
                 html += '</span>'
-                html += '</span></li>'
+                html += '</span></a></li>'
                 return html
             }
 
@@ -1754,7 +2003,12 @@
                 var memoHeadFinalized = memoFinalizedFrom( doc.memoStatus )
                 var memoHeadRevStatus = memoHeadFinalized ? 'eingeloggt' : 'offen'
                 memoHtml += '<span class="mh-icon">' + statusIconFor( memoHeadRevStatus, memoHeadFinalized ) + '</span>'
-                memoHtml += '<span class="mh-name">' + escapeAttr( doc.memoName ) + '</span>'
+                // Memo 081, WI-066: the memo name becomes a TARGET while the row stays a SWITCH. Beleg
+                // 29.2 named "the memo name in the tree is only a toggle, not a target" as one of three
+                // reasons a fresh browser context cannot reach a document; this is that reason closed.
+                // The short form /doc/{documentId} is what makes it possible — a memo head has no single
+                // revision to point at.
+                memoHtml += '<span class="mh-name"><a href="' + escapeAttr( docPathFor( doc.documentId, null ) ) + '" style="display:contents">' + escapeAttr( doc.memoName ) + '</a></span>'
                 // Fix (#81): the full-width break keeps the memo name on line 1 to itself so the
                 // status cluster wraps to line 2 — a long name stays fully readable.
                 // PRD-005 (Memo 024 Kap 4, F4=A): the break is now UNCONDITIONAL — every memo
@@ -1784,20 +2038,80 @@
                 // PRD-019 (Memo 016 Kap 7.3): emoji reduction. The ❓ emoji is replaced by a
                 // quiet textual count badge ("N ?") — same information (open questions exist +
                 // how many), no colourful emoji. Hidden when there are no open questions.
-                var openCount = ( doc.questions || {} ).open || 0
+                // Memo 081 (WI-069, Ä6): same per-memo figure as the queue card, same declaration. Three
+                // states instead of two: a COUNTED zero stays hidden (`:empty`, unchanged), a counted number
+                // renders as before, and an UNCOUNTED memo shows a bare "?" — the old silent-zero form hid
+                // exactly the case that needed to be seen.
+                var qRow = normalizeQuestions( doc.questions )
+                var openCount = qRow.open
+                var rowTitle = qRow.basis ? ( 'Offene Fragen anzeigen — ' + questionCountTitle( qRow ) ) : questionCountTitle( qRow )
                 // PRD-006 (Kap 6.4 / AC-10): "?" und Zahl in eigene Spans, damit der Chip-gap
                 // den Box-Abstand zum Fragezeichen vergroessert. Leer bei 0 -> :empty blendet aus.
-                var qlContent = openCount > 0 ? ( '<span class="ql-q">\u003f</span><span class="ql-n">' + openCount + '</span>' ) : ''
-                memoHtml += '<span class="questions-link" data-document-id="' + escapeAttr( doc.documentId ) + '" data-selected-rev="' + escapeAttr( doc.selectedRevision || '' ) + '" data-open="' + openCount + '" title="Offene Fragen anzeigen">' + qlContent + '</span>'
+                var qlContent = ''
+                if( qRow.basis !== true ) {
+                    qlContent = '<span class="ql-q">\u003f</span>'
+                } else if( openCount > 0 ) {
+                    qlContent = '<span class="ql-q">\u003f</span><span class="ql-n">' + openCount + '</span>'
+                }
+                memoHtml += '<span class="questions-link" data-document-id="' + escapeAttr( doc.documentId ) + '" data-selected-rev="' + escapeAttr( doc.selectedRevision || '' ) + '" data-open="' + openCount + '" data-basis="' + ( qRow.basis ? '1' : '0' ) + '" title="' + escapeAttr( rowTitle ) + '">' + qlContent + '</span>'
                 memoHtml += '</div>'
                 memoHtml += '<ul data-memo-list="' + escapeAttr( doc.documentId ) + '" style="list-style:none;padding:0;margin:2px 0 0;display:' + revDisplay + '">'
                 // PRD-004 (Memo 022 Kap 8): when showOnlyFullRevisions is ON (Default), Prepare-
                 // and Update-Revisionen werden in der Sidebar AUSGEBLENDET (rein visuell — Registry
                 // und Tree-Payload bleiben unveraendert). Fehlender/unbekannter Typ -> als 'full'
                 // behandelt (Fallback konsistent zum data-state in renderRevEntry).
-                ;( doc.revisions || [] ).filter( revisionPassesConfigFilter ).forEach( function( rev ) {
+                // Memo 081, WI-070: the same predicate, but the remainder is no longer dropped on the
+                // floor. `hidden` is rendered as ONE row that names the number and the types and is
+                // itself the control that opens them — the config switch showOnlyFullRevisions has no
+                // operating element anywhere (measured: 13 code sites, none of them an input, its only
+                // override a gitignored file read once at server start), so "reachable" had to be built,
+                // not configured. An empty `hidden` renders NOTHING: a "0 ausgeblendet" line under every
+                // memo would be noise, and from the outside it is indistinguishable from "nothing was
+                // filtered" anyway.
+                // Memo 081, WI-106: a memo whose project is OUT OF SCOPE carries `revisionsIncluded:
+                // false` and an empty list. Rendering that as an empty revision list would show "nothing
+                // here" for a memo with 27 revisions — a missing basis dressed up as a result, which is
+                // the display twin of the vacuum-green gate this project keeps taking apart. It gets a
+                // NAMED row instead, and the number in it comes from revisionCounts (shipped to 385 of
+                // 385 documents since PRD-35 and, until now, read by nobody here).
+                var counts = ( doc.revisionCounts && typeof doc.revisionCounts === 'object' ) ? doc.revisionCounts : null
+                var registered = ( counts && typeof counts.registered === 'number' )
+                    ? counts.registered
+                    : ( typeof doc.revisionCount === 'number' ? doc.revisionCount : null )
+                if( doc.revisionsIncluded === false ) {
+                    // The muted "rev-hidden-note" styling is reused deliberately: app.css is not touched
+                    // by this change, and a row that states a missing basis should read like the other
+                    // quiet meta row of this list, not like a revision.
+                    memoHtml += '<li class="rev-hidden-note rev-not-loaded" data-rev-not-loaded="' + escapeAttr( doc.documentId ) + '"'
+                        + ' data-rev-registered="' + ( registered === null ? '' : registered ) + '">'
+                        + escapeHtml( registered === null ? 'Revisionen noch nicht geladen' : ( registered + ' Revisionen \u00b7 noch nicht geladen' ) )
+                        + '</li>'
+                    memoHtml += '</ul></div>'
+                    return memoHtml
+                }
+                var partition = partitionRevisionsByConfigFilter( doc.revisions )
+                // Memo 081, Phasen-Abnahme C1-3 § 2.4: a deep link to a HIDDEN revision used to show its
+                // content with no row anywhere and zero active markers in the whole tree — the reader saw
+                // content without a position. Neither PRD-33 nor PRD-35 owns that state; it appears only
+                // when they are composed. It closes here because the server now knows, PER CONNECTION,
+                // what THIS reader is looking at (doc.selectedRevision is this socket's own selection) and
+                // can say so without pushing that selection onto everybody else.
+                var viewedIsHidden = partition.hidden.some( function( rev ) { return rev.fileName === doc.selectedRevision } )
+                var isRevealed = revealedMemos.has( doc.documentId ) || viewedIsHidden
+                var shown = isRevealed ? ( doc.revisions || [] ) : partition.kept
+                ;( shown ).forEach( function( rev ) {
                     memoHtml += renderRevEntry( doc, rev )
                 } )
+                if( partition.hidden.length > 0 ) {
+                    memoHtml += '<li class="rev-hidden-note' + ( isRevealed ? ' rev-hidden-note-open' : '' ) + '"'
+                        + ' data-hidden-toggle="' + escapeAttr( doc.documentId ) + '"'
+                        + ' data-hidden-count="' + partition.hidden.length + '"'
+                        + ' data-hidden-types="' + escapeAttr( JSON.stringify( partition.byType ) ) + '"'
+                        + ' data-hidden-considered="' + partition.considered + '"'
+                        + ' title="' + escapeAttr( isRevealed ? 'Ausgeblendete Revisionen wieder einklappen' : 'Ausgeblendete Revisionen anzeigen' ) + '">'
+                        + escapeHtml( ( isRevealed ? '▾ ' : '▸ ' ) + hiddenRevisionsLabel( partition ) )
+                        + '</li>'
+                }
                 memoHtml += '</ul></div>'
                 return memoHtml
             }
@@ -1878,8 +2192,11 @@
                     memos = projectNode.memos || []
                 }
 
-                if( memos.length === 0 ) { return }
-
+                // Memo 081, WI-106: a project with an empty memo list used to VANISH from the sidebar
+                // (the `return` that stood here), while its header count was taken from that same list.
+                // Both are derivations from what arrived, and with a scoped catalogue a derivation from
+                // what arrived is a statement about what was SENT wearing the label of what EXISTS. The
+                // head is rendered either way and the count comes from the tree's own figure.
                 var isCollapsed = collapsedProjects.has( projectId )
                 var bodyDisplay = isCollapsed ? 'none' : 'block'
                 var boxCls = 'ns-box' + ( isCollapsed ? ' ns-box-collapsed' : '' )
@@ -1887,7 +2204,8 @@
 
                 html += '<div class="' + boxCls + '" data-namespace="' + escapeAttr( projectId ) + '" data-active="' + ( isActive ? 'true' : 'false' ) + '">'
                 html += '<div class="ns-header" data-project="' + escapeAttr( projectId ) + '" title="Namespace ein-/ausklappen">'
-                html += nsHeaderInner( projectId, memos.length, isCollapsed )
+                var memoCount = ( projectNode && typeof projectNode.memoCount === 'number' ) ? projectNode.memoCount : memos.length
+                html += nsHeaderInner( projectId, memoCount, isCollapsed )
                 html += '</div>'
                 html += '<div class="ns-body" data-project-list="' + escapeAttr( projectId ) + '" style="display:' + bodyDisplay + '">'
                 memos.forEach( function( doc ) {
@@ -1907,9 +2225,25 @@
             // generated markup — the last thing on the page that forced 'unsafe-inline' into script-src
             // and thereby made the Sicherheits-Kopf worth less than the header it is written in. Bound
             // here instead, the policy needs no script exception at all.
+            // Memo 081, WI-066: the row now carries a real href, so the handler takes the EVENT and
+            // decides. A plain left click keeps today's in-app selection without a page load
+            // (preventDefault, then the unchanged selectRevision call); middle click and
+            // Cmd/Ctrl/Shift/Alt fall through to the browser and open a new tab. Letting those through
+            // is not a detail — it is the difference between a link and a string that looks like one.
             navEl.querySelectorAll( 'li[data-doc][data-rev]' ).forEach( function( el ) {
-                el.addEventListener( 'click', function() {
+                el.addEventListener( 'click', function( ev ) {
+                    if( !isPlainLeftClick( ev ) ) { return }
+                    if( ev && typeof ev.preventDefault === 'function' ) { ev.preventDefault() }
                     selectRevision( el.getAttribute( 'data-doc' ), el.getAttribute( 'data-rev' ) )
+                } )
+            } )
+
+            // Memo 081, WI-066: the memo name navigates, the rest of the head keeps toggling. Same
+            // stopPropagation convention the other inner interactive children of .memo-head already use
+            // — no preventDefault here, so the name really does navigate to its own address.
+            navEl.querySelectorAll( '.mh-name a[href]' ).forEach( function( el ) {
+                el.addEventListener( 'click', function( ev ) {
+                    if( ev && typeof ev.stopPropagation === 'function' ) { ev.stopPropagation() }
                 } )
             } )
 
@@ -1925,9 +2259,17 @@
                         collapsedProjects.add( projectId )
                     }
                     var nowCollapsed = collapsedProjects.has( projectId )
+                    // Memo 081, WI-106/WI-107: opening a project is the moment its depth is needed —
+                    // the revision lists are 60.1 % of the catalogue and a collapsed project never
+                    // shows them. The request is additive: an opened project stays in the scope until
+                    // the connection ends, so open/close does not re-fetch on every click.
+                    if( !nowCollapsed ) { requestProjectScope( [ projectId ] ) }
                     var bodyEl = navEl.querySelector( '.ns-body[data-project-list="' + projectId + '"]' )
                     var boxEl = navEl.querySelector( '.ns-box[data-namespace="' + projectId + '"]' )
-                    var memoCount = bodyEl ? bodyEl.querySelectorAll( '.memo-group' ).length : 0
+                    var headerNode = ( lastTree || {} )[ projectId ]
+                    var memoCount = ( headerNode && typeof headerNode.memoCount === 'number' )
+                        ? headerNode.memoCount
+                        : ( bodyEl ? bodyEl.querySelectorAll( '.memo-group' ).length : 0 )
                     if( bodyEl ) { bodyEl.style.display = nowCollapsed ? 'none' : 'block' }
                     if( boxEl ) { boxEl.classList.toggle( 'ns-box-collapsed', nowCollapsed ) }
                     el.innerHTML = nsHeaderInner( projectId, memoCount, nowCollapsed )
@@ -1954,6 +2296,25 @@
                     if( caretEl ) {
                         caretEl.innerHTML = nowCollapsed ? '&#9656;' : '&#9662;'
                     }
+                } )
+            } )
+
+            // Memo 081, WI-070: the count row IS the control. One click reveals this memo's hidden
+            // revisions, another folds them back. The state lives in revealedMemos and is part of
+            // computeSidebarSignature, so the next documentList broadcast redraws WITH it instead of
+            // quietly closing what the user opened — an unfolding that does not survive a broadcast is
+            // worthless for operating the tree, and every broadcast redraws this sidebar.
+            navEl.querySelectorAll( 'li[data-hidden-toggle]' ).forEach( function( el ) {
+                el.addEventListener( 'click', function( ev ) {
+                    if( ev && typeof ev.stopPropagation === 'function' ) { ev.stopPropagation() }
+                    var memoId = el.getAttribute( 'data-hidden-toggle' )
+                    if( revealedMemos.has( memoId ) ) {
+                        revealedMemos.delete( memoId )
+                    } else {
+                        revealedMemos.add( memoId )
+                    }
+                    lastSidebarSignature = null
+                    renderSidebar()
                 } )
             } )
 
@@ -1984,6 +2345,16 @@
             var collapse = {
                 p: Array.from( collapsedProjects ).sort(),
                 m: Array.from( collapsedMemos ).sort(),
+                // Memo 081, WI-070: the reveal state joins the signature for the same reason the two
+                // collapse sets are in it — it drives the markup, so a signature blind to it would skip
+                // exactly the redraw the user asked for.
+                r: Array.from( revealedMemos ).sort(),
+                // Memo 081, WI-106: the scope state drives the markup (loaded lists vs a named loading
+                // row), so it belongs in the signature for the same reason the collapse sets do —
+                // otherwise the no-op skip drops exactly the redraw our own requestProjectScope asked
+                // for, and the loading row would never resolve.
+                s: Array.from( scopedProjects ).sort(),
+                q: Array.from( pendingScopeProjects ).sort(),
                 full: cfg.showOnlyFullRevisions === true
             }
             if( currentMode === 'transcripts' ) {
@@ -2248,6 +2619,12 @@
                         collapsedTranscriptProjects.add( projectId )
                     }
                     var nowCollapsed = collapsedTranscriptProjects.has( projectId )
+                    // Memo 081, WI-107: THE SAME request, the same one message. Opening a project in the
+                    // Transcripts tree needs the fields only this view uses (url, mtime, type, sequence)
+                    // — measured 192 262 of 449 282 B over 1415 entries. One scope serves both trees; a
+                    // second request message for the transcript side would be the second definition the
+                    // memo forbids, and two definitions drift.
+                    if( !nowCollapsed ) { requestProjectScope( [ projectId ] ) }
                     var boxEl = el.closest( '.ns-box' )
                     var bodyEl = boxEl ? boxEl.querySelector( '.ns-body' ) : null
                     var leafCount = boxEl ? boxEl.querySelectorAll( '.transcript-entry' ).length : 0
@@ -2555,6 +2932,11 @@
             if( mode === 'transcripts' ) { return '/transcripts' }
             if( mode === 'specs' ) { return '/specs' }
             if( mode === 'dbtables' ) { return '/dbtables' }
+            // Memo 081, WI-066: with a document open, the memos view IS that document's address.
+            // Without this, clicking the tab you are already on, or coming back from Specs, would
+            // overwrite the deep link with a generic /memos — the address would not survive its own
+            // application.
+            if( currentDocPath ) { return currentDocPath }
             return '/memos'
         }
 
@@ -3082,11 +3464,32 @@
         window.addEventListener( 'popstate', function( ev ) {
             var mode = ( ev.state && ev.state.mode ) ? ev.state.mode : modeForPath( window.location.pathname )
             applyMode( mode )
+            // Memo 081, WI-066: a restored document address selects again. selectRevision pushes only
+            // on a differing path, and popstate runs AFTER the browser moved the address bar — so the
+            // paths are equal here and nothing is pushed. No extra flag is needed for that.
+            // Only the LONG form re-selects. The short form deliberately does NOT: it names a document
+            // without naming a revision, so re-selecting would have to resolve "newest" a second time
+            // in the client, push the resulting long form, and thereby grow the stack the user just
+            // walked back through — pressing Back again would land on the same short form and repeat it.
+            // A second preselection rule (PRD-35's subject) plus an endless Back loop is a steep price
+            // for re-resolving an address that already shows a revision of the very document it names.
+            // Named limitation, not an oversight.
+            var restored = parseDocPath( window.location.pathname )
+            if( restored ) {
+                currentDocPath = window.location.pathname
+                if( restored.fileName ) { selectRevision( restored.documentId, restored.fileName ) }
+            }
         } )
 
         // Initial route: derive the mode from the current path (default -> memos / current memo).
         ;( function initRoute() {
             var initialMode = modeForPath( window.location.pathname )
+            // Memo 081, WI-066: a document address is REMEMBERED here, not acted on. The selection for
+            // the initial address is made by the server on socket connect, over the same registry calls
+            // a click uses — selecting a second time from here would be a competing decider for the same
+            // display. What this line prevents is the opposite failure: a later mode toggle silently
+            // replacing the address the page was opened under.
+            if( parseDocPath( window.location.pathname ) ) { currentDocPath = window.location.pathname }
             window.history.replaceState( { mode: initialMode }, '', window.location.pathname )
             applyMode( initialMode )
         } )()
@@ -3986,6 +4389,11 @@
             var memoId = document.getElementById( 't-memo' ).value
             var revisionId = document.getElementById( 't-revision' ).value
             var content = document.getElementById( 't-content' ).value
+
+            // PRD-22 (Memo 081 Kap 19, WI-130): name what the export omits BEFORE the write runs,
+            // out of the same measured state — so the user sees it while acting is still possible.
+            // The flow is not held: this reports, it does not ask (S1, N1).
+            renderUnconfirmedNotice( 't-unconfirmed', unconfirmedNotice() )
 
             // PRD-006 (Kap 9, AC-03): the confirmed question answers (st.addedText) must be
             // saved together with the transcript on the NORMAL save path too — not only via
@@ -5418,11 +5826,31 @@
         // PRD-008: the diff-toggle now lives in the content-sticky-header and is re-created on
         // each updateSidebarSticky render. bindDiffToggle wires the (current) #diff-toggle node
         // to the diff logic and restores its show/hide + active state from currentDiff/showDiff.
+        // Memo 081, WI-105: the diff is fetched, not received. This asks for the diff of the revision on
+        // screen and asks AT MOST ONCE per revision — a second toggle-on of the same revision uses what
+        // is already here. The key is the documentId/fileName pair the server echoes back, so an answer
+        // that arrives after the reader moved on can be recognised as stale and dropped.
+        function requestDiffIfNeeded() {
+            if( diffAvailable !== true ) { return false }
+            if( !currentDocumentId || !currentFileName ) { return false }
+
+            var key = currentDocumentId + '::' + currentFileName
+            if( currentDiffKey === key && currentDiff ) { return false }
+            if( requestedDiffKey === key ) { return false }
+            if( !currentWs || currentWs.readyState !== 1 ) { return false }
+
+            requestedDiffKey = key
+            currentWs.send( JSON.stringify( { type: 'requestDiff', documentId: currentDocumentId, fileName: currentFileName } ) )
+
+            return true
+        }
+
         function bindDiffToggle() {
             var diffToggleEl = document.getElementById( 'diff-toggle' )
             if( !diffToggleEl ) { return }
 
-            if( currentDiff && currentDiff.hasDiff ) {
+            // The toggle is OFFERED on the announcement, not on a payload that is no longer here.
+            if( diffAvailable === true ) {
                 diffToggleEl.style.display = ''
                 diffToggleEl.classList.toggle( 'active', showDiff )
             } else {
@@ -5436,6 +5864,8 @@
             diffToggleEl.addEventListener( 'click', function() {
                 showDiff = !showDiff
                 diffToggleEl.classList.toggle( 'active', showDiff )
+
+                if( showDiff ) { requestDiffIfNeeded() }
 
                 if( showDiff && currentDiff ) {
                     renderDiffView( lastContent, currentDiff )
@@ -5569,8 +5999,9 @@
             }
 
             // ---- Abschnitt 2: Fragen. Open questions of the viewed memo, each with an answer
-            // field. Source = doc.questions count for the label; the live questionNav.questions
-            // (open, parsed) supply the per-question titles/answer fields.
+            // field. Memo 081 (WI-064): the label used to count doc.questions while the list below it
+            // rendered questionNav — two sets under one heading. Both now come from the schema of the
+            // viewed revision, so the label counts what the list shows.
             renderPromptQuestions( memoEntry )
 
             modal.classList.remove( 't-hidden' )
@@ -5600,17 +6031,23 @@
         }
 
         // PRD-008 (Kap 9.5): build the Fragen-Abschnitt — one answer field per open question.
-        // Reuses the live questionNav.questions (already parsed from the rendered revision). The
-        // label "2 · FRAGEN BEANTWORTEN (n / m)" reflects doc.questions (same source as Zone 2).
+        // Reuses the live questionNav.questions (already parsed from the rendered revision). Memo 081
+        // (WI-064): the label "2 · FRAGEN BEANTWORTEN (n / m)" now counts the SAME question schema the
+        // list renders. It used to read doc.questions — the per-memo figure — which is how "(0 / 0)"
+        // came to sit over five pre-filled answer fields (Beleg 19.2).
         function renderPromptQuestions( memoEntry ) {
             var list = document.getElementById( 'pp-questions-list' )
             var label = document.getElementById( 'pp-questions-label' )
             if( !list ) { return }
             list.innerHTML = ''
 
-            var qMeta = normalizeQuestions( memoEntry ? memoEntry.doc.questions : null )
-            var total = qMeta.answered + qMeta.open
-            if( label ) { label.textContent = '2 · FRAGEN BEANTWORTEN (' + qMeta.answered + ' / ' + total + ')' }
+            // Memo 081 (WI-064, S2/Ä7): the sharpest form of the defect stood in these four lines — the
+            // LABEL counted the registry while the LIST below it rendered questionNav, so "(0 / 0)" could
+            // sit over five pre-filled answer fields. The label now counts the same schema the list does.
+            // Only the label is touched here; questionNav and its state belong to PRD-31 and are read, not
+            // written.
+            var qView = countQuestionsOf( lastQuestionSchema )
+            if( label ) { label.textContent = '2 · FRAGEN BEANTWORTEN (' + qView.answered + ' / ' + qView.total + ')' }
 
             var open = Array.isArray( questionNav.questions ) ? questionNav.questions : []
             promptEditState.questions = open
@@ -5848,6 +6285,17 @@
             // nothing, different text -> REPLACE in place. A byte-identical second "Uebernehmen" is
             // unchanged by this (every block matches its own id with the same text and is written back
             // verbatim), so the idempotency this path already had is preserved.
+            // PRD-22 (Memo 081 Kap 19, WI-130, S3): the SAME defect, a second mechanism. On an
+            // unconfirmed selection the WI-109 gate leaves input.value empty — the intent sits in the
+            // placeholder, not the value — so the entry drops out at `val.length === 0` above, equally
+            // without a word. Closing only the named functions would close the case and leave the
+            // class open. Same producer, so both paths say the same thing.
+            // typeof-guard like the marks above: the isolated applyPromptEdit vm-eval has no module
+            // scope and must get no notice instead of a ReferenceError.
+            if( typeof unconfirmedNotice === 'function' && typeof renderUnconfirmedNotice === 'function' ) {
+                renderUnconfirmedNotice( 'pp-unconfirmed', unconfirmedNotice() )
+            }
+
             var merge = mergeAnswerBlocks( transcript, answerBlocks )
 
             // A6: an incomplete comparison set is RED — the write is refused rather than appending into a
@@ -6162,18 +6610,27 @@
             applyMetatagChips()
             // PRD-001 (#16-18): Roh-Markdown der Frage-Sektionen ausblenden, Anchor behalten.
             hideRawQuestionBodies()
-            // PRD-015 (D6): hide a block's structured H3 body sections below a block-meta card so they
-            // neither show as raw prose H3s nor claim heading anchors. Which H3 that is comes from the
-            // ONE register (Memo 080, PRD-B1 — BLOCK_BODY_HEADINGS below), no longer from three
-            // hand-typed names. Runs after hideRawQuestionBodies (a block's own "### Offene Fragen" is
-            // already raw-question-hidden; this covers the rest).
-            hideBlockBodySections()
+            // PRD-015 (D6) + Memo 081, WI-113: fold a block's structured H3 body sections below a
+            // block-meta card into <details> frames carrying a computed figure line. WHICH sections fold
+            // comes from the ONE contract (BlockSections.chapterContract(), mirrored as
+            // CHAPTER_FOLD_SECTIONS below) — six, not the twenty labels of the vocabulary. Runs after
+            // hideRawQuestionBodies (a block's own "### Offene Fragen" is already raw-question-hidden)
+            // and BEFORE wrapTablesCollapsible, so a table can ask whether its heading is already
+            // visible inside the same frame (WI-114).
+            foldBlockBodySections()
             // PRD-018 (Memo 072 Kap 13, F10=A): the deterministic Block↔Topic UI from the STORE.
             // resolveWikiLinks + wrapTablesCollapsible are pure sync DOM surgery; applyTopicPillsFromStore
             // is async (reads /api/documents/<id>/topics) and runs fire-and-forget so it never blocks the
             // sync render. Order: [[…]] links first (before tables reparent nodes), then collapse tables,
             // then the store-driven chapter pill + cross-link line.
+            // Memo 081, WI-076: the identifier pass runs at exactly ONE call point, immediately after
+            // the [[wiki-link]] pass it was modelled on, on EVERY content render — a pass that only ran
+            // on the first load would be gone after the next revision click. It is async (the stock
+            // arrives over the network) and shares that ONE request with applyTopicPillsFromStore
+            // below; the cache is cleared here so each render still reads the store fresh.
+            resetTopicStoreCache()
             resolveWikiLinks()
+            resolveIdLinks( currentDocumentId )
             wrapTablesCollapsible()
             // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): the annotation render pass. Runs on EVERY
             // render path (this method is the common post-render hook, incl. after renderDiffView), and
@@ -6200,7 +6657,9 @@
                 details.className = 'table-collapsible'
                 details.setAttribute( 'open', '' )
                 var summary = document.createElement( 'summary' )
-                summary.className = 'table-collapsible-summary'
+                // Memo 081, WI-114: an omitted label keeps the toggle but carries no text — the second
+                // class lets the stylesheet render a bare toggle instead of an empty line with padding.
+                summary.className = label.length > 0 ? 'table-collapsible-summary' : 'table-collapsible-summary bare-table-summary'
                 summary.textContent = label
                 table.parentNode.insertBefore( details, table )
                 details.appendChild( summary )
@@ -6212,20 +6671,48 @@
         // PRD-018: derive a human summary label for a collapsible table from the nearest preceding
         // heading or bold lead-in paragraph. Walks previous siblings (no while-loop — bounded recursion,
         // stops at the first heading or bold lead-in). Falls back to "Tabelle".
+        //
+        // Memo 081, WI-114 (REV-16:4139-4140): A SECTION TITLE AND A FOLD LABEL MUST NOT SHOW THE SAME
+        // TEXT. Measured before this change: the label is derived from the nearest PRECEDING heading,
+        // and in a chapter that heading is `### Belege` sitting directly above the table — so the
+        // summary read "Belege" one line under the heading "Belege", in all 41 chapters.
+        //
+        // THE RULE IS ABOUT VISIBILITY, NOT ABOUT THE WORD "Belege", and that is what makes it close the
+        // CLASS rather than the case. Testing for that word would leave `### Topics`, `### Work-Items`
+        // and `### Abhaengigkeiten` with the identical duplication — measured, their tables sit directly
+        // under their heading too, so the duplication is four sections times 41 chapters, not one.
+        // The question asked here is: is the heading the label would come from ALREADY VISIBLE inside
+        // the same fold frame? If it is, the table takes no label at all — the frame already names it,
+        // and its own summary already carries the figure.
+        //
+        // OUTSIDE A FOLD FRAME NOTHING CHANGES. Tables in the Vorwort, in the questions and in the
+        // Nachtraege keep their heading label; a rewrite that relabelled those would be unasked scope.
         function tableSummaryLabel( table ) {
             var fromSibling = function( node ) {
                 if( !node ) { return null }
-                if( headingLevel( node ) > 0 ) { return ( node.textContent || '' ).trim() }
+                if( headingLevel( node ) > 0 ) { return { text: ( node.textContent || '' ).trim(), node } }
                 if( node.tagName === 'P' ) {
                     var strong = node.querySelector( 'strong, b' )
-                    if( strong && ( strong.textContent || '' ).trim().length > 0 ) { return strong.textContent.trim() }
+                    if( strong && ( strong.textContent || '' ).trim().length > 0 ) { return { text: strong.textContent.trim(), node } }
                 }
                 return fromSibling( node.previousElementSibling )
             }
 
-            var label = fromSibling( table.previousElementSibling )
+            var found = fromSibling( table.previousElementSibling )
 
-            return ( label && label.length > 0 ) ? label : 'Tabelle'
+            if( found && headingLevel( found[ 'node' ] ) > 0 && sameFoldFrame( table, found[ 'node' ] ) ) { return '' }
+
+            return ( found && found[ 'text' ].length > 0 ) ? found[ 'text' ] : 'Tabelle'
+        }
+
+        // Two nodes share a fold frame when both sit inside the SAME <details class="chapter-section">.
+        // A null frame on either side is not a match: two tables outside every frame do not share one.
+        function sameFoldFrame( table, heading ) {
+            if( !table.closest || !heading.closest ) { return false }
+            var here = table.closest( '.chapter-section' )
+            var there = heading.closest( '.chapter-section' )
+
+            return here !== null && here === there
         }
 
 
@@ -6236,8 +6723,17 @@
         // the tree is walked via recursion, each matching text node replaced by a fragment of anchors.
         var WIKI_LINK_RE = /\[\[([^\[\]]+)\]\]/g
 
+        // Memo 081, WI-076 (REV-16:3062): THE SKIP SET IS SHARED, NOT COPIED. It IS the opt-out of
+        // T060 — an identifier (or a [[slug]]) written inside a code span or a fence is text and stays
+        // text — and the identifier pass below is required to use "the SAME skip set". Two skip sets
+        // that are supposed to agree are the parallel path T060 rejects in its own reasoning, so the
+        // list was lifted out of resolveWikiLinks to module scope and both passes read THIS one.
+        // The diagram containers are NOT in here on purpose: they are <div>s, so they are caught by
+        // the isDiagramContainer predicate both passes call next to this lookup, not by a tag name.
+        var CONTENT_SKIP_TAGS = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true }
+
         function resolveWikiLinks() {
-            var skip = { 'CODE': true, 'PRE': true, 'A': true, 'SCRIPT': true, 'STYLE': true }
+            var skip = CONTENT_SKIP_TAGS
             var textNodes = []
             var collect = function( node ) {
                 node.childNodes.forEach( function( child ) {
@@ -6295,6 +6791,379 @@
             } )
 
             return a
+        }
+
+
+        // ====================================================================
+        // Memo 081, WI-076 (REV-16:3046-3062, T055/T060): IDENTIFIERS IN THE RENDERED DOCUMENT.
+        //
+        // resolveIdLinks() is built NEXT TO the [[wiki-link]] pass, as an additive post-render pass
+        // with the SAME skip set (CONTENT_SKIP_TAGS above) — "no new route, no second renderer"
+        // (REV-16:3055). The wiki pass is the template down to the details: text nodes collected by
+        // recursion (no while loop), CODE/PRE/A/SCRIPT/STYLE skipped by tag, diagram containers
+        // skipped by predicate, each hit replaced by a fragment.
+        //
+        // THE MARK ADDS NO MARKUP TO THE TEXT. The visible label stays the bare identifier: the
+        // reference syntax is "the bare identifier in running prose, no additional markup"
+        // (REV-16:3061), and a mark that wrapped it in brackets would reintroduce exactly that.
+        //
+        // CLASS 3 IS NOT RECOGNIZED, AND THAT IS A DECISION (F12 = A, REV-16:3046). `F7`, `P1`, `C01`,
+        // `K1` stay plain text. The reason is measured and lives in the vocabulary itself: 6694 `F`
+        // hits across the five corpora are not separable in running prose from formula symbols, figure
+        // numbers and keyboard keys. The honest limit of the old vocabulary, not an oversight.
+        // ====================================================================
+
+        // The recognized identifier vocabulary, MIRRORED from src/IdRegister.mjs (WI-075 / PRD-40).
+        // The browser cannot import the module — the same situation BLOCK_BODY_HEADINGS is in, and the
+        // same answer: one readable literal line, held against the module by a parity case that reads
+        // THIS line back and fails under an injected divergence.
+        //
+        // ONLY THE TABLE IS MIRRORED, NEVER THE EXPRESSION. idTokenSource() below rebuilds the
+        // alternation from these rows with the same algorithm IdRegister uses, and the parity case
+        // compares the RESULT against the module's ID_TOKEN_SOURCE character for character. Two typed
+        // expressions would be two truths; one typed table and two builders are one.
+        var ID_VOCABULARY_MIRROR = [ { prefix: 'M', separator: 'none', min: 3, max: 4 }, { prefix: 'MNT', separator: 'required', min: 3, max: 4 }, { prefix: 'T', separator: 'none', min: 3, max: 4 }, { prefix: 'B', separator: 'none', min: 3, max: 4 }, { prefix: 'G', separator: 'none', min: 3, max: 4 }, { prefix: 'WI', separator: 'required', min: 3, max: 4 }, { prefix: 'RES', separator: 'required', min: 3, max: 4 }, { prefix: 'PRD', separator: 'required', min: 1, max: 4 }, { prefix: 'REQ', separator: 'required', min: 3, max: 4 }, { prefix: 'PLAN', separator: 'required', min: 3, max: 4 }, { prefix: 'ANM', separator: 'required', min: 3, max: 4 }, { prefix: 'LL', separator: 'required', min: 3, max: 4 }, { prefix: 'REV', separator: 'required', min: 2, max: 4 }, { prefix: 'SR', separator: 'required', min: 2, max: 3 } ]
+
+        // The optional scope prefix of a QUALIFIED, memo-foreign reference — `M080-T096`, `M080/WI-221`
+        // (F20 = A). Mirrored from IdRegister.SCOPE_PREFIX_SOURCE and parity-checked with it.
+        var ID_SCOPE_PREFIX_SOURCE = '(?:M\\d{3,4}[-/])?'
+
+        // The separator sources, mirrored from IdRegister.SEPARATOR_SOURCE.
+        var ID_SEPARATOR_SOURCE = { 'required': '-', 'optional': '-?', 'none': '' }
+
+        // The prefixes the CLIENT stock can carry — the topic store's three corners plus the memo
+        // catalogue the sidebar already holds. This is the load-bearing half of the stock: it says
+        // which KINDS this view can look up, and that is what tells a missing entry apart from a kind
+        // the browser cannot resolve at all. Without it every `PRD-42` and `REV-16` in the prose would
+        // be handed to the author as HIS broken reference, which is a defect the machine made.
+        var ID_STOCK_PREFIXES = [ 'T', 'B', 'WI', 'M' ]
+
+        // idTokenSource — the alternation, rebuilt from ID_VOCABULARY_MIRROR with the algorithm of
+        // IdRegister.buildSource: group by (separator, digit span) in order of first appearance;
+        // inside a group sort prefixes by LENGTH DESCENDING then alphabetically so a longer prefix can
+        // never be shadowed; sort the groups by their longest prefix, descending. Both orders are
+        // computed, never hand-kept.
+        function idTokenSource() {
+            var groups = []
+            ID_VOCABULARY_MIRROR.forEach( function( row ) {
+                var key = row.separator + '|' + row.min + '|' + row.max
+                var found = groups.find( function( group ) { return group.key === key } )
+                if( !found ) {
+                    found = { key: key, members: [] }
+                    groups.push( found )
+                }
+                found.members.push( row )
+            } )
+
+            return groups
+                .map( function( group ) {
+                    var prefixes = group.members
+                        .map( function( row ) { return row.prefix } )
+                        .sort( function( a, b ) { return b.length - a.length || a.localeCompare( b ) } )
+                    var head = group.members[ 0 ]
+                    var digits = head.min === head.max ? ( '\\d{' + head.min + '}' ) : ( '\\d{' + head.min + ',' + head.max + '}' )
+
+                    return { longest: prefixes[ 0 ].length, source: '(?:' + prefixes.join( '|' ) + ')' + ID_SEPARATOR_SOURCE[ head.separator ] + digits }
+                } )
+                .sort( function( a, b ) { return b.longest - a.longest || a.source.localeCompare( b.source ) } )
+                .map( function( group ) { return group.source } )
+                .join( '|' )
+        }
+
+
+        // idRecognizedPrefixes — the mirrored prefix list, in table order. What the parity case holds
+        // against IdRegister.prefixes( { recognized: true } ).
+        function idRecognizedPrefixes() {
+            return ID_VOCABULARY_MIRROR.map( function( row ) { return row.prefix } )
+        }
+
+
+        // idTokenPattern — a FRESH global expression per pass. Global regexes carry lastIndex, and a
+        // shared instance walked by two consumers skips hits; the wiki pass resets lastIndex by hand
+        // for the same reason. A new object per pass makes that impossible rather than careful.
+        function idTokenPattern() {
+            return new RegExp( '\\b' + ID_SCOPE_PREFIX_SOURCE + '(?:' + idTokenSource() + ')\\b', 'g' )
+        }
+
+
+        // idSplitToken — a matched token into scope, identifier, prefix and digits. Mirrors
+        // IdRegister.#splitToken including its measured rule: A MEMO CANNOT BE SCOPED INSIDE ANOTHER
+        // MEMO — `M080/M081` in prose means "M080 and M081", not "M081 within M080". Returns null when
+        // the token does not decompose, so a shape the expression matched but the table cannot name is
+        // dropped rather than marked under a guessed prefix.
+        function idSplitToken( token ) {
+            var scoped = /^M(\d{3,4})[-/](.+)$/.exec( token )
+            var anchored = new RegExp( '^(?:' + idTokenSource() + ')$' )
+            var targetsMemo = scoped !== null && /^M\d{3,4}$/.test( scoped[ 2 ] ) === true
+            var qualified = scoped !== null && targetsMemo !== true && anchored.test( scoped[ 2 ] ) === true
+            var scope = qualified === true ? ( 'M' + scoped[ 1 ] ) : null
+            var id = qualified === true ? scoped[ 2 ] : ( targetsMemo === true ? ( 'M' + scoped[ 1 ] ) : token )
+            var parts = /^([A-Z]+)-?(\d+)$/.exec( id )
+
+            if( parts === null ) { return null }
+
+            return { token: token, id: id, scope: scope, qualified: qualified, prefix: parts[ 1 ], key: ( scope === null ? '' : ( scope + '-' ) ) + id }
+        }
+
+
+        // idMemoCatalogue — the memos this viewer knows, from the sidebar tree it already holds. No
+        // second fetch: flattenTreeMemos() is the same flattening computeQueue uses. `M081` is derived
+        // from the memo FOLDER NAME, exactly as the server derives it (MemoView.#memoIdOf).
+        function idMemoCatalogue() {
+            var entries = []
+            flattenTreeMemos().forEach( function( doc ) {
+                if( !doc || typeof doc !== 'object' ) { return }
+                var hit = /^(\d{3,4})-/.exec( String( doc.memoName == null ? '' : doc.memoName ) )
+                if( hit === null ) { return }
+                entries.push( { memo: 'M' + hit[ 1 ], documentId: doc.documentId, memoName: doc.memoName } )
+            } )
+
+            return entries
+        }
+
+
+        // buildIdStock — the stock the three display states are decided against, folded out of the
+        // topic-store payload the client ALREADY fetches plus the memo catalogue it already holds.
+        //
+        // A NULL PAYLOAD IS NOT AN EMPTY STOCK. `null` in, `null` out — and the caller then marks
+        // NOTHING and says why. An empty stock would report every identifier as broken and claim to
+        // have measured, which is the vacuum-green gate with its sign flipped. An empty but PRESENT
+        // payload is a different statement and yields a real stock with zero entries: then every
+        // T/B/WI reference is genuinely unresolved, and that is the truth about that memo.
+        function buildIdStock( payload ) {
+            if( !payload || typeof payload !== 'object' ) { return null }
+
+            var topics = Array.isArray( payload.topics ) ? payload.topics : []
+            var blocks = Array.isArray( payload.blocks ) ? payload.blocks : []
+            var workItems = Array.isArray( payload.workItems ) ? payload.workItems : []
+            var chapterOfTopic = {}
+            var titleOf = {}
+            topics.forEach( function( topic ) {
+                if( !topic || typeof topic.id !== 'string' ) { return }
+                chapterOfTopic[ topic.id ] = ( typeof topic.chapter === 'string' && topic.chapter.length > 0 ) ? topic.chapter : null
+                titleOf[ topic.id ] = topic.title || ''
+            } )
+
+            var ids = []
+            topics.forEach( function( topic ) {
+                if( !topic || typeof topic.id !== 'string' ) { return }
+                ids.push( { id: topic.id, title: titleOf[ topic.id ], chapter: chapterOfTopic[ topic.id ] } )
+            } )
+            blocks.forEach( function( block ) {
+                if( !block || typeof block.blockId !== 'string' ) { return }
+                // A block has no chapter of its own — it inherits the chapter of the first topic that
+                // stands in it. The forward edge topic.blockId is the ONE checked edge the store view
+                // uses; block.topicIds is deliberately not read as a second truth.
+                var owner = topics.find( function( topic ) { return topic && topic.blockId === block.blockId && chapterOfTopic[ topic.id ] !== null } )
+
+                ids.push( { id: block.blockId, title: '', chapter: owner === undefined ? null : chapterOfTopic[ owner.id ] } )
+            } )
+            workItems.forEach( function( item ) {
+                if( !item || typeof item.id !== 'string' ) { return }
+                var chapter = ( typeof item.topicId === 'string' && chapterOfTopic[ item.topicId ] !== undefined ) ? chapterOfTopic[ item.topicId ] : null
+                ids.push( { id: item.id, title: item.title || '', chapter: chapter } )
+            } )
+
+            var catalogue = idMemoCatalogue()
+            var localMemo = null
+            catalogue.forEach( function( entry ) {
+                if( entry.documentId === currentDocumentId ) { localMemo = entry.memo }
+            } )
+
+            return { memo: localMemo, prefixes: ID_STOCK_PREFIXES, ids: ids, catalogue: catalogue }
+        }
+
+
+        // idVerdictOf — the display state of ONE reference. Four states from the memo (REV-16:3048-3052)
+        // and a fifth the memo does not name but PRD-40 already minted for the write side:
+        //
+        //   local        the identifier stands in THIS memo's stock -> anchor, jumps to its chapter
+        //   foreign      a qualified `M080-…` (or a bare `M080`) whose memo the catalogue knows ->
+        //                anchor to the deep link /doc/{documentId} (WI-066, built as PRD-33). It lands
+        //                at the TOP of that document, NOT at the chapter: the client does not hold the
+        //                foreign memo's stock and fetching it per identifier would be a request per
+        //                link. The tooltip SAYS SO instead of pretending the jump hit a chapter.
+        //   unresolved   covered kind, no entry -> muted mark, NO anchor, tooltip naming the reason.
+        //                "the mark IS the finding" (REV-16:3052).
+        //   ambiguous    covered kind, MORE than one entry — the more dangerous class, kept apart from
+        //                unresolved for the same reason IdRegister keeps it apart.
+        //   no-carrier   this view carries no stock for the KIND at all (REV, PRD, RES, REQ, …). NOT
+        //                the author's defect and never shown as one — a quiet mark whose tooltip says
+        //                the browser cannot look this kind up. Reporting it as `unresolved` would hand
+        //                the author a defect the machine made, which is exactly why PRD-40 split the
+        //                two verdicts in the first place.
+        function idVerdictOf( entry, stock ) {
+            var memoOf = function( memo ) {
+                return stock.catalogue.find( function( item ) { return item.memo === memo } )
+            }
+
+            if( entry.qualified === true ) {
+                var target = memoOf( entry.scope )
+                if( target === undefined ) {
+                    return { state: 'unresolved', hint: entry.token + ' — Memo ' + entry.scope.slice( 1 ) + ' ist in diesem Katalog nicht bekannt' }
+                }
+
+                return { state: 'foreign', href: '/doc/' + encodeURIComponent( target.documentId ), hint: entry.token + ' — liegt in Memo ' + entry.scope.slice( 1 ) + '. Der Sprung trifft das Dokument, nicht das Kapitel.' }
+            }
+
+            if( entry.prefix === 'M' ) {
+                var known = memoOf( entry.id )
+                if( known === undefined ) {
+                    return { state: 'unresolved', hint: entry.token + ' — Memo ' + entry.id.slice( 1 ) + ' ist in diesem Katalog nicht bekannt' }
+                }
+                if( known.documentId === currentDocumentId ) {
+                    return { state: 'foreign', href: '/doc/' + encodeURIComponent( known.documentId ), hint: entry.token + ' — dieses Memo. Der Sprung fuehrt an den Anfang des Dokuments.' }
+                }
+
+                return { state: 'foreign', href: '/doc/' + encodeURIComponent( known.documentId ), hint: entry.token + ' — liegt in Memo ' + entry.id.slice( 1 ) + '. Der Sprung trifft das Dokument, nicht das Kapitel.' }
+            }
+
+            if( stock.prefixes.indexOf( entry.prefix ) === -1 ) {
+                return { state: 'no-carrier', hint: entry.token + ' — fuer diese Art fuehrt die Ansicht keinen Bestand. Nicht geprueft, kein Befund am Text.' }
+            }
+
+            var matches = stock.ids.filter( function( item ) { return item.id === entry.id } )
+
+            if( matches.length === 0 ) {
+                return { state: 'unresolved', hint: entry.token + ' — kein Eintrag im Bestand dieses Memos' }
+            }
+            if( matches.length > 1 ) {
+                return { state: 'ambiguous', hint: entry.token + ' — ' + matches.length + ' Eintraege tragen diese Kennung' }
+            }
+
+            var found = matches[ 0 ]
+            var label = found.title && found.title.length > 0 ? ( ' „' + found.title + '"' ) : ''
+            if( found.chapter === null ) {
+                return { state: 'resolved', hint: entry.token + label + ' — im Bestand, aber ohne Kapitel-Bindung. Kein Sprungziel.' }
+            }
+
+            return { state: 'local', chapter: found.chapter, hint: entry.token + label + ' — Kapitel „' + found.chapter + '"' }
+        }
+
+
+        // buildIdMark — one mark. An ANCHOR only where a jump target exists; everything else is a span,
+        // because a link that does not move is a promise the display cannot keep. No state is designed
+        // to alarm: the unresolved mark is muted, not red — the author has not made a mistake, he has
+        // not yet applied a convention this very revision introduces.
+        function buildIdMark( entry, verdict, headings ) {
+            var target = verdict.state === 'local' ? matchChapterHeading( headings, verdict.chapter ) : null
+            var node = ( verdict.state === 'foreign' || target !== null ) ? document.createElement( 'a' ) : document.createElement( 'span' )
+            node.className = 'id-ref id-ref-' + ( target === null && verdict.state === 'local' ? 'resolved' : verdict.state )
+            node.setAttribute( 'data-id-ref', entry.key )
+            node.setAttribute( 'title', verdict.hint )
+            node.textContent = entry.token
+
+            if( verdict.state === 'foreign' ) {
+                // classifyLinkHref reads a leading "/" as a ROUTE and interceptLinks leaves those
+                // alone, so the deep link navigates natively — no WS message, no second handler.
+                node.setAttribute( 'href', verdict.href )
+
+                return node
+            }
+
+            if( target !== null ) {
+                node.setAttribute( 'href', '#' )
+                node.addEventListener( 'click', function( e ) {
+                    e.preventDefault()
+                    if( target.scrollIntoView ) { target.scrollIntoView( { behavior: 'smooth', block: 'start' } ) }
+                } )
+            }
+
+            return node
+        }
+
+
+        // renderIdStockNote — the FOURTH state, and it is not optional. If "stock missing" and
+        // "everything resolved" both looked unremarkable, a failed fetch would read as a clean
+        // document. That is the most expensive confusion this project knows, and renderFormHints keeps
+        // the same three-way distinction for the same reason. This note is written NEXT TO that band
+        // and never into it — the hint band belongs to the server's validator, not to this pass.
+        function renderIdStockNote( stock, counted ) {
+            var existing = contentEl.querySelector( '.id-ref-note' )
+            if( existing ) { existing.parentNode.removeChild( existing ) }
+            if( stock !== null && counted > 0 ) { return }
+
+            var note = document.createElement( 'div' )
+            note.className = 'id-ref-note'
+            note.textContent = stock === null
+                ? 'Kennungen: Bestand nicht geladen — keine Kennung wurde geprueft.'
+                : 'Kennungen: Bestand geladen, keine Kennung im Text gefunden.'
+            contentEl.insertBefore( note, contentEl.firstChild )
+        }
+
+
+        // resolveIdLinks — THE pass. Async because the stock arrives over the network; it shares the
+        // ONE in-flight topic-store request with applyTopicPillsFromStore (loadTopicStore) rather than
+        // issuing a second fetch. Idempotent: an element already carrying an `id-ref` class is not
+        // descended into, so a second run over the same tree produces no nested marks — the form
+        // wrapTablesCollapsible already uses with `closest( '.table-collapsible' )`.
+        //
+        // Returns the counted result so a measurement can state HOW MUCH it looked at. Occurrences and
+        // distinct references are TWO statements and an answer that gives only one of them is
+        // ambiguous, so both are carried.
+        async function resolveIdLinks( documentId ) {
+            var payload = documentId ? await loadTopicStore( documentId ) : null
+
+            // The reader switched documents while the stock was in flight: marking now would decorate
+            // the NEW document with the OLD memo's stock. Bail instead.
+            if( documentId !== currentDocumentId ) { return { ran: false, reason: 'document changed while the stock was loading', occurrences: 0, distinct: 0, states: {} } }
+
+            var stock = buildIdStock( payload )
+            if( stock === null ) {
+                renderIdStockNote( null, 0 )
+
+                return { ran: true, available: false, reason: 'no stock — nothing was marked and nothing was checked', occurrences: 0, distinct: 0, states: {} }
+            }
+
+            var pattern = idTokenPattern()
+            var textNodes = []
+            var collect = function( node ) {
+                node.childNodes.forEach( function( child ) {
+                    if( child.nodeType === 3 ) {
+                        pattern.lastIndex = 0
+                        if( pattern.test( child.nodeValue || '' ) ) { textNodes.push( child ) }
+
+                        return
+                    }
+                    if( child.nodeType !== 1 ) { return }
+                    if( CONTENT_SKIP_TAGS[ child.tagName ] ) { return }
+                    if( isDiagramContainer( child ) ) { return }
+                    if( child.classList && child.classList.contains( 'id-ref' ) ) { return }
+                    collect( child )
+                } )
+            }
+            collect( contentEl )
+
+            var headings = contentEl.querySelectorAll( 'h2' )
+            var counted = { occurrences: 0, states: {}, keys: {} }
+            textNodes.forEach( function( node ) {
+                var text = String( node.nodeValue )
+                pattern.lastIndex = 0
+                var hits = Array.from( text.matchAll( pattern ) )
+                var frag = document.createDocumentFragment()
+                var cursor = hits.reduce( function( position, hit ) {
+                    if( hit.index > position ) { frag.appendChild( document.createTextNode( text.slice( position, hit.index ) ) ) }
+                    var entry = idSplitToken( hit[ 0 ] )
+                    if( entry === null ) {
+                        frag.appendChild( document.createTextNode( hit[ 0 ] ) )
+
+                        return hit.index + hit[ 0 ].length
+                    }
+                    var verdict = idVerdictOf( entry, stock )
+                    frag.appendChild( buildIdMark( entry, verdict, headings ) )
+                    counted.occurrences = counted.occurrences + 1
+                    counted.keys[ entry.key ] = true
+                    counted.states[ verdict.state ] = ( counted.states[ verdict.state ] || 0 ) + 1
+
+                    return hit.index + hit[ 0 ].length
+                }, 0 )
+                if( cursor < text.length ) { frag.appendChild( document.createTextNode( text.slice( cursor ) ) ) }
+                node.parentNode.replaceChild( frag, node )
+            } )
+
+            renderIdStockNote( stock, counted.occurrences )
+
+            return { ran: true, available: true, reason: null, occurrences: counted.occurrences, distinct: Object.keys( counted.keys ).length, states: counted.states, comparedStockEntries: stock.ids.length, comparedStockPrefixes: stock.prefixes.length, comparedCatalogue: stock.catalogue.length }
         }
 
 
@@ -7119,17 +7988,39 @@
         // deps · research). Fire-and-forget from applyContentStructure (the store read is async; the sync
         // DOM surgery does not block on it). Idempotent: a heading already carrying a pill-header is left
         // alone (no duplicate on a re-render race).
+        // Memo 081, WI-076: the ONE in-flight topic-store request of a render pass. Two consumers now
+        // need the same payload — the pill/section injection below and the identifier pass
+        // (resolveIdLinks) — and the memo is explicit that the second must not add a fetch of its own
+        // ("no second fetch, no new route", REV-16:3055). The promise is cached per documentId and
+        // cleared at the start of each content render, so a render still reads the store FRESH while
+        // the two consumers inside one render share exactly one request.
+        //
+        // A FAILURE RESOLVES TO null, IT DOES NOT REJECT. null is a real answer here: it says "no
+        // stock", which is a different statement from an empty store, and the identifier pass turns it
+        // into a named absence rather than into a document full of false findings.
+        var topicStorePending = {}
+
+        function resetTopicStoreCache() {
+            topicStorePending = {}
+        }
+
+        function loadTopicStore( documentId ) {
+            if( !documentId ) { return Promise.resolve( null ) }
+            if( topicStorePending[ documentId ] ) { return topicStorePending[ documentId ] }
+
+            topicStorePending[ documentId ] = fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/topics' )
+                .then( function( resp ) { return resp.ok ? resp.json() : null } )
+                .catch( function() { return null } )
+
+            return topicStorePending[ documentId ]
+        }
+
+
         async function applyTopicPillsFromStore( documentId ) {
             if( !documentId ) { return }
 
-            var payload = null
-            try {
-                var resp = await fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/topics' )
-                if( !resp.ok ) { return }
-                payload = await resp.json()
-            } catch( err ) {
-                return
-            }
+            var payload = await loadTopicStore( documentId )
+            if( payload === null || typeof payload !== 'object' ) { return }
 
             var topics = ( payload && Array.isArray( payload.topics ) ) ? payload.topics : []
             // PRD-V8 (Memo 080 Kap 16, T080): the same payload now carries the (chapter, block)
@@ -7643,11 +8534,45 @@
         // MemoView.isBlockBodyHeading. It used to carry the LEGACY alias "problem-beschreibung" while
         // the canonical name was already "faktenlage" — a drift that hid nothing here but would hide
         // content the moment the parser renamed a section (Beleg 2.7).
-        var BLOCK_BODY_HEADINGS = [ 'user-auftrag', 'ist-zustand', 'soll-zustand', 'bewertung', 'abgrenzung', 'entscheidung', 'messung', 'beispiel', 'risiko', 'gegenargument', 'offene punkte', 'topics', 'work-items', 'prd-zuordnung', 'belege', 'faktenlage', 'problem-beschreibung', 'loesungsansatz', 'offene fragen' ]
+        var BLOCK_BODY_HEADINGS = [ 'user-auftrag', 'ist-zustand', 'soll-zustand', 'bewertung', 'abgrenzung', 'entscheidung', 'messung', 'beispiel', 'risiko', 'gegenargument', 'offene punkte', 'topics', 'work-items', 'abhaengigkeiten', 'prd-zuordnung', 'belege', 'faktenlage', 'problem-beschreibung', 'loesungsansatz', 'offene fragen' ]
         // The two suffix forms the register accepts (": " 25x and " (" 1x in REV-18). Same list, same
         // order as BlockSections SUFFIX_SEPARATORS — the parity test compares this line too, so the
         // browser cannot decide differently from the server mirror.
         var BLOCK_BODY_SUFFIXES = [ ': ', ' (' ]
+
+        // Memo 081, WI-113 (REV-16:4110-4111): the six chapter sections that FOLD, mirrored from
+        // BlockSections.chapterContract() — the entries whose `overview` is false, lower-cased, in
+        // contract order. Kept on ONE line so the parity test can read it verbatim and hold it against
+        // the register, exactly as BLOCK_BODY_HEADINGS above is held.
+        //
+        // THIS IS NOT BLOCK_BODY_HEADINGS AND MUST NOT BECOME IT. That list is the derived copy of the
+        // whole VOCABULARY (20 labels) — it answers "is this an H3 the register knows?". This one
+        // answers "does this section fold?". Measured, the two differ by thirteen: the vocabulary folds
+        // `user-auftrag`, which the memo wants OPEN, plus twelve headings nobody asked to fold.
+        var CHAPTER_FOLD_SECTIONS = [ 'ist-zustand', 'soll-zustand', 'belege', 'topics', 'work-items', 'abhaengigkeiten' ]
+
+        // The display noun of each folding section, and the dimension its distribution is measured over.
+        // `Abhaengigkeiten` counts EDGES rather than repeating its own heading (REV-16:4111 calls them
+        // Kanten). `art` reads the Art column of the section table, `evidence` the evidence tags of the
+        // section body; the other three carry no second dimension and say only how many.
+        var CHAPTER_FIGURE_KINDS = {
+            'ist-zustand': { noun: 'Befunde', dimension: 'evidence' },
+            'soll-zustand': { noun: 'Aussagen', dimension: 'evidence' },
+            'belege': { noun: 'Belege', dimension: 'art' },
+            'topics': { noun: 'Topics', dimension: null },
+            'work-items': { noun: 'Work-Items', dimension: null },
+            'abhaengigkeiten': { noun: 'Kanten', dimension: null }
+        }
+
+        // The six values the `Art` column of a Belege table carries, measured over REV-16 (399 rows:
+        // gemessen 214, gelesen 96, entschieden 53, beobachtet 17, Spezifikation 9, abgeleitet 3 — a sum
+        // of 392, so SEVEN rows carry none of them). The list is closed on purpose: a seventh value is a
+        // finding, and the remainder rule below is what makes it visible instead of swallowing it.
+        var EVIDENCE_ART_VALUES = [ 'gemessen', 'gelesen', 'entschieden', 'beobachtet', 'Spezifikation', 'abgeleitet' ]
+
+        // The five evidence tags. They are shown lower-cased because the upper case of `[GEMESSEN]` is
+        // TAG SYNTAX, not spelling — the Art values above are shown exactly as the table writes them.
+        var EVIDENCE_TAGS = [ 'GEMESSEN', 'FAKT', 'ABGELEITET', 'ANNAHME', 'VERMUTUNG' ]
 
         function isBlockBodyHeading( node ) {
             if( headingLevel( node ) !== 3 ) { return false }
@@ -7660,28 +8585,248 @@
             } )
         }
 
-        // PRD-015 (D6): walk each block-meta card's body region — from the card to the next H2 or the
-        // next block-meta card (the SAME bounds as BlockMeta.#bodySections) — and collapse every H3
-        // body heading plus its level-aware sibling body. Consistent with the Kap-3/5 logic
-        // (hideRawQuestionBodies + hiddenSiblingsAfter): only h3 is detected, and the collapse range
-        // is level-aware. No while-loop (Memo-Standard) — the sibling chain is walked via recursion.
-        function hideBlockBodySections() {
-            var cards = contentEl.querySelectorAll( '.block-meta-card' )
-            cards.forEach( function( card ) {
-                var step = function( node ) {
-                    if( !node ) { return }
-                    if( node.classList && node.classList.contains( 'block-meta-card' ) ) { return }
-                    if( headingLevel( node ) === 2 ) { return }
-                    if( isBlockBodyHeading( node ) ) {
-                        node.classList.add( 'block-body-hidden' )
-                        hiddenSiblingsAfter( node ).forEach( function( sibling ) {
-                            sibling.classList.add( 'block-body-hidden' )
-                        } )
-                    }
-                    step( node.nextElementSibling )
-                }
+        // Memo 081, WI-113 (REV-16:4127): the fold recogniser is PREFIX-BASED, not an equality test —
+        // `### Soll-Zustand: {Aspekt}` must count as a Soll-Zustand. Measured over REV-16: 25 of the 60
+        // Soll-Zustand sections carry a suffix, so an equality test would leave 41.7 % of them unfolded
+        // and without a figure, and the reader would meet a half-folded document.
+        //
+        // The capability is NOT new: BLOCK_BODY_SUFFIXES and the shape of isBlockBodyHeading above
+        // already do exactly this for the vocabulary. This reuses that shape against the FOLD list
+        // instead of building a second recogniser beside it. Returns the matched contract label (the
+        // key into CHAPTER_FIGURE_KINDS) or null.
+        function chapterFoldLabel( node ) {
+            if( headingLevel( node ) !== 3 ) { return null }
+            var label = ( node.textContent || '' ).trim().toLowerCase()
+            var hit = CHAPTER_FOLD_SECTIONS.filter( function( heading ) {
+                if( label === heading ) { return true }
+                return BLOCK_BODY_SUFFIXES.some( function( separator ) {
+                    return label.indexOf( heading + separator ) === 0
+                } )
+            } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
+        }
+
+        // PRD-015 (D6) + Memo 081, WI-113 (REV-16:4126): walk each block-meta card's body region — from
+        // the card to the next H2 or the next block-meta card (the SAME bounds as BlockMeta.#bodySections)
+        // — and FOLD every one of the six chapter sections into a <details> whose <summary> is the
+        // computed figure line. The region and the level-aware range are unchanged; what changed is the
+        // mechanism.
+        //
+        // ONE COLLAPSE MECHANISM INSTEAD OF TWO HALVES. Measured before this change: tables collapse
+        // through <details class="table-collapsible"> with a <summary>, sections collapsed through the
+        // CSS class `block-body-hidden` — and a class has no line a figure could sit on. Worse, it could
+        // not be REOPENED: `#content .block-body-hidden { display: none }` HIDES, it does not fold. What
+        // was called "collapsed sections" was in truth "invisible sections".
+        //
+        // THE FIGURE LINE IS THE SUMMARY. That is the whole design: <details> gives the fold, <summary>
+        // gives the line, the line says what is inside. Both rules stand side by side (REV-16:4124) —
+        // the section is CLOSED by default, the table inside it stays <details open> (F10=A), so opening
+        // a section shows an open table.
+        //
+        // THE FOLD STATE IS A READER SETTING, NOT A DOCUMENT STATE (REV-16:4125). Nothing is written
+        // back into the revision and the markdown source is untouched — this pass runs over the rendered
+        // DOM, where every other post-render pass runs.
+        //
+        // No while-loop (Memo-Standard) — the sibling chain is walked via recursion. The continuation
+        // point is taken BEFORE the nodes move: once the heading and its body sit inside the <details>,
+        // `heading.nextElementSibling` no longer points into the chapter.
+        // PRD-45 (Memo 081, WI-113): a NUMBERED CHAPTER H2 is the second region the fold pass starts
+        // from. It is deliberately the SAME notion of "numbered chapter" matchChapterHeading already
+        // falls back on (`/^\s*\d+\./` on the trimmed text, :8088) rather than a second one beside it —
+        // two predicates that are supposed to agree are the parallel path this file rejects elsewhere.
+        //
+        // Measured over the corpus: 4689 of 9254 H2 headings carry the `N.` form. The twenty range
+        // headings (`## 2.–5. …`) match it too and the six `## 13-Klarstellung.` headings do not;
+        // measured, NEITHER group carries any of the six folding sections today, so the boundary is
+        // unobservable at the current corpus. Named rather than glossed: a section written under a
+        // `N-Wort.` heading would not fold.
+        function isNumberedChapterHeading( node ) {
+            if( headingLevel( node ) !== 2 ) { return false }
+
+            return /^\s*\d+\./.test( ( node.textContent || '' ).trim() )
+        }
+
+        function foldBlockBodySections() {
+            // The walk is ONE function shared by both start regions rather than one per region: the
+            // stop conditions (next H2, next card) and the idempotency guard have to be identical, and
+            // a second copy would let them drift apart.
+            var step = function( node ) {
+                if( !node ) { return }
+                if( node.classList && node.classList.contains( 'block-meta-card' ) ) { return }
+                if( headingLevel( node ) === 2 ) { return }
+
+                var label = chapterFoldLabel( node )
+                // Idempotent: a heading already inside a fold frame is left alone, so a second pass
+                // over the same DOM produces no second <details> and no second figure line. Same
+                // guard wrapTablesCollapsible uses with closest( '.table-collapsible' ). This is also
+                // what makes the two start regions safe to overlap — whichever reaches a section
+                // first folds it, the other walks past it.
+                var folded = node.closest && node.closest( '.chapter-section' )
+                if( label === null || folded ) { step( node.nextElementSibling ); return }
+
+                var body = hiddenSiblingsAfter( node )
+                var resume = body.length > 0 ? body[ body.length - 1 ].nextElementSibling : node.nextElementSibling
+                foldOneSection( { heading: node, body, label } )
+                step( resume )
+            }
+
+            // REGION 1 — a block-meta card's body, unchanged.
+            contentEl.querySelectorAll( '.block-meta-card' ).forEach( function( card ) {
                 step( card.nextElementSibling )
             } )
+
+            // REGION 2 (PRD-45) — the numbered chapters. WITHOUT IT THE PASS REACHES NOTHING: measured
+            // over all 533 revision documents of the corpus, 7 carry a card and 23 carry at least one
+            // of the six sections, and the INTERSECTION IS EMPTY — 0 fold frames, 0 figure lines,
+            // including in REV-16, the document the order was written for. A mechanism that is correct
+            // on a constructed fixture and reaches 0 of 533 real documents is not a delivered feature.
+            //
+            // The region ends at the next H2, so the walk never enters the Vorwort or a questions
+            // block by construction. Measured, that bound is not even load-bearing today: all 2997
+            // section headings of the corpus already sit under a numbered H2, 0 under any other H2 and
+            // 0 before the first one.
+            //
+            // The list is taken BEFORE the folding starts, which is safe in both directions: an H2 is
+            // never moved (hiddenSiblingsAfter stops at level <= 3, so it is never collected into a
+            // frame), and a section that region 1 already folded is skipped by the guard above.
+            contentEl.querySelectorAll( 'h2' ).forEach( function( heading ) {
+                if( !isNumberedChapterHeading( heading ) ) { return }
+                step( heading.nextElementSibling )
+            } )
+        }
+
+        // Move one section into its own <details>. The heading stays INSIDE the frame: it is the anchor
+        // the table of contents and the identifier jumps address, and taking it out would break both.
+        function foldOneSection( payload ) {
+            var heading = payload[ 'heading' ]
+            var body = payload[ 'body' ]
+            var label = payload[ 'label' ]
+
+            var details = document.createElement( 'details' )
+            details.className = 'chapter-section'
+            var summary = document.createElement( 'summary' )
+            summary.className = 'chapter-section-summary'
+            summary.textContent = chapterSectionFigure( { body, label } )
+
+            heading.parentNode.insertBefore( details, heading )
+            details.appendChild( summary )
+            details.appendChild( heading )
+            body.forEach( function( sibling ) { details.appendChild( sibling ) } )
+        }
+
+        // Memo 081, WI-113 (REV-16:4133-4135): the figure line is a RENDER RESULT, never an author's
+        // duty. Nobody writes "399 Belege · 214 gemessen" into the revision; the renderer counts the
+        // section's units and the values of its Art column or its evidence tags and assembles the line.
+        // The reason is correctness, not convenience: a typed figure is a CLAIM ABOUT THE CONTENT from
+        // the next edit onwards, and nobody maintains it. A computed figure cannot drift.
+        //
+        // TYPED FIGURES IN THE DOCUMENT ARE NOT READ. The revision carries author lines like
+        // "> **9 Belege** — gemessen 5 · gelesen 4". They belong to the author, they stay in the body,
+        // and they are never a source for this line — that is the entire point of computing it.
+        //
+        // THE VACUUM RULE APPLIES TO COUNTING TOO (REV-16:4135). A section with nothing to count states
+        // "0 Belege"; it never drops the line. A MISSING figure line is a renderer defect, not an empty
+        // section, and those two must never look alike.
+        //
+        // THE COUNTING UNIT IS NAMED RATHER THAN ASSUMED: a list item and a table data row both count as
+        // one unit, because the corpus writes the same content in both forms — measured over REV-16, the
+        // Belege sections are tables throughout while Ist-/Soll-Zustand are bullet lists, and a rule that
+        // counted only one of the two would report 0 for 41 sections. A section carrying both counts both.
+        function chapterSectionFigure( payload ) {
+            var body = payload[ 'body' ]
+            var label = payload[ 'label' ]
+            var kind = CHAPTER_FIGURE_KINDS[ label ]
+            var total = countSectionUnits( body )
+            var parts = distributionOf( { body, dimension: kind[ 'dimension' ] } )
+            var head = total + ' ' + kind[ 'noun' ]
+
+            if( parts.length === 0 ) { return head }
+
+            // AND THE DISTRIBUTION STATES ITS REMAINDER, in BOTH directions. Measured over REV-16: 399
+            // evidence rows against a distribution summing to 392 — seven rows carry none of the six Art
+            // values. A line that lists the six and stops would silently drop those seven. The same
+            // statement `basis` makes for questionCounts and revisionCounts: a total that does not add
+            // up says so. The upward case is named too, because an evidence tag can sit in a paragraph
+            // that is not a counted unit, and "more marks than units" is a finding, not a rounding error.
+            var counted = parts.reduce( function( sum, part ) { return sum + part[ 'count' ] }, 0 )
+            var shown = parts.map( function( part ) { return part[ 'count' ] + ' ' + part[ 'value' ] } )
+            var rest = counted < total ? [ ( total - counted ) + ' ohne Angabe' ] : []
+            var over = counted > total ? [ ( counted - total ) + ' zusaetzlich ausgezeichnet' ] : []
+
+            return [ head ].concat( shown ).concat( rest ).concat( over ).join( ' · ' )
+        }
+
+        // List items plus table DATA rows (tbody only — a header row is not a finding). Nodes are
+        // counted through querySelectorAll on each body node, and the node itself is counted when it IS
+        // one of the two, so a bare <li> sibling is not lost.
+        function countSectionUnits( body ) {
+            return body.reduce( function( sum, node ) {
+                var items = node.querySelectorAll ? node.querySelectorAll( 'li' ).length : 0
+                var rows = node.querySelectorAll ? node.querySelectorAll( 'tbody tr' ).length : 0
+                var self = ( node.tagName === 'LI' ) ? 1 : 0
+
+                return sum + items + rows + self
+            }, 0 )
+        }
+
+        // The second dimension of the figure line. `art` reads the Art column of the section tables,
+        // `evidence` the evidence tags of the section text. Values with a count of zero are dropped —
+        // naming all six every time would bury the ones that actually occur — but the REMAINDER above
+        // is computed against the TOTAL, so nothing silently disappears with them.
+        function distributionOf( payload ) {
+            var body = payload[ 'body' ]
+            var dimension = payload[ 'dimension' ]
+
+            if( dimension === 'art' ) {
+                var rowValues = body.reduce( function( acc, node ) {
+                    var rows = node.querySelectorAll ? Array.prototype.slice.call( node.querySelectorAll( 'tbody tr' ) ) : []
+
+                    return acc.concat( rows.map( artValueOfRow ) )
+                }, [] )
+
+                return EVIDENCE_ART_VALUES
+                    .map( function( value ) {
+                        var count = rowValues.filter( function( found ) { return found === value } ).length
+
+                        return { value, count }
+                    } )
+                    .filter( function( part ) { return part[ 'count' ] > 0 } )
+            }
+
+            if( dimension === 'evidence' ) {
+                var text = body.reduce( function( acc, node ) { return acc + ' ' + ( node.textContent || '' ) }, '' )
+
+                return EVIDENCE_TAGS
+                    .map( function( tag ) {
+                        var hits = text.match( new RegExp( '\\[' + tag + '\\]', 'g' ) ) || []
+
+                        return { value: tag.toLowerCase(), count: hits.length }
+                    } )
+                    .filter( function( part ) { return part[ 'count' ] > 0 } )
+            }
+
+            return []
+        }
+
+        // The Art value of one table row, or null. A row DECLARES its Art in a cell that holds nothing
+        // but that word — never anywhere in its prose. Measured, a Belege row reads
+        // "| 38.4 | app.client.mjs:8116 | gemessen | … |", and the word `gemessen` also occurs inside
+        // neighbouring prose cells; a substring test would count those rows twice and inflate the
+        // distribution past the row count. Cell equality is the same rule the independent count over
+        // the markdown uses, which is what makes the two comparable at all.
+        function artValueOfRow( row ) {
+            var cells = row.querySelectorAll ? Array.prototype.slice.call( row.querySelectorAll( 'td, th' ) ) : []
+            var hit = cells
+                .map( function( cell ) { return ( cell.textContent || '' ).trim().toLowerCase() } )
+                .map( function( text ) {
+                    var found = EVIDENCE_ART_VALUES.filter( function( value ) { return value.toLowerCase() === text } )
+
+                    return found.length > 0 ? found[ 0 ] : null
+                } )
+                .filter( function( value ) { return value !== null } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
         }
 
         // PRD-006 (#C2): the heading level (1-4) of a DOM node, or 0 when it is not a heading.
@@ -7923,6 +9068,13 @@
         // applying the delta. Every later Shift+Up/Down then steps normally.
         var questionNav = { active: -1, optionFocus: -1, lane: 'option', questions: [], state: [], fertig: false, footerFocus: -1, engaged: false }
 
+        // Memo 081 WI-118: the working state that came back from the server, plus the document+revision
+        // pair it belongs to. `key` is what makes the load happen ONCE per pair — a second broadcast of
+        // the same pair must not re-fetch, or a late answer would overwrite a fresh selection. The
+        // entries are the raw stored records; stateFromStoredRecord maps them, nothing else reads them.
+        var questionStateStored = { key: null, entries: {}, seen: 0, skipped: 0 }
+        var questionStateSaveTimer = null
+
         // Memo 080 (Kap 18, PRD-F2): THE RE-FORMULATION KINDS AND THEIR FREE-TEXT ROWS. `reframe` says the
         // QUESTION is wrong (Memo 059), `reoption` says the ANSWER OPTIONS go past the decision — the case
         // the user named as the recurring one. Two turns, two prompts, ONE mechanism: the row build, the
@@ -7968,7 +9120,9 @@
             // `status`, not `!answered` — a question retired as irrelevant/ersetzt is not answered either,
             // so the old test handed it a widget and it kept collecting answers nobody would ever read.
             // `status` is set on BOTH parse paths (json fence and markdown blocks), so this is one axis.
-            var open = ( schema || [] ).filter( function( q ) { return q && q.status === 'open' } )
+            // Memo 081 (WI-064, Ä7): the filter moved into openQuestionsOf so the Zone-2 header and the
+            // popup label count the SAME stock this renders, by construction rather than by agreement.
+            var open = openQuestionsOf( schema )
 
             // Anchor the widgets directly under the "Offene Fragen" section (Phase 4),
             // or at the end of the content if that anchor is missing.
@@ -7985,6 +9139,20 @@
             ;( questionNav.questions || [] ).forEach( function( pq, pIdx ) {
                 if( pq && pq.id ) { prevById[ pq.id ] = questionNav.state[ pIdx ] }
             } )
+            // Memo 081 WI-118: the STORED working state fills the SAME map, right before it is read — no
+            // second merge branch. Everything the map already guarantees therefore holds for a restored
+            // state too: keyed by q.id (not by position), and dropped whole by the validity latch in
+            // seedQuestionState when its selection index outruns today's option list.
+            //
+            // WHO WINS. A live entry the user has WORKED ON (touched, or already confirmed) beats the
+            // stored one — otherwise a broadcast arriving mid-typing would replace the fresh selection
+            // with an older saved one, which is Memo 079 PRD-24's defect in new clothes. An UNTOUCHED
+            // live entry is not the user's work, it is the AI preselection the seed just built, and it
+            // yields. That distinction is not a softening of the rule but the only way it can hold at
+            // all: the load is async, so the restore ALWAYS arrives at a second render that already
+            // found a freshly seeded entry under every question id. "Any live entry wins" would make
+            // the restore a no-op by construction.
+            fillPrevFromStoredQuestionState( prevById, questionStateStored.entries )
             questionNav.questions = open
             questionNav.state = seedQuestionState( open, prevById )
             questionNav.active = open.length > 0 ? 0 : -1
@@ -8023,6 +9191,29 @@
                 banner.textContent = '⚠ ' + fallbackCount + ' von ' + open.length
                     + ' Fragen konnten nicht als Widget geparst werden — sie werden als Rohtext angezeigt.'
                 container.insertBefore( banner, container.firstChild )
+            }
+
+            // Memo 081 (WI-064/WI-069, S3 + Ä8): the SECOND axis at the same place. The banner above covers
+            // parse ("the counter promised N, only N-k could be rendered"); this one covers SOURCE ("the memo
+            // list says N, this revision renders M"). Both are legitimate figures answering different
+            // questions — per memo against per revision — and the memo asks that the difference be stated,
+            // not resolved. The container also carries the rendered count on a stable hook so a later
+            // end-to-end check can compare cards and number in one read instead of counting cards.
+            var registryEntry = lookupMemoEntryById( currentDocumentId )
+            var registry = normalizeQuestions( registryEntry ? registryEntry.doc.questions : null )
+            container.setAttribute( 'data-qw-rendered', String( open.length ) )
+            container.setAttribute( 'data-qw-source', registry.comparison.source )
+            container.setAttribute( 'data-qw-registry-open', registry.basis ? String( registry.open ) : '' )
+
+            if( registry.basis === true && registry.open !== open.length ) {
+                var divergence = document.createElement( 'div' )
+                divergence.className = 'qw-parse-warn'
+                divergence.id = 'qw-source-warn'
+                divergence.setAttribute( 'data-qw-divergence', '1' )
+                divergence.textContent = '⚠ Zwei Mengen: die Memo-Übersicht zählt ' + registry.open
+                    + ' offene Fragen (' + questionCountTitle( registry ) + '), diese Revision rendert '
+                    + open.length + ' Karten. Beide Zahlen stehen hier, damit die Differenz sichtbar ist.'
+                container.insertBefore( divergence, container.firstChild )
             }
 
             // PRD-012 (Memo 076 H8, WI-106): the answers-only bar + mountAnswersOnlyBarInHeader are
@@ -8070,12 +9261,112 @@
 
         // PRD-028 (Kap 12.3): assemble the injected, confirmed answers (state.addedText) into
         // a single answers-only content block. Returns empty when nothing was added.
+        //
+        // PRD-22 (Memo 081 Kap 19, WI-130): IT REPORTS ITS COMPARISON BASIS. `count` says how many
+        // blocks were TAKEN and nothing said how many states were CHECKED — so no caller could tell
+        // "nothing was there" from "something was left out", and a selection the user forgot to
+        // confirm vanished without a word. A check without a declared comparison set is not green,
+        // it is blind. Same rule the answer-block merge below already follows.
+        //
+        // THE HARVEST FILTER IS UNTOUCHED (WI-109): an unconfirmed selection still does NOT reach
+        // `content`. This function NAMES it, it does not harvest it — an intent is displayed, never
+        // recorded as a decision (REV-16 :1748). `skipped` therefore uses exactly the predicate the
+        // amber placeholder uses, so field and edge speak about the same thing.
+        //
+        // `present` vs `compared`: how many state entries exist at all versus how many were actually
+        // readable. They differ only when the state carries holes — and that difference is what lets
+        // the caller report an empty comparison set instead of silently reporting nothing to say.
+        //
+        // isConfirmedAnswer is the harvest predicate, written ONCE. It stood twice (here and in
+        // appendAddedAnswers) with identical text; the second copy is gone. Naming it also keeps the
+        // "how many places may harvest" count honest — a substring buried in a lambda cannot be
+        // counted, a named predicate can.
+        function isConfirmedAnswer( st ) {
+            return !!( st && st.added === true && st.addedText )
+        }
+
+        // Memo 081 WI-118: map ONE stored record onto the widget state shape seedQuestionState produces.
+        // Its own named function so it can be lifted out and tested directly (extractFunction.mjs), and
+        // because this is where the whole WI-109 guarantee is cashed in:
+        //
+        // A record without a `confirmed` part carries NO answer text ANYWHERE — the intent half has no
+        // field that could hold one. So `addedText` is null not because this function chose to be
+        // careful but because there is nothing to take it from, and the restored state then fails the
+        // very same isConfirmedAnswer above that an unconfirmed selection fails today. The separation is
+        // not a rule to obey, it is a sentence that cannot be formed.
+        //
+        // Returns null for a shape it does not recognise — never a half-filled state.
+        function stateFromStoredRecord( record ) {
+            if( !record || typeof record !== 'object' ) { return null }
+            var intent = record.intent
+            if( !intent || typeof intent !== 'object' || !Array.isArray( intent.selected ) ) { return null }
+            var confirmed = record.confirmed
+            var answerText = ( confirmed && typeof confirmed.answerText === 'string' && confirmed.answerText.length > 0 )
+                ? confirmed.answerText
+                : null
+
+            return {
+                selected: intent.selected.slice(),
+                custom: Array.isArray( intent.custom ) ? intent.custom.slice() : [],
+                added: answerText !== null,
+                addedText: answerText,
+                rejected: intent.rejected === true,
+                touched: intent.touched === true
+            }
+        }
+
+        // Memo 081 WI-118: fill the merge map from the stored state for every question id whose LIVE
+        // entry is not the user's own work (see the caller for why untouched yields). Mutates the map it
+        // is handed — the same map seedQuestionState then reads, so there is exactly one merge path.
+        // Both operands are PARAMETERS, not module state: that is what makes the precedence rule
+        // testable on its own instead of only through a render.
+        function fillPrevFromStoredQuestionState( prevById, stored ) {
+            var records = stored || {}
+
+            Object.keys( records ).forEach( function( id ) {
+                var live = prevById[ id ]
+                var isOwnWork = !!( live && ( live.touched === true || live.added === true || live.rejected === true ) )
+                if( isOwnWork ) { return }
+                var restored = stateFromStoredRecord( records[ id ] )
+                if( restored ) { prevById[ id ] = restored }
+            } )
+        }
+
         function collectAddedAnswers() {
-            var blocks = questionNav.state
-                .filter( function( st ) { return st && st.added === true && st.addedText } )
+            var entries = questionNav.state || []
+            var examined = entries.filter( function( st ) { return !!st } )
+            var blocks = examined
+                .filter( isConfirmedAnswer )
                 .map( function( st ) { return st.addedText } )
 
-            return { count: blocks.length, content: blocks.join( '\n' ) }
+            var skipped = entries
+                .map( function( st, idx ) { return { st: st, idx: idx } } )
+                .filter( function( entry ) { return !!entry.st } )
+                .filter( function( entry ) { return !isConfirmedAnswer( entry.st ) } )
+                .filter( function( entry ) {
+                    return ( entry.st.selected || [] ).length > 0 || ( entry.st.custom || [] ).length > 0
+                } )
+                .map( function( entry ) {
+                    // The state carries no question id (seedQuestionState), so the name comes from the
+                    // index-parallel questions array. A missing question falls back to the 1-based
+                    // position — NEVER to an invented id.
+                    var q = ( questionNav.questions || [] )[ entry.idx ]
+
+                    return {
+                        id: ( q && q.id ) ? q.id : ( 'Frage ' + ( entry.idx + 1 ) ),
+                        title: ( q && q.title ) ? q.title : '',
+                        intent: q ? buildAnswerText( q, entry.st ).answerLine : ''
+                    }
+                } )
+
+            return {
+                count: blocks.length,
+                content: blocks.join( '\n' ),
+                compared: examined.length,
+                present: entries.length,
+                skipped: skipped,
+                blocks: blocks
+            }
         }
 
         // PRD-006 (Kap 9, AC-03): append the collected answer blocks to a transcript content
@@ -8086,9 +9377,11 @@
             var collected = collectAddedAnswers()
             if( collected.count === 0 ) { return base }
 
-            var missing = questionNav.state
-                .filter( function( st ) { return st && st.added === true && st.addedText } )
-                .map( function( st ) { return st.addedText } )
+            // PRD-22 (Memo 081 Kap 19, WI-130): the SAME predicate stood here a second time and
+            // walked questionNav.state again. Two copies of one condition are exactly where a later
+            // change touches one and drifts them apart — so this reads the blocks the collector
+            // already measured. One filter site, one truth. The idempotency rule is unchanged.
+            var missing = collected.blocks
                 .filter( function( block ) { return base.indexOf( block.trim() ) === -1 } )
 
             if( missing.length === 0 ) { return base }
@@ -8096,6 +9389,60 @@
             var sep = base.trim().length > 0 ? '\n\n' : ''
 
             return base + sep + missing.join( '\n' )
+        }
+
+        // PRD-22 (Memo 081 Kap 19, WI-130): the loud edge before sending — ONE producer for both
+        // export paths, so the two cannot drift into two different wordings of the same fact.
+        //
+        // IT ONLY REPORTS. Nothing here changes what is exported: the unconfirmed selection stays out
+        // of the content (WI-109). "Angezeigt, nicht geerntet" (REV-16 :1748) is the whole point, and
+        // :1750 picks the display level with an action hint — not a modal that holds up the save.
+        //
+        // THE TEXT ALWAYS NAMES BOTH NUMBERS ("2 von 7"). A message that says how many were dropped
+        // but not how many were checked repeats, in the fix, the exact blindness being fixed.
+        //
+        // NOTHING FOUND IS NOT AUTOMATICALLY GREEN: a state that carries entries of which none was
+        // readable has an EMPTY comparison set, and that is reported rather than passed over in
+        // silence — the same distinction mergeAnswerBlocks draws between markers and compared. No
+        // questions at all is a legitimate null case and stays quiet.
+        function unconfirmedNotice() {
+            var collected = collectAddedAnswers()
+
+            if( collected.compared === 0 ) {
+                if( collected.present === 0 ) { return { count: 0, compared: 0, text: '' } }
+
+                return {
+                    count: 0,
+                    compared: 0,
+                    text: 'Antwort-Prüfung ohne Vergleichsgrundlage: 0 von ' + collected.present
+                        + ' Fragen konnten gelesen werden — es lässt sich nicht sagen, ob etwas fehlt.'
+                }
+            }
+
+            if( collected.skipped.length === 0 ) { return { count: 0, compared: collected.compared, text: '' } }
+
+            var names = collected.skipped
+                .map( function( entry ) { return entry.id } )
+                .join( ', ' )
+            // Same wording as the placeholder above, so the field and the edge do not give the user
+            // two different instructions for one action.
+            var text = 'Nicht übernommen: ' + collected.skipped.length + ' von ' + collected.compared
+                + ' Fragen sind ausgewählt, aber nicht bestätigt (' + names + ').'
+                + '\nSie werden NICHT gespeichert — im Widget auf "Hinzufügen" klicken, sonst geht die Auswahl verloren.'
+
+            return { count: collected.skipped.length, compared: collected.compared, text: text }
+        }
+
+        // PRD-22 (Memo 081 Kap 19, WI-130): render the notice into a field. Its own field, never the
+        // error channel — an omitted intent is not an error, and the error box is cleared on every
+        // save attempt. Missing field is not an error either (the popup path runs vm-isolated).
+        function renderUnconfirmedNotice( fieldId, notice ) {
+            var box = document.getElementById( fieldId )
+            if( !box ) { return }
+
+            box.textContent = notice.text
+            if( notice.text.length > 0 ) { box.classList.remove( 't-hidden' ) }
+            else { box.classList.add( 't-hidden' ) }
         }
 
         // PRD-012 (Memo 076 H8, WI-106): the answers-only bar ("ohne Transcript speichern" + "Fertig")
@@ -8297,15 +9644,25 @@
 
             // WI-041 (Memo 081): the AI recommendation is a DISPLAY property, never a selection.
             // Both the option marker (qw-ai + "(KI-Empfehlung)" hint) and the green KI-EMPFEHLUNG
-            // line used to read `preselected` — but every question sets preselected:[] (the
-            // Vorauswahl-Sperre against the submit leak, Memo 081 Kap 19), so the Sperre silently
-            // switched the whole recommendation display off. Derive the recommended option ONCE
-            // here: from the preselection when present, otherwise from the leading option key of
-            // the recommendation text. Nothing below writes selection state — the Sperre holds.
+            // line used to read `preselected` — a field that meant two things at once, so the
+            // Vorauswahl-Sperre of REV-02 (writing preselected:[] into every question) silently
+            // switched the whole recommendation display off. WI-025 ends that: the server now ships
+            // `aiRecommended` as its own display field and `preselected` carries only what an author
+            // explicitly chose. This reads the display field FIRST.
+            //
+            // Two fallbacks stay, in this order, and both earn their place: a payload from an older
+            // server build carries no aiRecommended at all (then the old preselected reading is the
+            // right one), and a payload from neither still has the recommendation TEXT. The regex
+            // fallback is strictly weaker than the server derivation — measured against 1285 single
+            // questions with a non-empty recommendation it finds 1158 and misses 127 (9.9 %), namely
+            // "Option A — …" and "**A** — …". Dropping it would be a new regression of the same
+            // family as REV-02, only smaller and therefore harder to notice.
             var aiReasoning = typeof q.aiRecommendation === 'string' ? q.aiRecommendation.trim() : ''
             var aiRecommendedIdx = -1
             if( q.typ === 'single' ) {
-                if( Array.isArray( q.preselected ) && q.preselected.length > 0 ) {
+                if( Array.isArray( q.aiRecommended ) && q.aiRecommended.length > 0 ) {
+                    aiRecommendedIdx = q.aiRecommended[ 0 ]
+                } else if( !Array.isArray( q.aiRecommended ) && Array.isArray( q.preselected ) && q.preselected.length > 0 ) {
                     aiRecommendedIdx = q.preselected[ 0 ]
                 } else if( aiReasoning.length > 0 ) {
                     var aiKeyMatch = aiReasoning.match( /^([A-H])\b/ )
@@ -8417,6 +9774,7 @@
                             setAddButtonState( qIdx, false )
                             updateSaveAnswersOnlyState()
                         }
+                        persistQuestionState()
                     }
                 } )
                 // Memo 079 reframe-freetext-click-loss: the reformulation was committed ONLY on Enter, so
@@ -8503,13 +9861,138 @@
             st.touched = true
         }
 
+        // Memo 081, WI-118: the ONE place a widget interaction becomes durable. Every mutating path joins
+        // it AFTER its mutation — selecting an option, typing a custom entry, harvesting a re-formulation,
+        // confirming, undoing, rejecting, un-rejecting — so a new interaction path is persisted by joining
+        // this call, not by remembering a save in seven places. markQuestionTouched above is the same idea
+        // at the START of a mutation; this is its counterpart at the END, and the two must not be merged: a
+        // save that ran before the assignment would store the state the user just left.
+        //
+        // It bundles: seven clicks in a row do not become seven writes. It never delays or breaks the
+        // click — the write runs on a timer and its failure surfaces as a visible message rather than an
+        // exception (the "best-effort but visible" rule UserInputCapture already follows).
+        function persistQuestionState() {
+            if( questionStateSaveTimer !== null ) { return }
+            questionStateSaveTimer = setTimeout( function() {
+                questionStateSaveTimer = null
+                flushQuestionState()
+            }, 250 )
+        }
+
+        // Build the records for the current widget state. The confirmed half is derived from
+        // isConfirmedAnswer — THE existing predicate, not a second copy of its condition. If the harvest
+        // condition ever narrows or widens, the store follows it automatically; two copies of one
+        // condition are exactly where a later change touches one of them and they drift apart.
+        //
+        // It reports its comparison set: `seen` how many states were examined, `skipped` how many carry
+        // no question id and are therefore neither stored nor restored (the same rule prevById follows).
+        // A silent drop would be expensive here, because a half-filled store looks like an empty one.
+        function buildQuestionStateRecords() {
+            var questions = questionNav.questions || []
+            var state = questionNav.state || []
+            var entries = {}
+            var counted = { seen: 0, skipped: 0 }
+
+            questions.forEach( function( q, qIdx ) {
+                var st = state[ qIdx ]
+                if( !st ) { return }
+                counted.seen = counted.seen + 1
+                if( !q || !q.id ) {
+                    counted.skipped = counted.skipped + 1
+
+                    return
+                }
+                var record = {
+                    intent: {
+                        selected: ( st.selected || [] ).slice(),
+                        custom: ( st.custom || [] ).slice(),
+                        rejected: st.rejected === true,
+                        touched: st.touched === true
+                    }
+                }
+                if( isConfirmedAnswer( st ) ) { record.confirmed = { answerText: st.addedText } }
+                entries[ q.id ] = record
+            } )
+
+            return { entries: entries, seen: counted.seen, skipped: counted.skipped }
+        }
+
+        function flushQuestionState() {
+            if( !currentDocumentId ) { return }
+            var rev = currentRevisionId()
+            if( !rev ) { return }
+            var built = buildQuestionStateRecords()
+
+            fetch( '/api/documents/' + encodeURIComponent( currentDocumentId ) + '/question-state', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify( { revisionId: rev, entries: built.entries } )
+            } )
+                .then( function( r ) { return r.ok ? r.json() : { status: false, messages: [ 'HTTP ' + r.status ] } } )
+                .then( function( data ) {
+                    if( data && data.status === true ) { return }
+                    showQuestionStateSaveError( data && data.messages ? data.messages : [] )
+                } )
+                .catch( function( err ) { showQuestionStateSaveError( [ String( err && err.message ? err.message : err ) ] ) } )
+        }
+
+        // A failed save is VISIBLE. A store that fails quietly is worse than none, because it promises
+        // that the restart is harmless — and the user only finds out when the state is already gone.
+        // German display text over English fields, like every other widget message here.
+        function showQuestionStateSaveError( messages ) {
+            var container = document.getElementById( 'question-widgets' )
+            if( !container ) { return }
+            var box = document.getElementById( 'qw-state-save-warn' )
+            if( !box ) {
+                box = document.createElement( 'div' )
+                box.className = 'qw-parse-warn'
+                box.id = 'qw-state-save-warn'
+                container.insertBefore( box, container.firstChild )
+            }
+            var detail = ( messages || [] ).join( '; ' )
+            box.textContent = '⚠ Der Antwort-Zustand konnte nicht gespeichert werden'
+                + ( detail.length > 0 ? ( ' (' + detail + ')' ) : '' )
+                + ' — nach einem Neustart des Servers ist er verloren.'
+        }
+
+        // Memo 081 WI-118: load the stored working state for THIS document+revision, then render again.
+        // The load is async and therefore cannot be finished before the first render, so it re-runs the
+        // SAME idempotent renderQuestionWidgets three other callers already run — a fourth call of the
+        // third path, never a fourth render path. Loading happens ONCE per document+revision pair: the
+        // key is claimed BEFORE the request goes out, so a repeated broadcast of the same pair cannot
+        // let a late answer overwrite a fresh selection.
+        function refreshQuestionState() {
+            if( !currentDocumentId ) { return }
+            var rev = currentRevisionId()
+            if( !rev ) { return }
+            var key = currentDocumentId + '::' + rev
+            if( questionStateStored.key === key ) { return }
+            questionStateStored.key = key
+
+            fetch( '/api/documents/' + encodeURIComponent( currentDocumentId ) + '/question-state?revisionId=' + encodeURIComponent( rev ) )
+                .then( function( r ) { return r.ok ? r.json() : { entries: {}, seen: 0, skipped: 0 } } )
+                .then( function( data ) {
+                    questionStateStored.entries = ( data && data.entries ) ? data.entries : {}
+                    questionStateStored.seen = ( data && typeof data.seen === 'number' ) ? data.seen : 0
+                    questionStateStored.skipped = ( data && typeof data.skipped === 'number' ) ? data.skipped : 0
+                    renderQuestionWidgets( lastQuestionSchema )
+                } )
+                .catch( function() {} )
+        }
+
         // PRD-F3 (Memo 080 Kap 18, S4): does the CONFIRMED selection say exactly what the AI had
         // preselected? This is the provenance datum the `preselected` column exists for — "the user went
         // with the recommendation" — and it is written only for an answer the user actually confirmed.
         // Empty selection is never a preselection match (nothing was chosen at all).
         function isPreselectionAnswer( q, st ) {
             if( !q || !st ) { return false }
-            var pre = Array.isArray( q.preselected ) ? q.preselected : []
+            // Memo 081, WI-025: the datum this asks about is "did the user go with the RECOMMENDATION",
+            // so it reads the display field, not the selection field. Without this the provenance chain
+            // — [Vorauswahl] in the answer heading -> PRESELECTED_MARK -> the --preselected CLI flag ->
+            // the user_input_answers.preselected column — would report a constant false as soon as the
+            // derivation left `preselected`, and a constant value in a provenance column looks exactly
+            // like a result. The fallback is the older-payload case, same reasoning as in the widget.
+            var pre = Array.isArray( q.aiRecommended ) ? q.aiRecommended : ( Array.isArray( q.preselected ) ? q.preselected : [] )
             var expected = q.typ === 'single' ? pre.slice( 0, 1 ) : pre
             if( expected.length === 0 || st.selected.length !== expected.length ) { return false }
             if( st.custom.length > 0 ) { return false }
@@ -8542,6 +10025,7 @@
                 updateSaveAnswersOnlyState()
             }
             refreshOptionMarkers( qIdx )
+            persistQuestionState()
         }
 
         function refreshOptionMarkers( qIdx ) {
@@ -8724,6 +10208,7 @@
                 setAddButtonState( qIdx, false )
                 updateSaveAnswersOnlyState()
             }
+            persistQuestionState()
         }
 
         function submitQuestionAnswer( qIdx ) {
@@ -8761,6 +10246,7 @@
             setAddButtonState( qIdx, true )
             // PRD-028: a collected answer enables the "ohne Transcript speichern" path.
             updateSaveAnswersOnlyState()
+            persistQuestionState()
         }
 
         // PRD-006 (Kap 9, AC-07): explicit undo of a confirmed answer. Resets the added
@@ -8774,6 +10260,7 @@
             st.addedText = null
             setAddButtonState( qIdx, false )
             updateSaveAnswersOnlyState()
+            persistQuestionState()
         }
 
         // PRD-005 (#22): "+ Frage" — open the transcript modal pre-filled with a
@@ -8806,6 +10293,7 @@
                 if( tog ) { tog.textContent = '+' }
                 setRejectButtonState( qIdx, true )
             }
+            persistQuestionState()
         }
 
         // PRD-006 (AC-08): "Ablehnen rückgängig" — restore a rejected card to normal.
@@ -8824,6 +10312,7 @@
             }
             // The selection survived the reject, so the markers just need a redraw.
             refreshOptionMarkers( qIdx )
+            persistQuestionState()
         }
 
         function toggleRejectQuestion( qIdx ) {
@@ -9024,7 +10513,15 @@
                 // PRD-B1) and raw-question/vorwort bodies. They are hidden in the prose, so they must not pollute
                 // the TOC either. buildTOC always runs after applyContentStructure, so the classes
                 // are present by now.
-                if( heading.classList.contains( 'block-body-hidden' ) ) { return }
+                //
+                // Memo 081, WI-113: this READER of `block-body-hidden` was not foreseen by the order,
+                // which expected the class in two places and measured four. It is why the class could
+                // not simply be deleted: the six folding sections are no longer hidden, they are folded,
+                // so the test moves from "is this heading hidden" to "does this heading sit inside a
+                // fold frame". Without it the table of contents would gain 265 entries the reader never
+                // had — the six section headings of all 41 chapters — which is the same pollution this
+                // line was written against.
+                if( heading.closest && heading.closest( '.chapter-section' ) ) { return }
                 if( heading.classList.contains( 'raw-question-hidden' ) ) { return }
 
                 var li = document.createElement( 'li' )
@@ -9364,20 +10861,17 @@
                 return set
             }
 
+            // Memo 081, WI-105: the previous side no longer arrives as raw markdown to be parsed a
+            // second time in the browser. The server ships previousBlockTexts — the SAME set this code
+            // used to build here, formed by the SAME rule (MemoView.collectBlockTexts). With it go the
+            // throwaway container, the second marked.parse and the slugCounts rescue that only existed
+            // because of them. A null value means "not built", which is a different statement from
+            // "built and empty": on null every block stays UNMARKED rather than every block being
+            // marked new, because a missing comparison basis must not look like a comparison that found
+            // everything changed.
             var previousTextSet = new Set()
-            if( diff.previousContent ) {
-                // PRD-015 (D8): the previous-content render runs through the SAME renderer.heading,
-                // which mutates the shared slugCounts map. Rendering it after the live render would
-                // leave slugCounts in a polluted state for any later reuse. Snapshot the live counts,
-                // run the throwaway previous render on a fresh count space, then restore — so the
-                // previous render owns its OWN slugCounts and never pollutes the live anchors.
-                var liveSlugCounts = new Map( slugCounts )
-                slugCounts.clear()
-                var prevContainer = document.createElement( 'div' )
-                prevContainer.innerHTML = marked.parse( diff.previousContent )
-                previousTextSet = collectBlockTexts( prevContainer )
-                slugCounts.clear()
-                liveSlugCounts.forEach( function( v, k ) { slugCounts.set( k, v ) } )
+            if( Array.isArray( diff.previousBlockTexts ) ) {
+                diff.previousBlockTexts.forEach( function( text ) { previousTextSet.add( text ) } )
             }
 
             // PRD-018: changedSections is the server-side, reliable chapter granularity.
@@ -9552,7 +11046,11 @@
 
         function connect() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-            const ws = new WebSocket( protocol + '//' + location.host )
+            // Memo 081, WI-066: the socket carries the CURRENT path so the server can honour a document
+            // address on connect. A path in a WebSocket URL is legal and the upgrade ignores it — it is
+            // transport, nothing else. Read live at every (re)connect, never frozen at start: a value
+            // taken once and used later is the two-timepoints form PRD-29 just removed from this file.
+            const ws = new WebSocket( protocol + '//' + location.host + window.location.pathname )
             currentWs = ws
 
             ws.onopen = function() {
@@ -9580,9 +11078,52 @@
                 // bundle hash on connect. If this page was rendered from an OLDER bundle, reload to
                 // pick up the new client (this is what stops a restarted server's stale tabs from
                 // polling the removed /api/session + /api/cockpit routes).
+                //
+                // Memo 081 (WI-068): the reload is throttled to ONCE per build-ID pair. The server side
+                // of this defect is fixed (the page is no longer frozen at boot), but the throttle is
+                // not a second fix of the same case — it closes the CLASS. An unconditional reload on
+                // mismatch turns ANY future source of disagreement — an interposed cache, a tab out of
+                // the bfcache, a second process on the same port — back into the measured 100 % loop.
+                // If a reload does NOT resolve the mismatch, the assumption "one reload fetches the new
+                // client" is refuted, and then the right move is the one /api/health makes: report the
+                // disagreement, do not act on it. The marker has to survive the reload that it throttles
+                // (a reload discards every variable in memory), so it lives in sessionStorage, and it
+                // carries BOTH ids so a later, genuinely new build is not throttled along with it.
+                // The decision itself is a PURE function, deliberately: a reload cannot be observed
+                // from inside the page that performs it, so the only way to prove both directions —
+                // it throttles, and it does not throttle too much — is to decide separately from
+                // acting. `attempt` names the PAIR (old id -> new id), not just the new id: a later,
+                // genuinely new build must not be throttled along with the one before it.
+                function decideBuildReload( pageBuild, serverId, lastAttempt ) {
+                    if( !serverId || !pageBuild || serverId === pageBuild ) { return { action: 'none', attempt: null } }
+
+                    var attempt = pageBuild + '->' + serverId
+
+                    if( lastAttempt === attempt ) { return { action: 'warn', attempt: attempt } }
+
+                    return { action: 'reload', attempt: attempt }
+                }
+
                 if( data.type === 'build' ) {
-                    if( data.id && window.__MEMO_VIEW_BUILD__ && data.id !== window.__MEMO_VIEW_BUILD__ ) {
+                    var lastAttempt = null
+
+                    // A sandboxed or storage-blocked context throws on access. This is not a silent
+                    // default: with no storage there is no throttle to read, and falling back to the
+                    // pre-081 behaviour (reload once) is the honest answer.
+                    try { lastAttempt = sessionStorage.getItem( 'memoViewBuildReload' ) } catch ( err ) { lastAttempt = null }
+
+                    var decision = decideBuildReload( window.__MEMO_VIEW_BUILD__, data.id, lastAttempt )
+
+                    if( decision.action === 'reload' ) {
+                        try { sessionStorage.setItem( 'memoViewBuildReload', decision.attempt ) } catch ( err ) { /* storage blocked — reload once, unthrottled */ }
                         location.reload()
+                    }
+
+                    if( decision.action === 'warn' ) {
+                        // The measured defect left NO JS error and NO failed request — it was invisible
+                        // to every error console. From here on it is not.
+                        console.warn( 'memo-view: build handshake still disagrees after a reload — page was rendered with ' + window.__MEMO_VIEW_BUILD__ + ', server is serving ' + data.id + '. Not reloading again.' )
+                        statusEl.title = 'Server verbunden, aber der Build weicht ab: Seite ' + window.__MEMO_VIEW_BUILD__ + ', Server ' + data.id + '. Server neu starten.'
                     }
 
                     return
@@ -9595,6 +11136,24 @@
                 if( data.type === 'documentList' ) {
                     lastTree = data.tree || {}
                     lastLatest = data.latest || []
+                    // Memo 081, WI-106: book the depth this payload actually brought — read off the
+                    // payload itself (revisionsIncluded), never off the request we sent. A request that
+                    // was answered with less than it asked for must leave the loading row standing, and
+                    // a pending flag cleared by hope instead of by evidence is how a spinner becomes
+                    // permanent.
+                    Object.keys( lastTree ).forEach( function( pId ) {
+                        var node = lastTree[ pId ]
+                        var list = ( node && node.memos ) ? node.memos : ( Array.isArray( node ) ? node : [] )
+                        var included = list.length > 0 && list.every( function( m ) { return m && m.revisionsIncluded === true } )
+                        if( included ) { scopedProjects.add( pId ) } else { scopedProjects.delete( pId ) }
+                        pendingScopeProjects.delete( pId )
+                    } )
+                    // Memo 081, D1: `comparison` now reaches this message (it was built by PRD-35 and
+                    // dropped two lines later by its only caller, so the payload carried three keys and
+                    // no explanation). It is deliberately NOT stashed in a client variable here:
+                    // measured, `lastLatest` has no rendered surface in this client at all — it feeds
+                    // computeSidebarSignature and nothing else — so a reader would be a variable nobody
+                    // reads, which is the defect D1 describes rather than its repair.
                     if( currentMode === 'memos' ) {
                         renderSidebar()
                     }
@@ -9697,13 +11256,16 @@
                     // `|| {}` fallback on purpose — a missing/failed validation must stay null so
                     // the band can state the gap instead of showing an empty, reassuring strip.
                     lastValidation = data.validation === undefined ? null : data.validation
-                    currentDiff = data.diff || null
-
-                    if( currentDiff && currentDiff.hasDiff ) {
-                        showDiff = true
-                    } else {
-                        showDiff = false
-                    }
+                    // Memo 081, WI-105: a content message no longer carries the diff — it carries the
+                    // ANNOUNCEMENT. The payload of the PREVIOUS revision is dropped here (it belongs to
+                    // a revision that is no longer on screen), and showDiff is NOT touched: the reader's
+                    // choice survives the click that used to overwrite it. What the message decides is
+                    // only whether the toggle is offered.
+                    currentDiff = null
+                    currentDiffKey = null
+                    requestedDiffKey = null
+                    diffAvailable = data.diffAvailable === true
+                    diffInfo = data.diffInfo || null
                     // The diff-toggle now lives in the sticky header and is (re)bound there
                     // via updateSidebarSticky -> bindDiffToggle (called later in this handler).
 
@@ -9779,6 +11341,55 @@
                         // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): load this revision's annotations
                         // and run the render pass now that the document + revision are known.
                         refreshAnnotations()
+                        // PRD-31 (Memo 081, WI-118): same place, same reason — currentFileName is only
+                        // assigned in THIS branch, and currentRevisionId() reads it, so a load started
+                        // before this point would ask for the PREVIOUS revision's state.
+                        refreshQuestionState()
+                        // Memo 081, WI-105: a reader who left the diff view ON gets it back without a
+                        // second click — the request goes out as soon as the pair is known. A reader who
+                        // left it off sends nothing at all, which is the whole point of the change.
+                        if( showDiff ) { requestDiffIfNeeded() }
+                    }
+                }
+
+                // Memo 081, WI-105: the answer to requestDiff. The echoed pair is checked against the
+                // revision on screen BEFORE anything is rendered — a late answer for a revision the
+                // reader has already left is dropped, never painted over the current one. `diff: null`
+                // with a named reason is an answer too: the view says why it is empty instead of waiting
+                // silently for something that will not come.
+                if( data.type === 'diff' ) {
+                    if( !data.documentId || data.documentId === currentDocumentId ) {
+                        // The line above is the ONE document guard this client uses for every
+                        // document-scoped message (RuntimeStatusFeedPRDV3 measures that there is no second
+                        // spelling — a private one here was written first and the class detector found it).
+                        // A diff needs a SECOND half the other messages do not: it belongs to a REVISION,
+                        // not only to a document, so an answer for the right document but the revision the
+                        // reader has already left is dropped as well.
+                        if( data.fileName !== currentFileName ) { return }
+
+                        var answeredKey = data.documentId + '::' + data.fileName
+                        currentDiff = data.diff || null
+                        currentDiffKey = answeredKey
+                        requestedDiffKey = null
+
+                        if( currentDiff === null ) {
+                            // Named, not silent: the toggle goes inactive and says WHY on hover, instead
+                            // of leaving the reader before an empty view waiting for an answer that came.
+                            var reasonText = 'Kein Diff verfügbar' + ( data.reason ? ' — ' + data.reason : '' )
+                            var toggleEl = document.getElementById( 'diff-toggle' )
+                            showDiff = false
+                            if( toggleEl ) {
+                                toggleEl.classList.remove( 'active' )
+                                toggleEl.title = reasonText
+                            }
+                            console.warn( reasonText )
+
+                            return
+                        }
+
+                        if( showDiff && shouldRerenderOnBroadcast( currentContentView ) && currentMode !== 'specs' ) {
+                            renderProseContent( true )
+                        }
                     }
                 }
             }

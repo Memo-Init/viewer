@@ -85,7 +85,16 @@ describe( 'MemoValidator.validate — result shape & status (PRD-036)', () => {
         // of `checked` on purpose: `checked` is the section/header basis, and a basis bolted onto a
         // foreign one is exactly the drift the family exists against.
         // The assertion stays EXACT (an eighth key would still fail) — it is not loosened.
-        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'warnings' ] )
+        // Memo 081, WI-075 widens it by ONE more: `idResolution`, the comparison basis of the
+        // identifier family — did it run, was a stock available, how many distinct references it held
+        // against that stock and how they came out. Same reasoning as `optionQuality`: a key of its own,
+        // not a member of `checked`. The assertion stays EXACT (a ninth key would still fail).
+        // Memo 081, WI-115 widens it by ONE more: `userMandate`, the comparison basis of the
+        // mandate-form family — how many numbered chapters were examined and how many carry the
+        // section, a quote, a source reference, a default sentence. Same reasoning a third time: a key
+        // of its own, riding in every result including the refusal. The assertion stays EXACT (a tenth
+        // key would still fail).
+        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'idResolution', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'userMandate', 'warnings' ] )
         expect( Array.isArray( result[ 'messages' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'info' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'warnings' ] ) ).toBe( true )
@@ -191,8 +200,14 @@ describe( 'MemoValidator required sections (MEMO-001, PRD-002 — 10 sections)',
         { 'heading': 'Vorwort', 'feldPfad': 'section.Vorwort' },
         { 'heading': 'Offene Fragen', 'feldPfad': 'section.OffeneFragen' },
         { 'heading': 'Beantwortete Fragen', 'feldPfad': 'section.BeantworteteFragen' },
-        { 'heading': 'Phasen', 'feldPfad': 'section.Phasen' },
-        { 'heading': 'Phase-Hints', 'feldPfad': 'section.Phase-Hints' },
+        // Memo 081, PRD-39 / WI-120: the SCHEMA position is now called `Abhaengigkeiten` /
+        // `Abhaengigkeits-Hinweise`, and the old spellings stay accepted as aliases without an expiry —
+        // 356 of 533 revision files in the stock carry `## Phasen`. So the heading REMOVED from the
+        // document is still the old one (that is what the fixture writes), while the feldPfad the code
+        // reports is the new position name. Splitting the two is the point: a case that derived both
+        // from one string could not tell a renamed position from a broken check.
+        { 'heading': 'Phasen', 'feldPfad': 'section.Abhaengigkeiten' },
+        { 'heading': 'Phase-Hints', 'feldPfad': 'section.Abhaengigkeits-Hinweise' },
         { 'heading': 'Finalisierungs-Checkliste', 'feldPfad': 'section.Finalisierungs-Checkliste' },
         { 'heading': 'Ancillary Files', 'feldPfad': 'section.AncillaryFiles' },
         { 'heading': 'Rollout-Entry-Points', 'feldPfad': 'section.Rollout-Entry-Points' },

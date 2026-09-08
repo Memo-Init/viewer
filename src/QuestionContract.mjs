@@ -21,7 +21,7 @@
 // OPTIONS go past the decision. Two kinds and not one flag, because the two carry different
 // discards — the wording versus the whole option set — and the journal gates them differently.
 // Like `custom`/`topic` both are NON-'option' kinds and therefore do NOT count toward isRenderable's
-// two-real-option minimum, and #resolvePreselected never pre-selects one. Anything else is a defect —
+// two-real-option minimum, and #resolveAiRecommended never recommends one. Anything else is a defect —
 // it makes the option vanish from the card (MEMO-033).
 const VALID_OPTION_KINDS = [ 'option', 'custom', 'topic', 'reframe', 'reoption' ]
 

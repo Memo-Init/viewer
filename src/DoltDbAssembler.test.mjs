@@ -1277,12 +1277,14 @@ describe( 'DoltDbAssembler — external payload pointers (Memo 080, PRD-D5)', ()
         const fixtureSha = createHash( 'sha256' ).update( POINTER_GOLDEN_BODY, 'utf8' ).digest( 'hex' )
         expect( fixtureSha ).toBe( POINTER_MANIFEST[ 'sha256' ] )
         expect( Buffer.byteLength( POINTER_GOLDEN_BODY, 'utf8' ) ).toBe( POINTER_MANIFEST[ 'byteLength' ] )
-        // Re-measured after the Lessons carrier (Memo 080, PRD-P3): 1882 bytes, 25 more than the 1857
-        // before, because `## Lessons-Learned` now carries BOTH empty marks — `_kein Inhalt_` for the
-        // absent prose and `_keine Lessons-Learned_` for the empty appending table. (The 1857 itself was
-        // measured after PRD-R3 turned the two `#### ` headings into `### `.) The figure is re-measured
-        // on every intentional render change, never carried over.
-        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1882 )             // compared 1882 bytes, > 0
+        // Re-measured after the chapter contract (Memo 081, PRD-39 / WI-116): 1918 bytes, 36 more than
+        // the 1882 before, because the register gained the GENERATED entry `Abhaengigkeiten` and a
+        // generated section is always held open — so every block now carries `### Abhaengigkeiten` with
+        // the explicit empty mark until its supplier exists (WI-091, Memo 082). (The 1882 was measured
+        // after the Lessons carrier, PRD-P3, and the 1857 before it after PRD-R3 turned the two `#### `
+        // headings into `### `.) The figure is re-measured on every intentional render change, never
+        // carried over.
+        expect( POINTER_MANIFEST[ 'byteLength' ] ).toBe( 1918 )             // compared 1918 bytes, > 0
     } )
 
 
@@ -1450,7 +1452,11 @@ describe( 'DoltDbAssembler — the document form (Memo 080, PRD-R1 Vollausbau)',
             .map( ( entry ) => entry[ 'heading' ] )
             .filter( ( heading ) => headings.includes( heading ) === true )
 
-        expect( headings.length ).toBe( 8 )                    // 3 mandatory + 4 generated + 1 optional
+        // Memo 081, PRD-39 / WI-116: 3 mandatory + FIVE generated + 1 optional (was 4 generated). The
+        // register gained `Abhaengigkeiten` as a generated entry, and generated headings render ALWAYS —
+        // which is what the memo asks for: "die Sektion faellt nie weg, damit ihre Abwesenheit nicht mit
+        // einer Auslassung verwechselt wird" (REV-16:4168).
+        expect( headings.length ).toBe( 9 )                    // 3 mandatory + 5 generated + 1 optional
         expect( headings ).toEqual( registerOrder )
         expect( markdown ).toContain( '### Ist-Zustand\n\nGemessen.' )
         expect( markdown ).toContain( '### User-Auftrag\n\n_kein Inhalt_' )

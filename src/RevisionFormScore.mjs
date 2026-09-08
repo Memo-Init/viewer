@@ -42,6 +42,12 @@
 // defaults, single quotes, no semicolons, comments in English.
 
 
+// Memo 081, WI-116: the chapter contract is READ from the one register instead of being typed out a
+// fourth time (see CONTRACT_SECTIONS below). BlockSections is pure — no file access, no state — so this
+// module stays a pure function of its input.
+import { BlockSections } from './BlockSections.mjs'
+
+
 // The closed German six-set of evidence levels, identical to the set the markdown form lint
 // (MarkdownFormLint, PRD-B2) enforces. Counting only [FAKT]/[ANNAHME]/[VERMUTUNG] would close the
 // case instead of the class; measured on the three calibration files (080/REV-01, REV-03, REV-04)
@@ -80,15 +86,18 @@ const DECLARATION = /^\s*\|\s*(\d+\.\d+)\s*\|/
 const FOOTNOTE_REF = /\[\^[^\]]+\]/
 const BELEGE_HEADING = /^###\s+Belege\b/
 
-// The five mandatory section headings of the chapter contract. The naming follows the canonical
-// spelling the form lint enforces (FR-06): the bare name, optionally qualified after a colon.
-const CONTRACT_SECTIONS = [
-    /^###\s+User-Auftrag\b/,
-    /^###\s+Ist-Zustand\b/,
-    /^###\s+Soll-Zustand\b/,
-    /^###\s+Belege\b/,
-    /^###\s+PRD-Zuordnung\b/
-]
+// The mandatory section headings of the chapter contract. The naming follows the canonical spelling the
+// form lint enforces (FR-06): the bare name, optionally qualified after a colon.
+//
+// Memo 081, WI-116: this list WAS the contract's fourth copy — five of the memo's building blocks, with
+// `### PRD-Zuordnung` as the fifth, while the memo's contract has named `### Abhaengigkeiten` since
+// REV-15. It is now DERIVED from BlockSections.chapterContract(), the one register, so a contract change
+// lands here by construction instead of by somebody remembering this file. The list grows from 5 to 8
+// blocks, so K8 (the contracted share) measures a STRICTER duty than before: a value that drops is a
+// more correct answer, not a regression, and both numbers are reported rather than one frozen.
+const CONTRACT_SECTIONS = BlockSections.chapterContract().contract
+    .filter( ( entry ) => entry[ 'required' ] === true )
+    .map( ( entry ) => new RegExp( `^###\\s+${ entry[ 'heading' ] }\\b` ) )
 
 // A verbatim user quote: the German OPENING quotation mark, real content, then a closing mark.
 // Both closing forms are accepted — measured over the stock the revisions open with „ (U+201E) and

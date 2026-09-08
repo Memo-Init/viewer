@@ -278,7 +278,7 @@ describe( 'PRD-V5 Masche 2b — Verbindungs-Waechter (Antwort und Anfrage)', () 
     } )
 
 
-    it( 'JEDE Aufrufstelle wertet den Abbruch aus — Leser und Wachen sind gleich viele (16 von 16)', () => {
+    it( 'JEDE Aufrufstelle wertet den Abbruch aus — Leser und Wachen sind gleich viele (17 von 17)', () => {
         const readers = memoViewSource.match( /const \{ body, aborted \} = await readBody\( req \)/g ) || []
         const guards = memoViewSource.match( /if\( aborted === true \) \{ return \}/g ) || []
         const oldReaders = memoViewSource.match( /const \{ body \} = await readBody\( req \)/g ) || []
@@ -287,9 +287,12 @@ describe( 'PRD-V5 Masche 2b — Verbindungs-Waechter (Antwort und Anfrage)', () 
         // steht daneben, damit ein stiller Wegfall aller Leser nicht als "0 === 0" gruen meldet.
         // PRD-V7 (Memo 080 Kap 16) hat den 15. Leser gebracht: PATCH /api/annotations/<id>.
         // PRD-V9 (Memo 080 Kap 19) den 16.: POST /mcp, der Werkzeug-Endpunkt.
+        // PRD-31 (Memo 081 Kap 19, WI-118) den 17.: PUT /api/documents/<id>/question-state.
+        // Die Zahl ist eine Volkszaehlung und wandert mit jeder neuen Route — die tragende Zusicherung
+        // ist die Zeile darueber (gleich viele Leser wie Wachen), und die bleibt unberuehrt.
         // Nachmessen: grep -c "const { body, aborted } = await readBody( req )" src/MemoView.mjs
         expect( readers.length ).toBe( guards.length )
-        expect( readers.length ).toBe( 16 )
+        expect( readers.length ).toBe( 17 )
         expect( oldReaders.length ).toBe( 0 )
     } )
 } )

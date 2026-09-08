@@ -29,6 +29,9 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
     const savedQuestionNav = globalThis.questionNav
     const savedSetAddButtonState = globalThis.setAddButtonState
     const savedUpdateSaveAnswersOnlyState = globalThis.updateSaveAnswersOnlyState
+    // PRD-31 (Memo 081, WI-118): harvestReformulationInputs joins the persistence seam at its end, so
+    // the lifted function needs that collaborator stubbed like the two above.
+    const savedPersistQuestionState = globalThis.persistQuestionState
 
 
     afterEach( () => {
@@ -36,6 +39,7 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
         globalThis.questionNav = savedQuestionNav
         globalThis.setAddButtonState = savedSetAddButtonState
         globalThis.updateSaveAnswersOnlyState = savedUpdateSaveAnswersOnlyState
+        globalThis.persistQuestionState = savedPersistQuestionState
     } )
 
 
@@ -136,7 +140,12 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
     } )
 
 
-    it( 'A3/R3 — the new kind is never PRE-SELECTED, on either path, and it decides nothing for the user', () => {
+    // Memo 081, WI-025 (PRD-35): the guarantee is unchanged — an injected default is never chosen FOR
+    // the user — but the field that carries the derivation moved. Held against `aiRecommended`, because
+    // `preselected` now only ever holds an explicit author selection and this fixture writes none, so
+    // the case would be vacuously true there: the `recommended.length > 0` guard below is exactly the
+    // line that keeps it from being so.
+    it( 'A3/R3 — the new kind is never RECOMMENDED, on either path, and it decides nothing for the user', () => {
         const cases = [
             { name: 'questions-json', question: jsonAuthored().questions[ 0 ] },
             { name: 'markdown', question: markdownAuthored().questions[ 0 ] }
@@ -146,17 +155,17 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
         const compared = cases
             .map( ( entry ) => {
                 const options = entry.question[ 'options' ]
-                const preselected = entry.question[ 'preselected' ]
+                const recommended = entry.question[ 'aiRecommended' ]
                 const nonOptionIndexes = options
                     .map( ( option, index ) => ( option[ 'kind' ] === 'option' ? -1 : index ) )
                     .filter( ( index ) => index !== -1 )
 
                 // the AI recommendation names A, so the recommendation IS resolved — the case is not
-                // vacuously true because nothing was pre-selected at all.
-                expect( preselected.length ).toBeGreaterThan( 0 )
+                // vacuously true because nothing was recommended at all.
+                expect( recommended.length ).toBeGreaterThan( 0 )
                 expect( nonOptionIndexes.length ).toBe( INJECTED.length )
                 nonOptionIndexes
-                    .forEach( ( index ) => expect( preselected ).not.toContain( index ) )
+                    .forEach( ( index ) => expect( recommended ).not.toContain( index ) )
 
                 return nonOptionIndexes.length
             } )
@@ -211,6 +220,7 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
         globalThis.document = { querySelector: ( sel ) => ( sel.includes( 'qw-card' ) ? card : null ) }
         globalThis.setAddButtonState = () => {}
         globalThis.updateSaveAnswersOnlyState = () => {}
+        globalThis.persistQuestionState = () => {}
         globalThis.questionNav = { state: [ { selected: [ 5 ], custom: [], added: false } ] }
 
         harvestReformulationInputs( 0 )
@@ -239,6 +249,7 @@ describe( 'Memo 080 PRD-F2 — the fourth injected default: re-formulate the ANS
         globalThis.document = { querySelector: ( sel ) => ( sel.includes( 'qw-card' ) ? card : null ) }
         globalThis.setAddButtonState = () => {}
         globalThis.updateSaveAnswersOnlyState = () => {}
+        globalThis.persistQuestionState = () => {}
         globalThis.questionNav = { state: [ { selected: [ 4 ], custom: [], added: false } ] }
 
         harvestReformulationInputs( 0 )

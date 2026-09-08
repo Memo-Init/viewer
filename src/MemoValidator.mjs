@@ -3,6 +3,7 @@ import { BlockMeta } from './BlockMeta.mjs'
 import { invalidOptionKinds } from './QuestionContract.mjs'
 import { OptionQualityLint } from './OptionQualityLint.mjs'
 import { BlockSections } from './BlockSections.mjs'
+import { IdRegister } from './IdRegister.mjs'
 
 
 // PRD-036/037/038 (Memo 016, Kap 13): deterministic, server-side, STRUCTURAL validation of
@@ -64,6 +65,21 @@ const ERROR_CODE_CATALOG = [
     // number nobody re-measured is a claim, not a gate.
     { 'code': 'WARN-020', 'severity': 'WARNING', 'theme': 'dokument-ebene', 'description': 'The document section sequence deviates from the declared document-level order (BlockSections.documentSections, REV-18 Z. 158-172)' },
     { 'code': 'WARN-021', 'severity': 'WARNING', 'theme': 'header', 'description': 'A head field of the document level is missing (Typ, Aenderungen — REV-18 Z. 160; the MEMO-010 duty is a SUBSET of the form requirement, not its replacement)' },
+    // Memo 081, WI-116 / T061 (REV-16:3431): "the contract is COUNTED, not judged: the check is a set
+    // difference (chapters x mandatory blocks against the headings found) and belongs in the invariant
+    // script, not in an agent's verdict. A check that finds nothing to compare reports RED, not green."
+    //
+    // WARNING, NOT ERROR, AND THE NUMBER SAYS WHY. Measured 2026-09-08 over 533 revision files: 6 carry
+    // `### Abhaengigkeiten` at all, 16 carry `### PRD-Zuordnung`, and the contract's eight headings
+    // appear in full in a single-digit number of documents. An ERROR would refuse practically every
+    // revision in the workbench on day one. The sharpening rule is the one written at the head of this
+    // catalogue: measure the corpus AGAIN grouped by revision type, sharpen only when the `full` group
+    // shows zero hits, otherwise record the measured stand as a snag. A severity raised against a number
+    // nobody re-measured is a claim, not a gate.
+    //
+    // The code number is MEASURED, not assumed: WARN-010/011/020/021/030-034 were occupied on
+    // 2026-09-08, so this takes the next free block.
+    { 'code': 'WARN-040', 'severity': 'WARNING', 'theme': 'kapitel-vertrag', 'description': 'A numbered chapter does not carry every mandatory building block of the chapter contract (BlockSections.chapterContract, REV-16:3393-3402) — reported as a set difference with its comparison basis, never as a judgement' },
     // Memo 080, Kap 14 / WI-172 — the CROSS-revision counterpart of SR-13. SR-13 sees one file and
     // flags the pointer that replaces content; WARN-011 sees two files and names what LEFT the
     // document. Measured 2026-09-03 over the memo-080 revisions: REV-01 -> REV-02 lost the
@@ -116,7 +132,71 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'WARN-032', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'A non-approved word from the anchor register\'s misLabels[] sits in title/question/label/value — use the approved label (A7/R6). Only checked when the register was handed in; otherwise the run reports registerAvailable: false and the rule counts as NOT checked' },
     { 'code': 'WARN-033', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': '"mentalModelCheck" missing or empty — state "aligned" or name the collision with the known user tendency (A8, advisory: it never answers the question and never removes it)' },
     { 'code': 'WARN-034', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'Open questions were left UNGRADED because they carry none of the option-quality fields — the finding names every id, so a MIXED block cannot report the opted-in question and stay silent about the one next to it (A11). Non-blocking while the writing path adopts the fields; one field opts an object in and it is then measured in full' },
-    { 'code': 'INFO-020', 'severity': 'INFO', 'theme': 'optionen-guete', 'description': 'The option-quality lint examined 0 open questions although a questions-json block was present — the run reports that it compared nothing instead of reporting a green zero (A11)' }
+    { 'code': 'INFO-020', 'severity': 'INFO', 'theme': 'optionen-guete', 'description': 'The option-quality lint examined 0 open questions although a questions-json block was present — the run reports that it compared nothing instead of reporting a green zero (A11)' },
+    // Memo 081, WI-075 / T055+T060 (REV-16:3033-3046, 3061-3063) — IDENTIFIERS IN RUNNING TEXT.
+    //
+    // THE ANCHOR IS THIS VALIDATOR, REACHED THROUGH `memo lint`, AND DELIBERATELY NOT THE TRANSCRIPT
+    // GATE. The transcript gate judges the USER's input; punishing him for dictating "schau dir T55
+    // an" would be enforcement in the wrong place (REV-16:3033). Which is why these codes carry a NEW
+    // theme, `kennung`: the reject-gate selects its family BY THEME (QUESTION_FORMAT_THEMES below),
+    // and filing an identifier finding under an existing theme would have made every one of them a
+    // reason to reject a transcript — the same accident `03\d` once caused for the option-quality
+    // codes, a second time, through the one door this work was told not to touch.
+    //
+    // THREE STAGES, GRADED HARDNESS, AND ONLY S1 IS SHARP. S1 states the READING and never blocks.
+    // S2 (well-formed, resolves nowhere) and S3 (well-formed, resolves ambiguously) enter as
+    // WARNINGS. The memo argues warn-first from 21.7 % dead references in REV-08; measured 2026-09-08
+    // against REV-16 the figure is 3.2 % (9 of 284 checkable identifiers). BOTH numbers are recorded
+    // and NEITHER is why the stage stays soft. The reason is that SIX of those nine are cross-memo
+    // references written without the qualification F20=A requires — which makes S2 a finding about a
+    // CONVENTION BEING ADOPTED, not about a document being broken. A gate that hard-enforces a
+    // convention at the moment of its introduction blocks the introduction, and the author of the
+    // rule would be its first convict, in the very document that writes it down.
+    //
+    // THE SHARPENING RULE IS THE ONE AT THE HEAD OF THIS CATALOGUE: measure the corpus AGAIN, grouped
+    // by revision type, each group stating how many files it compared; sharpen only when the `full`
+    // group shows zero hits. A severity raised against a number nobody re-measured is a claim, not a
+    // gate.
+    //
+    // The code numbers are MEASURED, not assumed: INFO-010/020 and WARN-010/011/020/021/030-034/040
+    // were occupied on 2026-09-08 and the whole 1xx block was free, so the block the memo names is
+    // the block that is taken.
+    { 'code': 'INFO-100', 'severity': 'INFO', 'theme': 'kennung', 'description': 'Identifiers were recognised in the running text and are reported with their READING — "T055 -> topic \'…\'" — because the interpretation is what the author asked for; naming the identifier back at him is not (S1, never blocking)' },
+    { 'code': 'INFO-101', 'severity': 'INFO', 'theme': 'kennung', 'description': 'Identifiers were recognised but NO stock was handed in, so the existence rules did not run — the finding states that it compared nothing instead of reporting a green zero (the counterpart of INFO-020 for the identifier family)' },
+    { 'code': 'WARN-100', 'severity': 'WARNING', 'theme': 'kennung', 'description': 'A well-formed identifier resolves against NO entry of the handed-in stock (S2). Warn-first while the qualification convention of F20=A is being adopted; a prefix the stock does not cover at all is reported as noCarrier instead and is NOT this code' },
+    { 'code': 'WARN-101', 'severity': 'WARNING', 'theme': 'kennung', 'description': 'A well-formed identifier resolves to MORE THAN ONE entry of the handed-in stock (S3) — the more dangerous class, because an ambiguous reference reads as a working one' },
+    // Memo 081, WI-115 / T077 (REV-16:4152): "the form is lintable BECAUSE it is deterministic … the
+    // anchor is the SAME one as for the identifier check of chapter 31 (MemoValidator via `memo lint`)
+    // — no second lint script." This family is therefore not a new gate; it is a new family inside the
+    // one gate, and the form it checks is the one the REGISTER carries (BlockSections.userMandateForm).
+    //
+    // WHAT IS CHECKED IS THE ARRANGEMENT, NEVER THE CONTENT. Whether a quote is well chosen is not a
+    // machine judgement and does not become one; whether the READING fits the quote is explicitly
+    // forbidden ground (REV-16:3418 — the reading is a reading aid, the quote wins). "Der Inhalt
+    // bleibt frei, die Anordnung nicht" (REV-16:4154).
+    //
+    // WARNING, AND THE NUMBERS SAY WHY. Measured 2026-09-08 over TWO revisions rather than one, because
+    // a form check that has only seen its own memo knows no spread:
+    //   REV-16 (memo 081)  41 chapters, 41 with the section, 37 with a quote, 30 with a source →  9 findings
+    //   REV-18 (memo 080)  25 chapters, 25 with the section, 25 with a quote,  0 with a source → 25 findings
+    // An ERROR would refuse the finalised revision of the very memo that introduces the rule, and it
+    // would refuse memo 080 — the memo this PRD cites as the MODEL for the default sentence — in all
+    // 25 of its chapters. The sharpening rule is the one at the head of this catalogue and it is not
+    // waived here: measure again, grouped by revision type, sharpen only when the `full` group is zero.
+    //
+    // A NEW THEME, DELIBERATELY. QUESTION_FORMAT_THEMES selects the codes that REJECT a transcript, by
+    // theme rather than by number range (the trap MEMO-034..039 sprang once, and `kennung` avoided a
+    // second time). A form remark about a chapter heading must never be able to reject a user's
+    // transcript. The theme is written in English because that is the rule for machine tokens without
+    // exception (core scripts/check-enum-language.mjs); the German themes above are frozen legacy
+    // vocabulary, documented rather than endorsed, and are not a precedent to copy.
+    //
+    // The code numbers are MEASURED, not assumed: INFO-010/020, WARN-010/011/020/021/030-034/040 and
+    // the whole 1xx block (taken by `kennung` on 2026-09-08) were occupied, so this takes the 2xx block.
+    { 'code': 'WARN-200', 'severity': 'WARNING', 'theme': 'mandate-form', 'description': 'A numbered chapter delivers no verifiable mandate — it carries no `### User-Auftrag` section at all, or the section carries neither a block quote nor one of the closed default sentences (BlockSections.userMandateForm). The two cases carry different wording, because "there is no section" and "the section says nothing checkable" are different defects' },
+    { 'code': 'WARN-201', 'severity': 'WARNING', 'theme': 'mandate-form', 'description': 'A block quote in `### User-Auftrag` carries no source reference in the prescribed shape — parentheses with file and line, directly below the quote (REV-16:4148). Reported with the chapter and the line of the quote, never as a collective count' },
+    { 'code': 'WARN-202', 'severity': 'WARNING', 'theme': 'mandate-form', 'description': 'The optional `**Gelesen als:**` line stands BEFORE a quote or before its source reference. Only the POSITION is checked and the line stays optional — requiring it would make the AI reading a criterion, which REV-16:3418 forbids' },
+    { 'code': 'WARN-203', 'severity': 'WARNING', 'theme': 'mandate-form', 'description': 'A default sentence and a block quote stand in the same `### User-Auftrag` — the default sentence REPLACES quote and source reference, so carrying both says the chapter has and has not a mandate at once' }
 ]
 
 
@@ -173,15 +253,47 @@ const QUESTION_FORMAT_THEMES = [ 'frage', 'frage-parse', 'optionen', 'typ', 'jso
 // (filename suffix) and MEMO-080 (block-meta) apply to every type.
 const REVISION_SCHEMA = {
     'full': {
-        'sections': [ 'Kontext', 'Vorwort', 'Offene Fragen', 'Beantwortete Fragen', 'Phasen', 'Phase-Hints', 'Finalisierungs-Checkliste', 'Ancillary Files', 'Rollout-Entry-Points', 'Lessons-Learned' ],
-        'sectionAliases': { 'Vorwort': [ 'Vorwort', 'Claude-Vorwort' ] },
+        // Memo 081, WI-120 (REV-16:5322-5327): after F24=A the document section is called
+        // `## Abhaengigkeiten` and its neighbour `## Abhaengigkeits-Hinweise`. The memo states the
+        // reason it could not simply be renamed IN the revision: "the schema change would break every
+        // existing memo". Measured 2026-09-08 over 533 revision files, `## Phasen` stands in 356 of them
+        // and `## Abhaengigkeiten` in 0 — a straight swap would hand MEMO-001 (an ERROR, status:false,
+        // the hard post-write gate) to 356 files at once.
+        // So the old headings stay ACCEPTED, through the alias mechanism that already carries
+        // `## Claude-Vorwort`. The alias has NO expiry: the stock is not migrated (F19), so the old
+        // spelling is not a transitional state, it is the majority. Positions 5 and 6 stay positions 5
+        // and 6 — #validateDocumentOrder reads the sequence, and moving them would be a second,
+        // unasked-for change.
+        // Both umlaut spellings are accepted HERE, where the alias list is explicit and per-heading. The
+        // block-level register deliberately does not fold umlauts (BlockSections, WI-116): there the
+        // comparison is shared by three readers and the measured need is zero.
+        'sections': [ 'Kontext', 'Vorwort', 'Offene Fragen', 'Beantwortete Fragen', 'Abhaengigkeiten', 'Abhaengigkeits-Hinweise', 'Finalisierungs-Checkliste', 'Ancillary Files', 'Rollout-Entry-Points', 'Lessons-Learned' ],
+        'sectionAliases': {
+            'Vorwort': [ 'Vorwort', 'Claude-Vorwort' ],
+            'Abhaengigkeiten': [ 'Abhaengigkeiten', 'Abhängigkeiten', 'Phasen' ],
+            'Abhaengigkeits-Hinweise': [ 'Abhaengigkeits-Hinweise', 'Abhängigkeits-Hinweise', 'Phase-Hints' ]
+        },
         'headerFields': [ 'Memo', 'Memo-Name', 'Revision', 'Datum', 'Status' ],
         'headerAliases': {},
         'schemaVersion': true,
         'questionFamilies': true,
         'lifecycleMarker': true,
         'documentOrder': true,
-        'documentHeader': true
+        'documentHeader': true,
+        // Memo 081, WI-116: the CHAPTER contract is counted for `full` only. A prepare or an update
+        // artefact carries no numbered body chapters, so measuring it against a per-chapter duty would
+        // hold it to a form it does not have — the lesson of PRD-V13 below.
+        'chapterContract': true,
+        // Memo 081, WI-075: the identifier family (INFO-100/101, WARN-100/101). It is entered HERE and
+        // not as a bare `revisionType !== 'prepare'` inside the check, because the comment at the head
+        // of this table states the invariant plainly: there is exactly ONE place where a per-type duty
+        // lives. A second, private spelling of the same duty is the drift this table exists against.
+        'idReferences': true,
+        // Memo 081, WI-115: the USER-MANDATE FORM family (WARN-200..203), `full` only — a prepare or an
+        // update artefact carries no numbered body chapters, so measuring it against a per-chapter
+        // arrangement would hold it to a form it does not have. Entered HERE for the reason the head of
+        // this table states: there is exactly ONE place where a per-type duty lives.
+        'userMandate': true
     },
     'update': {
         // An update revision replaces or extends chapters but must still carry the FULL set of
@@ -198,7 +310,15 @@ const REVISION_SCHEMA = {
         'questionFamilies': true,
         'lifecycleMarker': true,
         'documentOrder': false,
-        'documentHeader': false
+        'documentHeader': false,
+        'chapterContract': false,
+        // An update revision is delivered prose like a full one and its references are meant to
+        // resolve, so the identifier family is ON here and only `prepare` switches it off.
+        'idReferences': true,
+        // OFF: an update revision replaces or extends chapters, but the numbered body chapters and
+        // their mandate sections live in the `full` revision it updates. Written out rather than
+        // omitted — an absent flag and a false one must not be the same statement.
+        'userMandate': false
     },
     'prepare': {
         // The three duties of the prepare artefact per memo-revision-generate/SKILL.md
@@ -212,7 +332,15 @@ const REVISION_SCHEMA = {
         'questionFamilies': false,
         'lifecycleMarker': false,
         'documentOrder': false,
-        'documentHeader': false
+        'documentHeader': false,
+        'chapterContract': false,
+        // OFF for `prepare`, and for the same reason the lifecycle marker is off: the artefact sits
+        // BEFORE the revision it plans and legitimately points at work that does not exist yet. A
+        // loose reference there is the intended state, not a defect.
+        'idReferences': false,
+        // OFF: a prepare artefact carries no numbered body chapters at all, so a per-chapter
+        // arrangement rule would measure it against a form it never had.
+        'userMandate': false
     }
 }
 
@@ -231,7 +359,15 @@ class MemoValidator {
     // validator reads no file, the caller hands the parsed register in (repos/core/cli/lib/lint.mjs does
     // the IO). Its absence is NOT a silent default — it is reported as `optionQuality.registerAvailable:
     // false`, and WARN-032 then counts as not checked rather than as clean.
-    static validate( { doc, fileName, anchorTerms } ) {
+    // `knownIds` (Memo 081, WI-075) is the SECOND optional payload key of exactly the same kind, and it
+    // is deliberately built the same way: the validator stays pure, the caller does the IO
+    // (repos/core/cli/lib/lint.mjs reads the memo's store, MemoView derives it from the store it
+    // already reads). Its absence is NOT a silent default and NOT an empty stock — it is reported as
+    // `idResolution.available: false` with a named reason, and the existence rules S2/S3 then count as
+    // NOT CHECKED rather than as clean. An empty stock, against which every identifier "fails to
+    // resolve", would be the vacuum-green gate with its sign flipped: it colours everything red and
+    // claims to have measured.
+    static validate( { doc, fileName, anchorTerms, knownIds } ) {
         // Memo 080, Kap 16 / WI-218: derive the revision type ONCE, then hand it to every check
         // family. Derived before the empty-document guard so even a refusal reports which schema
         // it would have applied.
@@ -251,7 +387,27 @@ class MemoValidator {
         //   skippedLegacy       how many OPEN questions carried none of the quality fields and could
         //                       therefore not be decided — a named skip, never a green zero
         //   registerAvailable   was an anchor register handed in — WARN-032 counts as checked only then
-        const struct = { 'status': false, 'messages': [], 'info': [], 'warnings': [], 'checked': { 'sections': 0, 'headerFields': 0, 'comparedSections': 0, 'comparedHeaderFields': 0 }, 'optionQuality': { 'ran': false, 'checked': 0, 'skippedAnswered': 0, 'skippedLegacy': 0, 'registerAvailable': false }, revisionType }
+        // Memo 081, WI-075: `idResolution` is the comparison basis of the IDENTIFIER family and it rides
+        // in EVERY result, including the refusal below — for the same reason `optionQuality` does. A
+        // basis that is missing from a refusal leaves the reader guessing whether nothing was checked
+        // or nothing was found, and those are different statements.
+        //   ran            did the family run at all (off for `prepare`)
+        //   available      was a stock handed in — without it S2/S3 count as NOT CHECKED
+        //   checked        how many DISTINCT references were held against the stock
+        //   resolved / unresolved / ambiguous / noCarrier   the four verdicts, and they sum to `checked`
+        //   distinct / occurrences   TWO statements, not one (measured on REV-16: 304 against 2252)
+        //   comparedCharacters / comparedStockEntries / comparedStockPrefixes   how much was compared
+        // Memo 081, WI-115: `userMandate` is the comparison basis of the MANDATE-FORM family and rides
+        // in EVERY result for the same reason as the two above. It states BOTH numbers the finding needs
+        // to be readable — how many chapters carry the section at all, and how many of those carry
+        // something checkable — because "the section is present" and "the section is in form" are the
+        // two statements this whole family exists to tell apart.
+        //   ran          did the family run at all (off for `prepare` and `update`)
+        //   chapters     how many numbered chapters were examined — 0 is RED, never a green zero
+        //   withSection  how many carry a `### User-Auftrag` at all
+        //   withQuote / withSource / withDefault   how many carry each element
+        //   misordered   how many put the optional reading before a quote or its source reference
+        const struct = { 'status': false, 'messages': [], 'info': [], 'warnings': [], 'checked': { 'sections': 0, 'headerFields': 0, 'comparedSections': 0, 'comparedHeaderFields': 0 }, 'optionQuality': { 'ran': false, 'checked': 0, 'skippedAnswered': 0, 'skippedLegacy': 0, 'registerAvailable': false }, 'idResolution': MemoValidator.#emptyIdResolution(), 'userMandate': MemoValidator.#emptyUserMandate(), revisionType }
 
         if( typeof doc !== 'string' || doc.length === 0 ) {
             const { message } = MemoValidator.#buildMessage( {
@@ -278,6 +434,9 @@ class MemoValidator {
         const lintExt = MemoValidator.#validateLintExtensions( { doc, fileName, revisionType } )
         const documentOrder = MemoValidator.#validateDocumentOrder( { doc, revisionType } )
         const documentHeader = MemoValidator.#validateDocumentHeader( { doc, revisionType } )
+        const chapterContract = MemoValidator.#validateChapterContract( { doc, revisionType } )
+        const idReferences = MemoValidator.#validateIdReferences( { doc, revisionType, knownIds } )
+        const userMandate = MemoValidator.#validateUserMandate( { doc, revisionType } )
 
         const messages = []
             .concat( sections[ 'messages' ] )
@@ -296,13 +455,19 @@ class MemoValidator {
             .concat( optionKinds[ 'info' ] )
             .concat( optionQuality[ 'info' ] )
             .concat( lintExt[ 'info' ] )
+            .concat( idReferences[ 'info' ] )
 
         struct[ 'messages' ] = messages
         struct[ 'info' ] = info
         struct[ 'warnings' ] = documentOrder[ 'warnings' ]
             .concat( documentHeader[ 'warnings' ] )
+            .concat( chapterContract[ 'warnings' ] )
             .concat( optionQuality[ 'warnings' ] )
+            .concat( idReferences[ 'warnings' ] )
+            .concat( userMandate[ 'warnings' ] )
         struct[ 'optionQuality' ] = optionQuality[ 'basis' ]
+        struct[ 'idResolution' ] = idReferences[ 'basis' ]
+        struct[ 'userMandate' ] = userMandate[ 'basis' ]
         struct[ 'status' ] = messages.length === 0
         // Memo 080, PRD-R1: a verdict without its comparison basis is not readable. `checked` states HOW
         // MUCH was compared — how many mandatory sections and how many mandatory header fields the run
@@ -312,6 +477,12 @@ class MemoValidator {
         // the document against. Both are 0 when the check did not RUN for this revision type — which is a
         // different statement from "ran and found nothing to compare", and that second case emits its own
         // warning instead of reporting a green zero.
+        // Memo 081, WI-116: the chapter contract states its comparison basis IN ITS MESSAGE
+        // (`chapters=<n> blocks=<b> expected=<n*b> found=<k> missing=<d>`) and deliberately does NOT add
+        // a fifth key here. `checked` is pinned by eight `toEqual` assertions across three suites that
+        // this PRD is not authorised to open; widening it would have been a change in two files outside
+        // its declared budget. The basis is stated, only in a different channel — and that difference is
+        // reported as a restschuld rather than smuggled in.
         struct[ 'checked' ] = {
             'sections': sections[ 'checked' ],
             'headerFields': header[ 'checked' ],
@@ -558,9 +729,31 @@ class MemoValidator {
                 .trim()
                 .toLowerCase()
 
+            // Memo 081, WI-116: the third-level headings of this chapter, code fences already excluded by
+            // the flags above. They are the comparison basis of the chapter-contract count (WARN-040) and
+            // are collected HERE because the chapter split and the fence exclusion already happen here —
+            // a second walk over the same lines would be a second answer to the same question.
+            const headings = body
+                .filter( ( line, offset ) => flags[ start[ 'index' ] + offset ] !== true && /^###\s+/.test( line ) === true )
+                .map( ( line ) => line.replace( /^###\s+/, '' ).trim() )
+
+            // Memo 081, WI-115: the chapter's own lines, each with its ABSOLUTE line number and whether
+            // it sits inside a code fence. Collected HERE for the same reason `headings` is: the split
+            // and the fence mask already exist at this point, and a second walk over the same lines
+            // would be a second answer to the same question. The absolute number is what lets a finding
+            // name the line instead of a collective count.
+            const numbered = body
+                .map( ( line, offset ) => ( { line, 'number': start[ 'index' ] + offset + 1, 'fenced': flags[ start[ 'index' ] + offset ] === true } ) )
+
             return {
                 key,
+                headings,
+                numbered,
                 'title': start[ 'title' ],
+                // `hasAuftrag` answers "does the TERM occur anywhere in the chapter" and is read by the
+                // cross-revision continuity check (WARN-011). It is deliberately NOT the basis of the
+                // mandate-form family, which asks a different question — "is there a SECTION, and is it
+                // arranged correctly" — and cuts the section itself through the register.
                 'hasAuftrag': body.some( ( line ) => /User-Auftrag/i.test( line ) === true ),
                 'nonEmptyLines': body.filter( ( line ) => line.trim().length > 0 ).length,
                 'evidenceMarks': body.reduce( ( acc, line ) => acc + ( line.match( /\[(?:FAKT|ANNAHME|VERMUTUNG)\]/g ) || [] ).length, 0 )
@@ -706,6 +899,264 @@ class MemoValidator {
         }
 
         return struct
+    }
+
+
+    // WARN-040 — the CHAPTER CONTRACT, COUNTED (Memo 081, WI-116 / T061, REV-16:3431): "the contract is
+    // counted, not judged: the check is a set difference (chapters x mandatory blocks against the
+    // headings found) and belongs in the invariant script, not in an agent's verdict."
+    //
+    // IT STATES ITS COMPARISON BASIS IN EVERY MESSAGE — `chapters=<n> blocks=<b> expected=<n*b>
+    // found=<k> missing=<d>` — and 0 chapters is RED with its own finding, never a silent pass. That is
+    // the whole point of the rule it implements: a check that found nothing to compare has checked
+    // nothing, and the honest answer says so instead of reporting a green zero.
+    //
+    // THE RECOGNISER IS BlockSections.matchContract, NOT A SECOND ONE HERE. It carries the same prefix
+    // semantics the register uses everywhere else, so `### Soll-Zustand: der Werkzeugkoffer` counts as
+    // `Soll-Zustand` while `### Soll-Zustandsbericht` does not. A `repeatable` block may stand more than
+    // once; presence, not multiplicity, is what the set difference asks about.
+    static #validateChapterContract( { doc, revisionType } ) {
+        const struct = { 'messages': [], 'info': [], 'warnings': [], 'checked': 0 }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        if( schema[ 'chapterContract' ] !== true ) { return struct }
+
+        const { contract } = BlockSections.chapterContract()
+        const mandatory = contract
+            .filter( ( entry ) => entry[ 'required' ] === true )
+        const chapters = MemoValidator.#numberedChapters( { doc } )
+
+        if( chapters.length === 0 ) {
+            MemoValidator.#route( {
+                'code': 'WARN-040',
+                'feldPfad': 'chapter.contract',
+                'description': `chapters=0 blocks=${ mandatory.length } expected=0 found=0 missing=0 — no numbered chapter was found, so the chapter contract had nothing to compare; a check without a comparison basis reports red, not green`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+
+            return struct
+        }
+
+        const rows = chapters
+            .map( ( chapter ) => {
+                const present = chapter[ 'headings' ]
+                    .map( ( text ) => BlockSections.matchContract( { text } ).heading )
+                const missing = mandatory
+                    .filter( ( entry ) => present.includes( entry[ 'heading' ] ) !== true )
+                    .map( ( entry ) => entry[ 'heading' ] )
+
+                return { 'title': chapter[ 'title' ], missing }
+            } )
+
+        const expected = chapters.length * mandatory.length
+        const missingCount = rows
+            .reduce( ( acc, row ) => acc + row[ 'missing' ].length, 0 )
+        struct[ 'checked' ] = expected
+
+        if( missingCount > 0 ) {
+            const offenders = rows
+                .filter( ( row ) => row[ 'missing' ].length > 0 )
+            MemoValidator.#route( {
+                'code': 'WARN-040',
+                'feldPfad': 'chapter.contract',
+                'description': `chapters=${ chapters.length } blocks=${ mandatory.length } expected=${ expected } found=${ expected - missingCount } missing=${ missingCount } — ${ offenders.map( ( row ) => `"${ row[ 'title' ] }" lacks ${ row[ 'missing' ].join( ', ' ) }` ).join( '; ' ) }`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+        }
+
+        return struct
+    }
+
+
+    // The empty basis of the mandate-form family (Memo 081, WI-115). It rides in EVERY result, the
+    // refusal of an empty document included, for the reason `optionQuality` and `idResolution` do: a
+    // basis missing from a refusal leaves the reader guessing whether nothing was checked or nothing
+    // was found, and those are different statements.
+    static #emptyUserMandate() {
+        return { 'ran': false, 'chapters': 0, 'withSection': 0, 'withQuote': 0, 'withSource': 0, 'withDefault': 0, 'misordered': 0 }
+    }
+
+
+    // Cut the `### User-Auftrag` section out of ONE chapter and read its three elements.
+    //
+    // The section is recognised through BlockSections.match — the SAME recogniser the display side and
+    // the contract counter use, never a second one here. That is what makes `### User-Auftrag: {Aspekt}`
+    // count as the section while `### User-Auftragslage` does not: the register decides, not a regex in
+    // this file.
+    //
+    // Consecutive quote lines are JOINED before the quote pattern is applied, because a block quote may
+    // span several `>` lines (measured: REV-16:3323-3327). Testing line by line would have counted a
+    // four-line quotation as no quotation at all.
+    static #mandateSectionOf( { chapter } ) {
+        const visible = chapter[ 'numbered' ]
+            .filter( ( entry ) => entry[ 'fenced' ] !== true )
+        const headAt = visible
+            .findIndex( ( entry ) => /^###\s+/.test( entry[ 'line' ] ) === true && BlockSections.match( { 'text': entry[ 'line' ].replace( /^###\s+/, '' ).trim() } ).field === 'userMandate' )
+        if( headAt === -1 ) {
+            return { 'found': false, 'body': [] }
+        }
+
+        const rest = visible
+            .slice( headAt + 1 )
+        const stopAt = rest
+            .findIndex( ( entry ) => /^#{2,3}\s+/.test( entry[ 'line' ] ) === true )
+        const body = stopAt === -1 ? rest : rest.slice( 0, stopAt )
+
+        return { 'found': true, body, 'headLine': visible[ headAt ][ 'number' ] }
+    }
+
+
+    // WARN-200..203 — the ARRANGEMENT of `### User-Auftrag` (Memo 081, WI-115 / T077).
+    //
+    // WHAT THIS CHECKS AND WHAT IT DELIBERATELY DOES NOT. It checks that a quote is there, that a
+    // source reference sits with it, and that the optional reading comes LAST. It does NOT check
+    // whether the quote is well chosen, whether the reading fits the quote (REV-16:3418 forbids it),
+    // and — the one worth stating loudly —
+    //
+    //   IT DOES NOT CHECK THAT THE SOURCE REFERENCE POINTS ANYWHERE REAL.
+    //
+    // Only its SHAPE is checked: parentheses carrying `file.ext:line`. Whether that file exists, and
+    // whether the quoted words stand at that line, is NOT established here and must not be read into a
+    // green result. The validator opens no file — that is its construction rule, which is why it runs
+    // identically in eight call sites and two repos, and the honest consequence is that a reference of
+    // the right shape pointing into the void passes. That is the same class this project has already
+    // paid for twice ("an identifier that resolves is not yet a correct identifier"), one level lower:
+    // here it does not even resolve, it merely looks as if it could. The way to the real resolution is
+    // open and named — lint.mjs already does the file IO and hands `anchorTerms` and `knownIds` in, so
+    // the same channel can later carry transcript lines — and it belongs to WI-117 / T079, not here.
+    // A test holds this boundary (a source reference on a non-existent file produces NO finding, on
+    // purpose), because a boundary that lives only in a comment disappears at the next rewrite.
+    static #validateUserMandate( { doc, revisionType } ) {
+        const struct = { 'messages': [], 'info': [], 'warnings': [], 'basis': MemoValidator.#emptyUserMandate() }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        if( schema[ 'userMandate' ] !== true ) { return struct }
+
+        const { elements, defaults } = BlockSections.userMandateForm()
+        const quoteRule = elements.find( ( entry ) => entry[ 'element' ] === 'quote' )
+        const sourceRule = elements.find( ( entry ) => entry[ 'element' ] === 'source' )
+        const readingRule = elements.find( ( entry ) => entry[ 'element' ] === 'reading' )
+        const chapters = MemoValidator.#numberedChapters( { doc } )
+
+        if( chapters.length === 0 ) {
+            // A form check that found no chapter has checked NOTHING. It reports red rather than a green
+            // zero — the same sentence the chapter-contract check makes, and for the same reason.
+            MemoValidator.#route( {
+                'code': 'WARN-200',
+                'feldPfad': 'chapter.userMandate',
+                'description': `chapters=0 elements=${ elements.length } defaults=${ defaults.length } — no numbered chapter was found, so the user-mandate form had nothing to compare; a check without a comparison basis reports red, not green`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+
+            return struct
+        }
+
+        const rows = chapters
+            .map( ( chapter ) => {
+                const { found, body, headLine } = MemoValidator.#mandateSectionOf( { chapter } )
+                if( found !== true ) {
+                    return { 'title': chapter[ 'title' ], 'section': false, 'quotes': [], 'sources': [], 'defaults': [], 'reading': null }
+                }
+
+                const quotes = MemoValidator.#quoteBlocks( { body } )
+                    .filter( ( block ) => quoteRule[ 'pattern' ].test( block[ 'text' ] ) === true )
+                const sources = body
+                    .filter( ( entry ) => sourceRule[ 'pattern' ].test( entry[ 'line' ] ) === true )
+                const defaultsFound = body
+                    .filter( ( entry ) => defaults.some( ( variant ) => variant[ 'pattern' ].test( entry[ 'line' ] ) === true ) )
+                const reading = body
+                    .find( ( entry ) => readingRule[ 'pattern' ].test( entry[ 'line' ] ) === true )
+
+                return { 'title': chapter[ 'title' ], 'section': true, headLine, quotes, sources, 'defaults': defaultsFound, 'reading': reading === undefined ? null : reading }
+            } )
+
+        MemoValidator.#routeMandateFindings( { rows, struct } )
+        struct[ 'basis' ] = {
+            'ran': true,
+            'chapters': rows.length,
+            'withSection': rows.filter( ( row ) => row[ 'section' ] === true ).length,
+            'withQuote': rows.filter( ( row ) => row[ 'quotes' ].length > 0 ).length,
+            'withSource': rows.filter( ( row ) => row[ 'sources' ].length > 0 ).length,
+            'withDefault': rows.filter( ( row ) => row[ 'defaults' ].length > 0 ).length,
+            'misordered': rows.filter( ( row ) => MemoValidator.#mandateMisordered( { row } ) === true ).length
+        }
+
+        return struct
+    }
+
+
+    // Consecutive `>` lines as ONE block, carrying the line number of the block's FIRST line so a
+    // finding can name where the quote starts.
+    static #quoteBlocks( { body } ) {
+        return body
+            .reduce( ( acc, entry ) => {
+                if( /^\s*>/.test( entry[ 'line' ] ) !== true ) { return { 'open': false, 'blocks': acc[ 'blocks' ] } }
+                const text = entry[ 'line' ].replace( /^\s*>\s?/, '' )
+                if( acc[ 'open' ] !== true ) {
+                    return { 'open': true, 'blocks': acc[ 'blocks' ].concat( [ { text, 'number': entry[ 'number' ], 'endNumber': entry[ 'number' ] } ] ) }
+                }
+
+                const head = acc[ 'blocks' ].slice( 0, -1 )
+                const last = acc[ 'blocks' ][ acc[ 'blocks' ].length - 1 ]
+
+                return { 'open': true, 'blocks': head.concat( [ { 'text': `${ last[ 'text' ] } ${ text }`, 'number': last[ 'number' ], 'endNumber': entry[ 'number' ] } ] ) }
+            }, { 'open': false, 'blocks': [] } )[ 'blocks' ]
+    }
+
+
+    // Does the optional reading stand BEFORE a quote or before a source reference? The reading is
+    // element 3, so everything it must follow is element 1 and 2 — position is the only thing judged.
+    static #mandateMisordered( { row } ) {
+        if( row[ 'reading' ] === null || row[ 'section' ] !== true ) { return false }
+        const later = row[ 'quotes' ].map( ( block ) => block[ 'number' ] )
+            .concat( row[ 'sources' ].map( ( entry ) => entry[ 'number' ] ) )
+
+        return later.some( ( number ) => number > row[ 'reading' ][ 'number' ] )
+    }
+
+
+    // One finding per offending chapter and per class, each naming its chapter and its line. A
+    // collective "5 chapters violate the form" is not a finding — the author has to know WHICH.
+    static #routeMandateFindings( { rows, struct } ) {
+        const emit = ( { code, description } ) => MemoValidator.#route( {
+            code,
+            'feldPfad': 'chapter.userMandate',
+            description,
+            'messages': struct[ 'messages' ],
+            'info': struct[ 'info' ],
+            'warnings': struct[ 'warnings' ]
+        } )
+
+        const missingSection = rows
+            .filter( ( row ) => row[ 'section' ] !== true )
+        const emptySection = rows
+            .filter( ( row ) => row[ 'section' ] === true && row[ 'quotes' ].length === 0 && row[ 'defaults' ].length === 0 )
+        const quoteWithoutSource = rows
+            .filter( ( row ) => row[ 'section' ] === true && row[ 'quotes' ].length > row[ 'sources' ].length )
+        const misordered = rows
+            .filter( ( row ) => MemoValidator.#mandateMisordered( { row } ) === true )
+        const both = rows
+            .filter( ( row ) => row[ 'defaults' ].length > 0 && row[ 'quotes' ].length > 0 )
+
+        if( missingSection.length > 0 ) {
+            emit( { 'code': 'WARN-200', 'description': `chapters=${ rows.length } without a section=${ missingSection.length } — ${ missingSection.map( ( row ) => `"${ row[ 'title' ] }" carries no \`### User-Auftrag\` section` ).join( '; ' ) }` } )
+        }
+        if( emptySection.length > 0 ) {
+            emit( { 'code': 'WARN-200', 'description': `chapters=${ rows.length } with an unusable section=${ emptySection.length } — ${ emptySection.map( ( row ) => `"${ row[ 'title' ] }" (line ${ row[ 'headLine' ] }) carries neither a block quote nor a default sentence` ).join( '; ' ) }` } )
+        }
+        if( quoteWithoutSource.length > 0 ) {
+            emit( { 'code': 'WARN-201', 'description': `chapters=${ rows.length } with a quote lacking a source reference=${ quoteWithoutSource.length } — ${ quoteWithoutSource.map( ( row ) => `"${ row[ 'title' ] }" quote at line ${ row[ 'quotes' ][ row[ 'sources' ].length ][ 'number' ] } (quotes=${ row[ 'quotes' ].length } sources=${ row[ 'sources' ].length })` ).join( '; ' ) }` } )
+        }
+        if( misordered.length > 0 ) {
+            emit( { 'code': 'WARN-202', 'description': `chapters=${ rows.length } with the reading out of position=${ misordered.length } — ${ misordered.map( ( row ) => `"${ row[ 'title' ] }" \`**Gelesen als:**\` at line ${ row[ 'reading' ][ 'number' ] } stands before quote or source reference` ).join( '; ' ) }` } )
+        }
+        if( both.length > 0 ) {
+            emit( { 'code': 'WARN-203', 'description': `chapters=${ rows.length } carrying default sentence and quote at once=${ both.length } — ${ both.map( ( row ) => `"${ row[ 'title' ] }" default sentence at line ${ row[ 'defaults' ][ 0 ][ 'number' ] }, quote at line ${ row[ 'quotes' ][ 0 ][ 'number' ] }` ).join( '; ' ) }` } )
+        }
     }
 
 
@@ -1139,6 +1590,96 @@ class MemoValidator {
         } )
 
         return struct
+    }
+
+
+    // THE IDENTIFIER FAMILY — INFO-100/101 (S1), WARN-100 (S2), WARN-101 (S3). Memo 081, WI-075,
+    // T055/T060.
+    //
+    // The recognition itself is NOT here and is not a second expression: it is IdRegister, whose
+    // vocabulary region is a character-identical mirror of repos/core/cli/src/IdVocabulary.mjs
+    // (PRD-28, WI-072/WI-073). This method is the WIRING — which channel each stage speaks through,
+    // and what is reported when there is nothing to compare against.
+    //
+    // WHY S1 IS AN INFO AND NOT A SILENT SUCCESS. "schau dir T55 an" is the input the memo names as
+    // the case the machine must UNDERSTAND rather than punish (REV-16:3033). What the author gets back
+    // is therefore the READING — "T055 -> topic '…'" — and the reading is the finding. `IdRegister`
+    // builds that sentence; this method only routes it.
+    static #validateIdReferences( { doc, revisionType, knownIds } ) {
+        const struct = { 'messages': [], 'info': [], 'warnings': [], 'basis': MemoValidator.#emptyIdResolution() }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        if( schema[ 'idReferences' ] !== true ) { return struct }
+
+        const { status, findings, basis } = IdRegister.resolve( { text: doc, knownIds } )
+        if( status !== true ) { return struct }
+
+        struct[ 'basis' ] = basis
+
+        if( findings.length === 0 ) { return struct }
+
+        // S1 — the reading of every recognised identifier, occurrences and distinct references stated
+        // separately because they are two different numbers.
+        MemoValidator.#route( {
+            'code': 'INFO-100',
+            'feldPfad': 'id.reading',
+            'description': `occurrences=${ basis[ 'occurrences' ] } distinct=${ basis[ 'distinct' ] } resolved=${ basis[ 'resolved' ] } unresolved=${ basis[ 'unresolved' ] } ambiguous=${ basis[ 'ambiguous' ] } noCarrier=${ basis[ 'noCarrier' ] } — ${ findings.map( ( item ) => item[ 'reading' ] ).join( '; ' ) }`,
+            'messages': struct[ 'messages' ],
+            'info': struct[ 'info' ],
+            'warnings': struct[ 'warnings' ]
+        } )
+
+        // No stock: S2 and S3 did NOT run. Said out loud, with the reason, instead of a green zero —
+        // the identifier counterpart of INFO-020.
+        if( basis[ 'available' ] !== true ) {
+            MemoValidator.#route( {
+                'code': 'INFO-101',
+                'feldPfad': 'id.stock',
+                'description': `${ basis[ 'distinct' ] } distinct identifiers were recognised but NOT checked for existence: ${ basis[ 'unavailableReason' ] }`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+
+            return struct
+        }
+
+        const named = ( verdict ) => findings
+            .filter( ( item ) => item[ 'verdict' ] === verdict )
+            .map( ( item ) => item[ 'token' ] )
+
+        const unresolved = named( 'unresolved' )
+        const ambiguous = named( 'ambiguous' )
+
+        if( unresolved.length > 0 ) {
+            MemoValidator.#route( {
+                'code': 'WARN-100',
+                'feldPfad': 'id.unresolved',
+                'description': `checked=${ basis[ 'checked' ] } against ${ basis[ 'comparedStockEntries' ] } stock entries over ${ basis[ 'comparedStockPrefixes' ] } covered prefixes — ${ unresolved.length } resolve nowhere: ${ unresolved.join( ', ' ) }`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+        }
+
+        if( ambiguous.length > 0 ) {
+            MemoValidator.#route( {
+                'code': 'WARN-101',
+                'feldPfad': 'id.ambiguous',
+                'description': `checked=${ basis[ 'checked' ] } against ${ basis[ 'comparedStockEntries' ] } stock entries — ${ ambiguous.length } resolve to more than one entry: ${ ambiguous.join( ', ' ) }`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+        }
+
+        return struct
+    }
+
+
+    // The basis shape in its "did not run" state. One spelling, so a refusal and a switched-off type
+    // cannot drift apart from the real thing.
+    static #emptyIdResolution() {
+        return { 'ran': false, 'available': false, 'unavailableReason': null, 'checked': 0, 'resolved': 0, 'unresolved': 0, 'ambiguous': 0, 'noCarrier': 0, 'distinct': 0, 'occurrences': 0, 'comparedCharacters': 0, 'comparedStockEntries': 0, 'comparedStockPrefixes': 0, 'comparedStockMemos': 0 }
     }
 
 

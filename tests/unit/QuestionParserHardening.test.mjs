@@ -111,15 +111,19 @@ describe( 'PRD-004 (Memo 011 Kap 11) — Optionen-/Key-Regex verankert (Bug C)',
     } )
 
 
-    it( 'does not preselect a phantom key from a bare prose letter', async () => {
+    it( 'does not recommend a phantom key from a bare prose letter', async () => {
         const { content } = await loadFixture( 'prose-phantom.md' )
         const { questions } = DocumentRegistry.parseQuestionSchema( { content } )
 
         // AI-Empfehlung is "B" -> the second real option. "Variante A" in the Hintergrund prose
-        // must NOT pull A into preselected.
+        // must NOT pull A into the recommendation.
+        // Memo 081, WI-025 (PRD-35): the anchored key regex this case measures is unchanged; after the
+        // split it feeds `aiRecommended` instead of `preselected`. Held against the field the derivation
+        // now writes — asserting `preselected` here would pass for every input and measure nothing.
         const real = questions[ 0 ][ 'options' ].filter( ( option ) => option[ 'kind' ] === 'option' )
         const bIndex = real.findIndex( ( option ) => option[ 'key' ] === 'B' )
-        expect( questions[ 0 ][ 'preselected' ] ).toEqual( [ bIndex ] )
+        expect( questions[ 0 ][ 'aiRecommended' ] ).toEqual( [ bIndex ] )
+        expect( questions[ 0 ][ 'preselected' ] ).toEqual( [] )
     } )
 } )
 

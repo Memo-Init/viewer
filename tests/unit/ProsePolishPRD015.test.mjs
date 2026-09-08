@@ -164,13 +164,25 @@ describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () =>
     } )
 
 
-    it( 'D6: a hideBlockBodySections pass runs from applyContentStructure and tags block-body-hidden', () => {
-        expect( clientSource ).toContain( 'function hideBlockBodySections()' )
-        expect( clientSource ).toContain( 'hideBlockBodySections()' )
-        expect( clientSource ).toContain( 'block-body-hidden' )
+    // Memo 081, WI-113: the pass still runs from applyContentStructure and still covers the same
+    // region — but it FOLDS instead of hiding, so the mechanism it is asserted on moved from a CSS
+    // class to <details>. The statement of this case is unchanged (a pass exists, it is called from
+    // the structure hook, it marks the sections, it reuses the shared level-aware helper); only the
+    // marker it looks for is the one that exists now. `block-body-hidden` was a class that made a
+    // section INVISIBLE with no way to reopen it.
+    it( 'D6: a foldBlockBodySections pass runs from applyContentStructure and marks chapter-section', () => {
+        expect( clientSource ).toContain( 'function foldBlockBodySections()' )
+        expect( clientSource ).toContain( 'foldBlockBodySections()' )
+        expect( clientSource ).toContain( 'chapter-section' )
         expect( clientSource ).toContain( 'function isBlockBodyHeading(' )
         // it reuses the level-aware Kap-3/5 collapse helper, not its own walker.
-        expect( clientSource ).toContain( 'hiddenSiblingsAfter( node ).forEach' )
+        expect( clientSource ).toContain( 'hiddenSiblingsAfter( node )' )
+        // VAKUUM-RIEGEL: the replaced class is really gone from the emitted script as a LIVE token —
+        // every remaining textual hit is a comment explaining the removal.
+        const live = clientSource
+            .split( '\n' )
+            .filter( ( line ) => line.includes( 'block-body-hidden' ) && !/^\s*(\/\/|\/\*|\*)/.test( line ) )
+        expect( live ).toEqual( [] )
     } )
 
 
@@ -183,15 +195,30 @@ describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () =>
     } )
 
 
-    it( 'D8: the previous-content render isolates slugCounts (snapshot/restore around it)', () => {
-        const start = clientSource.indexOf( 'if( diff.previousContent )' )
-        expect( start ).toBeGreaterThan( -1 )
-        const slice = clientSource.slice( start, start + 1200 )
+    // Memo 081, PRD-37 (WI-105): D8 protected the LIVE ANCHORS against a second render — the throwaway
+    // marked.parse of the previous side mutated the shared slugCounts map, so the snapshot/restore dance
+    // existed to undo it. That render is gone: the server now ships the block-text set the client used to
+    // derive from it, so there is no second render left to isolate against.
+    //   before: `if( diff.previousContent )` exists, and within 1200 chars: liveSlugCounts snapshot,
+    //           slugCounts.clear(), liveSlugCounts.forEach restore
+    //   after:  the cause is REMOVED — `diff.previousContent` does not occur, no second marked.parse of a
+    //           previous side exists, and exactly ONE slugCounts.clear() precedes the ONE live render
+    // The protected property is the same one, asserted at its cause instead of at its repair.
+    it( 'D8: no second render competes for slugCounts — the previous-side render is gone', () => {
+        expect( clientSource ).not.toContain( 'diff.previousContent' )
+        expect( clientSource ).not.toContain( 'var liveSlugCounts = new Map( slugCounts )' )
 
-        // snapshot the live map, clear, render previous, then restore -> live anchors untouched.
-        expect( slice ).toContain( 'var liveSlugCounts = new Map( slugCounts )' )
-        expect( slice ).toContain( 'slugCounts.clear()' )
-        expect( slice ).toContain( 'liveSlugCounts.forEach(' )
+        const start = clientSource.indexOf( 'var previousTextSet = new Set()' )
+        expect( start ).toBeGreaterThan( -1 )
+        const slice = clientSource.slice( start, start + 400 )
+
+        // The set arrives ready-made; nothing inside this block renders markdown.
+        expect( slice ).toContain( 'Array.isArray( diff.previousBlockTexts )' )
+        expect( slice ).not.toContain( 'marked.parse' )
+
+        // and the ONE live render still clears the map before it runs, as before.
+        const renderStart = clientSource.indexOf( 'slugCounts.clear()\n            var html = marked.parse( content )' )
+        expect( renderStart ).toBeGreaterThan( -1 )
     } )
 
 
@@ -229,7 +256,11 @@ describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () =>
         const end = clientSource.indexOf( 'function updateActiveTOC(', start )
         const slice = clientSource.slice( start, end )
 
-        expect( slice ).toContain( "heading.classList.contains( 'block-body-hidden' )" )
+        // Memo 081, WI-113: the block-body half of this test now asks about the FOLD FRAME instead of
+        // the hidden class — the six chapter sections are no longer hidden, they sit inside a
+        // <details class="chapter-section">. The raw-question half is untouched. The statement is the
+        // same one: a heading the structure pass collapsed must not appear in the table of contents.
+        expect( slice ).toContain( "heading.closest( '.chapter-section' )" )
         expect( slice ).toContain( "heading.classList.contains( 'raw-question-hidden' )" )
     } )
 } )
@@ -237,8 +268,13 @@ describe( 'inline prose pipeline shape (PRD-015, D4/D5/D6/D8/D9/D10/D11)', () =>
 
 // CSS shape: the two new view rules must exist (block-body hidden + h3 TOC indent + tables).
 describe( 'prose-polish CSS (PRD-015, D6/D9/D11)', () => {
-    it( 'D6: .block-body-hidden collapses out of the prose', () => {
-        expect( cssSource ).toContain( '.block-body-hidden { display: none; }' )
+    // Memo 081, WI-113: `display: none` is not a collapse, it is a disappearance — there was no toggle,
+    // so a section hidden that way could never be reopened. The rule is gone and the six chapter
+    // sections fold through <details class="chapter-section">, which this case now asserts instead.
+    it( 'D6: .chapter-section folds out of the prose, and the display:none rule is gone', () => {
+        expect( cssSource ).toContain( '#content .chapter-section {' )
+        expect( cssSource ).toContain( '#content .chapter-section > .chapter-section-summary {' )
+        expect( cssSource ).not.toContain( '.block-body-hidden { display: none; }' )
     } )
 
 

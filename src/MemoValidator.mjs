@@ -3,6 +3,7 @@ import { BlockMeta } from './BlockMeta.mjs'
 import { invalidOptionKinds } from './QuestionContract.mjs'
 import { OptionQualityLint } from './OptionQualityLint.mjs'
 import { BlockSections } from './BlockSections.mjs'
+import { IdRegister } from './IdRegister.mjs'
 
 
 // PRD-036/037/038 (Memo 016, Kap 13): deterministic, server-side, STRUCTURAL validation of
@@ -131,7 +132,39 @@ const ERROR_CODE_CATALOG = [
     { 'code': 'WARN-032', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'A non-approved word from the anchor register\'s misLabels[] sits in title/question/label/value — use the approved label (A7/R6). Only checked when the register was handed in; otherwise the run reports registerAvailable: false and the rule counts as NOT checked' },
     { 'code': 'WARN-033', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': '"mentalModelCheck" missing or empty — state "aligned" or name the collision with the known user tendency (A8, advisory: it never answers the question and never removes it)' },
     { 'code': 'WARN-034', 'severity': 'WARNING', 'theme': 'optionen-guete', 'description': 'Open questions were left UNGRADED because they carry none of the option-quality fields — the finding names every id, so a MIXED block cannot report the opted-in question and stay silent about the one next to it (A11). Non-blocking while the writing path adopts the fields; one field opts an object in and it is then measured in full' },
-    { 'code': 'INFO-020', 'severity': 'INFO', 'theme': 'optionen-guete', 'description': 'The option-quality lint examined 0 open questions although a questions-json block was present — the run reports that it compared nothing instead of reporting a green zero (A11)' }
+    { 'code': 'INFO-020', 'severity': 'INFO', 'theme': 'optionen-guete', 'description': 'The option-quality lint examined 0 open questions although a questions-json block was present — the run reports that it compared nothing instead of reporting a green zero (A11)' },
+    // Memo 081, WI-075 / T055+T060 (REV-16:3033-3046, 3061-3063) — IDENTIFIERS IN RUNNING TEXT.
+    //
+    // THE ANCHOR IS THIS VALIDATOR, REACHED THROUGH `memo lint`, AND DELIBERATELY NOT THE TRANSCRIPT
+    // GATE. The transcript gate judges the USER's input; punishing him for dictating "schau dir T55
+    // an" would be enforcement in the wrong place (REV-16:3033). Which is why these codes carry a NEW
+    // theme, `kennung`: the reject-gate selects its family BY THEME (QUESTION_FORMAT_THEMES below),
+    // and filing an identifier finding under an existing theme would have made every one of them a
+    // reason to reject a transcript — the same accident `03\d` once caused for the option-quality
+    // codes, a second time, through the one door this work was told not to touch.
+    //
+    // THREE STAGES, GRADED HARDNESS, AND ONLY S1 IS SHARP. S1 states the READING and never blocks.
+    // S2 (well-formed, resolves nowhere) and S3 (well-formed, resolves ambiguously) enter as
+    // WARNINGS. The memo argues warn-first from 21.7 % dead references in REV-08; measured 2026-09-08
+    // against REV-16 the figure is 3.2 % (9 of 284 checkable identifiers). BOTH numbers are recorded
+    // and NEITHER is why the stage stays soft. The reason is that SIX of those nine are cross-memo
+    // references written without the qualification F20=A requires — which makes S2 a finding about a
+    // CONVENTION BEING ADOPTED, not about a document being broken. A gate that hard-enforces a
+    // convention at the moment of its introduction blocks the introduction, and the author of the
+    // rule would be its first convict, in the very document that writes it down.
+    //
+    // THE SHARPENING RULE IS THE ONE AT THE HEAD OF THIS CATALOGUE: measure the corpus AGAIN, grouped
+    // by revision type, each group stating how many files it compared; sharpen only when the `full`
+    // group shows zero hits. A severity raised against a number nobody re-measured is a claim, not a
+    // gate.
+    //
+    // The code numbers are MEASURED, not assumed: INFO-010/020 and WARN-010/011/020/021/030-034/040
+    // were occupied on 2026-09-08 and the whole 1xx block was free, so the block the memo names is
+    // the block that is taken.
+    { 'code': 'INFO-100', 'severity': 'INFO', 'theme': 'kennung', 'description': 'Identifiers were recognised in the running text and are reported with their READING — "T055 -> topic \'…\'" — because the interpretation is what the author asked for; naming the identifier back at him is not (S1, never blocking)' },
+    { 'code': 'INFO-101', 'severity': 'INFO', 'theme': 'kennung', 'description': 'Identifiers were recognised but NO stock was handed in, so the existence rules did not run — the finding states that it compared nothing instead of reporting a green zero (the counterpart of INFO-020 for the identifier family)' },
+    { 'code': 'WARN-100', 'severity': 'WARNING', 'theme': 'kennung', 'description': 'A well-formed identifier resolves against NO entry of the handed-in stock (S2). Warn-first while the qualification convention of F20=A is being adopted; a prefix the stock does not cover at all is reported as noCarrier instead and is NOT this code' },
+    { 'code': 'WARN-101', 'severity': 'WARNING', 'theme': 'kennung', 'description': 'A well-formed identifier resolves to MORE THAN ONE entry of the handed-in stock (S3) — the more dangerous class, because an ambiguous reference reads as a working one' }
 ]
 
 
@@ -218,7 +251,12 @@ const REVISION_SCHEMA = {
         // Memo 081, WI-116: the CHAPTER contract is counted for `full` only. A prepare or an update
         // artefact carries no numbered body chapters, so measuring it against a per-chapter duty would
         // hold it to a form it does not have — the lesson of PRD-V13 below.
-        'chapterContract': true
+        'chapterContract': true,
+        // Memo 081, WI-075: the identifier family (INFO-100/101, WARN-100/101). It is entered HERE and
+        // not as a bare `revisionType !== 'prepare'` inside the check, because the comment at the head
+        // of this table states the invariant plainly: there is exactly ONE place where a per-type duty
+        // lives. A second, private spelling of the same duty is the drift this table exists against.
+        'idReferences': true
     },
     'update': {
         // An update revision replaces or extends chapters but must still carry the FULL set of
@@ -236,7 +274,10 @@ const REVISION_SCHEMA = {
         'lifecycleMarker': true,
         'documentOrder': false,
         'documentHeader': false,
-        'chapterContract': false
+        'chapterContract': false,
+        // An update revision is delivered prose like a full one and its references are meant to
+        // resolve, so the identifier family is ON here and only `prepare` switches it off.
+        'idReferences': true
     },
     'prepare': {
         // The three duties of the prepare artefact per memo-revision-generate/SKILL.md
@@ -251,7 +292,11 @@ const REVISION_SCHEMA = {
         'lifecycleMarker': false,
         'documentOrder': false,
         'documentHeader': false,
-        'chapterContract': false
+        'chapterContract': false,
+        // OFF for `prepare`, and for the same reason the lifecycle marker is off: the artefact sits
+        // BEFORE the revision it plans and legitimately points at work that does not exist yet. A
+        // loose reference there is the intended state, not a defect.
+        'idReferences': false
     }
 }
 
@@ -270,7 +315,15 @@ class MemoValidator {
     // validator reads no file, the caller hands the parsed register in (repos/core/cli/lib/lint.mjs does
     // the IO). Its absence is NOT a silent default — it is reported as `optionQuality.registerAvailable:
     // false`, and WARN-032 then counts as not checked rather than as clean.
-    static validate( { doc, fileName, anchorTerms } ) {
+    // `knownIds` (Memo 081, WI-075) is the SECOND optional payload key of exactly the same kind, and it
+    // is deliberately built the same way: the validator stays pure, the caller does the IO
+    // (repos/core/cli/lib/lint.mjs reads the memo's store, MemoView derives it from the store it
+    // already reads). Its absence is NOT a silent default and NOT an empty stock — it is reported as
+    // `idResolution.available: false` with a named reason, and the existence rules S2/S3 then count as
+    // NOT CHECKED rather than as clean. An empty stock, against which every identifier "fails to
+    // resolve", would be the vacuum-green gate with its sign flipped: it colours everything red and
+    // claims to have measured.
+    static validate( { doc, fileName, anchorTerms, knownIds } ) {
         // Memo 080, Kap 16 / WI-218: derive the revision type ONCE, then hand it to every check
         // family. Derived before the empty-document guard so even a refusal reports which schema
         // it would have applied.
@@ -290,7 +343,17 @@ class MemoValidator {
         //   skippedLegacy       how many OPEN questions carried none of the quality fields and could
         //                       therefore not be decided — a named skip, never a green zero
         //   registerAvailable   was an anchor register handed in — WARN-032 counts as checked only then
-        const struct = { 'status': false, 'messages': [], 'info': [], 'warnings': [], 'checked': { 'sections': 0, 'headerFields': 0, 'comparedSections': 0, 'comparedHeaderFields': 0 }, 'optionQuality': { 'ran': false, 'checked': 0, 'skippedAnswered': 0, 'skippedLegacy': 0, 'registerAvailable': false }, revisionType }
+        // Memo 081, WI-075: `idResolution` is the comparison basis of the IDENTIFIER family and it rides
+        // in EVERY result, including the refusal below — for the same reason `optionQuality` does. A
+        // basis that is missing from a refusal leaves the reader guessing whether nothing was checked
+        // or nothing was found, and those are different statements.
+        //   ran            did the family run at all (off for `prepare`)
+        //   available      was a stock handed in — without it S2/S3 count as NOT CHECKED
+        //   checked        how many DISTINCT references were held against the stock
+        //   resolved / unresolved / ambiguous / noCarrier   the four verdicts, and they sum to `checked`
+        //   distinct / occurrences   TWO statements, not one (measured on REV-16: 304 against 2252)
+        //   comparedCharacters / comparedStockEntries / comparedStockPrefixes   how much was compared
+        const struct = { 'status': false, 'messages': [], 'info': [], 'warnings': [], 'checked': { 'sections': 0, 'headerFields': 0, 'comparedSections': 0, 'comparedHeaderFields': 0 }, 'optionQuality': { 'ran': false, 'checked': 0, 'skippedAnswered': 0, 'skippedLegacy': 0, 'registerAvailable': false }, 'idResolution': MemoValidator.#emptyIdResolution(), revisionType }
 
         if( typeof doc !== 'string' || doc.length === 0 ) {
             const { message } = MemoValidator.#buildMessage( {
@@ -318,6 +381,7 @@ class MemoValidator {
         const documentOrder = MemoValidator.#validateDocumentOrder( { doc, revisionType } )
         const documentHeader = MemoValidator.#validateDocumentHeader( { doc, revisionType } )
         const chapterContract = MemoValidator.#validateChapterContract( { doc, revisionType } )
+        const idReferences = MemoValidator.#validateIdReferences( { doc, revisionType, knownIds } )
 
         const messages = []
             .concat( sections[ 'messages' ] )
@@ -336,6 +400,7 @@ class MemoValidator {
             .concat( optionKinds[ 'info' ] )
             .concat( optionQuality[ 'info' ] )
             .concat( lintExt[ 'info' ] )
+            .concat( idReferences[ 'info' ] )
 
         struct[ 'messages' ] = messages
         struct[ 'info' ] = info
@@ -343,7 +408,9 @@ class MemoValidator {
             .concat( documentHeader[ 'warnings' ] )
             .concat( chapterContract[ 'warnings' ] )
             .concat( optionQuality[ 'warnings' ] )
+            .concat( idReferences[ 'warnings' ] )
         struct[ 'optionQuality' ] = optionQuality[ 'basis' ]
+        struct[ 'idResolution' ] = idReferences[ 'basis' ]
         struct[ 'status' ] = messages.length === 0
         // Memo 080, PRD-R1: a verdict without its comparison basis is not readable. `checked` states HOW
         // MUCH was compared — how many mandatory sections and how many mandatory header fields the run
@@ -1264,6 +1331,96 @@ class MemoValidator {
         } )
 
         return struct
+    }
+
+
+    // THE IDENTIFIER FAMILY — INFO-100/101 (S1), WARN-100 (S2), WARN-101 (S3). Memo 081, WI-075,
+    // T055/T060.
+    //
+    // The recognition itself is NOT here and is not a second expression: it is IdRegister, whose
+    // vocabulary region is a character-identical mirror of repos/core/cli/src/IdVocabulary.mjs
+    // (PRD-28, WI-072/WI-073). This method is the WIRING — which channel each stage speaks through,
+    // and what is reported when there is nothing to compare against.
+    //
+    // WHY S1 IS AN INFO AND NOT A SILENT SUCCESS. "schau dir T55 an" is the input the memo names as
+    // the case the machine must UNDERSTAND rather than punish (REV-16:3033). What the author gets back
+    // is therefore the READING — "T055 -> topic '…'" — and the reading is the finding. `IdRegister`
+    // builds that sentence; this method only routes it.
+    static #validateIdReferences( { doc, revisionType, knownIds } ) {
+        const struct = { 'messages': [], 'info': [], 'warnings': [], 'basis': MemoValidator.#emptyIdResolution() }
+        const { schema } = MemoValidator.#schemaOf( { revisionType } )
+        if( schema[ 'idReferences' ] !== true ) { return struct }
+
+        const { status, findings, basis } = IdRegister.resolve( { text: doc, knownIds } )
+        if( status !== true ) { return struct }
+
+        struct[ 'basis' ] = basis
+
+        if( findings.length === 0 ) { return struct }
+
+        // S1 — the reading of every recognised identifier, occurrences and distinct references stated
+        // separately because they are two different numbers.
+        MemoValidator.#route( {
+            'code': 'INFO-100',
+            'feldPfad': 'id.reading',
+            'description': `occurrences=${ basis[ 'occurrences' ] } distinct=${ basis[ 'distinct' ] } resolved=${ basis[ 'resolved' ] } unresolved=${ basis[ 'unresolved' ] } ambiguous=${ basis[ 'ambiguous' ] } noCarrier=${ basis[ 'noCarrier' ] } — ${ findings.map( ( item ) => item[ 'reading' ] ).join( '; ' ) }`,
+            'messages': struct[ 'messages' ],
+            'info': struct[ 'info' ],
+            'warnings': struct[ 'warnings' ]
+        } )
+
+        // No stock: S2 and S3 did NOT run. Said out loud, with the reason, instead of a green zero —
+        // the identifier counterpart of INFO-020.
+        if( basis[ 'available' ] !== true ) {
+            MemoValidator.#route( {
+                'code': 'INFO-101',
+                'feldPfad': 'id.stock',
+                'description': `${ basis[ 'distinct' ] } distinct identifiers were recognised but NOT checked for existence: ${ basis[ 'unavailableReason' ] }`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+
+            return struct
+        }
+
+        const named = ( verdict ) => findings
+            .filter( ( item ) => item[ 'verdict' ] === verdict )
+            .map( ( item ) => item[ 'token' ] )
+
+        const unresolved = named( 'unresolved' )
+        const ambiguous = named( 'ambiguous' )
+
+        if( unresolved.length > 0 ) {
+            MemoValidator.#route( {
+                'code': 'WARN-100',
+                'feldPfad': 'id.unresolved',
+                'description': `checked=${ basis[ 'checked' ] } against ${ basis[ 'comparedStockEntries' ] } stock entries over ${ basis[ 'comparedStockPrefixes' ] } covered prefixes — ${ unresolved.length } resolve nowhere: ${ unresolved.join( ', ' ) }`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+        }
+
+        if( ambiguous.length > 0 ) {
+            MemoValidator.#route( {
+                'code': 'WARN-101',
+                'feldPfad': 'id.ambiguous',
+                'description': `checked=${ basis[ 'checked' ] } against ${ basis[ 'comparedStockEntries' ] } stock entries — ${ ambiguous.length } resolve to more than one entry: ${ ambiguous.join( ', ' ) }`,
+                'messages': struct[ 'messages' ],
+                'info': struct[ 'info' ],
+                'warnings': struct[ 'warnings' ]
+            } )
+        }
+
+        return struct
+    }
+
+
+    // The basis shape in its "did not run" state. One spelling, so a refusal and a switched-off type
+    // cannot drift apart from the real thing.
+    static #emptyIdResolution() {
+        return { 'ran': false, 'available': false, 'unavailableReason': null, 'checked': 0, 'resolved': 0, 'unresolved': 0, 'ambiguous': 0, 'noCarrier': 0, 'distinct': 0, 'occurrences': 0, 'comparedCharacters': 0, 'comparedStockEntries': 0, 'comparedStockPrefixes': 0, 'comparedStockMemos': 0 }
     }
 
 

@@ -85,7 +85,11 @@ describe( 'MemoValidator.validate — result shape & status (PRD-036)', () => {
         // of `checked` on purpose: `checked` is the section/header basis, and a basis bolted onto a
         // foreign one is exactly the drift the family exists against.
         // The assertion stays EXACT (an eighth key would still fail) — it is not loosened.
-        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'warnings' ] )
+        // Memo 081, WI-075 widens it by ONE more: `idResolution`, the comparison basis of the
+        // identifier family — did it run, was a stock available, how many distinct references it held
+        // against that stock and how they came out. Same reasoning as `optionQuality`: a key of its own,
+        // not a member of `checked`. The assertion stays EXACT (a ninth key would still fail).
+        expect( Object.keys( result ).sort() ).toEqual( [ 'checked', 'idResolution', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'warnings' ] )
         expect( Array.isArray( result[ 'messages' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'info' ] ) ).toBe( true )
         expect( Array.isArray( result[ 'warnings' ] ) ).toBe( true )

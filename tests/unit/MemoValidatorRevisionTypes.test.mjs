@@ -337,19 +337,23 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
         'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'WARN-034', 'INFO-020',
         // Memo 081, PRD-39 / WI-116: the chapter-contract count. WARN-010/011/020/021/030-034 were
         // measured as occupied on 2026-09-08, so it took the next free block.
-        'WARN-040'
+        'WARN-040',
+        // Memo 081, WI-075 (PRD-40): the identifier family. Four codes, a NEW theme (`kennung`), and
+        // the whole 1xx block was measured free before it was taken.
+        'INFO-100', 'INFO-101', 'WARN-100', 'WARN-101'
     ]
 
-    it( 'getCatalog() carries exactly 35 codes — the 19 of PRD-V13 plus the sixteen later additions', () => {
+    it( 'getCatalog() carries exactly 39 codes — the 19 of PRD-V13 plus the twenty later additions', () => {
         const { catalog } = MemoValidator.getCatalog()
         const codes = catalog.map( ( entry ) => entry[ 'code' ] ).sort()
 
         expect( codes ).toEqual( [
-            'INFO-010', 'INFO-020', 'MEMO-001', 'MEMO-002', 'MEMO-010', 'MEMO-020a', 'MEMO-020b',
+            'INFO-010', 'INFO-020', 'INFO-100', 'INFO-101', 'MEMO-001', 'MEMO-002', 'MEMO-010', 'MEMO-020a', 'MEMO-020b',
             'MEMO-020c', 'MEMO-020d', 'MEMO-025', 'MEMO-030', 'MEMO-031', 'MEMO-032', 'MEMO-033',
             'MEMO-034', 'MEMO-035', 'MEMO-036', 'MEMO-037', 'MEMO-038', 'MEMO-039', 'MEMO-040',
             'MEMO-050', 'MEMO-060', 'MEMO-070', 'MEMO-080', 'WARN-010', 'WARN-011', 'WARN-020',
-            'WARN-021', 'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'WARN-034', 'WARN-040'
+            'WARN-021', 'WARN-030', 'WARN-031', 'WARN-032', 'WARN-033', 'WARN-034', 'WARN-040',
+            'WARN-100', 'WARN-101'
         ] )
     } )
 
@@ -369,14 +373,16 @@ describe( 'MemoValidator revision types — no new error code (A8)', () => {
             [ 'MEMO-033', 'ERROR' ], [ 'MEMO-040', 'ERROR' ], [ 'MEMO-050', 'ERROR' ], [ 'MEMO-060', 'ERROR' ],
             [ 'MEMO-070', 'ERROR' ], [ 'MEMO-080', 'ERROR' ], [ 'WARN-010', 'WARNING' ]
         ] )
-        // The sixteen additions, in catalogue order: three WARNINGs (PRD-R1/R4), the FOURTH WARNING of
+        // The twenty additions, in catalogue order: three WARNINGs (PRD-R1/R4), the FOURTH WARNING of
         // Memo 081 / PRD-39 (WARN-040, the chapter-contract count, which stands next to the other two
-        // document-level codes), then the six option-quality ERRORs, five WARNINGs and one INFO of PRD-F4.
+        // document-level codes), then the six option-quality ERRORs, five WARNINGs and one INFO of PRD-F4,
+        // and finally the identifier family of Memo 081 / PRD-40: two INFOs then two WARNINGs.
         expect( catalog.filter( ( entry ) => ADDED_SINCE_PRD_V13.includes( entry[ 'code' ] ) ).map( ( entry ) => entry[ 'severity' ] ) )
             .toEqual( [
                 'WARNING', 'WARNING', 'WARNING', 'WARNING',
                 'ERROR', 'ERROR', 'ERROR', 'ERROR', 'ERROR', 'ERROR',
-                'WARNING', 'WARNING', 'WARNING', 'WARNING', 'WARNING', 'INFO'
+                'WARNING', 'WARNING', 'WARNING', 'WARNING', 'WARNING', 'INFO',
+                'INFO', 'INFO', 'WARNING', 'WARNING'
             ] )
     } )
 } )

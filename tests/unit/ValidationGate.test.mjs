@@ -34,8 +34,12 @@ describe( 'PRD-040 gate wiring (source-structural)', () => {
         // are SHARPENED, not loosened — the first pins the two-parameter signature (no default, no
         // optional marker), the second pins that the name actually reaches MemoValidator. A helper that
         // accepted the name and dropped it would satisfy the old assertion and defeat the whole change.
-        expect( src ).toMatch( /static #computeValidation\( \{ content, fileName \} \)/ )
-        expect( src ).toMatch( /try \{\s*const validation = MemoValidator\.validate\( \{ 'doc': content, fileName \} \)/ )
+        // Memo 081, WI-075: the signature gained `knownIds`, the injected identifier stock. Same
+        // no-silent-default contract as `fileName` — asserted below by the absence of a `=` default.
+        expect( src ).toMatch( /static #computeValidation\( \{ content, fileName, knownIds \} \)/ )
+        // Memo 081, WI-075: the stock is handed ON as well, not merely accepted — a helper that took
+        // `knownIds` and dropped it would satisfy the signature assertion and defeat the change.
+        expect( src ).toMatch( /try \{\s*const validation = MemoValidator\.validate\( \{ 'doc': content, fileName, knownIds \} \)/ )
         expect( src ).toMatch( /'validation': null/ )
     } )
 
@@ -74,9 +78,14 @@ describe( 'PRD-040 gate wiring (source-structural)', () => {
         // hand a file name on and 3 of which have no file at all and say so with an explicit null (the
         // raw /api/validate body, the empty state of a document without revisions, the body assembled
         // from the db). A ninth site, or a site that silently omitted the argument, breaks this.
-        expect( calls.length ).toBe( 8 )
+        // Memo 081, WI-075: NINE, not eight. #computeQuestionReject called MemoValidator DIRECTLY and
+        // was therefore never in this count — it was the one site that went around the funnel (D3 of the
+        // C1-4 acceptance). It is now IN the funnel and joins the explicit-null group, because a
+        // submitted transcript body has no revision file. The statement is unchanged and the number is
+        // re-measured: 9 = 5 with a name + 4 that have no file and say so.
+        expect( calls.length ).toBe( 9 )
         expect( withName.length ).toBe( 5 )
-        expect( withNull.length ).toBe( 3 )
+        expect( withNull.length ).toBe( 4 )
     } )
 } )
 
@@ -107,7 +116,9 @@ describe( 'PRD-040 gate emitted message (serialisation / safety)', () => {
         // Memo 080: the envelope grew additively — `checked` (PRD-R1, the comparison basis),
         // `revisionType` (PRD-V13, WHICH schema was applied) and `optionQuality` (PRD-F4, the basis of
         // the option-quality family). The assertion stays EXACT.
-        expect( Object.keys( parsed[ 'validation' ] ).sort() ).toEqual( [ 'checked', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'warnings' ] )
+        // Memo 081, WI-075 widens it by ONE more: `idResolution`, the comparison basis of the
+        // identifier family. The assertion stays EXACT — a ninth key would still fail.
+        expect( Object.keys( parsed[ 'validation' ] ).sort() ).toEqual( [ 'checked', 'idResolution', 'info', 'messages', 'optionQuality', 'revisionType', 'status', 'warnings' ] )
         expect( typeof parsed[ 'validation' ][ 'status' ] ).toBe( 'boolean' )
         expect( parsed[ 'validation' ][ 'revisionType' ] ).toBe( 'full' )
     } )

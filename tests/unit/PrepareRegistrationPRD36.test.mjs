@@ -242,11 +242,14 @@ describe( 'PRD-36 T-F — the call sites are counted, not assumed (comparison ba
         // earlier — the empty state a socket gets when its address names a document that holds no
         // revision. It has no file at all and joins the explicit-null group. The number is re-measured
         // here rather than carried over from the order.
-        expect( all.length ).toBe( 8 )
+        // Memo 081, WI-075: 9, not 8 — the ninth site (#computeQuestionReject) used to call the
+        // validator directly and was invisible to this count for exactly the reason this case exists.
+        // It has no file and joins the explicit-null group.
+        expect( all.length ).toBe( 9 )
         expect( withName.length ).toBe( 5 )
-        expect( withNull.length ).toBe( 3 )
+        expect( withNull.length ).toBe( 4 )
         // No silent default: the parameter is never optional and never defaulted in the signature.
-        expect( src ).toMatch( /static #computeValidation\( \{ content, fileName \} \)/ )
+        expect( src ).toMatch( /static #computeValidation\( \{ content, fileName, knownIds \} \)/ )
         expect( src ).not.toMatch( /#computeValidation\( \{ content, fileName = / )
     } )
 
@@ -257,7 +260,9 @@ describe( 'PRD-36 T-F — the call sites are counted, not assumed (comparison ba
         const block = gate.slice( 0, gate.indexOf( 'if( MemoView.#transcriptRegistry )' ) )
 
         expect( block.length ).toBeGreaterThan( 200 )
-        expect( block ).toMatch( /#computeValidation\( \{ 'content': latestRevision\[ 'content' \], 'fileName': latestRevision\[ 'fileName' \] \} \)/ )
+        // The trailing `, knownIds` is Memo 081 / WI-075; the fileName half this case is about is
+        // unchanged and is still matched literally.
+        expect( block ).toMatch( /#computeValidation\( \{ 'content': latestRevision\[ 'content' \], 'fileName': latestRevision\[ 'fileName' \], knownIds \} \)/ )
         expect( block ).toMatch( /latestRevision\[ 'fileName' \]/ )
     } )
 } )

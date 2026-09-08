@@ -374,6 +374,10 @@ class MemoView {
     // `memo-NNN.db` (a lock touch, a reader opening the file) would push an identical message to every
     // client. Keyed per document, because each memo carries its own database and its own ledger.
     static #lastRuntimeSeq = new Map()
+    // Memo 081, WI-075: memoDir -> { stamp, knownIds }. The stamp is the mtime quartet of the four
+    // store folders, so a store that changes on disk is picked up without a restart and an unchanged
+    // one is not re-read at every send.
+    static #knownIdsCache = new Map()
 
     // PRD-017 (Memo 072, Phase 5): the merged Spec-Viewer. #specRegistry holds the auto-discovered
     // project spec/ namespaces (SpecAutoRegister, no user-local store); #specRoots keeps the two disk
@@ -2751,7 +2755,8 @@ ${ VendorAssets.scriptTags().tags }
                 const latestRevision = await MemoView.#registry.getLatestRevision( { documentId: result[ 'documentId' ] } )
 
                 if( latestRevision[ 'found' ] === true ) {
-                    const { validation } = MemoView.#computeValidation( { 'content': latestRevision[ 'content' ], 'fileName': latestRevision[ 'fileName' ] } )
+                    const { knownIds } = MemoView.#knownIdsForDocument( { 'documentId': result[ 'documentId' ] } )
+                    const { validation } = MemoView.#computeValidation( { 'content': latestRevision[ 'content' ], 'fileName': latestRevision[ 'fileName' ], knownIds } )
                     const registryType = latestRevision[ 'revisionType' ]
                     const appliedType = validation === null || typeof validation !== 'object' ? null : validation[ 'revisionType' ]
                     const divergent = registryType !== null && appliedType !== null && registryType !== appliedType
@@ -4484,7 +4489,11 @@ ${ VendorAssets.scriptTags().tags }
                 // Memo 081, WI-080: `null` on purpose, not by omission. This route judges a raw body a
                 // writer is about to submit — there is no file yet, so the document's own signals are
                 // the RIGHT stage to decide the type here, not the accidental one.
-                const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': null } )
+                // Memo 081, WI-075: `knownIds` is `null` for the SAME reason and it is the honest
+                // answer — a body that belongs to no registered memo yet has no store to be held
+                // against. The result says available:false with that reason, which the reader can tell
+                // apart from "checked and clean".
+                const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': null, 'knownIds': null } )
                 const safe = ( validation !== null && typeof validation === 'object' )
                     ? validation
                     : { 'status': false, 'messages': [ 'MEMO-002 doc: Document is empty or not a string' ], 'info': [] }
@@ -5051,10 +5060,19 @@ ${ VendorAssets.scriptTags().tags }
                     // omitting the argument would look like the oversight this change removes.
                     const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': null } )
+                    const { knownIds } = MemoView.#knownIdsForDocument( { 'documentId': linked[ 'documentId' ] } )
+                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': null, knownIds } )
 
                     if( ws.readyState === 1 ) {
-                        ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': null, 'memoName': memoName, 'documentId': linked[ 'documentId' ], 'diff': null, questionSchema, vorwort, validation } ) )
+                        // Memo 081, PRD-40 (phase acceptance C1-4, P-1): this send site still carried a
+                        // dead `diff` key from the message contract BEFORE PRD-37, while the four others
+                        // carry diffAvailable/diffInfo. Measured: the client reads `data.diff` in the
+                        // content branch ZERO times and `data.diffAvailable` six times. No misbehaviour —
+                        // a contract in which one of five sends carries a field the other four do not and
+                        // nobody reads. There is no diff to announce here (the document has no revision),
+                        // so the announcement is the honest `false`/`null` the other four also emit when
+                        // they have nothing.
+                        ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': null, 'memoName': memoName, 'documentId': linked[ 'documentId' ], 'diffAvailable': false, 'diffInfo': null, questionSchema, vorwort, validation } ) )
                     }
                 }
 
@@ -5122,7 +5140,8 @@ ${ VendorAssets.scriptTags().tags }
                                 if( ws.readyState === 1 ) {
                                     const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': revFileName } )
+                                    const { knownIds } = MemoView.#knownIdsForDocument( { 'documentId': autoTarget[ 'documentId' ] } )
+                                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': revFileName, knownIds } )
                                     ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'documentId': autoTarget[ 'documentId' ], 'diffAvailable': diffAvailable, 'diffInfo': diffInfo, questionSchema, vorwort, validation } ) )
                                 }
                             } )
@@ -5147,7 +5166,8 @@ ${ VendorAssets.scriptTags().tags }
                                     const { memoName } = MemoView.resolveMemoName( { documentId: msg.documentId } )
                                     const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                                     const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': revFileName } )
+                                    const { knownIds } = MemoView.#knownIdsForDocument( { 'documentId': msg.documentId } )
+                                    const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': revFileName, knownIds } )
 
                                     ws.send( JSON.stringify( { 'type': 'content', 'content': content, 'fileName': revFileName, 'memoName': memoName, 'documentId': msg.documentId, 'diffAvailable': diffAvailable, 'diffInfo': diffInfo, questionSchema, vorwort, validation } ) )
 
@@ -5234,7 +5254,8 @@ ${ VendorAssets.scriptTags().tags }
                         const { memoName, documentId } = MemoView.resolveMemoName( { absolutePath: state.absolutePath } )
                         const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
                         const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-                        const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': fileName } )
+                        const { knownIds } = MemoView.#knownIdsForPath( { 'absolutePath': state.absolutePath } )
+                        const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': fileName, knownIds } )
                         const message = JSON.stringify( { 'type': 'content', content, fileName, memoName, documentId, diffAvailable, diffInfo, questionSchema, vorwort, validation } )
 
                         if( ws.readyState === 1 ) {
@@ -5369,7 +5390,10 @@ ${ VendorAssets.scriptTags().tags }
 
         const { questionSchema } = MemoView.#computeQuestionSchema( { content } )
         const { vorwort } = DocumentRegistry.parseVorwort( { content } )
-        const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': fileName } )
+        // Memo 081, WI-075: this site holds a full path and no documentId of its own, so the stock is
+        // resolved from the ADDRESS — the same asymmetry `memoName` above already lives with.
+        const stock = absolutePath ? MemoView.#knownIdsForPath( { absolutePath } ) : { 'knownIds': null }
+        const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': fileName, 'knownIds': stock[ 'knownIds' ] } )
         const message = JSON.stringify( { 'type': 'content', content, fileName, preserveScroll, memoName, documentId, diffAvailable, diffInfo, questionSchema, vorwort, validation } )
 
         clients.forEach( ( ws ) => {
@@ -5380,7 +5404,119 @@ ${ VendorAssets.scriptTags().tags }
     }
 
 
-    static #computeValidation( { content, fileName } ) {
+    // Memo 081, WI-075 — THE STOCK the identifier check (INFO-100/101, WARN-100/101) is measured
+    // against. Derived from the store this server ALREADY reads (readTopicStore's three corners plus
+    // the revisions folder), never from a second source and never from a new route.
+    //
+    // FILE NAMES ONLY, NO FILE CONTENT. The names carry the ids, which is what S2/S3 need; reading the
+    // 118 topic records to add a TITLE to the reading would put a content read on a path that runs at
+    // seven send sites. `memo lint` — one-shot, already async, and the anchor point the memo names —
+    // does read the titles, so the fuller reading exists exactly where the memo asks for it. The
+    // resolver supports titles either way; this caller simply does not supply them, and says so here
+    // rather than leaving the reader to wonder why the reading is shorter in the browser.
+    //
+    // CACHED PER MEMO DIRECTORY, invalidated by the mtime of the four folders. Measured before the
+    // cache existed the derivation cost ~1 ms per call at seven send sites; the numbers are in the
+    // build report. `prefixes` is the load-bearing half of the payload: it says which kinds this stock
+    // COVERS, and that is what tells a missing entry (WARN-100) apart from a kind the machine cannot
+    // look up at all (noCarrier). Without it an uncovered prefix would be reported to the author as
+    // his broken reference.
+    static knownIdsForMemoDir( { memoDir } ) {
+        if( typeof memoDir !== 'string' || memoDir.length === 0 ) { return { 'knownIds': null } }
+
+        const dirs = {
+            'T': resolve( memoDir, '_topics' ),
+            'WI': resolve( memoDir, '_work-items' ),
+            'B': resolve( memoDir, 'blocks' ),
+            'REV': resolve( memoDir, 'revisions' )
+        }
+        const stamp = Object.values( dirs )
+            .map( ( path ) => {
+                const stat = existsSync( path ) === true ? statSync( path, { 'throwIfNoEntry': false } ) : null
+
+                return stat === null ? '-' : String( stat.mtimeMs )
+            } )
+            .join( '|' )
+
+        const cached = MemoView.#knownIdsCache.get( memoDir )
+        if( cached !== undefined && cached[ 'stamp' ] === stamp ) { return { 'knownIds': cached[ 'knownIds' ] } }
+
+        const patterns = {
+            'T': /^(T\d{3,4})\.json$/,
+            'WI': /^(WI-\d{3,4})\.json$/,
+            'B': /^(B\d{3,4})$/,
+            'REV': /^(REV-\d{2,4})(?:-prepare|-update)?\.md$/
+        }
+        const covered = Object.keys( dirs )
+            .filter( ( prefix ) => existsSync( dirs[ prefix ] ) === true )
+        const memoId = MemoView.#memoIdOf( { memoDir } )
+        // DEDUPLICATED BY ID, and that is not tidiness: `REV-17.md` and `REV-17-update.md` are two
+        // FILES but one revision, so counting both would hand the reader a WARN-101 ambiguity that
+        // exists nowhere but in this list. Measured against the stock before the dedup, that single
+        // mistake produced 275 false ambiguities out of 312 references.
+        const ids = covered
+            .reduce( ( acc, prefix ) => {
+                const entries = ( () => {
+                    try { return readdirSync( dirs[ prefix ] ) } catch { return [] }
+                } )()
+                const found = entries
+                    .map( ( name ) => patterns[ prefix ].exec( name ) )
+                    .filter( ( hit ) => hit !== null )
+                    .map( ( hit ) => hit[ 1 ] )
+
+                return acc.concat( found )
+            }, [] )
+            .filter( ( id, position, all ) => all.indexOf( id ) === position )
+            .map( ( id ) => ( { 'id': id, 'memo': memoId, 'title': null } ) )
+
+        const knownIds = { 'memo': memoId, 'prefixes': covered, 'memos': memoId === null ? [] : [ memoId ], 'ids': ids }
+        MemoView.#knownIdsCache.set( memoDir, { stamp, knownIds } )
+
+        return { knownIds }
+    }
+
+
+    // The memo this directory IS, as the `M{NNN}` identifier the qualification rule compares against
+    // (F20 = A). Derived from the folder name (`081-slug`); an unnamed folder yields null, and a null
+    // scope means an unqualified reference is matched against unscoped stock entries only — never
+    // against a guessed memo.
+    static #memoIdOf( { memoDir } ) {
+        const hit = /^(\d{3,4})-/.exec( basename( memoDir ) )
+
+        return hit === null ? null : `M${ hit[ 1 ] }`
+    }
+
+
+    // The stock for a registered document, or null when this server cannot determine it. `null` is a
+    // REAL answer here: the result then says available:false with a reason, which is a different
+    // statement from "checked and clean".
+    static #knownIdsForDocument( { documentId } ) {
+        if( typeof documentId !== 'string' || documentId.length === 0 ) { return { 'knownIds': null } }
+
+        const found = MemoView.#registry === null ? null : MemoView.#registry.getDocument( { documentId } )
+        const doc = found === null || found === undefined ? null : found[ 'document' ]
+        if( doc === null || doc === undefined ) { return { 'knownIds': null } }
+
+        const location = MemoView.resolveMemoDir( { 'memoPath': doc[ 'memoPath' ] } )
+        if( location[ 'status' ] !== true ) { return { 'knownIds': null } }
+
+        return MemoView.knownIdsForMemoDir( { 'memoDir': location[ 'memoDir' ] } )
+    }
+
+
+    // The stock for a revision file addressed by its absolute path — the memo directory is the parent
+    // of the `revisions/` folder the file sits in.
+    static #knownIdsForPath( { absolutePath } ) {
+        if( typeof absolutePath !== 'string' || absolutePath.length === 0 ) { return { 'knownIds': null } }
+
+        const location = MemoView.resolveMemoDir( { 'memoPath': dirname( absolutePath ) } )
+        if( location[ 'status' ] !== true ) { return { 'knownIds': null } }
+
+        return MemoView.knownIdsForMemoDir( { 'memoDir': location[ 'memoDir' ] } )
+    }
+
+
+    static #computeValidation( { content, fileName, knownIds } ) {
         // PRD-040 (Memo 016, Kap 13): the deterministic MemoValidator runs as a GATE in the
         // server before delivering `content` to the View/AI. The result `{ status, messages,
         // info }` is attached as a `validation` field to every content WebSocket message.
@@ -5400,8 +5536,18 @@ ${ VendorAssets.scriptTags().tags }
         // carries NO default — a site that genuinely has no file (a raw transcript body, a body
         // assembled from the db, the empty state of a document without revisions) passes `null` and
         // says why. A silent default here would be the very omission this change removes.
+        //
+        // Memo 081, WI-075: `knownIds` rides the SAME path `fileName` took, and for the same reason.
+        // Measured before this change: SEVEN call sites went through this funnel and ONE went around it
+        // (#computeQuestionReject, carried as D3 of the C1-4 acceptance, without a file name either). A
+        // funnel one site bypasses is not a funnel — the identifier report would be right at seven
+        // places and silent at the eighth, and the eighth is the question path, where a dictated
+        // identifier is MOST likely. That site is now IN the funnel, so the count of call sites and the
+        // count of sites reached by the stock are the same number. Like `fileName`, the parameter is NOT
+        // optional and carries NO default: a site that genuinely cannot determine the stock passes
+        // `null` and says why, and the result then reports available:false instead of a green zero.
         try {
-            const validation = MemoValidator.validate( { 'doc': content, fileName } )
+            const validation = MemoValidator.validate( { 'doc': content, fileName, knownIds } )
 
             return { validation }
         } catch {
@@ -5483,8 +5629,16 @@ ${ VendorAssets.scriptTags().tags }
         // MemoValidator.isQuestionFormatCode reads each code's own catalogue THEME instead, so a code
         // in a new theme cannot creep in by number, and gate and test share ONE spelling of the rule
         // rather than a hand-kept regex copy on each side.
+        // Memo 081, WI-075: this site used to call MemoValidator DIRECTLY, bypassing the one funnel —
+        // it was carried as D3 of the C1-4 acceptance and it is closed here rather than worked around.
+        // It now goes through #computeValidation like the other seven, which also retires the second
+        // copy of the defensive try/catch. `fileName` and `knownIds` are BOTH null and both honestly:
+        // a submitted transcript body has no revision file and belongs to no memo store yet. The
+        // identifier family therefore reports available:false for it, and that is exactly right — the
+        // gate below rejects on the QUESTION-FORMAT themes only, and an identifier finding carries the
+        // new `kennung` theme precisely so it can never become a reason to reject a transcript.
         try {
-            const validation = MemoValidator.validate( { doc: content } )
+            const { validation } = MemoView.#computeValidation( { 'content': content, 'fileName': null, 'knownIds': null } )
 
             if( validation === null || typeof validation !== 'object' || validation[ 'status' ] !== false ) {
                 return { 'reject': false, 'messages': [] }
@@ -5827,7 +5981,9 @@ ${ VendorAssets.scriptTags().tags }
 
             // Memo 081, WI-080: `null` on purpose. This body is assembled from the database, so no file
             // name exists to derive a type from — the document's own signals are the right stage here.
-            const { validation } = MemoView.#computeValidation( { 'content': markdown, 'fileName': null } )
+            // Memo 081, WI-075: `knownIds` null for the same reason — this helper receives a body and
+            // nothing that says which memo it came from. available:false is the honest answer.
+            const { validation } = MemoView.#computeValidation( { 'content': markdown, 'fileName': null, 'knownIds': null } )
 
             return validation !== null && typeof validation === 'object' && validation[ 'status' ] === true
         } catch {

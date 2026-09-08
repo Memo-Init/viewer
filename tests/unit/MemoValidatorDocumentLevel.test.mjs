@@ -86,7 +86,11 @@ describe( 'MemoValidator document level — the catalogue (A14, A17)', () => {
         // re-introduce silently: the two numbers keep their meaning and their theme.
         // 35 since Memo 081 / PRD-39 added WARN-040 (the chapter-contract count) — additive, a WARNING,
         // and it took the next free block precisely because the occupied numbers were measured first.
-        expect( catalog.length ).toBe( 35 )
+        // 39 since Memo 081 / PRD-40 added the identifier family (INFO-100/101, WARN-100/101). Same
+        // discipline again: the occupied numbers were measured first and the free 1xx block taken. The
+        // family carries a NEW theme (`kennung`) so it can never creep into the transcript reject-gate,
+        // which is the very collision this case was written to keep impossible.
+        expect( catalog.length ).toBe( 39 )
         expect( added.length ).toBe( 2 )
         expect( added.map( ( entry ) => [ entry[ 'code' ], entry[ 'severity' ], entry[ 'theme' ] ] ) ).toEqual( [
             [ 'WARN-020', 'WARNING', 'dokument-ebene' ],

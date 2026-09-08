@@ -78,7 +78,7 @@ const ID_VOCABULARY = [
     { prefix: 'REQ', entity: 'requirement', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: '../lib/requirements/allocate.mjs:20', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
     { prefix: 'PLAN', entity: 'plan', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: null, carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
     { prefix: 'ANM', entity: 'annotation', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: '../../viewer/src/AnnotationStore.mjs:309', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
-    { prefix: 'LL', entity: 'lesson-learned', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/LessonStore.mjs:201', carrier: 'db-row', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    { prefix: 'LL', entity: 'lesson-learned', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/LessonStore.mjs:198', carrier: 'db-row', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
     // REV: 2–4. The whole stock is two-digit (891 REV-NN.md files); the head-room to four keeps a
     // memo past REV-99 readable. A global three-digit width could not match a single real revision.
     { prefix: 'REV', entity: 'revision', tier: 2, separator: 'required', digits: { min: 2, max: 4 }, mintedAt: null, carrier: 'filename', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },

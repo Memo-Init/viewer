@@ -91,6 +91,44 @@ const FERTIG_KRITERIEN_BLOCK = `Fertig-Kriterien (alle Pflicht, erst dann ist di
 - Memo im memo-view registriert (Reihenfolge: Server → POST /api/documents → Browser)
 - Session-Marker: \`memo session mark --memo <NNN> --event init || true\``
 
+// Memo 082 PRD-15 (WI-185, Kap 30b) — four ADDITIVE blocks for the `revision` header. Same criterion
+// as the V3 blocks above: the header is the only channel a fresh receiver is guaranteed to read, and
+// these four things are the ones measurably missing from it (30a). Every parser-bound line stays
+// byte-identical — the blocks are prose, so no schema bump is needed (30c, WI-188).
+
+// Block 5 — Rollen-Zeile, directly under the schema line and BEFORE every obligation. Derived from
+// Kap 23a, not invented. The USEFUL half is the Abgrenzung: the line says which role the receiver has
+// AND which it does not have. Deliberately NO machine-readable role field — that would be a fourth
+// role vocabulary, which 30a names premature; this is prose.
+const ROLE_LINE_BLOCK_REVISION = `**Deine Rolle in diesem Auftrag: Autor** (\`author\`). Du verarbeitest diesen Transcript zu
+{REV-NEXT}: Themen und Arbeitspakete erheben, Kapitel schreiben, Fragen stellen, beantwortete
+verschieben, Research beauftragen und ablegen. **Du planst keine Phasen (Planer) und du arbeitest
+nichts ab (Orchestrator, Worker).**`
+
+// Block 6 — the REAL precondition chain; it REPLACES the single `**Voraussetzung:** memo-sop` line.
+// 30a measured that the real chain carries two separately checked registry edges in two registers,
+// while the old line named only the second one.
+const PRECONDITION_CHAIN_BLOCK_REVISION = `**Voraussetzungs-Kette:** \`session-sop\` → \`memo-sop\` → \`memo-revision-generate\`. Beide
+Vorgaenger sind eigene Registry-Kanten und werden **einzeln** geprueft — \`memo-sop\` allein
+genuegt nicht.`
+
+// Block 7 — Reflexions-Hinweis, directly behind the chain. The Erlaubnis-Klausel is load-bearing: the
+// opposite malfunction (brooding instead of proceeding) is the reason a repeat stays explicitly
+// allowed — as the RESULT of the check, never as a reflex (Kap 28f).
+const REFLECTION_HINT_BLOCK_REVISION = `**Nach einer Gate-Meldung: erst pruefen, dann wiederholen.** Der urspruengliche Befehl ist eine
+Hypothese aus der Zeit VOR dem Lesen — pruefe ihn gegen das eben Gelesene und sag dazu, dass du
+geprueft hast. Ein identischer zweiter Versuch ist erlaubt, aber als Ergebnis dieser Pruefung, nie
+als Reflex.`
+
+// Block 8 — Fertig-Kriterien for the `revision` type, at the END, in the shape the memo-init type
+// already uses. 30a measured `revision` as the ONLY type without them — and the most frequent one
+// (8 of 8 V3 transcripts of M082).
+const COMPLETION_CRITERIA_BLOCK_REVISION = `Fertig-Kriterien (alle Pflicht, erst dann ist dieser Auftrag erledigt):
+- {REV-NEXT} geschrieben
+- Jede beantwortete Frage von \`## Offene Fragen\` nach \`## Beantwortete Fragen\` VERSCHOBEN
+- Offene Fragen im \`questions-json\`-Pflicht-Format
+- Session-Marker: \`memo session mark --memo {NNN} --event revision --revision {REV-NEXT} || true\``
+
 // Type "revision" — the only template carrying a memo number and revision fields.
 //
 // PRD-009 (Memo 022 Kap 10) — Bindungsmodell:
@@ -110,6 +148,8 @@ const REVISION_TEMPLATE = `# Transcript zu Memo {NNN} {Memo-Name} — Revision {
 
 ${ SCHEMA_LINE }
 
+${ ROLE_LINE_BLOCK_REVISION }
+
 ${ VOLL_READ_BLOCK_REVISION }
 
 ${ ACHTUNG_BLOCK }
@@ -124,7 +164,9 @@ Abgeleitete Workflow-Info (KEIN Bindungsschluessel): Feedback zu {REV-DISCUSSED}
 
 ${ ANTWORT_BINDUNG_BLOCK }
 
-**Voraussetzung:** \`memo-sop\` gelesen/geladen (Skill-Kontext aktuell).
+${ PRECONDITION_CHAIN_BLOCK_REVISION }
+
+${ REFLECTION_HINT_BLOCK_REVISION }
 
 Oeffentlicher Eintrittspunkt: \`memo-revision-generate\`
 
@@ -138,6 +180,8 @@ interne Schritte des oeffentlichen Skills — sie sind KEINE eigenen Eintrittspu
 Memo-Pfad: \`.memo/memos/{NNN}-{slug}/revisions/\`
 Vorherige Revision: \`{REV-PREV}.md\`
 Naechste Revision (zu erstellen): \`{REV-NEXT}.md\`
+
+${ COMPLETION_CRITERIA_BLOCK_REVISION }
 
 ---
 

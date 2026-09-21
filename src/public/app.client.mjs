@@ -2749,25 +2749,50 @@
         // PRD-006 (Kap 9, AC-04): split persisted "## Antwort auf F{N} ..." answer blocks out
         // of the transcript body so they can be re-attached as a dedicated section. Returns
         // the body with those blocks removed plus the answer markdown collected separately.
+        //
+        // M082-09-FX1 (Memo 082 Kap 20a, Cluster C — WI-120, follow-up to M082-09-06 O-1): THE SAME
+        // cut rule as scanAnswerBlocks, and therefore the same fence state. Until here this path read
+        // EVERY "## " line as a heading — including one that sits INSIDE a markdown fence, where it is
+        // content. Measured on four fence forms: a fence inside an answer section was TORN APART
+        // between the two halves (opening line in one, inner and closing line in the other), and an
+        // answer heading INSIDE a fence opened a section that does not exist, which pulled the rest of
+        // the body over with it. This is the DISPLAY path, so nothing was lost — but it was filed in
+        // the wrong half, and the defect is the same one the write path carried.
+        //
+        // scanCodeFences IS USED, NOT REBUILT: a second fence detector of its own would be exactly the
+        // parallel path this repair removes. The server twin is UserInputCapture.scanCodeFences, and
+        // HeaderSplitParityPRD32 holds the two readings against each other line by line.
+        //
+        // AN OPEN FENCE AT THE END OF THE TEXT IS NOT DECIDED: everything behind it counts as content,
+        // so nothing is cut. For a display that is the lossless reading — the writing path refuses at
+        // the same point instead (mergeAnswerBlocks, code unclosed-fence), because there a wrong guess
+        // would destroy text rather than misfile it.
         function splitAnswerBlocks( bodyMd ) {
             var text = String( bodyMd || '' )
             var lines = text.split( '\n' )
+            var fences = scanCodeFences( text )
             var bodyLines = []
             var answerLines = []
             var inAnswer = false
 
-            lines.forEach( function( line ) {
-                var isAnswerHeading = /^##\s+Antwort auf\s+F\d+/.test( line )
+            lines.forEach( function( line, index ) {
+                var outside = fences.inFence[ index ] !== true
+                var isAnswerHeading = outside && /^##\s+Antwort auf\s+F\d+/.test( line )
                 if( isAnswerHeading ) { inAnswer = true }
-                else if( /^##\s/.test( line ) ) { inAnswer = false }
+                else if( outside && /^##\s/.test( line ) ) { inAnswer = false }
 
                 if( inAnswer ) { answerLines.push( line ) }
                 else { bodyLines.push( line ) }
             } )
 
+            // The two halves plus the comparison set they were cut against: a caller (and a test) can
+            // state HOW MUCH was read instead of trusting that something was.
             return {
                 bodyWithoutAnswers: bodyLines.join( '\n' ).trim(),
-                answersMd: answerLines.join( '\n' )
+                answersMd: answerLines.join( '\n' ),
+                fences: fences.fences,
+                comparedLines: fences.comparedLines,
+                decidable: fences.decidable
             }
         }
 

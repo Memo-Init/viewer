@@ -110,6 +110,7 @@ Diese Revision entsteht aus der Datenbank.
 - **Frage (Original):** Wie werden Phasen normalisiert?
 - **AI-Empfehlung war:** A
 - **User-Entscheidung:** A — Aus rollout/state.json projizieren
+- **Entscheidungsweg:** eigenstaendige Entscheidung — stimmt mit der AI-Empfehlung ueberein
 - **Wortlaut:** A — Normalisierung laeuft aus rollout/state.json.
 - **Beantwortet in:** REV-02
 - **Anmerkung:** Muendliche Aussage uebersteuert die Widget-Auswahl
@@ -121,6 +122,7 @@ Diese Revision entsteht aus der Datenbank.
 - **Frage (Original):** Wie wird die Herkunft gefuehrt?
 - **AI-Empfehlung war:** A
 - **User-Entscheidung:** —
+- **Entscheidungsweg:** nicht erhoben — die Herkunft dieser Entscheidung ist nicht aufgezeichnet
 - **Beantwortet in:** REV-03
 
 ## Phasen

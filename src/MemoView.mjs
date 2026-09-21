@@ -2130,6 +2130,77 @@ class MemoView {
     }
 
 
+    // M082-09-01 (Memo 082 Kap 20c, WI-115): the ONE source of the port the owner check guards.
+    // cli.mjs asks for it instead of carrying a second literal 3333 — two spellings of the same port
+    // is how a guard and the thing it guards drift apart.
+    static defaultPort() {
+        return { port: PORT_SCHEMA[ 0 ] }
+    }
+
+
+    // M082-09-01 (Memo 082 Kap 20c, WI-115): the public seam of the EXISTING probe. It opens no new
+    // socket and adds no listener — it delegates to #isPortInUse, which the port selection already
+    // uses. Spelled as a delegation on purpose: a second probe implementation would be a second answer
+    // to "is 3333 taken", and two answers to that question is the defect this order closes.
+    static async probePortInUse( { port } ) {
+        const { inUse } = await MemoView.#isPortInUse( { port } )
+
+        return { inUse }
+    }
+
+
+    // M082-09-01 (WI-115): the PURE decision of the owner check. Handed the probe result and whatever
+    // the held port answered on /api/health, it decides whether a start may proceed and what the user
+    // is told. Pure so all three lages are provable without a socket.
+    //
+    // IT NEVER TERMINATES ANYTHING and it never picks another port. Chapter 20c is the record of a
+    // whole review round clicked into a foreign build: the answer to "occupied" is to NAME the owner,
+    // because that is what lets a human decide. A silent move to 4444 would leave the reviewer on the
+    // foreign 3333 — the same defect, one port further.
+    static buildPortOwnerReport( { port, inUse, health } ) {
+        if( inUse !== true ) {
+            return { report: { blocked: false, reason: 'port-free', lines: [] } }
+        }
+
+        const answered = health !== undefined && health !== null && typeof health === 'object'
+
+        if( answered !== true ) {
+            return {
+                report: {
+                    blocked: true,
+                    reason: 'held-without-self-report',
+                    lines: [
+                        `Port ${ port } is held, and the holder does not answer /api/health.`,
+                        '  This is not a memo-view server, or not one that reports its origin.',
+                        `  Identify the holder with: lsof -nP -iTCP:${ port } -sTCP:LISTEN`,
+                        '  Nothing was started and nothing was terminated.'
+                    ]
+                }
+            }
+        }
+
+        const show = ( value ) => value === null || value === undefined ? 'unknown' : String( value )
+
+        return {
+            report: {
+                blocked: true,
+                reason: 'held-by-memo-view',
+                lines: [
+                    `Port ${ port } is held by a running memo-view server:`,
+                    `  pid            ${ show( health[ 'pid' ] ) }`,
+                    `  originRepo     ${ show( health[ 'originRepo' ] ) }`,
+                    `  originBranch   ${ show( health[ 'originBranch' ] ) }`,
+                    `  originWorktree ${ show( health[ 'originWorktree' ] ) }`,
+                    `  startedAt      ${ show( health[ 'startedAt' ] ) }`,
+                    `  bootHash       ${ show( health[ 'bootHash' ] ) }`,
+                    '  Nothing was started and nothing was terminated.',
+                    '  Stop that server yourself if it is not the one you mean to measure.'
+                ]
+            }
+        }
+    }
+
+
     // PRD-017 (Memo 072, Phase 5, F9=A): compose the /api/specs payload. For every auto-discovered
     // namespace, list its versions NEWEST-FIRST (so the client preselects the latest), and for each
     // version resolve its draft-channel left-nav groups + a local publish badge. The badge is a pure
@@ -2560,14 +2631,104 @@ ${ VendorAssets.scriptTags().tags }
     }
 
 
+    // M082-09-01 (Memo 082 Kap 20c, WI-115): the PURE half of the origin reading. It decides nothing
+    // by touching the disk — it is handed what the disk said and turns it into the four fields.
+    // Pure on purpose, and for the same reason `stale` is: BOTH directions of `originWorktree` have to
+    // be provable, and a classifier that reached for its own source dir could only ever show the one
+    // direction the test machine happens to be in.
+    //
+    // NO SILENT DEFAULT. An undecidable origin answers `null` for all three values plus an
+    // `originStatus` that NAMES why. A comfortable `false` (or the main tree's path as a guess) would
+    // be exactly the failure the chapter records: reading an undecidable situation as the harmless
+    // case. `originStatus` is therefore ALWAYS a non-empty string, in every branch.
+    static classifyOrigin( { repoDir, markerKind, headText } ) {
+        const branchOf = ( text ) => {
+            if( typeof text !== 'string' ) { return null }
+
+            const line = text.split( '\n' )[ 0 ].trim()
+
+            // A detached HEAD carries a raw sha, not a `ref:` line — that is a real answer of "no
+            // branch", and it is reported as `null`, not as an invented name.
+            return line.startsWith( 'ref: refs/heads/' ) === true ? line.slice( 'ref: refs/heads/'.length ) : null
+        }
+
+        if( markerKind === 'directory' ) {
+            return { originRepo: repoDir, originBranch: branchOf( headText ), originWorktree: false, originStatus: 'main-tree' }
+        }
+
+        if( markerKind === 'file' ) {
+            return { originRepo: repoDir, originBranch: branchOf( headText ), originWorktree: true, originStatus: 'worktree' }
+        }
+
+        if( markerKind === 'unreadable' ) {
+            return { originRepo: repoDir, originBranch: null, originWorktree: null, originStatus: 'git-marker-unreadable' }
+        }
+
+        return { originRepo: null, originBranch: null, originWorktree: null, originStatus: 'no-git-marker' }
+    }
+
+
+    // M082-09-01 (WI-115): the I/O edge of the origin reading — the ONLY place that touches the disk.
+    // It starts from the MODULE address of the running process, never from `process.cwd()`: the working
+    // directory is whatever shell happened to start the server, so a cwd-derived answer would be a
+    // confident lie in exactly the situation this guard exists for.
+    //
+    // A worktree's `.git` is a FILE holding a `gitdir:` pointer; the main tree's is a DIRECTORY. That
+    // is the whole discriminator, and both branches read their HEAD from their own place.
+    static readOriginTree( { startDir } ) {
+        const parts = String( startDir ).split( sep )
+            .filter( ( part ) => part.length > 0 )
+        const chain = parts
+            .reduce( ( acc, part ) => acc.concat( [ join( acc.length === 0 ? sep : acc[ acc.length - 1 ], part ) ] ), [] )
+            .reverse()
+        const repoDir = chain
+            .find( ( dir ) => existsSync( join( dir, '.git' ) ) === true )
+
+        if( repoDir === undefined ) {
+            return { origin: MemoView.classifyOrigin( { repoDir: null, markerKind: 'missing', headText: null } ) }
+        }
+
+        const markerPath = join( repoDir, '.git' )
+
+        try {
+            const isDir = statSync( markerPath ).isDirectory()
+
+            if( isDir === true ) {
+                const headText = existsSync( join( markerPath, 'HEAD' ) ) === true ? readFileSync( join( markerPath, 'HEAD' ), 'utf8' ) : null
+
+                return { origin: MemoView.classifyOrigin( { repoDir, markerKind: 'directory', headText } ) }
+            }
+
+            const pointer = readFileSync( markerPath, 'utf8' ).split( '\n' )[ 0 ].trim()
+            const gitDir = pointer.startsWith( 'gitdir:' ) === true ? pointer.slice( 'gitdir:'.length ).trim() : null
+
+            if( gitDir === null ) {
+                return { origin: MemoView.classifyOrigin( { repoDir, markerKind: 'unreadable', headText: null } ) }
+            }
+
+            const headPath = join( gitDir, 'HEAD' )
+            const headText = existsSync( headPath ) === true ? readFileSync( headPath, 'utf8' ) : null
+
+            return { origin: MemoView.classifyOrigin( { repoDir, markerKind: 'file', headText } ) }
+        } catch {
+            return { origin: MemoView.classifyOrigin( { repoDir, markerKind: 'unreadable', headText: null } ) }
+        }
+    }
+
+
     // The body of GET /api/health as a PURE function of the two readings it compares. Pure on purpose:
     // both directions of `stale` (the green one and the red one) have to be provable, and a builder
     // that reaches for the module's own source dir could only ever show the green one.
     // A process that never recorded a boot answers `status: 'unrecorded'` and `stale: null` — it can
     // not compare, and a comfortable `false` would be an invented answer.
-    static buildHealthPayload( { boot, current, nowMs } ) {
+    //
+    // M082-09-01 (WI-115): `origin` is HANDED IN for the same reason. A caller that omits it gets the
+    // named status `origin-not-provided` — the payload never invents a source tree it was not told.
+    static buildHealthPayload( { boot, current, nowMs, origin } ) {
         const at = Number.isFinite( nowMs ) === true ? nowMs : Date.now()
         const uptimeSeconds = boot.startedAtMs === null ? null : Math.max( 0, Math.round( ( at - boot.startedAtMs ) / 1000 ) )
+        const given = origin !== undefined && origin !== null && typeof origin === 'object'
+        const known = given === true ? origin : { originRepo: null, originBranch: null, originWorktree: null, originStatus: 'origin-not-provided' }
 
         return {
             payload: {
@@ -2581,7 +2742,11 @@ ${ VendorAssets.scriptTags().tags }
                 hashedFiles: current.files,
                 hashComputations: current.hashCount,
                 stale: boot.bootHash === null ? null : boot.bootHash !== current.hash,
-                memoRoot: boot.memoRoot
+                memoRoot: boot.memoRoot,
+                originRepo: known[ 'originRepo' ],
+                originBranch: known[ 'originBranch' ],
+                originWorktree: known[ 'originWorktree' ],
+                originStatus: known[ 'originStatus' ]
             }
         }
     }
@@ -2589,7 +2754,8 @@ ${ VendorAssets.scriptTags().tags }
 
     // The route's call site: the recorded boot against the source tree as it is on disk right now.
     static healthPayload( { nowMs } ) {
-        const { payload } = MemoView.buildHealthPayload( { boot: MemoView.#boot, current: getServerSource(), nowMs } )
+        const { origin } = MemoView.readOriginTree( { startDir: SERVER_SRC_DIR } )
+        const { payload } = MemoView.buildHealthPayload( { boot: MemoView.#boot, current: getServerSource(), nowMs, origin } )
         // Memo 081, WI-106: THE GATE COUNTS, and it says so where a running server already answers what
         // it is doing. A gate without a counter is the send-side twin of a filter that never says how
         // much it removed — the exact class PRD-35 closed for the tree. buildHealthPayload stays pure

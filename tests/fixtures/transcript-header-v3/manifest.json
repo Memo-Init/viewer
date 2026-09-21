@@ -9,8 +9,8 @@
         {
             "id": "memo-init",
             "file": "memo-init.md",
-            "promptHash": "56eb31281c03d6b571d17329b383512863726121296949c5ded0b17405357db1",
-            "promptLength": 1433
+            "promptHash": "900682e8b99d6c151b28ff5e5575e637cd65e0fb9cc46c6e27d384b02fb21a13",
+            "promptLength": 1871
         },
         {
             "id": "revision",
@@ -21,8 +21,14 @@
         {
             "id": "frei",
             "file": "frei.md",
-            "promptHash": "3f06dd3e850f445829ec2513ab477b12a8139749cd405c83159b8c31fa43c566",
-            "promptLength": 759
+            "promptHash": "5def4558b0d415219ab47eb2383d2e6522dc38581a1624817e3526c3fde3456e",
+            "promptLength": 956
+        },
+        {
+            "id": "rollout",
+            "file": "rollout.md",
+            "promptHash": "80176fe039fb45b168dafedfeef401e008b58923f5ddcbab2d4956c906f4d59d",
+            "promptLength": 1362
         }
     ]
 }

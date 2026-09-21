@@ -65,12 +65,12 @@ const ID_VOCABULARY = [
     // MNT: the code half moved to MNT-{NNN} with PRD-21 (MaintenanceStore.mjs:42), the DATA half is
     // still M001.json … M006.json. The expression survives BOTH states — `M004` matches through the
     // M row, `MNT-004` through this one. Renaming the cards belongs behind the merge to main.
-    { prefix: 'MNT', entity: 'maintenance-card', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/MaintenanceStore.mjs:325', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
-    { prefix: 'T', entity: 'topic', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/TopicStore.mjs:485', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
-    { prefix: 'B', entity: 'block', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/MemoBlock.mjs:269', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
-    { prefix: 'G', entity: 'goal', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/GoalStore.mjs:347', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
-    { prefix: 'WI', entity: 'work-item', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/WorkItemStore.mjs:1078', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
-    { prefix: 'RES', entity: 'research', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/ResearchStore.mjs:287', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    { prefix: 'MNT', entity: 'maintenance-card', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/MaintenanceStore.mjs:528', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    { prefix: 'T', entity: 'topic', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/TopicStore.mjs:471', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    { prefix: 'B', entity: 'block', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/MemoBlock.mjs:270', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    { prefix: 'G', entity: 'goal', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/GoalStore.mjs:691', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    { prefix: 'WI', entity: 'work-item', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/WorkItemStore.mjs:1086', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    { prefix: 'RES', entity: 'research', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/ResearchStore.mjs:700', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
     // PRD: 1–4, not 3–4. Nothing mints a PRD id — the carrier is the file name, and the real stock
     // runs PRD-1 … PRD-514 unpadded: 3 one-digit, 59 two-digit, 514 three-digit files. A 3-digit
     // floor would fail to recognize 62 real PRDs, this very one (PRD-28) among them.

@@ -6090,8 +6090,32 @@
                 // preselection seeds the display and never reaches this field.
                 var st = questionNav.state[ qIdx ]
                 var stored = storedAnswerFor( q )
-                if( st && st.added === true && st.addedText && st.touched === true ) {
-                    input.value = buildAnswerText( q, st ).answerLine
+                // M082-09-04 (Memo 082 Kap 20, Cluster D, S1): the three conditions of this gate are
+                // DECIDED here, not inherited. After M082-09-03 the preselection no longer seeds the
+                // selection, so not one of them is still here to fend off the recommendation — each had
+                // to name a case of its own or go. All three named one:
+                //   `added`     STAYS — the line between "selected" and "decided". It is the condition
+                //       Memo 079 PRD-24 lacked, and without it an un-confirmed click becomes a recorded
+                //       answer again.
+                //   `addedText` STAYS — deliberately, although every write site today moves it together
+                //       with `added`. A guard is not excess because the current data happens to satisfy
+                //       it; reading it that way is how an unchecked assumption turns into an undeclared
+                //       invariant. It is what makes the coupling checkable at the READER.
+                //   `touched`   STAYS — measured, not assumed: stateFromStoredRecord derives `added`
+                //       from a stored answer text while carrying `touched` straight out of the record,
+                //       so a stored entry can still arrive confirmed-but-untouched. PRD-026's machine
+                //       injection is the same shape.
+                // WHAT DOES FALL is the gate's blind spot: it asked about the STATE and never about the
+                // RESULT. A confirmation carrying no answer line passed all three and produced an EMPTY
+                // field, which the save path then skipped without a word — and on the way it also
+                // suppressed both branches below, the stored read-back and the unconfirmed hint. A
+                // confirmed answer is a value only when it actually carries one; otherwise the chain
+                // continues instead of ending in a blank.
+                var confirmedValue = ( st && st.added === true && st.addedText && st.touched === true )
+                    ? buildAnswerText( q, st ).answerLine
+                    : ''
+                if( confirmedValue.trim().length > 0 ) {
+                    input.value = confirmedValue
                 } else if( stored.found === true ) {
                     // PRD-F3 (S2): an answer ALREADY saved into the transcript is read BACK out of the
                     // content instead of the field starting empty — otherwise a second "Uebernehmen" would
@@ -9357,27 +9381,57 @@
         function collectAddedAnswers() {
             var entries = questionNav.state || []
             var examined = entries.filter( function( st ) { return !!st } )
-            var blocks = examined
-                .filter( isConfirmedAnswer )
-                .map( function( st ) { return st.addedText } )
 
-            var skipped = entries
-                .map( function( st, idx ) { return { st: st, idx: idx } } )
+            // M082-09-04 (Memo 082 Kap 20, Cluster D, S2): every examined entry is classified ONCE, and
+            // that single classification feeds BOTH halves — what is exported and what is reported.
+            // Before, the export filter and the report filter were two predicates over the same state,
+            // and a third discard reason fell straight between them: a confirmation carrying no answer
+            // text was exported as a bare heading on the transcript path and dropped without a word on
+            // the popup path, while the button said "hinzugefügt ✓".
+            //
+            // THE REASON IS A MACHINE TOKEN (english). Its German sentence is assembled in
+            // unconfirmedNotice — display text and field value are two artefacts, and only one of them
+            // is read by a person.
+            //
+            // The order is not arbitrary. A missing question leaves nothing to form a block from, so it
+            // outranks the content question, which in turn outranks "never confirmed" — the reason a
+            // user is shown has to be the one they can act on. And an entry that carries nothing at all
+            // is NOT a discard: it is the legitimate null case and stays quiet, because a notice that
+            // fires on every save is one nobody reads after three days.
+            var classified = entries
+                .map( function( st, idx ) { return { st: st, idx: idx, q: ( questionNav.questions || [] )[ idx ] } } )
                 .filter( function( entry ) { return !!entry.st } )
-                .filter( function( entry ) { return !isConfirmedAnswer( entry.st ) } )
-                .filter( function( entry ) {
-                    return ( entry.st.selected || [] ).length > 0 || ( entry.st.custom || [] ).length > 0
+                .map( function( entry ) {
+                    // The confirmed block is heading + blank line + answer line, so everything after the
+                    // FIRST blank line is the body. Read out of the text that will really be exported,
+                    // not recomputed from the live selection: the question here is what the export
+                    // carries, not what the widget currently shows.
+                    var body = isConfirmedAnswer( entry.st )
+                        ? String( entry.st.addedText ).split( '\n\n' ).slice( 1 ).join( '\n\n' ).trim()
+                        : ''
+                    var hasIntent = ( entry.st.selected || [] ).length > 0 || ( entry.st.custom || [] ).length > 0
+                    var reason = isConfirmedAnswer( entry.st )
+                        ? ( body.length > 0 ? null : 'empty-content' )
+                        : ( hasIntent === true ? ( entry.q ? 'not-confirmed' : 'no-question' ) : null )
+
+                    return { st: entry.st, idx: entry.idx, q: entry.q, reason: reason }
                 } )
+
+            var blocks = classified
+                .filter( function( entry ) { return entry.reason === null && isConfirmedAnswer( entry.st ) } )
+                .map( function( entry ) { return entry.st.addedText } )
+
+            var skipped = classified
+                .filter( function( entry ) { return entry.reason !== null } )
                 .map( function( entry ) {
                     // The state carries no question id (seedQuestionState), so the name comes from the
                     // index-parallel questions array. A missing question falls back to the 1-based
                     // position — NEVER to an invented id.
-                    var q = ( questionNav.questions || [] )[ entry.idx ]
-
                     return {
-                        id: ( q && q.id ) ? q.id : ( 'Frage ' + ( entry.idx + 1 ) ),
-                        title: ( q && q.title ) ? q.title : '',
-                        intent: q ? buildAnswerText( q, entry.st ).answerLine : ''
+                        id: ( entry.q && entry.q.id ) ? entry.q.id : ( 'Frage ' + ( entry.idx + 1 ) ),
+                        title: ( entry.q && entry.q.title ) ? entry.q.title : '',
+                        intent: entry.q ? buildAnswerText( entry.q, entry.st ).answerLine : '',
+                        reason: entry.reason
                     }
                 } )
 
@@ -9443,16 +9497,70 @@
 
             if( collected.skipped.length === 0 ) { return { count: 0, compared: collected.compared, text: '' } }
 
-            var names = collected.skipped
-                .map( function( entry ) { return entry.id } )
-                .join( ', ' )
-            // Same wording as the placeholder above, so the field and the edge do not give the user
-            // two different instructions for one action.
-            var text = 'Nicht übernommen: ' + collected.skipped.length + ' von ' + collected.compared
-                + ' Fragen sind ausgewählt, aber nicht bestätigt (' + names + ').'
-                + '\nSie werden NICHT gespeichert — im Widget auf "Hinzufügen" klicken, sonst geht die Auswahl verloren.'
+            // M082-09-04 (Memo 082 Kap 20, Cluster D, S2): ONE LINE PER REASON, never one sentence for
+            // all of them. A collective "nicht gespeichert" reads three different situations as one and
+            // hides exactly the difference that tells the user what to do about it — the same mistake
+            // this whole cluster is about, one size smaller.
+            //
+            // EVERY LINE NAMES BOTH NUMBERS ("2 von 7"), for the reason PRD-22 already gave: a message
+            // that says how many were dropped but not how many were checked repeats, in the fix, the
+            // blindness being fixed.
+            //
+            // Machine token -> German sentence, mapped here and nowhere else. The first wording is the
+            // one PRD-22 shipped and is unchanged, so the field placeholder and this edge still give
+            // the user ONE instruction for one action.
+            var wording = [
+                {
+                    reason: 'not-confirmed',
+                    tail: ' Fragen sind ausgewählt, aber nicht bestätigt',
+                    hint: '\nSie werden NICHT gespeichert — im Widget auf "Hinzufügen" klicken, sonst geht die Auswahl verloren.'
+                },
+                {
+                    reason: 'empty-content',
+                    tail: ' Fragen sind bestätigt, tragen aber keinen Antworttext',
+                    hint: '\nSie werden NICHT gespeichert — im Widget eine Option wählen und erneut auf "Hinzufügen" klicken.'
+                },
+                {
+                    reason: 'no-question',
+                    tail: ' Einträge gehören zu keiner Frage der angezeigten Liste',
+                    hint: '\nSie werden NICHT gespeichert — die Fragenliste hat sich geändert; die Revision neu laden.'
+                }
+            ]
 
-            return { count: collected.skipped.length, compared: collected.compared, text: text }
+            var lines = wording
+                .map( function( form ) {
+                    return {
+                        form: form,
+                        hits: collected.skipped.filter( function( entry ) { return entry.reason === form.reason } )
+                    }
+                } )
+                .filter( function( group ) { return group.hits.length > 0 } )
+                .map( function( group ) {
+                    var names = group.hits
+                        .map( function( entry ) { return entry.id } )
+                        .join( ', ' )
+
+                    return 'Nicht übernommen: ' + group.hits.length + ' von ' + collected.compared
+                        + group.form.tail + ' (' + names + ').' + group.form.hint
+                } )
+
+            // A reason without a wording above would otherwise vanish from a message whose whole job is
+            // that nothing vanishes. It is reported with its raw token instead — ugly on purpose, and
+            // visible.
+            var known = wording.map( function( form ) { return form.reason } )
+            var unknown = collected.skipped
+                .filter( function( entry ) { return known.indexOf( entry.reason ) === -1 } )
+            var unknownLines = unknown.length > 0
+                ? [ 'Nicht übernommen: ' + unknown.length + ' von ' + collected.compared
+                    + ' Einträge mit unbekanntem Grund ('
+                    + unknown.map( function( entry ) { return entry.id + ': ' + entry.reason } ).join( ', ' ) + ').' ]
+                : []
+
+            return {
+                count: collected.skipped.length,
+                compared: collected.compared,
+                text: lines.concat( unknownLines ).join( '\n' )
+            }
         }
 
         // PRD-22 (Memo 081 Kap 19, WI-130): render the notice into a field. Its own field, never the
@@ -10343,6 +10451,20 @@
 
                 return
             }
+
+            // M082-09-04 (Memo 082 Kap 20, Cluster D): "Hinzufügen" on a question that carries NO choice
+            // used to confirm anyway. It produced an entry whose answer block is a bare heading —
+            // exported as a phantom answer on the transcript path, dropped without a word on the popup
+            // path — while the button answered "hinzugefügt ✓". That is the silent discard in its
+            // loudest form: the user is told the opposite of what happened.
+            // The SAME visible refusal both keyboard paths use, not a second one: one wording, one
+            // element, one place to change it. An undo is not affected — it returned above.
+            if( hasUserChoice( st ) !== true ) {
+                showNoSelectionHint( qIdx, 'Hinzufügen' )
+
+                return
+            }
+            clearNoSelectionHint()
 
             // PRD-F3 (Memo 080 Kap 18, S1): clicking "Hinzufügen" IS the interaction. A machine injection
             // that reached st.added without this click stays untouched and is therefore never read as a

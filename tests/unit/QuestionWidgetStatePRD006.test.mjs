@@ -79,11 +79,20 @@ describe( 'Question widget state — PRD-006 (Memo 018 Kap 9)', () => {
     // AC-06 — full keyboard control.
     it( 'binds Enter to "Hinzufügen" and Tab to footer cycling (AC-06)', () => {
         expect( emittedScript.includes( "if( ev.key === 'Enter' )" ) ).toBe( true )
-        expect( emittedScript.includes( 'submitQuestionAnswer( questionNav.active )' ) ).toBe( true )
+        // M082-09-03 (Memo 082 Kap 20, F15=A): the binding now runs through confirmQuestionByKeyboard
+        // instead of calling submitQuestionAnswer( questionNav.active ) directly. AC-06 is unchanged —
+        // the question is still confirmable from the keyboard — but a question that carries no actual
+        // choice is refused there with a visible hint, because a bare Enter on a freshly rendered page
+        // used to confirm whatever the seed had put into the first card.
+        expect( emittedScript.includes( "confirmQuestionByKeyboard( questionNav.active, 'Enter' )" ) ).toBe( true )
+        // The gate still REACHES the confirmation — AC-06 would be hollow if it only blocked.
+        expect( emittedScript.includes( 'function confirmQuestionByKeyboard' ) ).toBe( true )
+        expect( emittedScript.includes( 'submitQuestionAnswer( qIdx )' ) ).toBe( true )
         expect( emittedScript.includes( "if( ev.key === 'Tab' )" ) ).toBe( true )
         expect( emittedScript.includes( 'function cycleFooterFocus' ) ).toBe( true )
         // The "log in via keyboard" shortcut (Ctrl/Cmd+L).
         expect( emittedScript.includes( "ev.key === 'l' && ( ev.ctrlKey || ev.metaKey )" ) ).toBe( true )
+        expect( emittedScript.includes( "confirmQuestionByKeyboard( questionNav.active, 'Strg/Cmd+L' )" ) ).toBe( true )
     } )
 
 

@@ -281,7 +281,16 @@ describe( 'PRD-35 A4/T-J..T-L — the three displays and the provenance chain su
     ]
 
 
-    it( 'T-J — a recommendation seeds NO selection, and an explicit one still does (2 questions)', async () => {
+    it( 'T-J — neither a recommendation nor an explicit preselection seeds a selection (2 questions)', async () => {
+        // M082-09-03 (Memo 082 Kap 20, F15=A) — THE SECOND CEMENTING CASE, flipped with the first.
+        // Until here the positive control below read `toEqual( [ 0 ] )`: an EXPLICIT preselection was
+        // still expected to seed the selection. That expectation belonged to the world in which
+        // `preselected` was the author's decision and the widget was allowed to pre-answer for the
+        // user. F15=A ends that for BOTH sources — a preselection seeds the display, never the
+        // selection, no matter who wrote it.
+        //
+        // The positive control does not disappear, it MOVES to the display field: without it, "0
+        // selections" would also be reported by a function that simply does nothing.
         const { seedQuestionState } = await extractFunctions( [ 'seedQuestionState' ] )
         const recommended = { 'id': 'F1', 'typ': 'single', 'options': optionsOf(), 'preselected': [], 'aiRecommended': [ 0 ] }
         const chosen = { 'id': 'F2', 'typ': 'single', 'options': optionsOf(), 'preselected': [ 0 ], 'aiRecommended': [ 0 ] }
@@ -289,10 +298,10 @@ describe( 'PRD-35 A4/T-J..T-L — the three displays and the provenance chain su
         const state = seedQuestionState( [ recommended, chosen ], {} )
 
         expect( state[ 0 ].selected ).toEqual( [] )
+        expect( state[ 0 ].preselected ).toEqual( [] )
         expect( state[ 0 ].touched ).toBe( false )
-        // Positive control: without it, "0 preselections" would also be reported by a function that
-        // simply does nothing.
-        expect( state[ 1 ].selected ).toEqual( [ 0 ] )
+        expect( state[ 1 ].selected ).toEqual( [] )
+        expect( state[ 1 ].preselected ).toEqual( [ 0 ] )
         expect( state[ 1 ].touched ).toBe( false )
     } )
 

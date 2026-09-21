@@ -9230,22 +9230,44 @@
         // that separates "the widget shows the AI preselection" from "the user decided", so it has to be
         // testable on its own rather than only through a DOM render.
         //
-        // THE PRESELECTION SEEDS THE DISPLAY AND IS NOT A DECISION. A freshly built state is `touched:
-        // false` even when it already shows a selected option — only markQuestionTouched sets the marker,
-        // and only a real interaction calls it. A carried-over state keeps its marker (a broadcast must
-        // not turn a real choice back into a preselection); a state object from before the field existed
-        // normalises to false, because an absent marker is "not touched", never an assumed touch.
+        // THE PRESELECTION SEEDS THE DISPLAY AND IS NOT A DECISION — and since M082-09-03 (Memo 082
+        // Kap 20, Frage F15 = A) that sentence is also what the code does. It used to be a claim the
+        // line under it broke: `selected` was seeded FROM `q.preselected`, so a user who only confirmed
+        // signed the recommendation, and the resulting line landed in `## Beantwortete Fragen` — the
+        // section this codebase calls the User-Mental-Model source — as a decision of its own.
+        //
+        // THE RULE. `selected` carries EXCLUSIVELY what a human chose. The preselection carried by the
+        // payload lives in its own field, `preselected`, is display-only, and never reaches `selected`.
+        //
+        // WHERE IT IS ENFORCED. Here, by seeding `selected: []` unconditionally; in buildQuestionCard,
+        // which paints the preselection as a hint and reads `st.selected` for the chosen marker; and in
+        // confirmQuestionByKeyboard, which refuses to confirm a question that carries no actual choice.
+        //
+        // THE HAND MITIGATION HAS EXPIRED. Writing `"preselected": []` into every question of a memo
+        // (REV-02/REV-03 of Memo 082) was a transitional measure with a named expiry date, and this is
+        // the date. It is not removed retroactively — it simply has nothing left to prevent.
+        //
+        // `touched` is unchanged: a freshly built state is `touched: false`, only markQuestionTouched
+        // sets the marker, and only a real interaction calls it. A carried-over state keeps its marker
+        // (a broadcast must not turn a real choice back into a preselection); a state object from
+        // before the field existed normalises to false, because an absent marker is "not touched",
+        // never an assumed touch.
         function seedQuestionState( open, prevById ) {
             var previous = prevById || {}
 
             return ( open || [] ).map( function( q ) {
-                // single = first preselected index; multi = full preselected set.
+                // single = first preselected index; multi = full preselected set. This is the DISPLAY
+                // hint from here on — the same two shapes as before, in a field nobody harvests.
                 var pre = Array.isArray( q.preselected ) ? q.preselected.slice() : []
-                var selected = q.typ === 'single' ? ( pre.length > 0 ? [ pre[ 0 ] ] : [] ) : pre
+                var preselected = q.typ === 'single' ? ( pre.length > 0 ? [ pre[ 0 ] ] : [] ) : pre
                 var prev = q.id ? previous[ q.id ] : null
                 var optCount = ( q.options || [] ).length
                 if( prev && prev.selected.every( function( i ) { return i < optCount } ) ) {
                     prev.touched = prev.touched === true
+                    // The hint belongs to the QUESTION as it reads today, not to the state the user
+                    // built earlier — a carried-over state that kept an old hint would show the
+                    // preselection of a payload that no longer exists.
+                    prev.preselected = preselected
 
                     return prev
                 }
@@ -9255,7 +9277,7 @@
                 // the visible "hinzugefügt" quittance stays consistent.
                 // PRD-006 (Kap 9): rejected drives the reversible "Ablehnen" toggle — purely a UI state,
                 // the question data + selection always survive.
-                return { selected: selected, custom: [], added: false, addedText: null, rejected: false, touched: false }
+                return { selected: [], preselected: preselected, custom: [], added: false, addedText: null, rejected: false, touched: false }
             } )
         }
 
@@ -9644,8 +9666,8 @@
 
             // WI-041 (Memo 081): the AI recommendation is a DISPLAY property, never a selection.
             // Both the option marker (qw-ai + "(KI-Empfehlung)" hint) and the green KI-EMPFEHLUNG
-            // line used to read `preselected` — a field that meant two things at once, so the
-            // Vorauswahl-Sperre of REV-02 (writing preselected:[] into every question) silently
+            // line used to read `preselected` — a field that meant two things at once, so the hand
+            // mitigation of REV-02 (writing preselected:[] into every question) silently
             // switched the whole recommendation display off. WI-025 ends that: the server now ships
             // `aiRecommended` as its own display field and `preselected` carries only what an author
             // explicitly chose. This reads the display field FIRST.
@@ -9676,26 +9698,46 @@
             // Options (may be only the two defaults custom/topic if no A/B/C were found).
             var optsWrap = document.createElement( 'div' )
             optsWrap.className = 'qw-options'
-            var pre = questionNav.state[ qIdx ].selected
+            var chosen = questionNav.state[ qIdx ].selected
+            // M082-09-03 (F15=A): the two readings are now SEPARATE fields, and the card is where the
+            // separation becomes visible — `selected` paints the chosen marker, `preselected` paints a
+            // hint beside the label. Before, a preselection arrived here already disguised as a choice,
+            // so no reader of this card could tell the two apart.
+            //
+            // The hint matters most for `typ: 'multi'`: the aiRecommendedIdx derivation above only runs
+            // for single questions, so a multi preselection had NO display of its own — it was visible
+            // solely through the ☑ boxes it had wrongly seeded. Dropping the seed without this line
+            // would have traded a false decision for an invisible recommendation.
+            var preselectedHint = questionNav.state[ qIdx ].preselected || []
             var optionList = q.options || []
 
             optionList.forEach( function( opt, optIdx ) {
                 var row = document.createElement( 'div' )
                 row.className = 'qw-option'
                 row.setAttribute( 'data-oidx', String( optIdx ) )
-                var isSel = pre.indexOf( optIdx ) !== -1
+                var isSel = chosen.indexOf( optIdx ) !== -1
                 // AI recommendation marker — display only, from the derived index above (WI-041).
                 var isAi = aiRecommendedIdx === optIdx
+                var isPre = preselectedHint.indexOf( optIdx ) !== -1
                 if( isSel ) { row.classList.add( 'qw-selected' ) }
                 if( isAi ) { row.classList.add( 'qw-ai' ) }
+                if( isPre ) {
+                    row.classList.add( 'qw-ai' )
+                    row.setAttribute( 'data-preselected', '1' )
+                }
 
                 // PRD-011 (Memo 076 H7b, WI-101): ☑/☐ (U+2611/2610) render as coloured emoji boxes on
                 // macOS next to the plain text ◉/○ glyphs. The U+FE0E variation selector forces the
                 // text presentation so all four choice markers render as consistent mono glyphs.
                 var marker = q.typ === 'single' ? ( isSel ? '◉' : '○' ) : ( isSel ? '☑︎' : '☐︎' )
                 var keyLabel = ( opt.kind === 'option' ) ? ( '<span class="qw-option-key">' + escHtml( opt.key ) + ')</span> ' ) : ''
+                // One hint per row: a row that is both the AI recommendation and the payload's
+                // preselection says "(KI-Empfehlung)" once, never twice in two spellings.
+                var hint = isAi
+                    ? ' <span class="qw-ai-hint">(KI-Empfehlung)</span>'
+                    : ( isPre ? ' <span class="qw-ai-hint">(Vorauswahl — keine Antwort)</span>' : '' )
                 row.innerHTML = '<span class="qw-marker">' + marker + '</span>' + keyLabel
-                    + '<span class="qw-option-label">' + escHtml( opt.label ) + ( isAi ? ' <span class="qw-ai-hint">(KI-Empfehlung)</span>' : '' ) + '</span>'
+                    + '<span class="qw-option-label">' + escHtml( opt.label ) + hint + '</span>'
 
                 row.addEventListener( 'click', function() {
                     questionNav.active = qIdx
@@ -10054,6 +10096,9 @@
                 if( !row ) { return }
                 row.style.display = st.selected.indexOf( entry.idx ) !== -1 ? '' : 'none'
             } )
+            // M082-09-03: the "no choice yet" hint is answered by making a choice, so it goes away
+            // here — at the one place every selection change already passes — rather than on a timer.
+            clearNoSelectionHint()
         }
 
         function renderQuestionFocus() {
@@ -10209,6 +10254,79 @@
                 updateSaveAnswersOnlyState()
             }
             persistQuestionState()
+        }
+
+        // M082-09-03 (Memo 082 Kap 20, F15=A): the predicate, written ONCE — a question carries an
+        // actual choice when the user selected an option or entered text of their own. `preselected` is
+        // deliberately NOT read here; splitting that field off the selection is the whole point of this
+        // change, and letting it back in one function further on would re-open the defect quietly.
+        function hasUserChoice( st ) {
+            return ( ( st.selected || [] ).length > 0 ) || ( ( st.custom || [] ).length > 0 )
+        }
+
+        // The visible refusal. "Nothing happens" is the one form this must never be: a silent no-op
+        // and a successful confirmation look identical from the keyboard, which is how a confirm that
+        // fired on nothing could stay unnoticed for as long as it did.
+        function clearNoSelectionHint() {
+            var existing = document.getElementById( 'qw-no-selection-hint' )
+            if( existing && existing.parentNode ) { existing.parentNode.removeChild( existing ) }
+        }
+
+        function showNoSelectionHint( qIdx, via ) {
+            clearNoSelectionHint()
+            var card = document.querySelector( '#question-widgets .qw-card[data-qidx="' + qIdx + '"]' )
+            if( !card ) { return }
+            var hint = document.createElement( 'div' )
+            hint.className = 'qw-parse-warn'
+            hint.id = 'qw-no-selection-hint'
+            hint.setAttribute( 'data-qw-no-selection', '1' )
+            hint.textContent = '⚠ ' + via + ' hat nichts bestätigt: diese Frage trägt noch keine Auswahl. '
+                + 'Eine Vorauswahl oder KI-Empfehlung ist keine Antwort — bitte zuerst eine Option wählen.'
+            // MEASURED, and it cost one red run: `.qw-footer` is a DESCENDANT of the card, not a
+            // child of it, so `card.insertBefore( hint, footer )` throws NotFoundError and the hint
+            // never appears — the silent nothing this whole guard exists to prevent, one level down.
+            // Insert into the footer's OWN parent, and fall back to the card only when there is none.
+            var footer = card.querySelector( '.qw-footer' )
+            if( footer && footer.parentNode ) { footer.parentNode.insertBefore( hint, footer ) }
+            else { card.appendChild( hint ) }
+        }
+
+        // M082-09-03 (F15=A) — the ONE gate both keyboard confirms pass, so a third keyboard path is
+        // bound by joining this call rather than by remembering the rule a third time.
+        //
+        // It returns its verdict instead of swallowing it: a caller — and a test — can assert on the
+        // DECISION, not on the absence of a side effect.
+        //
+        // AN UNDO IS NOT A CONFIRMATION. A question that already carries a confirmed answer passes
+        // straight through, so the reversible "hinzugefügt ✓ (rückgängig)" path (PRD-006, AC-07) stays
+        // reachable without the mouse even for an answer that holds no option at all.
+        function confirmQuestionByKeyboard( qIdx, via ) {
+            var st = questionNav.state[ qIdx ]
+            if( !st ) { return false }
+
+            // The truthiness check and not the strict-equality spelling: this is the SAME condition
+            // submitQuestionAnswer keys its own undo branch on, and the gate has to mirror the branch
+            // it delegates to rather than invent a stricter one. It is also NOT the harvest condition
+            // — PRD-22's T7 counts the strict spelling to hold that one at exactly two sites, and a
+            // third spelling here would have read as a new silent copy of it. (Measured twice: the
+            // count runs over the whole file, comments included, so naming the spelling in prose
+            // raises it too — the pattern is counted, never the concept.)
+            if( st.added ) {
+                submitQuestionAnswer( qIdx )
+
+                return true
+            }
+
+            if( hasUserChoice( st ) !== true ) {
+                showNoSelectionHint( qIdx, via )
+
+                return false
+            }
+
+            clearNoSelectionHint()
+            submitQuestionAnswer( qIdx )
+
+            return true
         }
 
         function submitQuestionAnswer( qIdx ) {
@@ -10427,9 +10545,13 @@
 
             // PRD-006 (Kap 9, AC-06): Enter on the focused question triggers "Hinzufügen"
             // (identical to the button click, incl. its reversible undo on a second Enter).
+            // M082-09-03 (F15=A): it goes through confirmQuestionByKeyboard, which refuses a question
+            // that carries no actual choice. A bare Enter used to confirm the ACTIVE question — and
+            // active after a render is the first one — so one keystroke on a freshly loaded page
+            // signed whatever the seed had put there.
             if( ev.key === 'Enter' ) {
                 ev.preventDefault()
-                submitQuestionAnswer( questionNav.active )
+                confirmQuestionByKeyboard( questionNav.active, 'Enter' )
 
                 return
             }
@@ -10437,12 +10559,15 @@
             // PRD-006 (Kap 9, AC-06): a keyboard shortcut to "log in" (confirm) the focused
             // option without the mouse. Ctrl/Cmd+Enter selects the focused option AND adds
             // the answer in one keystroke — the "einloggen per Tastatur"-Aktion.
+            // M082-09-03 (F15=A): the toggle stays where it was — with a focused option this shortcut
+            // MAKES the choice and may then confirm it. Without one it used to confirm anyway, i.e.
+            // outside its own selecting condition; now the same guard as Enter catches that branch.
             if( ev.key === 'l' && ( ev.ctrlKey || ev.metaKey ) ) {
                 ev.preventDefault()
                 if( questionNav.lane === 'option' && questionNav.optionFocus >= 0 ) {
                     toggleOption( questionNav.active, questionNav.optionFocus )
                 }
-                submitQuestionAnswer( questionNav.active )
+                confirmQuestionByKeyboard( questionNav.active, 'Strg/Cmd+L' )
 
                 return
             }

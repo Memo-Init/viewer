@@ -21,9 +21,13 @@ let clientScript = ''
 
 async function loadCollector( state, questions ) {
     const script = await readEmittedScript()
+    // M082-09-07: buildQuestionStateRecords leitet fuer den Speicher die Options-NAMEN ab, deshalb werden
+    // optionIdentitiesOf und optionIdentityOf MITGEHOBEN. Eine typeof-Wache am Aufruf haette die Ableitung
+    // in genau dem Lauf uebersprungen, der die Datensaetze prueft — ein Gruen ueber einer Nullmenge.
     const lifted = await extractFunctionSources( [
         'isConfirmedAnswer', 'collectAddedAnswers', 'appendAddedAnswers', 'unconfirmedNotice',
-        'buildAnswerText', 'answerMarkSuffix', 'isPreselectionAnswer', 'buildQuestionStateRecords'
+        'buildAnswerText', 'answerMarkSuffix', 'isPreselectionAnswer', 'buildQuestionStateRecords',
+        'optionIdentityOf', 'optionIdentitiesOf'
     ] )
     // Die ECHTE Deklaration wird mitgehoben, nicht im Test nachgebaut — dieselbe Begruendung wie in
     // LauteKanteVorDemSendenPRD22: eine Kopie bliebe gruen, genau wenn die Produktionsliste waechst.

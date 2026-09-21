@@ -393,7 +393,25 @@ describe( 'PRD-31 (WI-118) — the answer state survives the process', () => {
         const declaration = src.split( 'function persistQuestionState(' ).length - 1
 
         expect( declaration ).toBe( 1 )
-        expect( calls - declaration ).toBe( declaredMutators + 1 )
+
+        // M082-09-07 (Memo 082 Kap 20a, Cluster E, WI-121): an EIGHTH caller, and it is named here rather
+        // than absorbed into a bigger number. It is not a mutating path — nobody interacted — it is the
+        // WRITE-THROUGH of the rebind: when an option list moved, the stored record still holds indices
+        // into the list that is gone, and leaving them there costs the user the whole entry on the next
+        // load (the validity latch drops it rather than the one option that really went).
+        //
+        // The addends are kept apart on purpose. "mutators + 1" was six named functions plus the inline
+        // Enter handler; a plain bump to "+ 2" would let a later, unnamed caller hide inside the same
+        // figure — which is the very thing this test was written to prevent.
+        const interactionJoiners = declaredMutators + 1
+        const rebindWriteThrough = 1
+
+        expect( calls - declaration ).toBe( interactionJoiners + rebindWriteThrough )
+
+        // ...and the eighth caller is CONDITIONAL. An unconditional write here would turn every render
+        // into a save, and a store rewritten on every render cannot be told from a broken one. Pinned so
+        // the extra addend above can never be cashed in for a cheaper call site.
+        expect( src ).toContain( 'if( rebind.changed > 0 || rebind.dropped.length > 0 ) { persistQuestionState() }' )
 
         // The seam is the counterpart of markQuestionTouched, and the two are NOT merged.
         expect( src ).toContain( 'function markQuestionTouched(' )

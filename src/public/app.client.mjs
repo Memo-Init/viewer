@@ -9594,7 +9594,16 @@
             // all: the load is async, so the restore ALWAYS arrives at a second render that already
             // found a freshly seeded entry under every question id. "Any live entry wins" would make
             // the restore a no-op by construction.
+            // M082-09-07 (Cluster E, WI-121): the selection is named BEFORE the stored state is merged in,
+            // against the list the user clicked in — the only list against which its indices mean anything.
+            // A restored record brings its OWN names and overwrites these, which is right: those names are
+            // older, and older is what the rebind needs.
+            captureSelectedKeys( prevById, questionNav.questions )
             fillPrevFromStoredQuestionState( prevById, questionStateStored.entries )
+            // ...and REBOUND onto today's list before the seed reads the map, so the validity latch below
+            // sees indices that already describe the list about to be rendered. The latch stays — it is now
+            // the last resort for entries that carry no names at all, not the first line of defence.
+            var rebind = rebindQuestionSelections( prevById, open )
             questionNav.questions = open
             questionNav.state = seedQuestionState( open, prevById )
             questionNav.active = open.length > 0 ? 0 : -1
@@ -9657,6 +9666,21 @@
                     + open.length + ' Karten. Beide Zahlen stehen hier, damit die Differenz sichtbar ist.'
                 container.insertBefore( divergence, container.firstChild )
             }
+
+            // M082-09-07 (Cluster E, WI-121): the rebind SAYS what it did, and THEN cleans up after itself.
+            //
+            // The saying: a selection that falls away without a word is the half of this defect a user can
+            // never find. The surface simply shows one option fewer than they chose.
+            //
+            // The cleaning: the store still holds the indices of the OLD list. Left alone they are orphans —
+            // and on the next load the validity latch would drop the whole entry rather than the one option
+            // that went, taking the custom entries, the rejection, the touched marker and any confirmed
+            // answer with them. Writing the rebound state through turns a permanent silent loss into a
+            // named one. It runs ONLY when something actually moved: an unconditional write would make every
+            // render a save, and a store that is rewritten on every render cannot be told from one that is
+            // broken.
+            renderQuestionStateRebindNotice( container, rebind )
+            if( rebind.changed > 0 || rebind.dropped.length > 0 ) { persistQuestionState() }
 
             // PRD-012 (Memo 076 H8, WI-106): the answers-only bar + mountAnswersOnlyBarInHeader are
             // removed (dead path; the popup's "Übernehmen" persists transcript + answers).
@@ -9769,7 +9793,7 @@
                 ? confirmed.answerText
                 : null
 
-            return {
+            var restored = {
                 selected: intent.selected.slice(),
                 custom: Array.isArray( intent.custom ) ? intent.custom.slice() : [],
                 added: answerText !== null,
@@ -9777,6 +9801,18 @@
                 rejected: intent.rejected === true,
                 touched: intent.touched === true
             }
+            // M082-09-07 (Cluster E, WI-121): the option NAMES the record was written with, when it carries
+            // them. A record from before they existed simply has none, and an ABSENT field is what tells the
+            // rebind to stand back and leave the entry to the old index rule — so the legacy case is
+            // recognised by the shape of the record, not by a version flag somebody has to maintain.
+            //
+            // Paired length is checked here as well as in the store, and deliberately: the store guards what
+            // is written to disk, this guards what a payload from any other source could claim.
+            if( Array.isArray( intent.selectedKeys ) && intent.selectedKeys.length === restored.selected.length ) {
+                restored.selectedKeys = intent.selectedKeys.slice()
+            }
+
+            return restored
         }
 
         // Memo 081 WI-118: fill the merge map from the stored state for every question id whose LIVE
@@ -9794,6 +9830,150 @@
                 var restored = stateFromStoredRecord( records[ id ] )
                 if( restored ) { prevById[ id ] = restored }
             } )
+        }
+
+        // M082-09-07 (Memo 082 Kap 20a, Cluster E, WI-121): THE NAME OF AN OPTION.
+        //
+        // A selection has always been a list of INDICES into the rendered option list, and that is the
+        // whole defect: an index is a POSITION, and a position means a different answer as soon as the
+        // list moves. `option:A` means the same answer choice wherever it sits.
+        //
+        // The four injected siblings (custom/topic/reframe/reoption) occur at most once per question, so
+        // their kind IS their name. An author option is named by its key — what the author wrote, and what
+        // the exported answer line already quotes ("B) Beta"), so the name is not a new invention here.
+        //
+        // Returns null when an option CANNOT be named. Null is not a name: it is the not-decidable case,
+        // and optionIdentitiesOf below refuses on it instead of inventing one. Same rule mergeAnswerBlocks,
+        // checkTranscriptShrink and scanCodeFences follow — a case nobody can decide is named, never read
+        // as the harmless one.
+        function optionIdentityOf( opt ) {
+            if( !opt || typeof opt !== 'object' ) { return null }
+            var kind = ( typeof opt.kind === 'string' && opt.kind.length > 0 ) ? opt.kind : 'option'
+            if( kind !== 'option' ) { return kind }
+            var key = typeof opt.key === 'string' ? opt.key.trim() : ''
+
+            return key.length > 0 ? ( 'option:' + key ) : null
+        }
+
+        // The names of a whole option list, plus whether the list can name its options AT ALL.
+        //
+        // IT REPORTS ITS COMPARISON SET (`compared`): a name list built from zero options is not a list in
+        // which nothing matched, it is a list nobody could look at. Two causes make a list undecidable and
+        // they are counted apart — an option that carries no usable key, and two options that would answer
+        // to the same name. Either way a rebind would have to guess, so it refuses.
+        //
+        // The refusal carries a machine `code` and the display sentence is built from it (the form
+        // M082-09-06 introduced for `unclosed-fence`) — never a message text two readers have to compare.
+        function optionIdentitiesOf( optionList ) {
+            var list = Array.isArray( optionList ) ? optionList : []
+            var identities = list.map( function( opt ) { return optionIdentityOf( opt ) } )
+            var named = identities.filter( function( id ) { return id !== null } )
+            var unnamed = identities.length - named.length
+            var duplicated = named.filter( function( id, idx ) { return named.indexOf( id ) !== idx } )
+            var code = unnamed > 0
+                ? 'unnamed-option'
+                : ( duplicated.length > 0 ? 'duplicate-option-name' : null )
+
+            return {
+                identities: identities,
+                compared: identities.length,
+                unnamed: unnamed,
+                duplicated: duplicated,
+                decidable: code === null,
+                code: code
+            }
+        }
+
+        // M082-09-07: stamp every carried entry with the NAMES of the options its selection was taken
+        // against. Mutates the map it is handed, exactly like fillPrevFromStoredQuestionState, and for the
+        // same reason: there is ONE merge map, and everything that has to travel with a state travels on it.
+        //
+        // The questions handed in are the PREVIOUS ones — the list the user actually clicked in. Naming the
+        // selection against today's list would name it against the very list it may no longer fit, which is
+        // the error this whole order exists to remove.
+        //
+        // IT ALWAYS OVERWRITES, and that is not carelessness. A live entry's indices are valid against the
+        // list handed in here by construction, so re-deriving is always right — while KEEPING a name list
+        // from an earlier render would go stale the moment the user clicks a different option, and a stale
+        // name would then restore the selection the user just replaced. The field is transport on the merge
+        // map, never a durable property of the live state. Not derivable => null, never a leftover array.
+        function captureSelectedKeys( prevById, questions ) {
+            var map = prevById || {}
+
+            ;( questions || [] ).forEach( function( q ) {
+                if( !q || !q.id ) { return }
+                var entry = map[ q.id ]
+                if( !entry ) { return }
+                var named = optionIdentitiesOf( q.options )
+                var selected = entry.selected || []
+                var inRange = selected.every( function( i ) { return i >= 0 && i < named.compared } )
+                entry.selectedKeys = ( named.decidable === true && inRange === true )
+                    ? selected.map( function( i ) { return named.identities[ i ] } )
+                    : null
+            } )
+        }
+
+        // M082-09-07: THE REBIND — map every carried selection from the option it NAMES onto the position
+        // that option holds in TODAY's list. Runs between the fill and the seed, so seedQuestionState sees
+        // indices that already describe the list it is about to render.
+        //
+        // Four situations, and only the third loses anything:
+        //   list unchanged   -> the names resolve to the same positions, the selection is identical
+        //   option moved     -> the name resolves to its NEW position, the selection follows it
+        //   option removed   -> the name resolves to nothing; THAT ONE selection falls away, and every
+        //                       other selection of the same question stays
+        //   options added    -> the names resolve unchanged, the selection is untouched
+        //
+        // WHAT IT REPLACES, and the difference IS the finding: seedQuestionState's validity latch drops the
+        // ENTIRE entry as soon as one index outruns the list — selection, custom entries, the rejection,
+        // the touched marker and any confirmed answer with it — and re-seeds silently. Measured as case V3
+        // of M082-09-02: option 6 chosen, list shortened, card shows NOTHING while the store still holds
+        // `selected [6], touched true`. The third situation above costs the one option that really went.
+        //
+        // An entry WITHOUT names is a state written before options had any. It is RECOGNISED and left to
+        // the latch to judge by today's rule — never reinterpreted (S5). A question whose option list
+        // cannot name its options is the same outcome from a different cause, and the two are counted
+        // apart so the report can say which one it hit.
+        function rebindQuestionSelections( prevById, open ) {
+            var map = prevById || {}
+            var report = { compared: 0, rebound: 0, moved: 0, changed: 0, legacy: 0, dropped: [], undecidable: [] }
+
+            ;( open || [] ).forEach( function( q ) {
+                if( !q || !q.id ) { return }
+                var entry = map[ q.id ]
+                if( !entry ) { return }
+                report.compared = report.compared + 1
+                if( !Array.isArray( entry.selectedKeys ) ) {
+                    report.legacy = report.legacy + 1
+
+                    return
+                }
+                var named = optionIdentitiesOf( q.options )
+                if( named.decidable !== true ) {
+                    report.undecidable.push( { question: q.id, code: named.code } )
+
+                    return
+                }
+                var resolved = entry.selectedKeys
+                    .map( function( key ) { return { key: key, index: named.identities.indexOf( key ) } } )
+                var kept = resolved.filter( function( hit ) { return hit.index !== -1 } )
+                var lost = resolved.filter( function( hit ) { return hit.index === -1 } )
+                var next = kept.map( function( hit ) { return hit.index } )
+                var changed = JSON.stringify( next ) !== JSON.stringify( entry.selected || [] )
+
+                lost.forEach( function( hit ) {
+                    report.dropped.push( { question: q.id, option: hit.key, title: q.title || '' } )
+                } )
+                // Assigned unconditionally: when nothing moved the assignment is the identity, and a branch
+                // here would be a second place where "did it change?" is decided.
+                entry.selected = next
+                entry.selectedKeys = kept.map( function( hit ) { return hit.key } )
+                report.rebound = report.rebound + 1
+                if( changed === true ) { report.changed = report.changed + 1 }
+                if( changed === true && lost.length === 0 ) { report.moved = report.moved + 1 }
+            } )
+
+            return report
         }
 
         function collectAddedAnswers() {
@@ -10470,13 +10650,29 @@
 
                     return
                 }
+                var selected = ( st.selected || [] ).slice()
                 var record = {
                     intent: {
-                        selected: ( st.selected || [] ).slice(),
+                        selected: selected,
                         custom: ( st.custom || [] ).slice(),
                         rejected: st.rejected === true,
                         touched: st.touched === true
                     }
+                }
+                // M082-09-07 (Cluster E, WI-121): the NAMES of the chosen options travel with the record, and
+                // this is the ONE place they are derived for the store — from the question that is already in
+                // hand, so name and index can never describe two different lists. Without them the store keeps
+                // a position whose meaning depends on a list it does not carry, and the next load has nothing
+                // but that position to go on.
+                //
+                // Omitted rather than half-filled when the list cannot name its options or a stored index
+                // already sits outside it: a record with names that do not match its indices would be worse
+                // than one with no names at all, because a reader would believe it.
+                var named = optionIdentitiesOf( q.options )
+                var nameable = named.decidable === true
+                    && selected.every( function( i ) { return i >= 0 && i < named.compared } )
+                if( nameable === true ) {
+                    record.intent.selectedKeys = selected.map( function( i ) { return named.identities[ i ] } )
                 }
                 if( isConfirmedAnswer( st ) ) { record.confirmed = { answerText: st.addedText } }
                 entries[ q.id ] = record
@@ -10502,6 +10698,46 @@
                     showQuestionStateSaveError( data && data.messages ? data.messages : [] )
                 } )
                 .catch( function( err ) { showQuestionStateSaveError( [ String( err && err.message ? err.message : err ) ] ) } )
+        }
+
+        // M082-09-07 (Cluster E, WI-121): the visible half of the rebind. Two sentences, and each fires only
+        // over a comparison set it can name — no notice at all in the normal case, because a warning that
+        // appears on every render is one nobody reads after three days (the same rule collectAddedAnswers
+        // follows for its discard notice).
+        //
+        // The first sentence covers what was LOST and names it per question and option. The second covers
+        // what could not be DECIDED — a question whose option list carries no unique names — and says which
+        // rule applies to it instead, because "nothing happened here" and "here I refused" are two
+        // different statements and a user can act on only one of them.
+        //
+        // German display text over English machine fields, like every other widget message here; the code
+        // in brackets is the machine token the notice is built FROM, not a second wording of it.
+        function renderQuestionStateRebindNotice( container, report ) {
+            if( !container || !report ) { return }
+            var dropped = report.dropped || []
+            var undecidable = report.undecidable || []
+            if( dropped.length === 0 && undecidable.length === 0 ) { return }
+
+            var box = document.createElement( 'div' )
+            box.className = 'qw-parse-warn'
+            box.id = 'qw-state-rebind-warn'
+            box.setAttribute( 'data-qw-rebind-dropped', String( dropped.length ) )
+            box.setAttribute( 'data-qw-rebind-undecidable', String( undecidable.length ) )
+            box.setAttribute( 'data-qw-rebind-compared', String( report.compared ) )
+
+            var sentences = []
+            if( dropped.length > 0 ) {
+                sentences.push( '⚠ ' + dropped.length + ' Auswahl wurde entfernt, weil die gewählte Antwortmöglichkeit nicht mehr angeboten wird: '
+                    + dropped.map( function( hit ) { return hit.question + ' → ' + hit.option } ).join( ', ' )
+                    + '. Alle übrigen Auswahlen dieser Fragen bleiben bestehen, und der gespeicherte Zustand wurde nachgezogen.' )
+            }
+            if( undecidable.length > 0 ) {
+                sentences.push( '⚠ ' + undecidable.length + ' Frage konnte nicht nachgebunden werden, weil ihre Antwortmöglichkeiten keine eindeutigen Namen tragen: '
+                    + undecidable.map( function( hit ) { return hit.question + ' (' + hit.code + ')' } ).join( ', ' )
+                    + '. Für sie gilt weiterhin die Regel über die laufende Nummer.' )
+            }
+            box.textContent = sentences.join( ' ' )
+            container.insertBefore( box, container.firstChild )
         }
 
         // A failed save is VISIBLE. A store that fails quietly is worse than none, because it promises

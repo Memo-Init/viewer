@@ -6357,33 +6357,130 @@
             } )
         }
 
+        // M082-09-06 (Memo 082 Kap 20a, Cluster C — WI-120, S1): der Zaun-Zustand, aus dem die
+        // Blockgrenze STRUKTURELL bestimmt wird statt aus einem Zeilenmuster.
+        //
+        // WARUM ES IHN BRAUCHT: die Grenzsuche las jede Zeile, die mit "## " beginnt, als
+        // Ueberschrift — auch eine, die INNERHALB eines Markdown-Zauns steht und dort Inhalt ist.
+        // Gemessen an der Reproduktion M082-09-02, Fall V2: die Ersetzung endete an dieser Zeile,
+        // riss deshalb die oeffnende Zaun-Zeile mit weg und liess Innen- und Schlusszeile verwaist
+        // zurueck. Derselbe Irrtum kostete den Absatz davor.
+        //
+        // KEIN MARKDOWN-PARSER, und das ist Absicht (S4): gefuehrt werden ausschliesslich Zeichen
+        // und Laenge des offenen Zauns. Ein Zaun schliesst nur mit DEMSELBEN Zeichen und MINDESTENS
+        // derselben Laenge — deshalb schliessen drei Backticks keinen Zaun aus vieren, und genau in
+        // dieser Form zitiert dieser Korpus Markdown in Markdown. Ein Abschluss traegt ausserdem
+        // nichts hinter sich; eine Info-Zeichenkette gibt es nur am Anfang.
+        //
+        // ES NENNT SEINE VERGLEICHSMENGE: `comparedLines` ist 0 ueber einem leeren Text — eine
+        // Grenz-Aussage ueber 0 Zeilen ist trivial wahr und ist kein Bestehen. Und `decidable` ist
+        // false, solange am Textende ein Zaun offen steht: "nicht entscheidbar" ist nicht dasselbe
+        // wie "keine Grenze gefunden", dieselbe Unterscheidung, die checkTranscriptShrink zwischen
+        // unbekannter und leerer Ausgangslaenge zieht.
+        function scanCodeFences( content ) {
+            var text = String( content || '' )
+            var lines = text.split( '\n' )
+            var scan = lines.reduce( function( acc, line ) {
+                var fence = line.match( /^ {0,3}(`{3,}|~{3,})/ )
+                if( acc.open === null ) {
+                    if( fence ) {
+                        acc.open = { char: fence[ 1 ].charAt( 0 ), length: fence[ 1 ].length, line: acc.inFence.length }
+                        acc.fences = acc.fences + 1
+                    }
+                    acc.inFence.push( acc.open !== null )
+
+                    return acc
+                }
+
+                var tail = fence ? line.slice( line.indexOf( fence[ 1 ] ) + fence[ 1 ].length ).trim() : ''
+                var closes = fence !== null
+                    && fence[ 1 ].charAt( 0 ) === acc.open.char
+                    && fence[ 1 ].length >= acc.open.length
+                    && tail.length === 0
+                acc.inFence.push( true )
+                if( closes === true ) { acc.open = null }
+
+                return acc
+            }, { inFence: [], open: null, fences: 0 } )
+
+            return {
+                comparedLines: text.length === 0 ? 0 : lines.length,
+                fences: scan.fences,
+                inFence: scan.inFence,
+                decidable: scan.open === null,
+                openFenceLine: scan.open === null ? null : scan.open.line
+            }
+        }
+
         // PRD-F3 (Memo 080 Kap 18, S3): read EVERY "## Antwort auf …" block out of a content string.
-        // A block runs from its heading to the next "## " heading (exclusive) — the same cut both
-        // server-side parsers make, so client and server see the same blocks.
         //
         // IT REPORTS ITS COMPARISON BASIS. `markers` is how many answer headings the content carries at
         // all; `parsed` is how many of them yielded a question id. The two differ exactly when a heading
         // is malformed — and a check whose comparison set is incomplete is not allowed to report green.
+        //
+        // M082-09-06 (Cluster C — WI-120, S1/S2): die Spanne endet nicht mehr an der naechsten
+        // Ueberschrift, sondern am ENDE DER ANTWORT. Zwei Aenderungen, eine Wurzel:
+        //
+        // 1. Ueberschriften und Grenzen werden nur AUSSERHALB eines Zauns gelesen (S1). `limit` ist
+        //    die naechste echte Ueberschrift — sie bleibt die Obergrenze, damit eine Ersetzung nie
+        //    in den naechsten Abschnitt laeuft.
+        // 2. Die Spanne endet am Ende des ersten Absatzes des Koerpers (S2). Der Erzeuger schreibt
+        //    genau diese Form — Ueberschrift, Leerzeile, eine Antwortzeile —, und alles, was der
+        //    Nutzer DARUNTER geschrieben hat, ist sein Text und wird nicht mehr mitverworfen. Eine
+        //    Leerzeile innerhalb eines Zauns beendet den Absatz nicht; sonst zerschnitte die
+        //    Reparatur genau die Zaeune, die sie schuetzen soll.
+        //
+        // `limit` bleibt im Ergebnis stehen, damit ein Aufrufer die beiden Grenzen unterscheiden
+        // kann: `end` ist, was ersetzt wird, `limit`, was frueher ersetzt worden waere.
         function scanAnswerBlocks( content ) {
             var text = String( content || '' )
             var lines = text.split( '\n' )
+            var fences = scanCodeFences( text )
             var indexed = lines.map( function( line, index ) { return { line: line, index: index } } )
-            var headings = indexed.filter( function( entry ) { return /^##\s+Antwort auf/.test( entry.line ) } )
+            var outside = indexed.filter( function( entry ) { return fences.inFence[ entry.index ] !== true } )
+            var headings = outside.filter( function( entry ) { return /^##\s+Antwort auf/.test( entry.line ) } )
 
             var blocks = headings.map( function( entry ) {
                 var match = entry.line.match( /^##\s+Antwort auf\s+(F\d+)/ )
-                var following = indexed.slice( entry.index + 1 ).filter( function( c ) { return /^##\s/.test( c.line ) } )
-                var end = following.length > 0 ? following[ 0 ].index : lines.length
+                var following = outside.filter( function( c ) { return c.index > entry.index && /^##\s/.test( c.line ) } )
+                var limit = following.length > 0 ? following[ 0 ].index : lines.length
+                var body = indexed.slice( entry.index + 1, limit )
+                var firstFilled = body.reduce( function( found, c ) {
+                    return found === null && c.line.trim().length > 0 ? c.index : found
+                }, null )
+                var paragraph = body
+                    .filter( function( c ) { return firstFilled !== null && c.index >= firstFilled } )
+                    .reduce( function( acc, c ) {
+                        if( acc.done === true ) { return acc }
+                        if( c.line.trim().length === 0 && fences.inFence[ c.index ] !== true ) {
+                            acc.done = true
+
+                            return acc
+                        }
+                        acc.end = c.index + 1
+
+                        return acc
+                    }, { end: entry.index + 1, done: false } )
+                var end = firstFilled === null ? entry.index + 1 : paragraph.end
 
                 return {
                     id: match ? match[ 1 ] : null,
                     start: entry.index,
                     end: end,
+                    limit: limit,
                     body: lines.slice( entry.index + 1, end ).join( '\n' ).trim()
                 }
             } )
 
-            return { markers: headings.length, parsed: blocks.filter( function( b ) { return b.id !== null } ).length, blocks: blocks }
+            return {
+                markers: headings.length,
+                parsed: blocks.filter( function( b ) { return b.id !== null } ).length,
+                blocks: blocks,
+                fences: fences.fences,
+                comparedLines: fences.comparedLines,
+                decidable: fences.decidable,
+                openFenceLine: fences.openFenceLine
+            }
         }
 
         // PRD-F3 (Memo 080 Kap 18, S3): merge fresh answer blocks into a content BY QUESTION ID.
@@ -6404,11 +6501,37 @@
         function mergeAnswerBlocks( content, blocks ) {
             var base = String( content || '' ).trim()
             var scan = scanAnswerBlocks( base )
+            // Ohne Zaun-Zustand gezaehlt, und das ist der Punkt: ein offener Zaun verdeckt jede
+            // Ueberschrift hinter sich, also taugt `scan.markers` genau dann nicht als Mass, wenn
+            // die Lage unklar ist. Diese Zahl sagt, wieviel ueberhaupt auf dem Spiel steht.
+            var rawMarkers = base.split( '\n' ).filter( function( line ) { return /^##\s+Antwort auf/.test( line ) } ).length
             var result = { ok: true, content: base, markers: scan.markers, compared: scan.parsed,
-                replaced: 0, unchanged: 0, dropped: 0, appended: 0, reason: null }
+                replaced: 0, unchanged: 0, dropped: 0, appended: 0, reason: null, code: null,
+                spanLines: 0, keptLines: 0, fences: scan.fences, rawMarkers: rawMarkers }
+
+            // M082-09-06 (Cluster C — WI-120, S3): eine Grenze, die nicht sicher bestimmbar ist,
+            // fuehrt zur VERWEIGERUNG statt zu einer geratenen Spanne. Ein bis zum Textende offener
+            // Zaun ist genau diese Lage. Die Abwaegung ist nicht symmetrisch: eine geratene Grenze
+            // verwirft im Zweifel Text des Nutzers, eine Verweigerung kostet einen Klick.
+            //
+            // Die Ausnahme ist gemessen, nicht bequem: traegt der Text ueberhaupt keine
+            // Antwort-Ueberschrift, gibt es keine Spanne zu bestimmen und nichts zu verlieren — das
+            // reine Anhaengen bleibt erlaubt. Dieselbe Positivkontrolle, die A6 fuer die leere
+            // Vergleichsmenge schon zieht.
+            if( scan.decidable !== true && rawMarkers > 0 ) {
+                result.ok = false
+                result.code = 'unclosed-fence'
+                result.reason = 'ein Code-Zaun ab Zeile ' + ( scan.openFenceLine + 1 )
+                    + ' wird bis zum Textende nicht geschlossen — die Grenze der '
+                    + rawMarkers + ' Antwort-Abschnitt(e) ist nicht sicher bestimmbar. '
+                    + 'Es wurde nichts ersetzt.'
+
+                return result
+            }
 
             if( scan.markers > scan.parsed ) {
                 result.ok = false
+                result.code = 'incomplete-comparison'
                 result.reason = ( scan.markers - scan.parsed ) + ' von ' + scan.markers
                     + ' "## Antwort auf"-Überschriften tragen keine lesbare Frage-Kennung — '
                     + 'die Dubletten-Prüfung hatte keine vollständige Vergleichsmenge.'
@@ -6442,6 +6565,11 @@
                 var planned = planByStart[ idx ]
                 if( planned ) {
                     acc.skipUntil = planned.blk.end
+                    // M082-09-06 (Cluster C — WI-120): die Quittung soll sagen, WIEVIEL angefasst
+                    // wurde, nicht nur wieviele Abschnitte verglichen wurden. `spanLines` und
+                    // `kept` teilen den Text vollstaendig auf — ihre Summe ist die Zeilenzahl des
+                    // Inhalts, und damit ist die Zahl pruefbar statt behauptet.
+                    acc.spanLines = acc.spanLines + ( planned.blk.end - planned.blk.start )
                     if( planned.mode === 'replace' ) {
                         var span = lines.slice( planned.blk.start, planned.blk.end )
                         var fresh = newById[ planned.blk.id ]
@@ -6459,9 +6587,13 @@
                     return acc
                 }
                 acc.out.push( line )
+                acc.kept = acc.kept + 1
 
                 return acc
-            }, { out: [], skipUntil: 0 } )
+            }, { out: [], skipUntil: 0, spanLines: 0, kept: 0 } )
+
+            result.spanLines = rebuilt.spanLines
+            result.keptLines = base.length === 0 ? 0 : rebuilt.kept
 
             var fresh = Object.keys( newById )
                 .filter( function( id ) { return seen[ id ] !== true } )
@@ -6549,9 +6681,15 @@
 
             // A6: an incomplete comparison set is RED — the write is refused rather than appending into a
             // content the check could not read. The message names how much was compared.
+            // M082-09-06 (Cluster C — WI-120, S3): zwei Verweigerungen, zwei Namen. Die erste sagt,
+            // dass die Vergleichsmenge unvollstaendig war, die zweite, dass die GRENZE nicht
+            // bestimmbar war — ein Nutzer, der einen offenen Zaun geschrieben hat, wird sonst nach
+            // einer Dublette suchen, die es nicht gibt. Der Kode entscheidet, nicht der Text.
             if( merge.ok !== true ) {
                 if( ppError ) {
-                    ppError.textContent = 'Dubletten-Prüfung rot: ' + merge.reason
+                    ppError.textContent = ( merge.code === 'unclosed-fence'
+                        ? 'Blockgrenze nicht bestimmbar: '
+                        : 'Dubletten-Prüfung rot: ' ) + merge.reason
                     ppError.classList.remove( 't-hidden' )
                 }
 
@@ -6698,13 +6836,22 @@
                     var checked = 'Dubletten-Prüfung: ' + merge.compared + ' Blöcke verglichen, '
                         + merge.replaced + ' ersetzt, ' + merge.dropped + ' Dublette(n) entfernt, '
                         + merge.appended + ' neu.'
+                    // M082-09-06 (Memo 082 Kap 20a, Cluster C — WI-120): die Quittung meldete gruen,
+                    // waehrend Nutzertext verschwand (M082-09-02, N3). Sie nannte ihre
+                    // Vergleichsmenge vorbildlich — aber die waren die verglichenen Abschnitte, nicht
+                    // die ANGEFASSTE SPANNE, und niemand, der sie las, hatte Anlass nachzusehen, ob
+                    // sein Absatz noch da ist. Die Reichweite steht jetzt daneben, gemessen: die
+                    // beiden Zahlen teilen den Inhalt vollstaendig auf.
+                    var reach = 'Reichweite: ' + merge.spanLines + ' Zeilen ersetzt, '
+                        + merge.keptLines + ' Zeilen unverändert übernommen, '
+                        + merge.fences + ' Code-Zäune erkannt.'
                     // PRD-05 (S3): eine durchgelassene Kuerzung wird protokolliert, nicht verschwiegen
                     // — und eine leere Vergleichsmenge sagt, dass sie leer war. Der Normalfall
                     // (gleich lang oder laenger) traegt eine leere Meldung und haengt nichts an.
                     var shrinkNote = shrink.message.length > 0 ? ( ' · ' + shrink.message ) : ''
                     ppSuccess.textContent = ( savedUrl
                         ? 'Gespeichert · in Zwischenablage kopiert: ' + savedUrl
-                        : 'Gespeichert.' ) + ' · ' + checked + shrinkNote
+                        : 'Gespeichert.' ) + ' · ' + checked + ' · ' + reach + shrinkNote
                     ppSuccess.classList.remove( 't-hidden' )
                 }
 

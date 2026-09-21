@@ -84,6 +84,11 @@ describe( 'PRD-002 applyPromptEdit — emitted browser string', () => {
         // skip the very check this file drives applyPromptEdit through.
         const shrinkSrc = extractFunction( emittedScript, 'function checkTranscriptShrink(' )
         const changedSrc = extractFunction( emittedScript, 'function promptFieldChangedByUser(' )
+        // M082-09-06 (Memo 082 Kap 20a, Cluster C — WI-120, S1): scanAnswerBlocks determines the block
+        // boundary through scanCodeFences now, so that one has to be lifted as well. Lifting rather
+        // than guarding the call with typeof is the same deliberate choice the shrink guard made: a
+        // guard would silently skip the fence detection in the very run that drives it.
+        const fenceSrc = extractFunction( emittedScript, 'function scanCodeFences(' )
 
         expect( applySrc.length ).toBeGreaterThan( 0 )
         expect( activateSrc.length ).toBeGreaterThan( 0 )
@@ -91,9 +96,10 @@ describe( 'PRD-002 applyPromptEdit — emitted browser string', () => {
         expect( scanSrc.length ).toBeGreaterThan( 0 )
         expect( shrinkSrc.length ).toBeGreaterThan( 0 )
         expect( changedSrc.length ).toBeGreaterThan( 0 )
+        expect( fenceSrc.length ).toBeGreaterThan( 0 )
 
         extractedSource = applySrc + '\n' + activateSrc + '\n' + mergeSrc + '\n' + scanSrc
-            + '\n' + shrinkSrc + '\n' + changedSrc
+            + '\n' + shrinkSrc + '\n' + changedSrc + '\n' + fenceSrc
             + '\nglobalThis.__apply = applyPromptEdit;'
             + '\nglobalThis.__activate = activatePsCopy;'
     } )

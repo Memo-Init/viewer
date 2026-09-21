@@ -208,7 +208,11 @@ describe( 'PRD-F3 A7-Vorstufe — die Provenienz-Marke am Antwort-Kopf', () => {
 
 
 describe( 'PRD-F3 A4/A5/A6 — die Dubletten-Pruefung ueber die Frage-Kennung', () => {
-    const load = () => extractFunctions( [ 'mergeAnswerBlocks', 'scanAnswerBlocks' ] )
+    // M082-09-06 (Memo 082 Kap 20a, Cluster C — WI-120, S1): scanAnswerBlocks bestimmt die
+    // Blockgrenze seit diesem Auftrag ueber scanCodeFences. Die Namensliste wird nachgezogen statt
+    // den Aufruf in der Produktion mit einer typeof-Wache zu umgehen — eine Wache haette die
+    // Zaun-Erkennung in genau dem Lauf uebersprungen, der sie prueft (M082-09-04 O-2, M082-09-05 O-2).
+    const load = () => extractFunctions( [ 'mergeAnswerBlocks', 'scanAnswerBlocks', 'scanCodeFences' ] )
     const block = ( id, text ) => `## Antwort auf ${ id } — Frage ${ id }\n\n${ text }\n`
     const count = ( content, id ) => ( content.match( new RegExp( `## Antwort auf ${ id }`, 'g' ) ) || [] ).length
 

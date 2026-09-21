@@ -117,20 +117,25 @@ describe( 'PRD-V5 WI-135 — applyPromptEdit haengt keine Dubletten an', () => {
         // MITGEHOBEN statt in der Produktion mit einer typeof-Wache umgangen: eine Wache haette die
         // Schrumpf-Pruefung in genau dem Lauf still uebersprungen, der sie prueft — ein Gruen ueber
         // einer Nullmenge. Die Namensliste nachzuziehen ist der Weg, den M082-09-04 O-2 dafuer nennt.
-        const lifted = await extractFunctionSources( [ 'applyPromptEdit', 'activatePsCopy', 'mergeAnswerBlocks', 'scanAnswerBlocks', 'checkTranscriptShrink', 'promptFieldChangedByUser' ] )
+        // M082-09-06 (Memo 082 Kap 20a, Cluster C — WI-120, S1): scanAnswerBlocks bestimmt die
+        // Blockgrenze jetzt ueber scanCodeFences; auch dieser Name wird MITGEHOBEN, aus demselben
+        // Grund wie oben — eine typeof-Wache haette die Zaun-Erkennung in genau dem Lauf still
+        // uebersprungen, der sie prueft.
+        const lifted = await extractFunctionSources( [ 'applyPromptEdit', 'activatePsCopy', 'mergeAnswerBlocks', 'scanAnswerBlocks', 'checkTranscriptShrink', 'promptFieldChangedByUser', 'scanCodeFences' ] )
         extractedSource = `${ lifted[ 'source' ] }\nglobalThis.__apply = applyPromptEdit;`
         loadedNames = lifted[ 'names' ]
     } )
 
 
-    it( 'der Helfer hebt AUCH async-Funktionen samt Schluesselwort heraus (6 Funktionen)', () => {
-        expect( loadedNames.length ).toBe( 6 )
+    it( 'der Helfer hebt AUCH async-Funktionen samt Schluesselwort heraus (7 Funktionen)', () => {
+        expect( loadedNames.length ).toBe( 7 )
         expect( extractedSource.startsWith( 'async function applyPromptEdit(' ) ).toBe( true )
         expect( extractedSource ).toContain( 'function activatePsCopy(' )
         expect( extractedSource ).toContain( 'function mergeAnswerBlocks(' )
         expect( extractedSource ).toContain( 'function scanAnswerBlocks(' )
         expect( extractedSource ).toContain( 'function checkTranscriptShrink(' )
         expect( extractedSource ).toContain( 'function promptFieldChangedByUser(' )
+        expect( extractedSource ).toContain( 'function scanCodeFences(' )
     } )
 
 

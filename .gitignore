@@ -1,4 +1,4 @@
-node_modules/
+node_modules
 coverage/
 .DS_Store
 # Env files — local-only secrets; the example template stays tracked.

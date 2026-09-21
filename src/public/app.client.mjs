@@ -5901,7 +5901,13 @@
         // ONE combined popup with BOTH prompt parts (Transcript-Abschnitt + Fragen-Abschnitt).
         // Re-bound on each updateSidebarSticky render (header is rebuilt), mirroring the other
         // sticky binders. Zone 2 itself stays a pure status overview — every input lives here.
-        var promptEditState = { memoName: null, projectId: null, memoId: null, revisionId: null, transcriptId: null, questions: [] }
+        // PRD-05 (Memo 082 Kap 20a, Cluster B — WI-119): vier Felder kommen dazu, und sie gehoeren
+        // hierher und nicht in einen zweiten Modul-Zustand. Es ist Zustand EINES geoeffneten Popups,
+        // genau wie transcriptId: `pristineValue` traegt den zuletzt VOM KODE geschriebenen Feldwert,
+        // `baselineLength` die Laenge des Textes, den der Server zu diesem Transcript haelt,
+        // `prefillStatus` die Lage, in der das Nachladen geendet ist, und `offeredBody` den
+        // nachgeladenen Text, der angeboten statt angewendet wurde.
+        var promptEditState = { memoName: null, projectId: null, memoId: null, revisionId: null, transcriptId: null, questions: [], pristineValue: null, baselineLength: null, prefillStatus: null, offeredBody: null }
 
         function bindPromptEdit( opts ) {
             opts = opts || {}
@@ -5913,6 +5919,201 @@
             btn.addEventListener( 'click', function() {
                 openPromptModal( { memoEntry: opts.memoEntry, memoName: opts.memoName } )
             } )
+        }
+
+        // PRD-05 (Memo 082 Kap 20a, Cluster B — WI-119, S2): VIER Lagen, VIER unterscheidbare
+        // Rueckgaben. Bis hierher endeten alle vier in demselben leeren Zeichenkettenwert: ein nicht
+        // gefundener Marker, ein Abruf, der nicht `ok` ist, eine Ausnahme und ein echt leeres
+        // Transcript waren am Feld nicht auseinanderzuhalten — und genau das ist der Befund, nicht
+        // eine seiner Folgen. `body === null` heisst "nicht entscheidbar" und ist ausdruecklich NICHT
+        // dasselbe wie `body === ''` ("entschieden leer"); an dieser einen Gleichsetzung haengt der
+        // ganze Schaden, weil sie eine gescheiterte Lesung als gueltiges Ergebnis ausgibt.
+        // Rein gehalten — ohne DOM und ohne Netz —, damit jede Lage einzeln pruefbar ist.
+        function transcriptPrefillOutcome( opts ) {
+            opts = opts || {}
+
+            if( opts.error ) {
+                return { status: 'exception', body: null, baselineLength: null, message: 'Fehler beim Laden: ' + ( opts.error.name || String( opts.error ) ) }
+            }
+            if( opts.ok !== true ) {
+                var statusText = ( opts.status === undefined || opts.status === null ) ? 'ohne Status' : String( opts.status )
+
+                return { status: 'fetch-failed', body: null, baselineLength: null, message: 'Abruf gescheitert: ' + statusText }
+            }
+
+            var raw = typeof opts.raw === 'string' ? opts.raw : ''
+            // Dieselbe Server-Form wie in renderTranscriptContent und im alten Nachlade-Zweig: MIT den
+            // beiden abschliessenden Zeilenumbruechen. Nur die Deutung des Fehlschlags aendert sich.
+            var marker = '## Transcript-Inhalt\n\n'
+            var idx = raw.indexOf( marker )
+            if( idx === -1 ) {
+                // Die Meldung nennt die Markierung, zitiert sie aber NICHT ein zweites Mal als
+                // Literal: `HeaderSplitParityPRD32` verlangt, dass jedes Vorkommen der Markierung im
+                // Klienten als Schnittstelle benennbar bleibt, damit kein zweiter Schnittpunkt
+                // unbemerkt hereinkommt. Der Text kommt deshalb aus derselben Variablen, gegen die
+                // auch geschnitten wird — eine Quelle, zwei Verwendungen.
+                return { status: 'marker-missing', body: null, baselineLength: null, message: 'Markierung nicht gefunden: der Abschnitt "' + marker.trim() + '" fehlt in der Antwort des Servers. Das Feld wurde nicht gefüllt.' }
+            }
+
+            var body = raw.slice( idx + marker.length ).trim()
+            if( body.length === 0 ) {
+                return { status: 'empty-transcript', body: '', baselineLength: 0, message: 'Transcript ist leer.' }
+            }
+
+            return { status: 'loaded', body: body, baselineLength: body.length, message: '' }
+        }
+
+        // PRD-05 (S1): die Veraenderungs-Erkennung an EINER benannten Stelle statt verstreut. Sie
+        // vergleicht den Feldwert mit dem zuletzt vom Kode geschriebenen — kein Ereignis-Abonnement,
+        // weil dessen Bindungs-Lebenszyklus selbst eine stille Fehlerquelle waere und der Vergleich
+        // an jedem Punkt nachrechenbar ist.
+        // `pristineValue` ohne Wert heisst "der Kode hat hier nie geschrieben", also ist die Frage
+        // nicht entscheidbar. Die Antwort `false` traegt dabei keinen stillen Default: sie fuehrt in
+        // der Schrumpf-Pruefung zu "nicht erklaert" und damit auf die strengere Seite.
+        function promptFieldChangedByUser() {
+            var el = document.getElementById( 'pp-content' )
+            if( !el ) { return false }
+            if( typeof promptEditState.pristineValue !== 'string' ) { return false }
+
+            return el.value !== promptEditState.pristineValue
+        }
+
+        // PRD-05 (S1/S2): die Lage wird BENANNT statt als "leer" gelesen. `offer === null` blendet den
+        // Uebernahme-Knopf aus; ein Text ohne Angebot ist eine reine Meldung.
+        function renderPrefillNotice( opts ) {
+            var box = document.getElementById( 'pp-prefill-notice' )
+            var textEl = document.getElementById( 'pp-prefill-text' )
+            var btn = document.getElementById( 'pp-prefill-apply' )
+            if( !box || !textEl ) { return }
+
+            textEl.textContent = opts.text
+            if( btn ) {
+                if( opts.offer === null ) { btn.classList.add( 't-hidden' ) }
+                else { btn.classList.remove( 't-hidden' ) }
+            }
+            if( opts.text.length > 0 ) { box.classList.remove( 't-hidden' ) }
+            else { box.classList.add( 't-hidden' ) }
+        }
+
+        // PRD-05 (S1): die EINE Stelle, an der entschieden wird, ob ein eintreffendes Nachladen das
+        // Feld fuellen darf. Bis hierher stand dort `ppContent.value = body` ohne jede Bedingung —
+        // gemessen in M082-09-02 (Fall V1): das Feld ist beim Oeffnen leer, der Fokus steht sofort
+        // darin, der Nutzer tippt, das Nachladen trifft ein und sein Text ist ersatzlos weg, ohne
+        // Nachfrage und ohne Hinweis.
+        //
+        // Drei Lagen, wie S1 sie nennt: unveraendert => fuellen · vom Nutzer veraendert => ANBIETEN,
+        // nie anwenden · nicht entscheidbar => das Feld bleibt, wie es ist, und die Lage wird benannt.
+        // Eine Zusammenfuehrung beider Fassungen entsteht ausdruecklich nicht (S4) — sie waere eine
+        // neue stille Aenderung an genau der Stelle, die dieser Auftrag schliesst.
+        function applyTranscriptPrefill( opts ) {
+            var outcome = opts.outcome
+            var el = document.getElementById( 'pp-content' )
+
+            promptEditState.prefillStatus = outcome.status
+            promptEditState.baselineLength = outcome.baselineLength
+
+            if( !el ) { return { applied: false, reason: 'no-field' } }
+
+            if( outcome.body === null ) {
+                renderPrefillNotice( { text: outcome.message, offer: null } )
+
+                return { applied: false, reason: outcome.status }
+            }
+
+            if( promptFieldChangedByUser() === true ) {
+                promptEditState.offeredBody = outcome.body
+                renderPrefillNotice( {
+                    text: 'Nachgeladener Text NICHT übernommen: das Feld trägt bereits ' + el.value.length
+                        + ' Zeichen eigenen Text, das Nachladen brachte ' + outcome.body.length
+                        + ' Zeichen. Es wurde nichts überschrieben.',
+                    offer: outcome.body
+                } )
+
+                return { applied: false, reason: 'field-changed' }
+            }
+
+            el.value = outcome.body
+            promptEditState.pristineValue = outcome.body
+            updatePromptTranscriptCount()
+            renderPrefillNotice( { text: outcome.message, offer: null } )
+
+            return { applied: true, reason: outcome.status }
+        }
+
+        // PRD-05 (S1, S4): der angebotene Text wird auf ausdrueckliche Nutzer-Handlung uebernommen,
+        // nicht verschmolzen. Danach ist der Feldwert wieder der vom Kode geschriebene, also gilt
+        // jede spaetere Abweichung erneut als Eingabe eines Menschen.
+        function adoptOfferedPrefill() {
+            var el = document.getElementById( 'pp-content' )
+            if( !el ) { return { adopted: false, reason: 'no-field' } }
+            if( typeof promptEditState.offeredBody !== 'string' ) { return { adopted: false, reason: 'nothing-offered' } }
+
+            el.value = promptEditState.offeredBody
+            promptEditState.pristineValue = promptEditState.offeredBody
+            promptEditState.baselineLength = promptEditState.offeredBody.length
+            promptEditState.offeredBody = null
+            updatePromptTranscriptCount()
+            renderPrefillNotice( { text: '', offer: null } )
+
+            return { adopted: true, reason: 'adopted' }
+        }
+
+        function bindPrefillOffer() {
+            var btn = document.getElementById( 'pp-prefill-apply' )
+            if( !btn ) { return }
+            if( btn.dataset.bound === '1' ) { return }
+            btn.dataset.bound = '1'
+
+            btn.addEventListener( 'click', function() { adoptOfferedPrefill() } )
+        }
+
+        // PRD-05 (S3): eine Voll-Ersetzung, die den Text kuerzer macht, ist eine Behauptung, die
+        // belegt werden muss. Dieselbe Regel, die mergeAnswerBlocks schon fuer die Antwort-Abschnitte
+        // ("nichts gefunden ist nie gruen") — dieser Auftrag dehnt sie auf den Transcript-Weg aus,
+        // erfindet sie also nicht. Eine Ablehnung sagt, gegen WELCHE Vergleichsmenge sie ergeht.
+        //
+        // Die beiden ersten Ausgaenge sind der Zaun gegen ein Gruen ueber einer Nullmenge:
+        // `baselineLength` ohne Zahl heisst, dass die Ausgangslaenge UNBEKANNT ist, weil das
+        // Nachladen in einer der drei Fehlerlagen endete — das ist nicht 0 und wird nicht als 0
+        // gelesen. Ein PUT ersetzt dabei gespeicherten Inhalt, dessen Laenge niemand kennt; deshalb
+        // ist das der einzige Ausgang, der ohne Kuerzung ablehnt. `baselineLength === 0` ist dagegen
+        // bekannt, aber trivial: es kann nichts schrumpfen, und die Pruefung meldet die leere
+        // Vergleichsmenge als eigenen Ausgang statt sie als Bestehen auszugeben.
+        function checkTranscriptShrink( opts ) {
+            var baselineLength = typeof opts.baselineLength === 'number' ? opts.baselineLength : null
+            var nextLength = opts.nextLength
+            var explained = Array.isArray( opts.explained ) ? opts.explained : []
+
+            if( opts.isUpdate !== true ) {
+                return { verdict: 'not-applicable', allowed: true, baselineLength: baselineLength, nextLength: nextLength, delta: null, explained: explained, message: '' }
+            }
+            if( baselineLength === null ) {
+                return { verdict: 'unknown-baseline', allowed: false, baselineLength: null, nextLength: nextLength, delta: null, explained: explained, message: 'Schrumpf-Prüfung nicht entscheidbar: die Ausgangslänge ist unbekannt, weil das Nachladen des Transcripts nicht gelungen ist. Es wurde nichts gespeichert.' }
+            }
+            if( baselineLength === 0 ) {
+                return { verdict: 'no-baseline', allowed: true, baselineLength: 0, nextLength: nextLength, delta: nextLength, explained: explained, message: 'Schrumpf-Prüfung: keine Vergleichsmenge — die Ausgangslänge ist 0 Zeichen, es wurde nichts verglichen.' }
+            }
+
+            var delta = nextLength - baselineLength
+            if( delta >= 0 ) {
+                return { verdict: 'pass-not-shorter', allowed: true, baselineLength: baselineLength, nextLength: nextLength, delta: delta, explained: explained, message: '' }
+            }
+            if( explained.length > 0 ) {
+                return { verdict: 'pass-explained', allowed: true, baselineLength: baselineLength, nextLength: nextLength, delta: delta, explained: explained, message: 'Kürzung erklärt (' + explained.join( ', ' ) + '): ' + baselineLength + ' → ' + nextLength + ' Zeichen, ' + delta + '.' }
+            }
+
+            return { verdict: 'reject-unexplained-shrink', allowed: false, baselineLength: baselineLength, nextLength: nextLength, delta: delta, explained: explained, message: 'Kürzung ohne erklärten Grund abgelehnt: ' + baselineLength + ' → ' + nextLength + ' Zeichen, ' + delta + '. Es wurde nichts gespeichert.' }
+        }
+
+        // PRD-05 (S1): der Fokus ist eine eigene Handlung geworden, weil er jetzt an zwei Stellen
+        // faellt — sofort, wenn nichts nachgeladen wird, und im then-/catch-Zweig, sobald der Inhalt
+        // feststeht. Ein Fokus auf ein Feld, dessen Inhalt noch unterwegs ist, ist die Einladung zum
+        // Rennen; er ist nicht dessen Ursache, aber er ist der Grund, warum es ueberhaupt eintritt.
+        function focusPromptContent() {
+            var el = document.getElementById( 'pp-content' )
+            if( !el ) { return }
+
+            el.focus()
         }
 
         // Open #transcript-modal in the combined "Prompt bearbeiten" mode (Kap 9.5). Shows the
@@ -5974,6 +6175,15 @@
             if( ppMemo ) { ppMemo.value = memoId }
             if( ppRevision ) { ppRevision.value = promptEditState.revisionId }
             if( ppContent ) { ppContent.value = '' }
+            // PRD-05 (Memo 082 Kap 20a, WI-119, S1): der Bezugspunkt der Veraenderungs-Erkennung wird
+            // MIT dem Feld gesetzt, nicht davor und nicht danach — sonst misst der spaetere Vergleich
+            // gegen den Stand eines frueheren Popups. Die Ausgangslaenge ist an dieser Stelle noch
+            // unbekannt (null), nicht 0: geladen ist nichts, und "nichts geladen" ist keine Laenge.
+            promptEditState.pristineValue = ''
+            promptEditState.baselineLength = null
+            promptEditState.prefillStatus = null
+            promptEditState.offeredBody = null
+            renderPrefillNotice( { text: '', offer: null } )
             // PRD-008 (Memo 076 H5, WI-072): the quality checkboxes are NOT part of the field reset
             // above, so a check ticked for memo A leaked silently into memo B's payload. Reset them on
             // every open, then restamp the label (WI-078) so the count starts from zero.
@@ -5982,20 +6192,31 @@
             updatePromptTranscriptCount()
 
             // Load the existing transcript body into the field (no header — body only).
+            // PRD-05 (Memo 082 Kap 20a, WI-119, S1/S2): der Zweig traegt die Entscheidung nicht mehr
+            // selbst. Er reicht die Antwort — samt Status und samt Ausnahme — an
+            // transcriptPrefillOutcome weiter, das die vier Lagen auseinanderhaelt, und laesst
+            // applyTranscriptPrefill entscheiden, ob gefuellt oder angeboten wird.
+            // Der gemeinsame leere Sammel-Rueckgabewert, in dem drei Fehlerlagen und ein echt leeres
+            // Transcript ununterscheidbar zusammenfielen, ist damit ersatzlos weg — und mit ihm der
+            // leere Fehler-Zweig, das stillste Stueck des Befundes: er hat eine Ausnahme verschluckt
+            // und dem Nutzer ein leeres Feld als Ergebnis hingestellt.
+            // Die frueheren Schreibweisen werden hier bewusst NICHT zitiert: eine Quelltext-Probe,
+            // die ihr Verschwinden misst, wuerde sonst diesen Kommentar treffen (M082-09-03, O-5).
             if( promptEditState.transcriptId ) {
                 fetch( '/api/transcripts/' + promptEditState.transcriptId )
-                    .then( function( resp ) { return resp.ok ? resp.text() : '' } )
-                    .then( function( raw ) {
-                        // PRD-V5 (Memo 080 Kap 16, WI-133): server form WITH the two trailing newlines
-                        // — same reason as in renderTranscriptContent. This is the split that fed the
-                        // edit field, so it is the one that produced the second header on save.
-                        var marker = '## Transcript-Inhalt\n\n'
-                        var idx = raw.indexOf( marker )
-                        var body = idx === -1 ? '' : raw.slice( idx + marker.length ).trim()
-                        if( ppContent ) { ppContent.value = body }
-                        updatePromptTranscriptCount()
+                    .then( function( resp ) {
+                        if( resp.ok !== true ) { return { ok: false, status: resp.status, raw: '' } }
+
+                        return resp.text().then( function( raw ) { return { ok: true, status: resp.status, raw: raw } } )
                     } )
-                    .catch( function() {} )
+                    .then( function( answer ) {
+                        applyTranscriptPrefill( { outcome: transcriptPrefillOutcome( answer ) } )
+                        focusPromptContent()
+                    } )
+                    .catch( function( err ) {
+                        applyTranscriptPrefill( { outcome: transcriptPrefillOutcome( { error: err } ) } )
+                        focusPromptContent()
+                    } )
             }
 
             // ---- Abschnitt 2: Fragen. Open questions of the viewed memo, each with an answer
@@ -6003,9 +6224,13 @@
             // rendered questionNav — two sets under one heading. Both now come from the schema of the
             // viewed revision, so the label counts what the list shows.
             renderPromptQuestions( memoEntry )
+            bindPrefillOffer()
 
             modal.classList.remove( 't-hidden' )
-            if( ppContent ) { ppContent.focus() }
+            // PRD-05 (Memo 082 Kap 20a, WI-119, S1): der Fokus kommt NACH dem Feststehen des Inhalts.
+            // Laeuft ein Nachladen, setzt ihn dessen then- oder catch-Zweig; laeuft keines, steht der
+            // Inhalt hier bereits fest (das leere Feld ist dann das Ergebnis, nicht ein Zwischenstand).
+            if( !promptEditState.transcriptId ) { focusPromptContent() }
         }
 
         function updatePromptTranscriptCount() {
@@ -6390,8 +6615,42 @@
                 return
             }
 
+            var isUpdate = !!promptEditState.transcriptId
+
+            // PRD-05 (Memo 082 Kap 20a, WI-119, S3): die Schrumpf-Pruefung sitzt unmittelbar vor der
+            // Voll-Ersetzung und NUR dort, wo eine zu ersetzen ist — beim PUT auf ein bestehendes
+            // Transcript. Ein POST legt an; dort gibt es nichts zu verlieren, und eine Pruefung ohne
+            // Vergleichsmenge waere ein Gruen ueber einer Nullmenge.
+            // Bis hierher war die einzige Bedingung "nicht leer" (der trim-Zaun oben), und damit
+            // konnte ein einziges "Uebernehmen" einen ganzen Transcript-Text durch einen einzelnen
+            // Antwort-Block ersetzen.
+            //
+            // Ein erklaerter Grund ist gemessen, nicht geraten: die Dubletten-Pruefung sagt selbst,
+            // wieviel sie ersetzt und wieviel sie entfernt hat, und eine Eingabe des Nutzers ist die
+            // legitime Kuerzung, die durchgehen MUSS — eine Pruefung, die jede Kuerzung ablehnt, waere
+            // von einer richtigen nicht zu unterscheiden und machte das Werkzeug unbenutzbar.
+            var shrinkExplained = []
+            if( merge.replaced > 0 ) { shrinkExplained.push( 'answer-replaced' ) }
+            if( merge.dropped > 0 ) { shrinkExplained.push( 'duplicate-removed' ) }
+            if( promptFieldChangedByUser() === true ) { shrinkExplained.push( 'user-edit' ) }
+
+            var shrink = checkTranscriptShrink( {
+                isUpdate: isUpdate,
+                baselineLength: promptEditState.baselineLength,
+                nextLength: content.length,
+                explained: shrinkExplained
+            } )
+
+            if( shrink.allowed !== true ) {
+                if( ppError ) {
+                    ppError.textContent = shrink.message
+                    ppError.classList.remove( 't-hidden' )
+                }
+
+                return
+            }
+
             try {
-                var isUpdate = !!promptEditState.transcriptId
                 var url = isUpdate ? '/api/transcripts/' + promptEditState.transcriptId : '/api/transcripts'
                 var method = isUpdate ? 'PUT' : 'POST'
                 var body = isUpdate
@@ -6417,6 +6676,14 @@
                 //    POST (Anlage) — no Karteileichen-Stapel for the same viewed revision.
                 if( data && data.transcriptId ) { promptEditState.transcriptId = data.transcriptId }
 
+                // PRD-05 (Memo 082 Kap 20a, WI-119, S3): was gerade geschrieben wurde, IST ab jetzt
+                // der Ausgangstext. Ohne diese Zeile stuende ein zweites "Uebernehmen" nach einer
+                // Neuanlage vor einer unbekannten Ausgangslaenge und wuerde abgelehnt, obwohl der
+                // Wert genau hier bekannt ist. Der Feldwert ist damit auch wieder der vom Kode
+                // gesetzte Bezugspunkt der Veraenderungs-Erkennung.
+                promptEditState.baselineLength = content.length
+                if( ppContent ) { promptEditState.pristineValue = ppContent.value }
+
                 // b) URL + Clipboard: copy the fresh transcript URL. The clipboard write is a
                 //    Promise; reject (denied permission) must not crash the flow.
                 var savedUrl = data && data.url ? data.url : ''
@@ -6431,9 +6698,13 @@
                     var checked = 'Dubletten-Prüfung: ' + merge.compared + ' Blöcke verglichen, '
                         + merge.replaced + ' ersetzt, ' + merge.dropped + ' Dublette(n) entfernt, '
                         + merge.appended + ' neu.'
+                    // PRD-05 (S3): eine durchgelassene Kuerzung wird protokolliert, nicht verschwiegen
+                    // — und eine leere Vergleichsmenge sagt, dass sie leer war. Der Normalfall
+                    // (gleich lang oder laenger) traegt eine leere Meldung und haengt nichts an.
+                    var shrinkNote = shrink.message.length > 0 ? ( ' · ' + shrink.message ) : ''
                     ppSuccess.textContent = ( savedUrl
                         ? 'Gespeichert · in Zwischenablage kopiert: ' + savedUrl
-                        : 'Gespeichert.' ) + ' · ' + checked
+                        : 'Gespeichert.' ) + ' · ' + checked + shrinkNote
                     ppSuccess.classList.remove( 't-hidden' )
                 }
 

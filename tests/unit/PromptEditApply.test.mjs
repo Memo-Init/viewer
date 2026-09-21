@@ -77,13 +77,23 @@ describe( 'PRD-002 applyPromptEdit — emitted browser string', () => {
         // fails with a ReferenceError instead of exercising the code under test.
         const mergeSrc = extractFunction( emittedScript, 'function mergeAnswerBlocks(' )
         const scanSrc = extractFunction( emittedScript, 'function scanAnswerBlocks(' )
+        // M082-09-05 (Memo 082 Kap 20a, Cluster B — WI-119, S3): applyPromptEdit delegates the
+        // shrink guard, so both helpers must be lifted too — otherwise the sandbox call fails with a
+        // ReferenceError instead of exercising the code under test. Lifting them (rather than
+        // guarding the call site with typeof in production) is deliberate: a guard would silently
+        // skip the very check this file drives applyPromptEdit through.
+        const shrinkSrc = extractFunction( emittedScript, 'function checkTranscriptShrink(' )
+        const changedSrc = extractFunction( emittedScript, 'function promptFieldChangedByUser(' )
 
         expect( applySrc.length ).toBeGreaterThan( 0 )
         expect( activateSrc.length ).toBeGreaterThan( 0 )
         expect( mergeSrc.length ).toBeGreaterThan( 0 )
         expect( scanSrc.length ).toBeGreaterThan( 0 )
+        expect( shrinkSrc.length ).toBeGreaterThan( 0 )
+        expect( changedSrc.length ).toBeGreaterThan( 0 )
 
         extractedSource = applySrc + '\n' + activateSrc + '\n' + mergeSrc + '\n' + scanSrc
+            + '\n' + shrinkSrc + '\n' + changedSrc
             + '\nglobalThis.__apply = applyPromptEdit;'
             + '\nglobalThis.__activate = activatePsCopy;'
     } )

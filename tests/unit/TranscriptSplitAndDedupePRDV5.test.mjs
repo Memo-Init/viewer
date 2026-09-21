@@ -112,18 +112,25 @@ describe( 'PRD-V5 WI-135 — applyPromptEdit haengt keine Dubletten an', () => {
         // PRD-F3 (Memo 080 Kap 18, S3): applyPromptEdit reicht die Dubletten-Pruefung an
         // mergeAnswerBlocks / scanAnswerBlocks weiter — beide muessen mitgehoben werden, sonst
         // scheitert der Sandbox-Aufruf an einer fehlenden Referenz statt am Pruefgegenstand.
-        const lifted = await extractFunctionSources( [ 'applyPromptEdit', 'activatePsCopy', 'mergeAnswerBlocks', 'scanAnswerBlocks' ] )
+        // M082-09-05 (Memo 082 Kap 20a, Cluster B — WI-119, S3): applyPromptEdit reicht seit diesem
+        // Auftrag ausserdem an checkTranscriptShrink und promptFieldChangedByUser weiter. Beide werden
+        // MITGEHOBEN statt in der Produktion mit einer typeof-Wache umgangen: eine Wache haette die
+        // Schrumpf-Pruefung in genau dem Lauf still uebersprungen, der sie prueft — ein Gruen ueber
+        // einer Nullmenge. Die Namensliste nachzuziehen ist der Weg, den M082-09-04 O-2 dafuer nennt.
+        const lifted = await extractFunctionSources( [ 'applyPromptEdit', 'activatePsCopy', 'mergeAnswerBlocks', 'scanAnswerBlocks', 'checkTranscriptShrink', 'promptFieldChangedByUser' ] )
         extractedSource = `${ lifted[ 'source' ] }\nglobalThis.__apply = applyPromptEdit;`
         loadedNames = lifted[ 'names' ]
     } )
 
 
-    it( 'der Helfer hebt AUCH async-Funktionen samt Schluesselwort heraus (4 Funktionen)', () => {
-        expect( loadedNames.length ).toBe( 4 )
+    it( 'der Helfer hebt AUCH async-Funktionen samt Schluesselwort heraus (6 Funktionen)', () => {
+        expect( loadedNames.length ).toBe( 6 )
         expect( extractedSource.startsWith( 'async function applyPromptEdit(' ) ).toBe( true )
         expect( extractedSource ).toContain( 'function activatePsCopy(' )
         expect( extractedSource ).toContain( 'function mergeAnswerBlocks(' )
         expect( extractedSource ).toContain( 'function scanAnswerBlocks(' )
+        expect( extractedSource ).toContain( 'function checkTranscriptShrink(' )
+        expect( extractedSource ).toContain( 'function promptFieldChangedByUser(' )
     } )
 
 
@@ -162,6 +169,13 @@ describe( 'PRD-V5 WI-135 — applyPromptEdit haengt keine Dubletten an', () => {
         const sandbox = {
             'promptEditState': {
                 'transcriptId': existingTranscriptId,
+                // M082-09-05 (WI-119, S3): die Ausgangslaenge, gegen die die Schrumpf-Pruefung rechnet.
+                // Sie ist hier NICHT frei gewaehlt: im Betrieb traegt sie die Laenge des Transcript-
+                // Koerpers, den openPromptModal in das Feld geladen hat — also genau den Wert, der eine
+                // Zeile tiefer als `pp-content`-Inhalt gesetzt wird. `pristineValue` traegt denselben
+                // Text, weil dieser Aufbau ein frisch geoeffnetes, noch unberuehrtes Popup nachstellt.
+                'baselineLength': transcriptValue.length,
+                'pristineValue': transcriptValue,
                 'projectId': 'memo-init',
                 'memoId': '080-db',
                 'revisionId': 'REV-01',

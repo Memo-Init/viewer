@@ -2451,6 +2451,13 @@ class MemoView {
                     </div>
                     <div id="pp-error" class="t-error t-hidden"></div>
                     <div id="pp-unconfirmed" class="t-notice t-hidden"></div>
+                    <!-- PRD-05 (Memo 082 Kap 20a, Cluster B — WI-119, S1/S2): die Stelle, an der eine
+                         nicht entscheidbare Lage BENANNT wird statt als leeres Feld zu erscheinen, und
+                         an der ein nachgeladener Text ANGEBOTEN statt angewendet wird. Der Knopf
+                         bleibt verborgen, solange es nichts anzubieten gibt — ein Angebot ueber einer
+                         Nullmenge waere dieselbe Unehrlichkeit in die andere Richtung. Kein neuer
+                         CSS-Baustein: .t-notice und .t-btn-primary stehen bereits. -->
+                    <div id="pp-prefill-notice" class="t-notice t-hidden"><span id="pp-prefill-text"></span> <button id="pp-prefill-apply" class="t-btn-primary t-hidden" type="button" data-pp-prefill-apply>Nachgeladenen Text übernehmen</button></div>
                     <div id="pp-success" class="pp-success t-hidden"></div>
                 </div>
                 <div class="t-tab-panel" id="t-panel-new">

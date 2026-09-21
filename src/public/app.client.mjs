@@ -12457,3 +12457,166 @@
                 openImageModal( target.getAttribute( 'src' ), target.getAttribute( 'alt' ) )
             }
         } )
+
+        // PRD-09 (Memo 082 Kap 20b, WI-123) — die ein- und ausblendbaren Seitenleisten (Xcode-Muster).
+        //
+        // WHAT IT IS: one visible button per side, sitting in the fixed #nav-bar, and BOTH directions
+        // run through that same button. One way in and another way out would be two things to find.
+        // The two sides are independent — Xcode does it that way, and a wide table usually only needs
+        // one of them out of the way.
+        //
+        // WHERE THE WIDTH LIVES: not here. Collapsing sets ONE class on #layout and app.css does the
+        // rest, so the middle (#main, flex:1) gains exactly what the panel gives up and the other
+        // sidebar is untouched. An inline width in this file would be a second authority for a number
+        // that app.css already owns.
+        //
+        // WHERE THE STATE LIVES — AND WHERE IT DOES NOT: in sessionStorage, the same mechanism the
+        // build-reload throttle further up already uses, so this adds no second per-session store.
+        // This is a PERSONAL VIEW setting: it never goes to the server, never into the database and
+        // never into a broadcast (Kap 20b cut table; lesson you-are-here-belongs-in-terminal-statusline
+        // — a shared server state is no place for one person's view). There is no fetch, no socket
+        // send and no POST in this block, and SidebarTogglePRD09 counts the write paths of the state
+        // and fails if one of them ever points anywhere else.
+        var SIDEBAR_STATE_KEY = 'memoViewSidebarCollapsed'
+
+        // The DECLARED starting state, not a fallback that quietly swallows a missing value: a new
+        // session opens with BOTH sidebars visible (PRD-09 S2/AB-6). Named once, here, so a test can
+        // assert the starting state instead of inferring it from an absence.
+        var SIDEBAR_DEFAULT_STATE = { left: false, right: false }
+
+        var SIDEBAR_PANELS = [
+            {
+                side: 'left',
+                panelId: 'doc-sidebar',
+                buttonId: 'sidebar-toggle-left',
+                collapsedClass: 'sidebar-left-collapsed',
+                anchorId: 'nav-brand',
+                place: 'afterend',
+                hideLabel: 'Linke Seitenleiste ausblenden',
+                showLabel: 'Linke Seitenleiste einblenden'
+            },
+            {
+                side: 'right',
+                panelId: 'toc-sidebar',
+                buttonId: 'sidebar-toggle-right',
+                collapsedClass: 'sidebar-right-collapsed',
+                anchorId: 'status',
+                place: 'beforebegin',
+                hideLabel: 'Rechte Seitenleiste ausblenden',
+                showLabel: 'Rechte Seitenleiste einblenden'
+            }
+        ]
+
+        // PURE: stored text -> state. Anything unreadable yields the DECLARED starting state rather
+        // than a half-applied layout — a truncated entry must not leave one side in limbo.
+        function parseSidebarState( raw ) {
+            var fallback = { left: SIDEBAR_DEFAULT_STATE.left === true, right: SIDEBAR_DEFAULT_STATE.right === true }
+            if( typeof raw !== 'string' || raw.length === 0 ) { return fallback }
+
+            var parsed = null
+            try { parsed = JSON.parse( raw ) } catch ( err ) { parsed = null }
+            if( !parsed || typeof parsed !== 'object' ) { return fallback }
+
+            return { left: parsed.left === true, right: parsed.right === true }
+        }
+
+        // PURE: flip ONE side, carry the other one through untouched. The independence of the two
+        // sides (S1/AB-3) is a property of this function, which is why it is testable as one.
+        function nextSidebarState( state, side ) {
+            var base = { left: !!( state && state.left === true ), right: !!( state && state.right === true ) }
+            if( side !== 'left' && side !== 'right' ) { return base }
+
+            var flipped = { left: base.left, right: base.right }
+            flipped[ side ] = !base[ side ]
+
+            return flipped
+        }
+
+        // PURE: the glyph. A panel outline with the collapsing side filled, so the two buttons are told
+        // apart by SHAPE and not only by where they sit.
+        function sidebarToggleIcon( side ) {
+            var bar = side === 'left'
+                ? '<rect x="2.2" y="3.2" width="3.6" height="9.6" rx="1" fill="currentColor"></rect>'
+                : '<rect x="10.2" y="3.2" width="3.6" height="9.6" rx="1" fill="currentColor"></rect>'
+
+            return '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">'
+                + '<rect x="1.6" y="2.6" width="12.8" height="10.8" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"></rect>'
+                + bar
+                + '</svg>'
+        }
+
+        function readSidebarState() {
+            var raw = null
+            try { raw = sessionStorage.getItem( SIDEBAR_STATE_KEY ) } catch ( err ) { raw = null }
+
+            return parseSidebarState( raw )
+        }
+
+        // The ONLY write path of this state. sessionStorage and nothing else — see the block comment.
+        function writeSidebarState( state ) {
+            try {
+                sessionStorage.setItem( SIDEBAR_STATE_KEY, JSON.stringify( state ) )
+            } catch ( err ) { /* storage blocked — the view still toggles, it just does not survive a reload */ }
+
+            return state
+        }
+
+        // The class on #layout and the control's own state, kept in lock-step — the same shape
+        // setActiveModeButton uses for the mode pills. aria-expanded is the state a screen reader
+        // reads; the title is the state a pointer user reads.
+        function applySidebarState( state ) {
+            var layout = document.getElementById( 'layout' )
+            if( !layout ) { return state }
+
+            SIDEBAR_PANELS.forEach( function( panel ) {
+                var collapsed = state[ panel.side ] === true
+                layout.classList.toggle( panel.collapsedClass, collapsed )
+
+                var button = document.getElementById( panel.buttonId )
+                if( !button ) { return }
+                var label = collapsed ? panel.showLabel : panel.hideLabel
+                button.setAttribute( 'aria-expanded', collapsed ? 'false' : 'true' )
+                button.setAttribute( 'title', label )
+                button.setAttribute( 'aria-label', label )
+            } )
+
+            return state
+        }
+
+        function toggleSidebar( side ) {
+            var next = nextSidebarState( readSidebarState(), side )
+            writeSidebarState( next )
+
+            return applySidebarState( next )
+        }
+
+        // Built from here instead of from the server markup: the page skeleton in MemoView.mjs is
+        // shared with three other orders of this phase, and nothing about these two buttons needs the
+        // server. Returns HOW MANY were built so the boot line below is a countable fact.
+        function buildSidebarToggles() {
+            var navBar = document.getElementById( 'nav-bar' )
+            if( !navBar ) { return 0 }
+
+            return SIDEBAR_PANELS.reduce( function( built, panel ) {
+                if( document.getElementById( panel.buttonId ) ) { return built }
+                var anchor = document.getElementById( panel.anchorId )
+                if( !anchor ) { return built }
+
+                var button = document.createElement( 'button' )
+                button.id = panel.buttonId
+                button.type = 'button'
+                button.className = 'sidebar-toggle'
+                button.setAttribute( 'aria-controls', panel.panelId )
+                button.setAttribute( 'aria-expanded', 'true' )
+                button.setAttribute( 'title', panel.hideLabel )
+                button.setAttribute( 'aria-label', panel.hideLabel )
+                button.innerHTML = sidebarToggleIcon( panel.side )
+                button.addEventListener( 'click', function() { toggleSidebar( panel.side ) } )
+                anchor.insertAdjacentElement( panel.place, button )
+
+                return built + 1
+            }, 0 )
+        }
+
+        buildSidebarToggles()
+        applySidebarState( readSidebarState() )

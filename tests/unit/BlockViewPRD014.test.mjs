@@ -252,9 +252,13 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
     } )
 
 
-    // The /blocks endpoint payload is exactly BlockMeta.parse output: blocks[] with id/repos/tags/
-    // topics and the three flat body fields. We exercise the data source the route wraps.
-    it( 'GET /api/documents/<id>/blocks payload mirrors BlockMeta.parse (blocks[] with body sections)', () => {
+    // PRD-13 (Memo 082 Kap 33, S1 / WI-234) REVERSES THE CLAIM THIS CASE USED TO MAKE. It was titled
+    // "the /blocks payload mirrors BlockMeta.parse" and it cemented the defect: the tab read block-meta
+    // fences out of the revision markdown, of which memo 082 has ZERO while 35 blocks sat in the store.
+    // The ASSERTIONS below are untouched and still correct — they are about BlockMeta.parse itself, and
+    // the parser stays (MemoValidator, MemoModel and the requirements route still use it). Only the
+    // claim about the ROUTE is withdrawn; the route's new wiring is pinned in the case below.
+    it( 'BlockMeta.parse yields blocks[] with id/repos/tags/topics and the flat body sections', () => {
         const doc = [
             '## Konsolidierung, Nutzbarkeit und Sichtbarkeit',
             '',
@@ -275,7 +279,6 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
 
         const { blocks } = BlockMeta.parse( { doc } )
 
-        // The route returns { status, documentId, blocks } — blocks IS this array.
         expect( Array.isArray( blocks ) ).toBe( true )
         expect( blocks.length ).toBe( 1 )
 
@@ -292,17 +295,29 @@ describe( 'Block view — PRD-010 (Memo 014 Kap 2)', () => {
     } )
 
 
-    // The route source is wired correctly: a /blocks GET branch that calls BlockMeta.parse, matched
-    // BEFORE the generic /api/documents/<id> GET (suffix is more specific).
-    it( 'the /blocks route is wired to BlockMeta.parse and matched before the generic route', () => {
-        expect( source.includes( "url.endsWith( '/blocks' )" ) ).toBe( true )
-        expect( source.includes( 'BlockMeta.parse( { doc: content } )' ) ).toBe( true )
-
+    // PRD-13 (Memo 082 Kap 33, S1 / WI-234): the INVERSION of the old case, which asserted the route was
+    // "wired to BlockMeta.parse". It is now wired to the STORE, and the check is SCOPED TO THE ROUTE
+    // SLICE rather than to the whole file — measured reason: the file carries a second, identical
+    // `BlockMeta.parse( { doc: content } )` in #collectBlockRequirementNames, so a file-wide
+    // `source.includes(...)` stayed green no matter what the route did. A check that cannot go red for
+    // the thing it names is not a check.
+    it( 'the /blocks route reads the STORE, not the markdown fences, and is matched before the generic route', () => {
         const blocksIdx = source.indexOf( "url.endsWith( '/blocks' )" )
         const genericIdx = source.indexOf( "if( url.startsWith( '/api/documents/' ) && req.method === 'GET' ) {" )
         expect( blocksIdx ).toBeGreaterThan( -1 )
         expect( genericIdx ).toBeGreaterThan( -1 )
         expect( blocksIdx ).toBeLessThan( genericIdx )
+
+        // The slice ends at the NEXT route branch, not at the generic one — everything between them
+        // belongs to other routes (/topics reads the same store, so a wide window would be green for
+        // free). Comparison set: the bytes of the /blocks branch and nothing else.
+        const nextRouteIdx = source.indexOf( "url.endsWith( '/topics' )", blocksIdx )
+        expect( nextRouteIdx ).toBeGreaterThan( blocksIdx )
+
+        const route = source.slice( blocksIdx, nextRouteIdx )
+        expect( route ).toContain( 'MemoView.readTopicStore(' )
+        expect( route ).toContain( 'MemoView.blockStoreTabView(' )
+        expect( route ).not.toContain( 'BlockMeta.parse( { doc: content } )' )
     } )
 
 

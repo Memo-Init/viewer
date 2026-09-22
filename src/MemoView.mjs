@@ -1634,10 +1634,23 @@ class MemoView {
             try {
                 const b = JSON.parse( raw )
 
+                const fields = ( b[ 'fields' ] != null && typeof b[ 'fields' ] === 'object' ) ? b[ 'fields' ] : {}
+                const sections = ( b[ 'sections' ] != null && typeof b[ 'sections' ] === 'object' ) ? b[ 'sections' ] : {}
+
                 return {
                     'blockId': b[ 'blockId' ],
                     'topicIds': Array.isArray( b[ 'topicIds' ] ) ? b[ 'topicIds' ] : [],
-                    'tags': Array.isArray( b[ 'tags' ] ) ? b[ 'tags' ] : []
+                    'tags': Array.isArray( b[ 'tags' ] ) ? b[ 'tags' ] : [],
+                    // PRD-13 (Memo 082 Kap 33, S3 / WI-234): the projection used to drop everything the
+                    // blocks TAB needs — title, chapter binding and chapter heading all lived in the file
+                    // and never left this function, which is why "the /topics route already delivers the
+                    // blocks" was true for the IDS and false for everything a reader wants to see. Added
+                    // ADDITIVELY: the three keys above keep their name, type and order, so every existing
+                    // reader of readTopicStore sees exactly what it saw before.
+                    'title': typeof fields[ 'title' ] === 'string' ? fields[ 'title' ] : '',
+                    'chapter': b[ 'chapter' ] == null ? null : b[ 'chapter' ],
+                    'chapterHeading': typeof b[ 'chapterHeading' ] === 'string' ? b[ 'chapterHeading' ] : '',
+                    'sections': sections
                 }
             } catch( e ) {
                 return null
@@ -3089,10 +3102,18 @@ ${ VendorAssets.scriptTags().tags }
                 return
             }
 
-            // PRD-010 (Memo 014 Kap 2): read-only block overlay model for one memo — the structured
-            // blocks parsed by BlockMeta.parse from the selected revision's markdown. MUST be matched
-            // BEFORE the generic /api/documents/<id> GET below (the suffix is more specific; otherwise
-            // the generic route would swallow "<id>/blocks" as the id). Mirror of the /requirements route.
+            // PRD-13 (Memo 082 Kap 33, S1 / WI-234): read-only block overlay model for one memo — and
+            // since this order it reads the STORE, not the revision markdown. Measured on memo 082 at
+            // build time: 0 block-meta fences in all 27 revision files against 35 block records in
+            // <memoDir>/blocks/B###/block.json and 35 rows in the `block` table of memo-082.db, so the
+            // tab was blank over a full carrier. It now takes the SAME source the /topics route already
+            // reads (MemoView.readTopicStore) — ONE authoritative source per datum, no fallback chain.
+            // The block-meta parser is NOT removed: MemoValidator, MemoModel and the requirements route
+            // still need it (measured: 9 files in the stock carry fences). It is simply no longer the
+            // source of this tab; the fence count survives here only as the DIAGNOSTIC reason of the
+            // empty state, and never as a rendered row.
+            // MUST be matched BEFORE the generic /api/documents/<id> GET below (the suffix is more
+            // specific; otherwise the generic route would swallow "<id>/blocks" as the id).
             if( url.startsWith( '/api/documents/' ) && url.endsWith( '/blocks' ) && req.method === 'GET' ) {
 
                 const documentId = url.slice( '/api/documents/'.length, url.length - '/blocks'.length )
@@ -3104,41 +3125,44 @@ ${ VendorAssets.scriptTags().tags }
                     return
                 }
 
-                // Memo 081, WI-106: a REST call has no viewer (see getPrimaryRevisionPath).
-                const { absolutePath } = MemoView.#registry.getPrimaryRevisionPath( { documentId } )
+                const location = MemoView.resolveMemoDir( { 'memoPath': result[ 'document' ][ 'memoPath' ] } )
+                const store = location[ 'status' ]
+                    ? await MemoView.readTopicStore( { 'memoDir': location[ 'memoDir' ] } )
+                    : { 'topics': [], 'blocks': [], 'workItems': [] }
+                const tab = MemoView.blockStoreTabView( { 'blocks': store[ 'blocks' ], 'topics': store[ 'topics' ] } )
+                const sourceLabel = location[ 'status' ]
+                    ? 'Block-Store ' + location[ 'memoDir' ] + '/blocks/B###/block.json'
+                    : 'Block-Store (kein Memo-Verzeichnis aufloesbar)'
 
-                if( !absolutePath ) {
-                    sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'blocks': [], 'errors': [] } )
-
-                    return
-                }
-
-                const { content } = await MemoView.#readFileContent( { absolutePath } )
-                // PRD-014 (Memo 016 Kap 9, A10): keep the parse `errors` (unparseable block-meta
-                // fences) — they used to be destructured away and silently discarded, so a memo with
-                // ONLY broken fences looked identical to one with no blocks at all.
-                const { blocks, errors } = BlockMeta.parse( { doc: content } )
-
-                // PRD-004 (Memo 016 Kap 3, A7): enrich every child block with its effective
-                // requirements (parent default ∪ child additive) by INVOKING the partition helper,
-                // which calls BlockMeta.effectiveRequirements — no longer dead code. Children arrive
-                // pre-computed so the client renders real requirement chips even without re-deriving.
-                const { groups, orphans } = MemoView.partitionBlocks( { blocks } )
-                const enrichedChildren = groups
-                    .map( ( group ) => group.parents.map( ( parent ) => parent.children ) )
-                    .flat( 2 )
-                    .concat( orphans )
-                const childByKey = new Map( enrichedChildren.map( ( child ) => [ `${ child.topic }|${ child.id }`, child ] ) )
-                const enrichedBlocks = blocks.map( ( block ) => {
-                    if( block.role !== 'child' ) { return block }
-                    const match = childByKey.get( `${ block.topic }|${ block.id }` )
-
-                    return match ? match : block
+                // PRD-13 (S4): the legacy fence count is read ONLY when the store came back empty — it is
+                // the one moment the number tells the reader something (the markdown still carries blocks
+                // the store never got), and reading the markdown on every call would be a cost for nothing.
+                const legacyFenceCount = tab[ 'blocks' ].length === 0
+                    ? await MemoView.#countLegacyBlockFences( { documentId } )
+                    : 0
+                const emptyState = MemoView.blockSourceEmptyState( {
+                    'count': tab[ 'blocks' ].length,
+                    'available': store[ 'blocks' ].length,
+                    'sourceLabel': sourceLabel,
+                    'legacyFenceCount': legacyFenceCount
                 } )
 
-                // PRD-014 (Memo 016 Kap 9, A10): `errors` is surfaced so the view can show the parse
-                // failures instead of a blank panel (reuses the same empty-/error-state component).
-                sendJson( res, 200, { 'status': 'ok', 'documentId': documentId, 'blocks': enrichedBlocks, 'errors': errors } )
+                // `errors` keeps its name and its empty-array type so every existing reader of this route
+                // stays readable; the store has no parse failures, so it is always empty here.
+                sendJson( res, 200, {
+                    'status': 'ok',
+                    'documentId': documentId,
+                    'blocks': tab[ 'blocks' ],
+                    'errors': [],
+                    'counts': tab[ 'counts' ],
+                    'source': {
+                        'kind': 'store',
+                        'label': sourceLabel,
+                        'available': store[ 'blocks' ].length,
+                        'legacyFenceCount': legacyFenceCount
+                    },
+                    'emptyState': emptyState
+                } )
 
                 return
             }
@@ -6165,6 +6189,25 @@ ${ VendorAssets.scriptTags().tags }
     }
 
 
+    // PRD-13 (Memo 082 Kap 33, S4 / WI-234): how many block-meta fences the selected revision still
+    // carries. DIAGNOSTIC ONLY — the number reaches the empty-state reason and never a rendered row.
+    // It is counted through BlockMeta.parse rather than through a text search on purpose: a hit count
+    // measures the PATTERN, the parser measures the BLOCKS, and a broken fence has to count too (it is
+    // a block the markdown meant to declare). An absent revision yields 0.
+    static async #countLegacyBlockFences( { documentId } ) {
+        const { absolutePath } = MemoView.#registry.getPrimaryRevisionPath( { documentId } )
+
+        if( !absolutePath ) { return 0 }
+
+        const { content } = await MemoView.#readFileContent( { absolutePath } )
+        const { blocks, errors } = BlockMeta.parse( { doc: content } )
+        const parsed = Array.isArray( blocks ) ? blocks.length : 0
+        const broken = Array.isArray( errors ) ? errors.length : 0
+
+        return parsed + broken
+    }
+
+
     // PRD-005 (Memo 016 Kap 4, B3): collect every requirement NAME declared by the blocks of a
     // document's selected revision — the union of each parent block's default `requirements` and each
     // child block's additive `requirementsPlus` (the `req-*` namespace). Read-only: parses the
@@ -7950,6 +7993,196 @@ ${ VendorAssets.scriptTags().tags }
             'kind': 'no-blocks',
             'reason': 'Keine Blöcke — dieses Memo enthaelt keinen block-meta-Fence.'
         }
+    }
+
+
+    // PRD-13 (Memo 082 Kap 33, S2 / WI-234): the three title cases of a STORE block, and they must stay
+    // TELLABLE APART. A title that repeats the block's own id says nothing, so it is treated as absent;
+    // but a DERIVED title that cannot be told from an authored one is worse than none, because the tab
+    // would again be asserting something it does not know. Hence three named outcomes, never two:
+    //   'store'   — an authored title that differs from the id: taken verbatim
+    //   'derived' — nothing authored, but the chapter heading or a body section carries a lead: derived
+    //               AND marked as derived, with the field it came from named in `derivedFrom`
+    //   'missing' — nothing derivable: the ID is shown and `titleMissing` says a title is missing
+    // Public + pure (the MemoView convention for testable statics); mirrored 1:1 by the inline browser
+    // helper blockTitleResolution, which is the single reason the copy lives here and not in the client.
+    static blockTitleResolution( { block } ) {
+        const safe = ( block != null && typeof block === 'object' ) ? block : {}
+        const id = typeof safe[ 'blockId' ] === 'string' ? safe[ 'blockId' ].trim() : ''
+        const authored = typeof safe[ 'title' ] === 'string' ? safe[ 'title' ].trim() : ''
+
+        if( authored.length > 0 && authored !== id ) {
+            return { 'title': authored, 'titleSource': 'store', 'titleMissing': false, 'derivedFrom': null }
+        }
+
+        const heading = typeof safe[ 'chapterHeading' ] === 'string' ? safe[ 'chapterHeading' ].trim() : ''
+
+        if( heading.length > 0 ) {
+            return { 'title': heading, 'titleSource': 'derived', 'titleMissing': false, 'derivedFrom': 'chapterHeading' }
+        }
+
+        const sections = ( safe[ 'sections' ] != null && typeof safe[ 'sections' ] === 'object' ) ? safe[ 'sections' ] : {}
+        const lead = Object.keys( sections )
+            .sort()
+            .map( ( key ) => ( { 'key': key, 'text': typeof sections[ key ] === 'string' ? sections[ key ].trim() : '' } ) )
+            .find( ( entry ) => entry[ 'text' ].length > 0 )
+
+        if( lead !== undefined ) {
+            const line = lead[ 'text' ].split( '\n' )[ 0 ].trim()
+            const short = line.length > 80 ? line.slice( 0, 77 ).trimEnd() + '…' : line
+
+            return { 'title': short, 'titleSource': 'derived', 'titleMissing': false, 'derivedFrom': 'sections.' + lead[ 'key' ] }
+        }
+
+        return { 'title': id.length > 0 ? id : 'Block', 'titleSource': 'missing', 'titleMissing': true, 'derivedFrom': null }
+    }
+
+
+    // PRD-13 (Memo 082 Kap 33, S3 / WI-234): the chapter binding of a STORE block — and the ZAUN around
+    // it. The binding is what whole phases are cut along, so a GUESSED chapter is worse than a missing
+    // one. Two sources are allowed and no third: the block's own authored `chapter`, and — only when the
+    // bound topics agree on EXACTLY ONE value — the topics. Zero candidates or two different candidates
+    // both yield null with a NAMED reason; nothing is ever picked for being the first or the most common.
+    // The topics of a block are read over BOTH checked edges (block.topicIds and topic.blockId) so a
+    // one-sided store does not silently look unbound. Public + pure; mirrored inline as
+    // blockChapterBinding.
+    static blockChapterBinding( { block, topics } ) {
+        const safe = ( block != null && typeof block === 'object' ) ? block : {}
+        const id = typeof safe[ 'blockId' ] === 'string' ? safe[ 'blockId' ].trim() : ''
+        const authored = safe[ 'chapter' ]
+        const authoredSet = authored !== null && authored !== undefined && String( authored ).trim().length > 0
+
+        if( authoredSet === true ) {
+            const heading = typeof safe[ 'chapterHeading' ] === 'string' ? safe[ 'chapterHeading' ].trim() : ''
+
+            return { 'chapter': authored, 'chapterSource': 'store', 'chapterHeading': heading, 'chapterReason': '' }
+        }
+
+        const topicList = Array.isArray( topics ) ? topics : []
+        const owned = Array.isArray( safe[ 'topicIds' ] ) ? safe[ 'topicIds' ] : []
+        const bound = topicList
+            .filter( ( topic ) => topic != null && typeof topic === 'object' )
+            .filter( ( topic ) => owned.indexOf( topic[ 'id' ] ) !== -1 || ( id.length > 0 && topic[ 'blockId' ] === id ) )
+        const candidates = bound
+            .map( ( topic ) => topic[ 'chapter' ] )
+            .filter( ( value ) => value !== null && value !== undefined && String( value ).trim().length > 0 )
+            .map( ( value ) => String( value ).trim() )
+        const distinct = candidates.filter( ( value, index ) => candidates.indexOf( value ) === index )
+
+        if( distinct.length === 1 ) {
+            return {
+                'chapter': distinct[ 0 ],
+                'chapterSource': 'derived-from-topics',
+                'chapterHeading': distinct[ 0 ],
+                'chapterReason': ''
+            }
+        }
+
+        const reason = distinct.length === 0
+            ? 'keine gebundene Topic traegt ein Kapitel'
+            : 'die gebundenen Topics nennen ' + distinct.length + ' verschiedene Kapitel'
+
+        return { 'chapter': null, 'chapterSource': null, 'chapterHeading': '', 'chapterReason': reason }
+    }
+
+
+    // PRD-13 (Memo 082 Kap 33, WI-234): the ONE label a block is grouped and headed by. Falls back in a
+    // fixed order — heading, then the bare binding, then the empty string — so a FENCE block (which
+    // carries `chapter` and no `chapterHeading`) groups exactly as it did before this change, and a
+    // STORE block (which carries both) groups by its readable heading instead of by a bare number.
+    // Public + pure; mirrored inline as blockGroupLabel.
+    static blockGroupLabel( { block } ) {
+        const safe = ( block != null && typeof block === 'object' ) ? block : {}
+        const heading = typeof safe[ 'chapterHeading' ] === 'string' ? safe[ 'chapterHeading' ].trim() : ''
+
+        if( heading.length > 0 ) { return { 'label': heading } }
+
+        const chapter = safe[ 'chapter' ]
+
+        if( chapter === null || chapter === undefined ) { return { 'label': '' } }
+
+        return { 'label': String( chapter ).trim() }
+    }
+
+
+    // PRD-13 (Memo 082 Kap 33, S1/S2/S3 / WI-234): fold the STORE corners into the blocks-tab view model.
+    // This is the whole point of the order: the tab used to read block-meta FENCES out of the revision
+    // markdown, of which memo 082 has ZERO, while 35 blocks sat in the store unread. The model keeps the
+    // shape the existing renderer already understands (`id`, `chapter`, `topics`, `tags`, `role`) so the
+    // partition/group/nest machinery needs no second spelling, and ADDS the three things the fence shape
+    // never had: a resolved title with its provenance, the chapter binding with its provenance, and the
+    // counters — every one of them WITH ITS DENOMINATOR, because a quota without one is a claim.
+    // Reads no file and keeps no state.
+    static blockStoreTabView( { blocks, topics } ) {
+        const blockList = Array.isArray( blocks ) ? blocks : []
+        const topicList = Array.isArray( topics ) ? topics : []
+        const mapped = blockList.map( ( block ) => {
+            const title = MemoView.blockTitleResolution( { block } )
+            const binding = MemoView.blockChapterBinding( { block, 'topics': topicList } )
+            const labelled = { 'chapterHeading': binding[ 'chapterHeading' ], 'chapter': binding[ 'chapter' ] }
+
+            return {
+                'id': typeof block[ 'blockId' ] === 'string' ? block[ 'blockId' ] : '',
+                'role': 'parent',
+                'title': title[ 'title' ],
+                'titleSource': title[ 'titleSource' ],
+                'titleMissing': title[ 'titleMissing' ],
+                'titleDerivedFrom': title[ 'derivedFrom' ],
+                'chapter': binding[ 'chapter' ],
+                'chapterSource': binding[ 'chapterSource' ],
+                'chapterHeading': binding[ 'chapterHeading' ],
+                'chapterReason': binding[ 'chapterReason' ],
+                'groupLabel': MemoView.blockGroupLabel( { 'block': labelled } )[ 'label' ],
+                'topics': Array.isArray( block[ 'topicIds' ] ) ? block[ 'topicIds' ] : [],
+                'tags': Array.isArray( block[ 'tags' ] ) ? block[ 'tags' ] : [],
+                'repos': []
+            }
+        } )
+        const countBy = ( key, value ) => mapped.filter( ( entry ) => entry[ key ] === value ).length
+
+        return {
+            'blocks': mapped,
+            'counts': {
+                'blocks': mapped.length,
+                'titleFromStore': countBy( 'titleSource', 'store' ),
+                'titleDerived': countBy( 'titleSource', 'derived' ),
+                'titleMissing': countBy( 'titleSource', 'missing' ),
+                'chapterBound': mapped.filter( ( entry ) => entry[ 'chapter' ] !== null ).length,
+                'chapterUnbound': mapped.filter( ( entry ) => entry[ 'chapter' ] === null ).length,
+                'chapterFromStore': countBy( 'chapterSource', 'store' ),
+                'chapterDerived': countBy( 'chapterSource', 'derived-from-topics' )
+            }
+        }
+    }
+
+
+    // PRD-13 (Memo 082 Kap 33, S4 / WI-234): the empty-state of the STORE-backed blocks tab. The state
+    // this order was opened over was a blank panel over a full store, so a bare "Keine Blöcke" is not
+    // enough: the surface must say HOW MANY records the source offered and WHICH source that was —
+    // "0 von N aus <Quelle>". `available` is the comparison set, and a comparison set of 0 is itself the
+    // finding, printed rather than hidden.
+    // `legacyFenceCount` is DIAGNOSTIC ONLY and never contributes a rendered row — it exists because a
+    // memo whose markdown still carries block-meta fences while its store is empty would otherwise lose
+    // its blocks silently when the tab moved to the store. Naming the discrepancy is the honest form; a
+    // fallback chain would be the second source this order explicitly does not build.
+    static blockSourceEmptyState( { count, available, sourceLabel, legacyFenceCount } ) {
+        const safeCount = ( typeof count === 'number' && count > 0 ) ? count : 0
+        const safeAvailable = ( typeof available === 'number' && available > 0 ) ? available : 0
+        const label = ( typeof sourceLabel === 'string' && sourceLabel.trim().length > 0 )
+            ? sourceLabel.trim()
+            : 'unbenannte Quelle'
+
+        if( safeCount > 0 ) {
+            return { 'empty': false, 'kind': 'present', 'reason': '' }
+        }
+
+        const safeFences = ( typeof legacyFenceCount === 'number' && legacyFenceCount > 0 ) ? legacyFenceCount : 0
+        const head = '0 von ' + safeAvailable + ' aus ' + label + '.'
+        const hint = safeFences > 0
+            ? ' Das Markdown dieses Dokuments traegt ' + safeFences + ' block-meta-Fence(s) — Alt-Quelle, seit PRD-13 nicht mehr die Quelle dieses Tabs.'
+            : ''
+
+        return { 'empty': true, 'kind': 'no-blocks', 'reason': head + hint }
     }
 
 

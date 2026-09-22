@@ -152,6 +152,25 @@ export function makeNode( tag, text, classes ) {
         return fresh
     }
 
+    // PRD-13 (Memo 082 Kap 33, WI-234): listeners. ADDITIVE — no existing caller reads these, so every
+    // suite that used the surrogate before sees exactly the surface it saw. The blocks-tab renderer
+    // binds a click on every card, and a surrogate without addEventListener makes buildBlockItem throw
+    // before it has rendered anything — which would look like a failing renderer instead of a missing
+    // shim. Added here rather than as a third private copy, for the reason in this file's head comment.
+    node._listeners = {}
+    node.addEventListener = ( type, fn ) => {
+        if( node._listeners[ type ] === undefined ) { node._listeners[ type ] = [] }
+        node._listeners[ type ].push( fn )
+
+        return undefined
+    }
+    node.click = () => {
+        ( node._listeners[ 'click' ] === undefined ? [] : node._listeners[ 'click' ] )
+            .forEach( ( fn ) => fn( { 'target': node } ) )
+
+        return undefined
+    }
+
     return node
 }
 
@@ -167,6 +186,16 @@ export function makeRoot( nodes ) {
 
 
 // The `document` the fold pass creates its <details>/<summary> with.
-export function makeDocument() {
-    return { createElement: ( tag ) => makeNode( tag ) }
+// PRD-13 (Memo 082 Kap 33, WI-234): `registry` is OPTIONAL and additive — a caller that passes nothing
+// gets the same object as before, with getElementById answering null for every id. The blocks tab needs
+// it because openBlockModal looks its modal up by id; answering null there is the honest "no modal in
+// this surrogate" rather than a throw.
+export function makeDocument( registry ) {
+    const known = ( registry != null && typeof registry === 'object' ) ? registry : {}
+
+    return {
+        createElement: ( tag ) => makeNode( tag ),
+        getElementById: ( id ) => ( Object.hasOwn( known, id ) ? known[ id ] : null ),
+        addEventListener: () => undefined
+    }
 }

@@ -481,9 +481,17 @@ describe( 'PRD-014 source-shape regression', () => {
     } )
 
 
-    it( 'A10: the /blocks route surfaces parse errors in the payload', () => {
-        expect( source ).toContain( 'const { blocks, errors } = BlockMeta.parse( { doc: content } )' )
-        expect( source ).toContain( "'errors': errors" )
+    // PRD-13 (Memo 082 Kap 33, S1/S4 / WI-234) REVERSES A10's route half. A10 was right that a broken
+    // fence must not vanish, and it still does not: the fences are counted in #countLegacyBlockFences
+    // (parsed PLUS unparseable) and the number is woven into the empty-state reason. What changed is
+    // WHERE the tab gets its blocks — the store, not the markdown — so the route no longer parses and
+    // no longer has parse errors to forward. `errors` keeps its name and its array type so no reader of
+    // the payload breaks; it is simply always empty on this path.
+    it( 'S1/S4: the /blocks route emits an empty errors[] and folds the fence count into the empty-state', () => {
+        expect( source ).toContain( "'errors': []" )
+        expect( source ).toContain( 'static async #countLegacyBlockFences(' )
+        expect( source ).toContain( 'MemoView.blockSourceEmptyState(' )
+        expect( source ).toContain( "'emptyState': emptyState" )
     } )
 
 

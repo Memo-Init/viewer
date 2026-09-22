@@ -5255,14 +5255,20 @@
                     return Object.assign( {}, child, { effectiveRequirements: effectiveFor( null, child ) } )
                 } )
 
+            // PRD-13 (Memo 082 Kap 33, WI-234): group by the ONE label the payload names. A STORE block
+            // carries `groupLabel` (its chapter heading); a FENCE block does not and falls back to the
+            // bare `chapter` exactly as before, so nothing about the fence path moves.
+            var labelOf = function( parent ) {
+                return ( typeof parent.groupLabel === 'string' ) ? parent.groupLabel : ( parent.chapter || '' )
+            }
             var chapterOrder = []
             withChildren.forEach( function( parent ) {
-                var chapter = parent.chapter || ''
+                var chapter = labelOf( parent )
                 if( chapterOrder.indexOf( chapter ) === -1 ) { chapterOrder.push( chapter ) }
             } )
 
             var groups = chapterOrder.map( function( chapter ) {
-                var groupParents = withChildren.filter( function( parent ) { return ( parent.chapter || '' ) === chapter } )
+                var groupParents = withChildren.filter( function( parent ) { return labelOf( parent ) === chapter } )
 
                 return { chapter: chapter, parents: groupParents }
             } )
@@ -5303,10 +5309,44 @@
             idSpan.textContent = blockId
             head.appendChild( idSpan )
 
+            // PRD-13 (Memo 082 Kap 33, S2 / WI-234): the TITLE, with its provenance on the card. A title
+            // that repeats the block id says nothing, and a derived title that cannot be told from an
+            // authored one is worse than none — so the source rides along in data-block-title-source
+            // ('store' | 'derived' | 'missing') and the missing case says so IN WORDS, not by omission.
+            // A fence block carries no `titleSource`; it gets no title span, so the fence card is
+            // byte-for-byte what it was.
+            if( typeof block.titleSource === 'string' ) {
+                var titleSpan = document.createElement( 'span' )
+                titleSpan.className = 'block-item-title block-title-' + block.titleSource
+                titleSpan.setAttribute( 'data-block-title-source', block.titleSource )
+                if( block.titleDerivedFrom ) {
+                    titleSpan.setAttribute( 'data-block-title-from', String( block.titleDerivedFrom ) )
+                }
+                var titleText = ( typeof block.title === 'string' ) ? block.title : ''
+                if( block.titleSource === 'missing' ) {
+                    titleSpan.textContent = titleText + ' — kein Titel hinterlegt'
+                } else if( block.titleSource === 'derived' ) {
+                    titleSpan.textContent = titleText + ' (abgeleitet)'
+                } else {
+                    titleSpan.textContent = titleText
+                }
+                head.appendChild( titleSpan )
+            }
+
             var chapterSpan = document.createElement( 'span' )
             chapterSpan.className = 'block-item-chapter'
             // A6: chapter header is rendered once per group; a child binds to its topic instead.
             chapterSpan.textContent = ( role === 'child' ) ? ( block.topic || '' ) : ( block.chapter || '' )
+            // PRD-13 (S3/AB-5): the chapter BINDING and its provenance are a separate hook from the
+            // display text. `none` is an explicit, assertable value — whole phases are cut along this
+            // binding, so an unbound block must be visible as unbound and never quietly filled in.
+            if( Object.prototype.hasOwnProperty.call( block, 'chapterSource' ) ) {
+                chapterSpan.setAttribute( 'data-block-chapter-binding', ( block.chapter === null || block.chapter === undefined ) ? 'none' : String( block.chapter ) )
+                chapterSpan.setAttribute( 'data-block-chapter-source', block.chapterSource === null ? 'none' : String( block.chapterSource ) )
+                if( block.chapterReason ) {
+                    chapterSpan.setAttribute( 'data-block-chapter-reason', String( block.chapterReason ) )
+                }
+            }
             head.appendChild( chapterSpan )
             item.appendChild( head )
 
@@ -5360,10 +5400,36 @@
             title.textContent = 'Blöcke (' + blocks.length + ')'
             root.appendChild( title )
 
+            // PRD-13 (Memo 082 Kap 33, S2/S3 / WI-234): the counters, each WITH ITS DENOMINATOR. A bare
+            // "35 gebunden" is a claim; "35 von 35" can be checked. Rendered only when the payload
+            // carries counts (the STORE path), so the fence path keeps its old markup exactly.
+            var counts = ( payload && payload.counts ) ? payload.counts : null
+            if( counts ) {
+                var countsEl = document.createElement( 'div' )
+                countsEl.className = 'block-counts'
+                var total = ( typeof counts.blocks === 'number' ) ? counts.blocks : 0
+                countsEl.setAttribute( 'data-block-count-total', String( total ) )
+                countsEl.setAttribute( 'data-block-chapter-bound', String( counts.chapterBound ) + '/' + String( total ) )
+                countsEl.setAttribute( 'data-block-title-store', String( counts.titleFromStore ) + '/' + String( total ) )
+                countsEl.setAttribute( 'data-block-title-derived', String( counts.titleDerived ) + '/' + String( total ) )
+                countsEl.setAttribute( 'data-block-title-missing', String( counts.titleMissing ) + '/' + String( total ) )
+                countsEl.textContent = 'Kapitel-Bindung ' + counts.chapterBound + ' von ' + total
+                    + ' · Titel hinterlegt ' + counts.titleFromStore + ' von ' + total
+                    + ' · abgeleitet ' + counts.titleDerived + ' von ' + total
+                    + ' · fehlend ' + counts.titleMissing + ' von ' + total
+                root.appendChild( countsEl )
+            }
+
             // A10/F9: a REAL empty-state. When there are no blocks, render WHY via the shared
             // empty-state component (and tell "no block-meta fence" apart from "all fences failed
             // to parse"). The parse `errors` (discarded before A10) are surfaced as warnings.
-            var emptyState = blocksEmptyState( blocks.length, errors.length )
+            // PRD-13 (S4): the STORE route computes its own empty-state ("0 von N aus <Quelle>") and
+            // ships it, so there is exactly ONE spelling of that copy and it cannot drift from the
+            // route. The blocksEmptyState call stays as the default for a payload that carries no
+            // emptyState — the fence shape and every existing caller that hands in a bare { blocks }.
+            var emptyState = ( payload && payload.emptyState )
+                ? payload.emptyState
+                : blocksEmptyState( blocks.length, errors.length )
             if( emptyState.empty === true ) {
                 root.appendChild( buildEmptyState( emptyState.kind, 'Keine Blöcke', emptyState.reason ) )
             }

@@ -1780,6 +1780,16 @@
         .block-section-title { font-size: 14px; font-weight: 700; color: var(--text-1); }
         .block-items { display: flex; flex-direction: column; gap: 8px; }
 
+        /* PRD-13 (Memo 082 Kap 33, S2/S3): the resolved title and the counters of the STORE-backed
+           blocks tab. An AUTHORED title reads as normal text; a DERIVED one is dimmed and italic and a
+           MISSING one is dimmed — the three cases must be tellable apart at a glance, not only in the
+           data-block-title-source attribute, because a derived title that looks authored is the very
+           claim this tab is not allowed to make. */
+        .block-counts { font-size: 12px; color: var(--text-muted); }
+        .block-item .block-item-title { font-size: 13px; font-weight: 600; color: var(--text-1); }
+        .block-item .block-title-derived { font-style: italic; color: var(--text-muted); font-weight: 500; }
+        .block-item .block-title-missing { color: var(--text-muted); font-weight: 500; }
+
         /* PRD-004 (Memo 016 Kap 3): chapter group (A6 one header), parent/child nesting (A1),
            role badge (A5), effective-requirement chips (A4). */
         .block-group { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }

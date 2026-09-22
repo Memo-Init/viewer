@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll, afterAll } from '@jest/globals'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-import { extractFunctions, readMemoViewSource } from '../helpers/extractFunction.mjs'
+import { extractFunctions, extractFunctionSources, readMemoViewSource } from '../helpers/extractFunction.mjs'
 import { MemoView } from '../../src/MemoView.mjs'
 import { BlockMeta } from '../../src/BlockMeta.mjs'
 
@@ -399,6 +399,21 @@ describe( 'source-shape regression — PRD-004 (A1/A6/A7)', () => {
     const clientSource = readFileSync( fileURLToPath( new URL( '../../src/public/app.client.mjs', import.meta.url ) ), 'utf8' )
     const source = mjsSource + '\n' + clientSource
 
+    // PRD-13 (Memo 082 Kap 33, WI-234): the two renderer cases below used to slice a FIXED number of
+    // characters after the function name. That window has now broken twice for the same reason — the
+    // function grew and an assertion fell off its end, which reads as "the renderer lost its role badge"
+    // when nothing of the sort happened. `extractFunctionSources` slices the REAL function body with the
+    // brace scanner, so the check is against the whole function and against nothing else, whatever its
+    // length. It also fails loud when the function is gone, where a widened window would silently
+    // compare an empty string.
+    let bodies = {}
+
+    beforeAll( async () => {
+        const lifted = await extractFunctionSources( [ 'renderBlockView' ] )
+        const card = await extractFunctionSources( [ 'buildBlockItem' ] )
+        bodies = { 'renderBlockView': lifted[ 'source' ], 'buildBlockItem': card[ 'source' ] }
+    } )
+
 
     it( 'the static mirror MemoView.partitionBlocks exists and invokes BlockMeta.effectiveRequirements (A7)', () => {
         expect( source ).toContain( 'static partitionBlocks( { blocks } )' )
@@ -408,18 +423,33 @@ describe( 'source-shape regression — PRD-004 (A1/A6/A7)', () => {
     } )
 
 
-    it( 'the /blocks route invokes the partition helper (effectiveRequirements no longer dead code, A7)', () => {
+    // PRD-13 (Memo 082 Kap 33, S1 / WI-234) WITHDRAWS A7's route claim, and the withdrawal has a price
+    // that is named here rather than hidden: the /blocks route moved to the STORE, so it no longer calls
+    // MemoView.partitionBlocks — and with it, BlockMeta.effectiveRequirements loses its last production
+    // caller (measured after the change: 0 callers in src/ outside MemoView.partitionBlocks itself).
+    // The helper is NOT deleted and NOT rewired: the only remaining candidate caller is
+    // #collectBlockRequirementNames, and pairing its flat union into parent/child pairs would change
+    // what the REQUIREMENTS route resolves — a different datum and outside this order. Reported, not
+    // papered over. What still stands is the CLIENT partition, which renders every block card and is
+    // pinned by the cases below; MemoView.partitionBlocks remains its server-side mirror.
+    it( 'S1: the /blocks route no longer invokes the partition helper (it reads the store instead)', () => {
         const routeIdx = source.indexOf( "url.endsWith( '/blocks' )" )
-        const route = source.slice( routeIdx, routeIdx + 1800 )
-        expect( route ).toContain( 'MemoView.partitionBlocks( { blocks } )' )
+        const nextRouteIdx = source.indexOf( "url.endsWith( '/topics' )", routeIdx )
+        expect( nextRouteIdx ).toBeGreaterThan( routeIdx )
+
+        const route = source.slice( routeIdx, nextRouteIdx )
+        expect( route ).not.toContain( 'MemoView.partitionBlocks( { blocks } )' )
+        expect( route ).toContain( 'MemoView.blockStoreTabView(' )
+
+        // The helper itself is still present and still wired to effectiveRequirements (A7's other half).
+        expect( source ).toContain( 'static partitionBlocks( { blocks } )' )
+        expect( source ).toContain( 'BlockMeta.effectiveRequirements( { parent, child } )' )
     } )
 
 
     it( 'the renderer no longer emits a single flat .block-items list of identical cards (A1)', () => {
-        const start = source.indexOf( 'function renderBlockView(' )
-        // PRD-014 (A10/F9): renderBlockView gained an empty-state + parse-error preamble at the top,
-        // so the chapter-group/children markup sits further down — widen the slice window accordingly.
-        const slice = source.slice( start, start + 3400 )
+        const slice = bodies[ 'renderBlockView' ]
+        expect( slice.length ).toBeGreaterThan( 0 )
 
         // A1/A6: it now builds chapter groups + nested children, not one flat .block-items loop.
         expect( slice ).toContain( 'partitionBlocks( blocks )' )
@@ -429,8 +459,8 @@ describe( 'source-shape regression — PRD-004 (A1/A6/A7)', () => {
 
 
     it( 'buildBlockItem renders a role badge + role class and a child topic/req chip (A3/A4/A5)', () => {
-        const start = source.indexOf( 'function buildBlockItem(' )
-        const slice = source.slice( start, start + 3400 )
+        const slice = bodies[ 'buildBlockItem' ]
+        expect( slice.length ).toBeGreaterThan( 0 )
 
         expect( slice ).toContain( 'block-role-' )
         expect( slice ).toContain( 'block-role-badge' )

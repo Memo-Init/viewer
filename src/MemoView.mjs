@@ -2600,6 +2600,13 @@ class MemoView {
         </div>
         <nav id="toc-sidebar" aria-label="Auf dieser Seite">
             <div id="toc-label">Auf dieser Seite</div>
+            <!-- S5 (Memo 082, WI-236): the sitemap's own status line. Two jobs, one element: it says
+                 why the sitemap does not apply to the panel that currently owns #content, and it says
+                 why a click just did nothing. Both used to be silent — the click check had no else
+                 branch at all, so a dead click looked exactly like a broken surface. role="status"
+                 plus aria-live make the message reach a screen reader too; it is a reading, never a
+                 control, so it takes no focus and never moves the panel by itself. -->
+            <div id="toc-note" class="toc-note t-hidden" role="status" aria-live="polite"></div>
             <ul id="toc-list"></ul>
         </nav>
     </div>

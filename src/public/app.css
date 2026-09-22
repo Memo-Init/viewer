@@ -2329,6 +2329,28 @@
             font-weight: 700;
         }
 
+        /* S5 (Memo 082, WI-236): the sitemap status line — the visible half of "a dead click says so".
+           Named selectors only; this file is shared with other orders of the same phase. */
+        .toc-note {
+            color: var(--text-muted);
+            background: var(--bg-1);
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--accent-bright);
+            border-radius: 4px;
+            padding: 6px 8px;
+            margin: 0 0 8px;
+            font-size: 11px;
+            line-height: 1.35;
+            overflow-wrap: anywhere;
+        }
+
+        /* The entries of a sitemap that does not apply to the current panel stay READABLE but are
+           visibly out of force — greying them out is the promise the note spells out in words. */
+        #toc-sidebar.toc-not-applicable li {
+            opacity: 0.45;
+            font-style: italic;
+        }
+
         .toc-dot {
             display: inline-block;
             width: 6px;

@@ -273,11 +273,17 @@ const truncateCell = ( value ) => {
 // with the FIXED select it is read with. This list is the only place a table or column of this surface is
 // named: no name is ever assembled from a caller argument, so nothing from a request can reach the SQL
 // (US-4). `kind` is both the node-id prefix and the mermaid class of that node kind.
+// WI-233 (Memo 082 Kap 33, S2) adds the FIFTH source: `block`. The column `topic.block` was already
+// read here before — and thrown away at drawing time, so a binding that exists in the carrier never
+// reached the canvas. Measured on memo-082 at the time of the build: 78 of 78 topics carry a block
+// binding and all 78 resolve against the 35 rows of `block`. The information was there, it simply did
+// not arrive.
 const GRAPH_SOURCES = [
     { 'key': 'topics', 'kind': 'T', 'table': 'topic', 'sql': 'SELECT id, title, phase, block FROM topic ORDER BY id' },
     { 'key': 'workItems', 'kind': 'W', 'table': 'work_item', 'sql': 'SELECT id, topic, title, status FROM work_item ORDER BY id' },
     { 'key': 'phases', 'kind': 'P', 'table': 'rollout_phase', 'sql': "SELECT id, name, status FROM rollout_phase WHERE id != '__state__' ORDER BY id" },
-    { 'key': 'prds', 'kind': 'R', 'table': 'rollout_work_item', 'sql': 'SELECT id, phase_id, title, status, target, wi_type FROM rollout_work_item ORDER BY phase_id, id' }
+    { 'key': 'prds', 'kind': 'R', 'table': 'rollout_work_item', 'sql': 'SELECT id, phase_id, title, status, target, wi_type FROM rollout_work_item ORDER BY phase_id, id' },
+    { 'key': 'blocks', 'kind': 'B', 'table': 'block', 'sql': 'SELECT id, title, sort FROM block ORDER BY sort, id' }
 ]
 
 
@@ -287,13 +293,20 @@ const GRAPH_CLASS_DEFS = [
     { 'kind': 'T', 'name': 'graphTopic', 'style': 'fill:#1f3a5f,stroke:#4a90d9,color:#e6f0fa' },
     { 'kind': 'W', 'name': 'graphWorkItem', 'style': 'fill:#24402b,stroke:#5aa75a,color:#e8f5e8' },
     { 'kind': 'P', 'name': 'graphPhase', 'style': 'fill:#4a3a1f,stroke:#c9a227,color:#faf3e0' },
-    { 'kind': 'R', 'name': 'graphPrd', 'style': 'fill:#3f2b4a,stroke:#9b6ad9,color:#f2e8fa' }
+    { 'kind': 'R', 'name': 'graphPrd', 'style': 'fill:#3f2b4a,stroke:#9b6ad9,color:#f2e8fa' },
+    { 'kind': 'B', 'name': 'graphBlock', 'style': 'fill:#4a1f2b,stroke:#d9557a,color:#fae6ec' }
 ]
 
 
-// The seven figures every graph answer carries. Declared once so the leaf, the empty answer and the route
+// The figures every graph answer carries. Declared once so the leaf, the empty answer and the route
 // all speak the SAME shape — a field can not go missing on one path only.
-const GRAPH_COUNT_KEYS = [ 'topics', 'workItems', 'phases', 'prds', 'edgesTopicWorkItem', 'edgesPhasePrd', 'edgesTopicPrd' ]
+//
+// WI-233 grows the list from seven to NINE: a fifth node kind and a fourth edge family have to be
+// counted, or the head line would go on stating a total the canvas no longer matches. That is the very
+// reconciliation this shape exists for, so the honest move is to extend it rather than to carry the
+// block figures in a second, parallel shape beside it.
+const GRAPH_COUNT_KEYS = [ 'topics', 'workItems', 'phases', 'prds', 'blocks',
+    'edgesTopicWorkItem', 'edgesPhasePrd', 'edgesTopicPrd', 'edgesBlockTopic' ]
 
 
 // WI-103 (Memo 080 Kap 15, F30 = A): the label width of an INTERACTIVE node. The mermaid source has to
@@ -818,13 +831,20 @@ class DoltDbAssembler {
             } )
         const droppedDuplicateNodes = nodes.length - uniqueNodes.length
 
+        // WI-233: `groupTopic` / `groupBlock` are the two GROUPING KEYS the toolbar builds its compound
+        // nodes from. They are computed HERE, from the same rows the edges are built from, so grouping
+        // and drawing can never disagree — the client groups by a key it was handed, it never re-derives
+        // a relation of its own. An empty string means "this node has no such group", which is a
+        // statement, not a missing field.
         const elementNodes = uniqueNodes
             .map( ( node ) => ( { 'data': {
                 'id': node[ 'id' ],
                 'kind': node[ 'kind' ],
                 'rawId': node[ 'rawId' ] === null || node[ 'rawId' ] === undefined ? '' : String( node[ 'rawId' ] ),
                 'label': graphNodeLabel( { 'id': node[ 'rawId' ], 'title': node[ 'rawTitle' ], 'cap': GRAPH_ELEMENT_LABEL_CAP } ),
-                'title': node[ 'rawTitle' ] === null || node[ 'rawTitle' ] === undefined ? '' : String( node[ 'rawTitle' ] )
+                'title': node[ 'rawTitle' ] === null || node[ 'rawTitle' ] === undefined ? '' : String( node[ 'rawTitle' ] ),
+                'groupTopic': node[ 'groupTopic' ] === null || node[ 'groupTopic' ] === undefined ? '' : String( node[ 'groupTopic' ] ),
+                'groupBlock': node[ 'groupBlock' ] === null || node[ 'groupBlock' ] === undefined ? '' : String( node[ 'groupBlock' ] )
             } } ) )
 
         const elementEdges = edgeFamilies
@@ -1066,19 +1086,41 @@ class DoltDbAssembler {
         const workItems = rows[ 'workItems' ]
         const phases = rows[ 'phases' ]
         const prds = rows[ 'prds' ]
+        const blocks = rows[ 'blocks' ] === undefined ? [] : rows[ 'blocks' ]
 
         const topicIds = new Set( topics.map( ( row ) => String( row[ 'id' ] ) ) )
         const phaseIds = new Set( phases.map( ( row ) => String( row[ 'id' ] ) ) )
+        const blockIds = new Set( blocks.map( ( row ) => String( row[ 'id' ] ) ) )
         const workItemById = new Map( workItems.map( ( row ) => [ String( row[ 'id' ] ), row ] ) )
+
+        // WI-233 — the block a topic is bound to, RESOLVED against the block table. An unset binding and
+        // a binding that names a block nobody wrote are different facts: the first is silence, the
+        // second is a dangling reference that gets counted and named in the warnings. Neither becomes an
+        // edge, and neither is guessed into one.
+        const blockOfTopic = new Map( topics
+            .filter( ( row ) => hasGraphRef( row[ 'block' ] ) === true && blockIds.has( String( row[ 'block' ] ).trim() ) === true )
+            .map( ( row ) => [ String( row[ 'id' ] ), String( row[ 'block' ] ).trim() ] ) )
+        const blockOfWorkItem = ( row ) => {
+            const topicId = hasGraphRef( row[ 'topic' ] ) === true ? String( row[ 'topic' ] ).trim() : ''
+
+            return blockOfTopic.has( topicId ) === true ? blockOfTopic.get( topicId ) : ''
+        }
 
         // A node carries the RAW identifier and title, not a finished label: the label is built per
         // condensation step in #renderGraphSource, so the same node set can be rendered at several label
         // widths without reading the database twice.
         const nodes = []
-            .concat( topics.map( ( row ) => ( { 'kind': 'T', 'id': graphNodeId( { 'kind': 'T', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ] } ) ) )
-            .concat( workItems.map( ( row ) => ( { 'kind': 'W', 'id': graphNodeId( { 'kind': 'W', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ] } ) ) )
-            .concat( phases.map( ( row ) => ( { 'kind': 'P', 'id': graphNodeId( { 'kind': 'P', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'name' ] } ) ) )
-            .concat( prds.map( ( row ) => ( { 'kind': 'R', 'id': graphNodeId( { 'kind': 'R', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ] } ) ) )
+            .concat( topics.map( ( row ) => ( { 'kind': 'T', 'id': graphNodeId( { 'kind': 'T', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ],
+                'groupTopic': String( row[ 'id' ] ), 'groupBlock': blockOfTopic.has( String( row[ 'id' ] ) ) === true ? blockOfTopic.get( String( row[ 'id' ] ) ) : '' } ) ) )
+            .concat( workItems.map( ( row ) => ( { 'kind': 'W', 'id': graphNodeId( { 'kind': 'W', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ],
+                'groupTopic': hasGraphRef( row[ 'topic' ] ) === true && topicIds.has( String( row[ 'topic' ] ).trim() ) === true ? String( row[ 'topic' ] ).trim() : '',
+                'groupBlock': blockOfWorkItem( row ) } ) ) )
+            .concat( phases.map( ( row ) => ( { 'kind': 'P', 'id': graphNodeId( { 'kind': 'P', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'name' ],
+                'groupTopic': '', 'groupBlock': '' } ) ) )
+            .concat( prds.map( ( row ) => ( { 'kind': 'R', 'id': graphNodeId( { 'kind': 'R', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ],
+                'groupTopic': '', 'groupBlock': '' } ) ) )
+            .concat( blocks.map( ( row ) => ( { 'kind': 'B', 'id': graphNodeId( { 'kind': 'B', 'id': row[ 'id' ] } ), 'rawId': row[ 'id' ], 'rawTitle': row[ 'title' ],
+                'groupTopic': '', 'groupBlock': String( row[ 'id' ] ) } ) ) )
 
         // Topic -> Work-Item, straight from work_item.topic.
         const topicWorkItemRefs = workItems
@@ -1124,20 +1166,38 @@ class DoltDbAssembler {
                 .filter( ( edge ) => edge !== null )
         } )
 
+        // WI-233 — Block -> Topic, straight from `topic.block`. The direction follows the rule the other
+        // two column-backed families already use: the edge runs FROM the referenced row TO the row that
+        // names it, exactly as work_item.topic yields T->W and rollout_work_item.phase_id yields P->R.
+        // This is the binding the read already carried and the drawing discarded.
+        const topicBlockRefs = topics
+            .filter( ( row ) => hasGraphRef( row[ 'block' ] ) === true )
+        const blockTopicEdges = DoltDbAssembler.#dedupeEdges( {
+            'edges': topicBlockRefs
+                .filter( ( row ) => blockIds.has( String( row[ 'block' ] ).trim() ) === true )
+                .map( ( row ) => ( {
+                    'from': graphNodeId( { 'kind': 'B', 'id': String( row[ 'block' ] ).trim() } ),
+                    'to': graphNodeId( { 'kind': 'T', 'id': row[ 'id' ] } )
+                } ) )
+        } )
+
         const counts = {
             'topics': topics.length,
             'workItems': workItems.length,
             'phases': phases.length,
             'prds': prds.length,
+            'blocks': blocks.length,
             'edgesTopicWorkItem': topicWorkItemEdges.length,
             'edgesPhasePrd': phasePrdEdges.length,
-            'edgesTopicPrd': topicPrdEdges.length
+            'edgesTopicPrd': topicPrdEdges.length,
+            'edgesBlockTopic': blockTopicEdges.length
         }
-        const empty = topics.length === 0 && workItems.length === 0 && phases.length === 0 && prds.length === 0
+        const empty = topics.length === 0 && workItems.length === 0 && phases.length === 0
+            && prds.length === 0 && blocks.length === 0
 
         if( empty === true ) {
             const emptyWarnings = DoltDbAssembler.#graphWarnings( {
-                counts, empty, 'danglingTopicRefs': 0, 'danglingPhaseRefs': 0,
+                counts, empty, 'danglingTopicRefs': 0, 'danglingPhaseRefs': 0, 'danglingBlockRefs': 0,
                 'source': DoltDbAssembler.emptyGraphSourceFacts(), 'droppedDuplicateNodes': 0
             } )
 
@@ -1148,7 +1208,7 @@ class DoltDbAssembler {
             }
         }
 
-        const edges = [].concat( topicWorkItemEdges ).concat( phasePrdEdges ).concat( topicPrdEdges )
+        const edges = [].concat( topicWorkItemEdges ).concat( phasePrdEdges ).concat( topicPrdEdges ).concat( blockTopicEdges )
         const fitted = DoltDbAssembler.#fitGraphSource( { nodes, edges } )
         // WI-103: the interactive element set is built from the SAME nodes and the SAME three edge
         // families the mermaid source uses — and it is built UNCONDITIONALLY, including on the
@@ -1159,13 +1219,19 @@ class DoltDbAssembler {
             'edgeFamilies': [
                 { 'kind': 'topic-work-item', 'edges': topicWorkItemEdges },
                 { 'kind': 'phase-prd', 'edges': phasePrdEdges },
-                { 'kind': 'topic-prd', 'edges': topicPrdEdges }
+                { 'kind': 'topic-prd', 'edges': topicPrdEdges },
+                { 'kind': 'block-topic', 'edges': blockTopicEdges }
             ]
         } )
         const warnings = DoltDbAssembler.#graphWarnings( {
             counts, empty,
             'danglingTopicRefs': topicWorkItemRefs.length - topicWorkItemEdges.length,
             'danglingPhaseRefs': phasePrdRefs.length - phasePrdEdges.length,
+            // Only a carrier that HAS blocks can have a dangling one. Where the table is absent or empty
+            // the relation is simply not modelled — that is silence, not a broken reference, and
+            // `counts.blocks` already states it. Measured while building this: without the distinction
+            // every older memo database raised a finding for a binding nothing could ever resolve.
+            'danglingBlockRefs': blocks.length === 0 ? 0 : topicBlockRefs.length - blockTopicEdges.length,
             'source': fitted[ 'source' ],
             'droppedDuplicateNodes': elements[ 'droppedDuplicateNodes' ]
         } )
@@ -1253,9 +1319,9 @@ class DoltDbAssembler {
     // The honest findings about THIS graph. Every branch names the measured figures, so a reader can tell
     // "nothing is there" from "something is there but does not connect" — the two cases an empty canvas
     // would render identically.
-    static #graphWarnings( { counts, empty, danglingTopicRefs, danglingPhaseRefs, source, droppedDuplicateNodes } ) {
+    static #graphWarnings( { counts, empty, danglingTopicRefs, danglingPhaseRefs, danglingBlockRefs, source, droppedDuplicateNodes } ) {
         const emptyWarning = empty === true
-            ? [ 'Keine Zeilen in topic, work_item, rollout_phase und rollout_work_item — 0 Knoten und 0 Kanten verglichen.' ]
+            ? [ 'Keine Zeilen in topic, work_item, rollout_phase, rollout_work_item und block — 0 Knoten und 0 Kanten verglichen.' ]
             : []
         const unlinkedWarning = empty !== true && counts[ 'topics' ] > 0 && counts[ 'prds' ] > 0 && counts[ 'edgesTopicPrd' ] === 0
             ? [ `Auffaellig: ${ counts[ 'topics' ] } Topics und ${ counts[ 'prds' ] } PRDs gelesen, aber keine einzige Topic-zu-PRD-Kante — die Work-Item-Bruecke traegt nicht.` ]
@@ -1274,6 +1340,12 @@ class DoltDbAssembler {
             : []
         const danglingPhaseWarning = danglingPhaseRefs > 0
             ? [ `Auffaellig: ${ danglingPhaseRefs } Rollout-Zeile(n) verweisen auf eine Phase, die nicht in der Tabelle rollout_phase steht — die Kante wird nicht gezeichnet.` ]
+            : []
+        // WI-233: the same Oelstand rule for the new family. A topic pointing at a block that nobody
+        // wrote is not silence — it is a reference that goes nowhere, and it stays nameable instead of
+        // vanishing into the gap between "no binding" and "a binding that does not resolve".
+        const danglingBlockWarning = danglingBlockRefs > 0
+            ? [ `Auffaellig: ${ danglingBlockRefs } Topic-Zeile(n) verweisen auf einen Block, der nicht in der Tabelle block steht — die Kante wird nicht gezeichnet.` ]
             : []
         // WI-103 (Memo 080 Kap 15): the same identifier read twice. The drawing keeps ONE node per id —
         // it has to, because a graph library refuses a duplicate id and the mermaid source collapsed such
@@ -1300,12 +1372,14 @@ class DoltDbAssembler {
             : []
 
         return [].concat( emptyWarning ).concat( unlinkedWarning ).concat( missingSideWarning )
-            .concat( danglingTopicWarning ).concat( danglingPhaseWarning ).concat( duplicateNodeWarning )
+            .concat( danglingTopicWarning ).concat( danglingPhaseWarning ).concat( danglingBlockWarning )
+            .concat( duplicateNodeWarning )
             .concat( tooLargeWarning ).concat( condensedWarning ).concat( nearEdgeWarning )
     }
 
 
-    // The diagram source: `flowchart LR`, one line per node, one line per edge, the four classDef lines and
+    // The diagram source: `flowchart LR`, one line per node, one line per edge, one classDef line per node
+    // kind (GRAPH_CLASS_DEFS — five since WI-233 added the block) and
     // a class assignment per kind that actually has nodes. Nothing else — the source is a pure function of
     // the read rows AND the label cap, so the same database at the same cap always produces the same drawing.
     static #renderGraphSource( { nodes, edges, cap } ) {

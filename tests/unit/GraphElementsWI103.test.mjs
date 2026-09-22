@@ -182,9 +182,12 @@ describe( 'Graph-Elemente fuer die interaktive Anzeige (WI-103, Memo 080 Kap 15,
 
 
     it( 'the drawn graph never claims more nodes than it draws — figures and drawing are reconciled', () => {
+        // WI-233 (Memo 082 Kap 33, S2): `blocks` joins the sum. Without it the reconciliation would keep
+        // comparing four kinds against a drawing of five and stay green while going quietly incomplete —
+        // this fixture carries no `block` table, so the added term is 0 and the case is unchanged here.
         const drawn = graph[ 'elements' ][ 'nodes' ].length
         const read = graph[ 'counts' ][ 'topics' ] + graph[ 'counts' ][ 'workItems' ]
-            + graph[ 'counts' ][ 'phases' ] + graph[ 'counts' ][ 'prds' ]
+            + graph[ 'counts' ][ 'phases' ] + graph[ 'counts' ][ 'prds' ] + graph[ 'counts' ][ 'blocks' ]
 
         // this fixture has no duplicates, so the two agree and no warning is raised …
         expect( drawn ).toBe( read )

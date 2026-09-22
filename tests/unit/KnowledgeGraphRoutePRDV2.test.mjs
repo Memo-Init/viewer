@@ -60,16 +60,23 @@ describe( 'PRD-V2 — die Antwort der Graph-Route (echte Datenbank, echte Aufloe
     } )
 
 
-    it( 'a memo WITH a database answers with a source and all seven figures (4 nodes, 3 edges)', () => {
+    // WI-233 (Memo 082 Kap 33, S2) — the figure list grew from SEVEN to NINE: `block` became the fifth
+    // node kind and `topic.block` the fourth edge family, a binding this read already carried and the
+    // drawing discarded. The literal count is raised rather than dropped, and the shape rule this case
+    // exists for is now ALSO asserted against emptyGraphCounts — that is the invariant ("no field goes
+    // missing on one path only"), and unlike a bare number it cannot go stale when the list grows again.
+    // This fixture has no `block` table, so both new figures read 0 and the case still measures.
+    it( 'a memo WITH a database answers with a source and all nine figures (4 nodes, 3 edges)', () => {
         const { dbPath, status } = MemoView.resolveMemoDbPath( { memoPath: withDb } )
         const graph = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
 
         expect( status ).toBe( true )
         expect( typeof graph[ 'mermaid' ] ).toBe( 'string' )
-        expect( Object.keys( graph[ 'counts' ] ).length ).toBe( 7 )
+        expect( Object.keys( graph[ 'counts' ] ).length ).toBe( 9 )
+        expect( Object.keys( graph[ 'counts' ] ) ).toEqual( Object.keys( DoltDbAssembler.emptyGraphCounts() ) )
         expect( graph[ 'counts' ] ).toEqual( {
-            topics: 1, workItems: 1, phases: 1, prds: 1,
-            edgesTopicWorkItem: 1, edgesPhasePrd: 1, edgesTopicPrd: 1
+            topics: 1, workItems: 1, phases: 1, prds: 1, blocks: 0,
+            edgesTopicWorkItem: 1, edgesPhasePrd: 1, edgesTopicPrd: 1, edgesBlockTopic: 0
         } )
         expect( graph[ 'empty' ] ).toBe( false )
         expect( graph[ 'reason' ] ).toBe( null )
@@ -84,8 +91,8 @@ describe( 'PRD-V2 — die Antwort der Graph-Route (echte Datenbank, echte Aufloe
 
         expect( resolved[ 'status' ] ).toBe( false )
         expect( resolved[ 'message' ] ).toMatch( /memo-NNN\.db/ )
-        // the no-db answer speaks the SAME seven-figure shape a real read produces — 7 of 7 keys
-        expect( Object.keys( counts ).length ).toBe( 7 )
+        // the no-db answer speaks the SAME shape a real read produces — 9 of 9 keys since WI-233
+        expect( Object.keys( counts ).length ).toBe( 9 )
         expect( Object.values( counts ).filter( ( value ) => value !== 0 ) ).toEqual( [] )
     } )
 } )

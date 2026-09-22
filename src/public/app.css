@@ -3431,6 +3431,19 @@
         .graph-detail { padding: 8px 10px; border: 1px solid var(--border, #30363d); border-radius: 6px; color: var(--text-2, #c9d1d9); font-size: 12px; background: rgba(110, 118, 129, .08); }
         .graph-detail[data-graph-detail="empty"] { color: var(--text-muted, #8b949e); }
 
+        /* WI-233 (Memo 082 Kap 33, S2): the graph toolbar. Existing CSS variables only, no new colour
+           scheme, and every rule is anchored on a NAMED selector of this panel — the file is shared with
+           other orders of this phase, so nothing here reaches outside .graph-toolbar and its own parts.
+           The pressed state of a kind button is read from aria-pressed, so the visible state and the one
+           assistive technology announces cannot drift apart. */
+        .graph-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 8px 10px; border: 1px solid var(--border, #30363d); border-radius: 6px; background: rgba(110, 118, 129, .08); }
+        .graph-tool { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2, #c9d1d9); }
+        .graph-tool-label { color: var(--text-muted, #8b949e); }
+        .graph-tool-select { font: inherit; font-size: 12px; padding: 3px 6px; border: 1px solid var(--border, #30363d); border-radius: 5px; background: var(--bg-1, #0d1117); color: var(--text-2, #c9d1d9); }
+        .graph-tool-kinds { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+        .graph-kind-toggle { font: inherit; font-size: 12px; padding: 3px 8px; border: 1px solid var(--border, #30363d); border-radius: 5px; background: var(--bg-1, #0d1117); color: var(--text-2, #c9d1d9); cursor: pointer; }
+        .graph-kind-toggle[aria-pressed="false"] { opacity: .45; text-decoration: line-through; }
+
         /* PRD-V4 (Memo 080, Kap 16 — WI-174): footnote markers and the reference apparatus at the end
            of a document. Colours come from the existing CSS variables only — no new colour scheme. */
         .fn-mark { line-height: 0; }

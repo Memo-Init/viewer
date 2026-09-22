@@ -3466,3 +3466,34 @@
         /* The fourth state of the memo, made visible: "no stock loaded" and "everything resolved" must
            not look the same, so the absence gets a line of its own instead of silence. */
         #content .id-ref-note { margin: 0 0 12px; padding: 6px 10px; border: 1px solid var(--border, #30363d); border-radius: 6px; background: rgba(110, 118, 129, .08); color: var(--text-muted, #8b949e); font-size: 12px; }
+
+        /* Memo 082, WI-235 (S4): the main click path says that it is working. Two named sites, no
+           new colour scheme — the accent and the warning variable that already exist carry both
+           states. The row answers "did my click register?", the header note answers "and for what?".
+           Deliberately NOT an overlay and NOT a blocking spinner: the wait is explained, not fenced
+           off, and the reader keeps the page he already has until the new one arrives. */
+        #doc-sidebar li.rev-pending {
+            position: relative;
+            background: rgba(68, 147, 248, .10);
+        }
+        #doc-sidebar li.rev-pending::before {
+            content: "";
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--link, #4493f8);
+        }
+        .rev-loading-note {
+            padding: 4px 12px;
+            font-size: 11px;
+            line-height: 1.5;
+            color: var(--text-muted, #8b949e);
+            border-top: 1px solid var(--border, #30363d);
+        }
+        .rev-loading-note.rev-loading-active { color: var(--link, #4493f8); }
+        /* The error state is muted, not alarming: a revision that did not arrive is a fact the
+           reader needs, not a fault he made. It stays put until the next click clears it — a
+           message that vanishes on its own is a message nobody read. */
+        .rev-loading-note.rev-loading-error { color: var(--warning, #d29922); }

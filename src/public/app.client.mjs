@@ -543,9 +543,12 @@
             // PRD-009 (Memo 016 Kap 7, F4): explicitly picking a memo/revision returns home to
             // prose — the incoming content broadcast must NOT be gated off by a stale open panel.
             currentContentView = 'prose'
-            if( currentWs && currentWs.readyState === 1 ) {
-                currentWs.send( JSON.stringify( { 'type': 'selectRevision', 'documentId': documentId, 'fileName': fileName } ) )
-            }
+            // Memo 082, WI-235 (S4): the send moved into requestRevision, so the pending state and
+            // the message it belongs to sit in ONE place and in the order that matters — the same
+            // shape requestProjectScope already has for the side paths. It sits AFTER the line above
+            // on purpose: ViewStatePanelsPRD009 pins the first 300 characters of this function from
+            // the outside, and that line has to keep its place inside them.
+            requestRevision( documentId, fileName )
             // Memo 081, WI-066: the address follows the selection. Same condition setMode already
             // carries — push ONLY when the path actually differs, so picking the same revision twice
             // leaves ONE history entry, not two. That single condition also settles the way back: when
@@ -559,6 +562,205 @@
             if( window.location.pathname !== currentDocPath ) {
                 window.history.pushState( { mode: 'memos', documentId: documentId, fileName: fileName }, '', currentDocPath )
             }
+        }
+
+        // ============================================================================
+        // Memo 082, WI-235 (S4): "der Viewer laedt total lang, man weiss nie, ob man geklickt hat".
+        //
+        // The main click path was the only one WITHOUT feedback — the side paths already have it,
+        // and requestProjectScope above is the working model: it marks BEFORE it sends and clears
+        // on the EVIDENCE of the answer, never on hope, because "a pending flag cleared by hope
+        // instead of by evidence is how a spinner becomes permanent" (the documentList handler says
+        // so in as many words). What follows applies that same shape to the revision click.
+        //
+        // TWO places carry the state, not one: the clicked ROW answers "did my click register?",
+        // the HEADER answers "and for what?". Those are two questions and they need two answers.
+        //
+        // This makes the wait EXPLAINED, not shorter. No render path is touched, no payload is made
+        // smaller — that is a separate, more expensive piece of work with its own profiling step.
+        // ============================================================================
+        var revisionPending = {
+            documentId: null,
+            fileName: null,
+            revisionId: null,
+            timer: null,
+            rowClass: 'rev-pending',
+            noteClass: 'rev-loading-note',
+            activeClass: 'rev-loading-active',
+            errorClass: 'rev-loading-error',
+            timeoutMs: 20000
+        }
+
+        // The identifier the header names. A header that says "Lade …" without saying WHAT answers
+        // only half of what was asked, so the file name is the fallback when there is no REV-NN.
+        function revisionPendingLabel( fileName ) {
+            var revisionId = revisionIdFromFileName( fileName )
+            if( revisionId ) { return revisionId }
+
+            return String( fileName || '' ).replace( /\.md$/i, '' )
+        }
+
+        // Set by the click binding immediately before it calls selectRevision, and consumed ONCE by
+        // markRevisionPending. The row cannot travel as a parameter: selectRevision's signature is
+        // pinned from the outside — ViewStatePanelsPRD009 slices the first 300 characters of that
+        // function, and a third parameter pushes the pinned line out of the window. So the channel is
+        // explicit and single-use instead of implicit and sticky: it is cleared the moment it is
+        // read, and a later programmatic selection can never inherit a row clicked minutes ago.
+        var revisionPendingOrigin = null
+
+        // Looked up rather than handed in, because selectRevision is also reached from the address
+        // bar (popstate) and from a restored deep link, where there is no clicked element at all.
+        //
+        // The preference for `.rev-mini` is NOT cosmetic: the Warteschlange at the top of the sidebar
+        // renders its cards into the SAME container and carries the SAME data-doc/data-rev pair, and
+        // it is emitted FIRST — so a naive "first match wins" would mark the queue card whenever a
+        // revision appears in both places, which is not where the reader clicked. Exactly one row is
+        // marked either way; this decides WHICH one.
+        function findRevisionRow( documentId, fileName ) {
+            var body = document.getElementById( 'doc-sidebar-body' )
+            if( !body ) { return null }
+            var matches = Array.from( body.querySelectorAll( 'li' ) ).filter( function( el ) {
+                return el.getAttribute( 'data-doc' ) === documentId && el.getAttribute( 'data-rev' ) === fileName
+            } )
+            if( matches.length === 0 ) { return null }
+            var lines = matches.filter( function( el ) { return el.classList.contains( 'rev-mini' ) } )
+
+            return lines.length > 0 ? lines[ 0 ] : matches[ 0 ]
+        }
+
+        // Created lazily and taken out again on resolve, NOT parked empty in the header: the header
+        // hides itself with #main-header:empty, and a parked node would keep an empty bar on screen
+        // in the state where nothing is loading at all.
+        function revisionPendingNote( create ) {
+            var header = document.getElementById( 'main-header' )
+            if( !header ) { return null }
+            var existing = header.querySelector( '.' + revisionPending.noteClass )
+            if( existing ) { return existing }
+            if( create !== true ) { return null }
+            var note = document.createElement( 'div' )
+            note.className = revisionPending.noteClass
+            note.setAttribute( 'role', 'status' )
+            note.setAttribute( 'aria-live', 'polite' )
+            header.appendChild( note )
+
+            return note
+        }
+
+        // Both display sites go down from ONE place, so a half-cleared state cannot exist. Returns
+        // how many ROW marks it took down, so a caller can state the number instead of assuming it.
+        function clearRevisionPendingMarks() {
+            var rows = Array.from( document.querySelectorAll( '.' + revisionPending.rowClass ) )
+            rows.forEach( function( el ) { el.classList.remove( revisionPending.rowClass ) } )
+            var note = revisionPendingNote( false )
+            if( note ) { note.classList.remove( revisionPending.activeClass ) }
+
+            return rows.length
+        }
+
+        function clearRevisionPendingTimer() {
+            if( revisionPending.timer === null ) { return false }
+            clearTimeout( revisionPending.timer )
+            revisionPending.timer = null
+
+            return true
+        }
+
+        function forgetRevisionPending() {
+            revisionPending.documentId = null
+            revisionPending.fileName = null
+            revisionPending.revisionId = null
+
+            return true
+        }
+
+        // S2, first line. S3 is the first statement of the body: a second click takes the first mark
+        // down BEFORE it sets its own, so the number of marked rows never exceeds one — two rows
+        // claiming to load would be a new ambiguity in the place meant to remove one.
+        function markRevisionPending( documentId, fileName ) {
+            clearRevisionPendingTimer()
+            clearRevisionPendingMarks()
+            revisionPending.documentId = documentId
+            revisionPending.fileName = fileName
+            revisionPending.revisionId = revisionPendingLabel( fileName )
+            // The clicked element wins over the lookup — the reader is looking at the row he hit,
+            // not at whichever row carries the pair first. Read and cleared in one go.
+            var origin = revisionPendingOrigin
+            revisionPendingOrigin = null
+            var originFits = origin !== null
+                && origin.getAttribute( 'data-doc' ) === documentId
+                && origin.getAttribute( 'data-rev' ) === fileName
+            var row = originFits ? origin : findRevisionRow( documentId, fileName )
+            if( row ) { row.classList.add( revisionPending.rowClass ) }
+            var note = revisionPendingNote( true )
+            if( note ) {
+                note.classList.remove( revisionPending.errorClass )
+                note.classList.add( revisionPending.activeClass )
+                note.textContent = 'Lade ' + revisionPending.revisionId + ' …'
+            }
+
+            return { marked: row ? 1 : 0, noted: note ? 1 : 0, revisionId: revisionPending.revisionId }
+        }
+
+        // S2, second line: cleared on the EVIDENCE of the arriving payload, and only when that
+        // payload is the one that was asked for. A broadcast for a DIFFERENT revision leaves the
+        // state standing rather than declaring a load finished that is still running.
+        function resolveRevisionPending( documentId, fileName ) {
+            if( revisionPending.fileName === null ) { return false }
+            var sameDocument = !documentId || !revisionPending.documentId || documentId === revisionPending.documentId
+            if( !sameDocument || fileName !== revisionPending.fileName ) { return false }
+            clearRevisionPendingTimer()
+            clearRevisionPendingMarks()
+            var note = revisionPendingNote( false )
+            if( note && note.parentNode ) { note.parentNode.removeChild( note ) }
+
+            return forgetRevisionPending()
+        }
+
+        // S2, third line, and it is the one that is easy to leave out: an indicator that HANGS on an
+        // error is worse than no indicator at all — it claims work that is no longer happening. So a
+        // load that cannot finish takes the mark down AND leaves a visible sentence behind.
+        function failRevisionPending( reason ) {
+            if( revisionPending.fileName === null ) { return false }
+            var label = revisionPending.revisionId
+            clearRevisionPendingTimer()
+            clearRevisionPendingMarks()
+            var note = revisionPendingNote( true )
+            if( note ) {
+                note.classList.add( revisionPending.errorClass )
+                note.textContent = label + ' wurde nicht geladen — ' + reason
+            }
+
+            return forgetRevisionPending()
+        }
+
+        // The deadline exists for the case the socket neither answers nor closes. It is a product
+        // behaviour, not a measurement: nothing asserts how LONG a load takes, only that the state
+        // cannot outlive the request that opened it.
+        function startRevisionPendingTimer() {
+            clearRevisionPendingTimer()
+            revisionPending.timer = setTimeout( function() {
+                revisionPending.timer = null
+                failRevisionPending( 'keine Antwort vom Server' )
+            }, revisionPending.timeoutMs )
+
+            return true
+        }
+
+        // Mark first, send second — shaped after requestProjectScope. The order IS the repair: set
+        // after the send, the state would only go up once the round trip had already begun, which is
+        // exactly the gap that was reported. And a send that cannot happen is not silence: it
+        // resolves the state it just set and says why, instead of leaving a mark with nothing behind it.
+        function requestRevision( documentId, fileName ) {
+            var marked = markRevisionPending( documentId, fileName )
+            if( !currentWs || currentWs.readyState !== 1 ) {
+                failRevisionPending( 'keine Verbindung zum Server' )
+
+                return { sent: false, marked: marked.marked, noted: marked.noted, revisionId: marked.revisionId }
+            }
+            currentWs.send( JSON.stringify( { 'type': 'selectRevision', 'documentId': documentId, 'fileName': fileName } ) )
+            startRevisionPendingTimer()
+
+            return { sent: true, marked: marked.marked, noted: marked.noted, revisionId: marked.revisionId }
         }
 
         function badgeClassFor( memoStatus ) {
@@ -1895,7 +2097,15 @@
                 // SHELL around the unchanged inner content changes. display:contents leaves the flex row
                 // exactly as it was, so app.css is not touched; inline style attributes are this
                 // client's established form and are covered by style-src 'self' 'unsafe-inline'.
-                var entryHtml = '<li class="' + cls + '" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" data-state="' + escapeAttr( rev.revisionType || 'full' ) + '">'
+                // Memo 082, WI-235 (S4): the mark is applied directly on click, but a sidebar redraw
+                // landing mid-load would paint it away. It is therefore also rendered from the state,
+                // so the two paths agree instead of racing. No signature change is needed for this:
+                // a SKIPPED redraw leaves the directly-applied class standing, and a redraw that does
+                // happen re-applies it here.
+                var pendingCls = ( revisionPending.documentId === doc.documentId && revisionPending.fileName === rev.fileName )
+                    ? ( ' ' + revisionPending.rowClass )
+                    : ''
+                var entryHtml = '<li class="' + cls + pendingCls + '" data-doc="' + escapeAttr( doc.documentId ) + '" data-rev="' + escapeAttr( rev.fileName ) + '" data-state="' + escapeAttr( rev.revisionType || 'full' ) + '">'
                 entryHtml += '<a class="rev-mini-link" href="' + escapeAttr( docPathFor( doc.documentId, rev.fileName ) ) + '" style="display:contents">'
                 entryHtml += inner
                 entryHtml += '</a>'
@@ -2234,6 +2444,9 @@
                 el.addEventListener( 'click', function( ev ) {
                     if( !isPlainLeftClick( ev ) ) { return }
                     if( ev && typeof ev.preventDefault === 'function' ) { ev.preventDefault() }
+                    // Memo 082, WI-235 (S4): name the row that was hit, so the loading mark lands
+                    // where the reader is looking. Consumed once, inside markRevisionPending.
+                    revisionPendingOrigin = el
                     selectRevision( el.getAttribute( 'data-doc' ), el.getAttribute( 'data-rev' ) )
                 } )
             } )
@@ -12275,6 +12488,12 @@
                         // second click — the request goes out as soon as the pair is known. A reader who
                         // left it off sends nothing at all, which is the whole point of the change.
                         if( showDiff ) { requestDiffIfNeeded() }
+                        // Memo 082, WI-235 (S4): the state ends HERE — after the render above and
+                        // after the header has been rebuilt — because that is the moment the user can
+                        // see the content. Cleared on the evidence of THIS payload: resolveRevision-
+                        // Pending compares the arrived pair against the asked-for one and leaves a
+                        // foreign broadcast alone.
+                        resolveRevisionPending( data.documentId, data.fileName )
                     }
                 }
 
@@ -12322,6 +12541,11 @@
 
             ws.onclose = function() {
                 currentWs = null
+                // Memo 082, WI-235 (S4): the socket going away is the commonest way a load stops
+                // without arriving. The offline banner below says the CONNECTION is gone; this says
+                // the REVISION did not come — and without it the row would keep claiming to load
+                // across every reconnect attempt.
+                failRevisionPending( 'die Verbindung wurde unterbrochen' )
                 reconnectAttempts++
 
                 // PRD-016 (Memo 016, E9): show the offline indicator from the FIRST failed

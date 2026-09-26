@@ -7525,6 +7525,20 @@
                 // alone, so the deep link navigates natively — no WS message, no second handler.
                 node.setAttribute( 'href', verdict.href )
 
+                // PRD-16 (Memo 082 Phase 9, WI-237): the plain left click no longer navigates. The href
+                // above STAYS — middle-click, "open in new tab" and copy-link keep working, and the
+                // popup's full-view bridge hands the same address on. What is intercepted here is only
+                // the plain click, and only for a FOREIGN reference: idRefOverlayDecision says so, and
+                // every other state keeps the in-document jump it had.
+                var overlay = idRefOverlayDecision( verdict )
+                if( overlay.open === true ) {
+                    node.setAttribute( 'data-id-ref-overlay', overlay.documentId )
+                    node.addEventListener( 'click', function( e ) {
+                        e.preventDefault()
+                        openIdRefOverlay( overlay.documentId, entry, verdict )
+                    } )
+                }
+
                 return node
             }
 
@@ -8972,6 +8986,212 @@
                 var file = researchOverlayFile
                 closeResearchOverlay()
                 if( file ) { openResearchDoc( file ) }
+            } )
+        }
+
+
+        // ============================================================================================
+        // PRD-16 (Memo 082 Phase 9, WI-237): the REFERENCE popup.
+        //
+        // The user's words: "wenn ich auf so einen gekringelten Memo-Link klicke, oeffnet sich das
+        // andere Memo und das andere ist weg — das ist Quatsch. Ich wuerde erwarten, dass ein
+        // Popup-Fenster aufgeht mit einer Uebersichtsseite, und dass ich bei dem Memo bleibe."
+        //
+        // The old behaviour was not a bug, it was a decision: buildIdMark gives a FOREIGN reference a
+        // real href, classifyLinkHref reads a leading "/" as a ROUTE, and interceptLinks deliberately
+        // leaves routes alone — so the browser navigated, and the memo under the reader's eyes was gone.
+        //
+        // WHAT CHANGES is only the plain left click. The href STAYS: it is what makes middle-click,
+        // "open in new tab" and copy-link work, and it is what the full-view bridge below hands on. The
+        // click is answered here with preventDefault and an overlay, so the page never moves.
+        //
+        // The overlay follows the #research-modal pattern above and reuses the shared .t-modal* classes
+        // — backdrop, dimming, ESC and the full-view bridge are inherited, not reinvented.
+        // #research-modal itself is NOT touched; it is the template, not the subject.
+        // ============================================================================================
+
+        // The document the open popup points at, and the token that opened it. Read by the full-view
+        // bridge BEFORE closing, for the same reason researchOverlayFile is: closing clears it.
+        var idRefOverlayTarget = null
+
+        // idRefOverviewRenderers — THE SEAM, and it is named so the next order does not have to look
+        // for it. A key is a reference PREFIX exactly as idSplitToken reports it ('M', 'T', 'B', 'WI',
+        // …); the value is a function ( overview, entry ) -> HTML string. The map is EMPTY on purpose:
+        // this order builds the seam and the generic rendering, not the typed renderers. Those are
+        // WI-238 (PRD-17 of this phase), and registering one is a single assignment here — there is ONE
+        // popup with a switching renderer, never a second popup per kind.
+        var idRefOverviewRenderers = {}
+
+
+        // idRefOverlayDecision — pure: does THIS reference open the popup, and for which document?
+        // Exactly the `foreign` state does, and exactly it carries a target document. Every other state
+        // (local, resolved, unresolved, ambiguous, no-carrier) is left completely alone: a LOCAL
+        // reference is an in-document jump, and swallowing it would break the very navigation this
+        // popup is not about. A version that intercepted every reference would be indistinguishable
+        // from the right one until the in-document jumps stopped working.
+        function idRefOverlayDecision( verdict ) {
+            if( !verdict || typeof verdict !== 'object' ) { return { open: false, reason: 'no verdict', documentId: null } }
+            if( verdict.state !== 'foreign' ) { return { open: false, reason: 'not a foreign reference: ' + String( verdict.state ), documentId: null } }
+            if( typeof verdict.href !== 'string' || verdict.href.indexOf( '/doc/' ) !== 0 ) { return { open: false, reason: 'foreign reference without a document target', documentId: null } }
+
+            return { open: true, reason: null, documentId: decodeURIComponent( verdict.href.slice( '/doc/'.length ) ) }
+        }
+
+
+        // idRefOverviewBody — the GENERIC rendering of one overview answer. Every state renders, and a
+        // non-ok state renders its NOTE instead of an empty plate: an empty preview would be
+        // indistinguishable from "that memo carries nothing", which is exactly the confusion the named
+        // states on the server exist to prevent. Everything that comes out of the answer goes through
+        // escapeHtml — it is memo content being put into markup.
+        function idRefOverviewBody( overview ) {
+            if( !overview || typeof overview !== 'object' ) {
+                return '<p class="idref-overlay-error">Die Uebersicht kam in einer Form zurueck, die diese Ansicht nicht lesen kann.</p>'
+            }
+
+            var lines = []
+            var state = String( overview.state )
+
+            if( state !== 'ok' ) {
+                lines.push( '<p class="idref-overlay-error">' + escapeHtml( overview.note ) + '</p>' )
+                lines.push( '<p class="idref-overlay-meta">' + escapeHtml( overview.documentId ) + ' · ' + escapeHtml( state ) + ' · ' + escapeHtml( String( overview.reason ) ) + '</p>' )
+
+                return lines.join( '\n' )
+            }
+
+            var latest = overview.latestRevision
+            var questions = overview.questions && typeof overview.questions === 'object' ? overview.questions : null
+
+            lines.push( '<p class="idref-overlay-meta">' + escapeHtml( overview.memoName ) + ' · ' + escapeHtml( String( overview.documentKind ) ) + ' · ' + escapeHtml( String( overview.memoStatus ) ) + '</p>' )
+            lines.push( '<p>Revisionen: ' + escapeHtml( String( overview.revisionCount ) )
+                + ( latest ? ( ' · zuletzt ' + escapeHtml( String( latest.fileName ) ) + ' (' + escapeHtml( String( latest.sizeKb ) ) + ' KB)' ) : '' )
+                + '</p>' )
+
+            // DocumentRegistry.questionCounts has no `total` — it carries open/answered/deferred plus
+            // `basis`, which says whether anything was counted at all. A count without its basis would
+            // read "0 offen" for a memo nobody ever counted, so the basis is printed, not assumed.
+            if( questions && typeof questions.answered === 'number' ) {
+                lines.push( '<p>Fragen: ' + escapeHtml( String( questions.answered ) ) + ' beantwortet · '
+                    + escapeHtml( String( questions.open ) ) + ' offen · ' + escapeHtml( String( questions.deferred ) ) + ' vertagt'
+                    + ( questions.basis === false ? ' (im Dokument nicht gezaehlt)' : '' ) + '</p>' )
+            }
+
+            // The outline states its comparison set: how many chapters are SHOWN and how many the
+            // revision carries. A capped list without its total would read like a complete one.
+            var headings = Array.isArray( overview.headings ) ? overview.headings : []
+            lines.push( '<p class="idref-overlay-note">Kapitel: ' + escapeHtml( String( headings.length ) ) + ' von ' + escapeHtml( String( overview.headingCount ) ) + ' angezeigt</p>' )
+
+            if( headings.length === 0 ) {
+                lines.push( '<p class="idref-overlay-note">Diese Revision fuehrt keine Kapitel-Ueberschriften.</p>' )
+            } else {
+                lines.push( '<ul>' + headings.map( function( title ) { return '<li>' + escapeHtml( title ) + '</li>' } ).join( '' ) + '</ul>' )
+            }
+
+            return lines.join( '\n' )
+        }
+
+
+        // renderIdRefOverview — the dispatch at the seam. A registered renderer for the reference kind
+        // wins; everything else gets idRefOverviewBody. One popup, one entry point, a switching
+        // renderer — which is what makes WI-238 an addition instead of a second overlay.
+        function renderIdRefOverview( overview, entry ) {
+            var prefix = entry && typeof entry.prefix === 'string' ? entry.prefix : ''
+            var renderer = idRefOverviewRenderers[ prefix ]
+
+            if( typeof renderer === 'function' ) { return renderer( overview, entry ) }
+
+            return idRefOverviewBody( overview )
+        }
+
+
+        function isIdRefOverlayOpen() {
+            var modal = document.getElementById( 'idref-modal' )
+
+            return !!( modal && !modal.classList.contains( 't-hidden' ) )
+        }
+
+
+        function closeIdRefOverlay() {
+            var modal = document.getElementById( 'idref-modal' )
+            var body = document.getElementById( 'idref-modal-body' )
+            idRefOverlayTarget = null
+            if( body ) { body.innerHTML = '' }
+            if( modal ) { modal.classList.add( 't-hidden' ) }
+        }
+
+
+        // openIdRefOverlay — the popup itself. Positional arguments to match the shape of buildIdMark
+        // and idVerdictOf in this file. The read is the new READ-ONLY route
+        // GET /api/documents/<id>/overview: an overview, never the document — the 443 KB render payload
+        // of a memo has no business in a preview.
+        function openIdRefOverlay( documentId, entry, verdict ) {
+            var modal = document.getElementById( 'idref-modal' )
+            var body = document.getElementById( 'idref-modal-body' )
+            var titleEl = document.getElementById( 'idref-modal-title' )
+            var fullBtn = document.getElementById( 'idref-modal-full' )
+            if( !modal || !body ) { return }
+
+            var token = entry && typeof entry.token === 'string' ? entry.token : String( documentId )
+            idRefOverlayTarget = { documentId: documentId, token: token, prefix: entry && entry.prefix ? entry.prefix : '', fullViewPath: null }
+
+            if( titleEl ) { titleEl.textContent = token }
+            // The bridge is hidden with the shared .t-hidden class, not with the `hidden` attribute:
+            // .t-hidden carries `display: none !important` and is what every other modal in this file
+            // toggles, so a button style that sets its own `display` can never leave it half-visible.
+            if( fullBtn ) { fullBtn.classList.add( 't-hidden' ) }
+            body.innerHTML = '<p class="idref-overlay-loading">Wird geladen: ' + escapeHtml( token ) + '</p>'
+            modal.classList.remove( 't-hidden' )
+
+            fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/overview' )
+                .then( function( res ) {
+                    // A 404 is a NAMED answer here, not a failure: the body says the identifier is
+                    // unknown. So the payload is read in both cases and only a broken body is an error.
+                    return res.json()
+                } )
+                .then( function( overview ) {
+                    // The reader closed the popup or opened another reference while this was in flight —
+                    // rendering now would paint THIS answer into THAT popup.
+                    if( !idRefOverlayTarget || idRefOverlayTarget.documentId !== documentId ) { return }
+
+                    idRefOverlayTarget.fullViewPath = overview && typeof overview.fullViewPath === 'string' ? overview.fullViewPath : null
+                    body.innerHTML = renderIdRefOverview( overview, entry )
+                    if( fullBtn && idRefOverlayTarget.fullViewPath !== null ) { fullBtn.classList.remove( 't-hidden' ) }
+                } )
+                .catch( function() {
+                    // Loud, inside the overlay: no silent failure and no navigation away from the memo.
+                    body.innerHTML = '<p class="idref-overlay-error">Uebersicht konnte nicht geladen werden: '
+                        + escapeHtml( token ) + '</p>'
+                    if( verdict && typeof verdict.hint === 'string' ) {
+                        body.innerHTML = body.innerHTML + '<p class="idref-overlay-meta">' + escapeHtml( verdict.hint ) + '</p>'
+                    }
+                } )
+        }
+
+
+        // Close wiring after the shared .t-modal convention, mirroring the #research-modal block above:
+        // close button, backdrop click, Escape.
+        var idRefModalCloseBtn = document.getElementById( 'idref-modal-close' )
+        if( idRefModalCloseBtn ) { idRefModalCloseBtn.addEventListener( 'click', closeIdRefOverlay ) }
+
+        var idRefModalEl = document.getElementById( 'idref-modal' )
+        if( idRefModalEl ) {
+            idRefModalEl.addEventListener( 'click', function( ev ) {
+                if( ev.target === idRefModalEl ) { closeIdRefOverlay() }
+            } )
+        }
+
+        document.addEventListener( 'keydown', function( ev ) {
+            if( ev.key === 'Escape' && isIdRefOverlayOpen() ) { closeIdRefOverlay() }
+        } )
+
+        // The bridge to the full document. "Manchmal will man doch hin" — and then it is a DECISION of
+        // the reader, not the consequence of a click. The path is read BEFORE closing, because closing
+        // clears idRefOverlayTarget.
+        var idRefModalFullBtn = document.getElementById( 'idref-modal-full' )
+        if( idRefModalFullBtn ) {
+            idRefModalFullBtn.addEventListener( 'click', function() {
+                var path = idRefOverlayTarget ? idRefOverlayTarget.fullViewPath : null
+                closeIdRefOverlay()
+                if( path ) { window.location.assign( path ) }
             } )
         }
 

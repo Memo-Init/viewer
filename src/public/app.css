@@ -3056,6 +3056,20 @@
         #research-modal .research-overlay-loading { color: var(--text-muted); }
         #research-modal .research-overlay-error { color: var(--danger); }
 
+        /* PRD-16 (Memo 082 Phase 9, WI-237): geometry of the REFERENCE popup, nothing more. Backdrop,
+           dimming, centering and z-index come from the shared .t-modal rules — NO second overlay block.
+           Narrower than the research plate on purpose: this one shows an OVERVIEW, not a document. */
+        #idref-modal .t-modal-content { width: 640px; }
+        #idref-modal .t-modal-body { display: block; }
+        #idref-modal .idref-overlay-loading { color: var(--text-muted); }
+        #idref-modal .idref-overlay-error { color: var(--danger); }
+        #idref-modal .idref-overlay-note { color: var(--text-muted); font-size: 12px; }
+        #idref-modal .idref-overlay-meta {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
         /* PRD-018 (WI-T013-7): [[wiki-link]] rendered as a navigable link, no longer literal text. */
         #content a.wiki-link {
             color: var(--accent);

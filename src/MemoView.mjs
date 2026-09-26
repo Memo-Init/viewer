@@ -190,6 +190,13 @@ const BUNDLE_CHUNK_SIZE = 65536
 // loopback-local, never-committed location instead of inventing a second one.
 const ERROR_LOG_FILE = 'memo-view.log'
 
+// PRD-16 (Memo 082 Phase 9, WI-237): the chapter cap of the READ-ONLY document overview. A preview is
+// a preview — the whole point of GET /api/documents/<id>/overview is to answer "what does that memo
+// carry?" without the render payload of the document itself. The cap is what keeps the answer a
+// fraction of the thing it describes, and extractOverviewHeadings reports the UNCAPPED count next to
+// the capped list so a reader can never mistake the cap for the whole.
+const OVERVIEW_HEADING_LIMIT = 12
+
 const PORT_COLORS = {
     3333: '4493f8',
     4444: '3fb950',
@@ -2565,6 +2572,25 @@ class MemoView {
             <div class="t-modal-body" id="research-modal-body"></div>
         </div>
     </div>
+    <!-- PRD-16 (Memo 082 Phase 9, WI-237): the REFERENCE popup. A foreign memo reference used to be a
+         real navigation — the reader clicked a cross-reference and the memo he was reading was gone.
+         It now opens HERE, over the prose, and #content is never touched. Built after the
+         #research-modal pattern directly above and REUSING the same .t-modal / .t-modal-content /
+         .t-modal-header / .t-modal-body classes, so backdrop, dimming, centering and z-index are
+         inherited — NO new overlay/position:fixed CSS, and #research-modal itself is untouched (it is
+         the template, not the subject). "Vollansicht" is the bridge for the case where the reader
+         really does want to go there: then it is a decision instead of the consequence of a click. -->
+    <div id="idref-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="idref-modal-title">
+        <div class="t-modal-content">
+            <div class="t-modal-header">
+                <span class="t-title" id="idref-modal-title">Querverweis</span>
+                <span class="t-header-spacer"></span>
+                <button class="t-btn-secondary" id="idref-modal-full" title="Das verwiesene Dokument vollstaendig oeffnen">Vollansicht</button>
+                <button class="t-close" id="idref-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
+            </div>
+            <div class="t-modal-body" id="idref-modal-body"></div>
+        </div>
+    </div>
     <!-- PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): annotation modal. REUSES the existing .t-modal /
          .t-modal-content / .t-modal-header / .t-modal-body classes (centered flex overlay) exactly like
          the requirement + block popups above. NO new overlay CSS. Opened from a text selection or a
@@ -3365,6 +3391,67 @@ ${ VendorAssets.scriptTags().tags }
                 } catch( error ) {
                     sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
                 }
+
+                return
+            }
+
+            // PRD-16 (Memo 082 Phase 9, WI-237): the READ-ONLY overview of ONE document — the payload
+            // behind the reference popup. MUST be matched BEFORE the generic /api/documents/<id> GET
+            // below (the suffix is more specific; otherwise the generic route would swallow
+            // "<id>/overview" as the id), the same ordering rule /requirements, /blocks, /topics and
+            // /graph above already follow.
+            //
+            // READ-ONLY, in every lane: it reads the registry entry and ONE revision file and answers.
+            // There is no store call, no registry mutation and no write of any kind here — a preview
+            // endpoint that writes would be a surprise at exactly the place that exists to remove one.
+            //
+            // It answers an OVERVIEW, not the document: the chapter outline is capped at
+            // OVERVIEW_HEADING_LIMIT and the ~443 KB render payload of the revision never leaves here.
+            //
+            // The four states are NAMED (unknown / empty / unreadable / ok) and every one of them
+            // speaks the same key set — see buildDocumentOverview. An unknown identifier answers 404
+            // WITH that named body, because a bare 404 would hand the reader a broken link where the
+            // truth is "this viewer does not know that memo".
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/overview' ) && req.method === 'GET' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/overview'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    const missing = MemoView.buildDocumentOverview( {
+                        documentId,
+                        'document': null,
+                        'revision': null,
+                        'revisionCount': 0,
+                        'content': '',
+                        'readable': false,
+                        'headingLimit': OVERVIEW_HEADING_LIMIT
+                    } )
+
+                    sendJson( res, 404, missing[ 'overview' ] )
+
+                    return
+                }
+
+                const doc = result[ 'document' ]
+                const { revision, comparedCount } = MemoView.selectOverviewRevision( { 'revisions': doc[ 'revisions' ] || [] } )
+                const located = revision === null
+                    ? { 'absolutePath': null }
+                    : MemoView.resolveRevisionPath( { documentId, 'fileName': revision[ 'fileName' ] } )
+                const content = located[ 'absolutePath' ] === null
+                    ? null
+                    : await readFile( located[ 'absolutePath' ], 'utf-8' ).catch( () => null )
+                const built = MemoView.buildDocumentOverview( {
+                    documentId,
+                    'document': doc,
+                    revision,
+                    'revisionCount': comparedCount,
+                    'content': content === null ? '' : content,
+                    'readable': content !== null,
+                    'headingLimit': OVERVIEW_HEADING_LIMIT
+                } )
+
+                sendJson( res, 200, built[ 'overview' ] )
 
                 return
             }
@@ -6285,6 +6372,149 @@ ${ VendorAssets.scriptTags().tags }
         struct[ 'absolutePath' ] = resolve( detail[ 'document' ][ 'memoPath' ], fileName )
 
         return struct
+    }
+
+
+    // ── PRD-16 (Memo 082 Phase 9, WI-237): the read-only document overview ─────────────────────────
+    //
+    // The data behind GET /api/documents/<id>/overview. Split into pure statics on purpose: the four
+    // named states, the chapter outline and the payload shape are each decidable without a registry, a
+    // socket or a file, so what the popup shows is measurable without standing a server up.
+
+    // selectOverviewRevision — WHICH revision an overview describes: the highest revision number, and
+    // among equals the plain form before `-prepare` / `-update` (the same ordering #compareRevisionFiles
+    // uses, reached through the public matchRevisionPattern so it stays testable). `comparedCount`
+    // travels with the answer because "no revision at all" and "one revision that happens to sort last"
+    // are two different statements and a caller must be able to tell them apart.
+    static selectOverviewRevision( { revisions } ) {
+        const list = Array.isArray( revisions ) === true ? revisions : []
+        const rank = ( entry ) => {
+            const matched = MemoView.matchRevisionPattern( { 'fileName': String( entry[ 'fileName' ] ) } )
+
+            return {
+                'number': matched[ 'revisionNumber' ] === null ? -1 : matched[ 'revisionNumber' ],
+                'suffix': MemoView.#suffixOrder( { 'suffix': matched[ 'suffix' ] } )
+            }
+        }
+        const picked = list.reduce( ( best, candidate ) => {
+            if( best === null ) { return candidate }
+
+            const a = rank( best )
+            const b = rank( candidate )
+
+            if( b[ 'number' ] !== a[ 'number' ] ) { return b[ 'number' ] > a[ 'number' ] ? candidate : best }
+            if( b[ 'suffix' ] !== a[ 'suffix' ] ) { return b[ 'suffix' ] > a[ 'suffix' ] ? candidate : best }
+
+            return String( candidate[ 'fileName' ] ).localeCompare( String( best[ 'fileName' ] ) ) > 0 ? candidate : best
+        }, null )
+
+        return { 'revision': picked, 'comparedCount': list.length }
+    }
+
+
+    // extractOverviewHeadings — the H2 chapter titles of one revision, fenced lines EXCLUDED. A `## …`
+    // inside a code fence is prose about a heading, not a heading; the M082-09-02 fixture carries
+    // exactly such a line, so the distinction is measured rather than assumed. Returns the capped list
+    // AND the uncapped count — a capped list alone cannot say how much it left out, which is the same
+    // "name your comparison set" rule the routes above follow. `limit` is REQUIRED and refused loudly:
+    // a silent default here would let a caller believe it had asked for a size it never named.
+    static extractOverviewHeadings( { content, limit } ) {
+        if( typeof limit !== 'number' || Number.isFinite( limit ) !== true || limit <= 0 ) {
+            throw new Error( 'extractOverviewHeadings: limit must be a positive finite number — a preview without a stated size is not a preview' )
+        }
+
+        const text = typeof content === 'string' ? content : ''
+        const walked = text
+            .split( '\n' )
+            .reduce( ( acc, line ) => {
+                if( /^\s*```/.test( line ) === true ) {
+                    return { 'fenced': acc[ 'fenced' ] !== true, 'headings': acc[ 'headings' ] }
+                }
+                if( acc[ 'fenced' ] === true ) { return acc }
+                if( /^##\s+\S/.test( line ) !== true ) { return acc }
+
+                return { 'fenced': false, 'headings': acc[ 'headings' ].concat( [ line.replace( /^##\s+/, '' ).trim() ] ) }
+            }, { 'fenced': false, 'headings': [] } )
+
+        return { 'headings': walked[ 'headings' ].slice( 0, limit ), 'headingCount': walked[ 'headings' ].length, 'limit': limit }
+    }
+
+
+    // overviewState — the FOUR named answers of the overview. An empty preview would be
+    // indistinguishable from "that memo carries nothing", and that confusion is the most expensive one
+    // this project knows (same reason renderIdStockNote keeps a fourth state and requirementsEmptyState
+    // exists at all). So every non-ok case is NAMED with its own reason instead of answered with a hull:
+    //
+    //   unknown     the identifier is not registered here      -> not the reader's mistake, and said so
+    //   empty       registered, but nothing readable to show   -> no revision, or a revision with no text
+    //   unreadable  registered, revision known, read refused   -> permission / vanished file, named apart
+    //   ok          an overview follows
+    static overviewState( { found, readable, revisionCount, contentLength } ) {
+        if( found !== true ) { return { 'state': 'unknown', 'reason': 'document-id-not-registered' } }
+        if( typeof revisionCount !== 'number' || revisionCount <= 0 ) { return { 'state': 'empty', 'reason': 'no-revision-in-document' } }
+        if( readable !== true ) { return { 'state': 'unreadable', 'reason': 'revision-source-not-readable' } }
+        if( typeof contentLength !== 'number' || contentLength <= 0 ) { return { 'state': 'empty', 'reason': 'revision-has-no-content' } }
+
+        return { 'state': 'ok', 'reason': null }
+    }
+
+
+    // overviewNote — the DISPLAY sentence of a state. German, because this surface points inward at its
+    // own developer; the fields it sits next to (`state`, `reason`) stay English machine tokens. The
+    // list is closed, and an unrecognised state gets a sentence that SAYS it is unrecognised rather than
+    // an empty string — a silent blank is exactly the hull the state machine above exists to prevent.
+    static overviewNote( { state } ) {
+        const notes = {
+            'ok': 'Uebersicht geladen.',
+            'unknown': 'Diese Kennung kennt der Viewer nicht — sie steht in keinem geladenen Projekt.',
+            'unreadable': 'Die Kennung ist bekannt, ihre Revision laesst sich aber nicht lesen.',
+            'empty': 'Die Kennung ist bekannt, traegt aber keinen lesbaren Inhalt.'
+        }
+        const note = notes[ state ]
+
+        return { 'note': note === undefined ? `Unbekannter Zustand der Uebersicht: ${ String( state ) }` : note }
+    }
+
+
+    // buildDocumentOverview — the payload shape, in ONE place. Every state speaks the SAME key set, so
+    // a reader of the answer can never tell a state apart by which fields are missing — it reads
+    // `state` (and the two unknown-case nulls are values, not absences). `fullViewPath` is the bridge
+    // the overlay offers: sometimes the reader really does want to go there, and then it is a DECISION
+    // instead of the consequence of a click.
+    static buildDocumentOverview( { documentId, document, revision, revisionCount, content, readable, headingLimit } ) {
+        const found = document !== null && document !== undefined
+        const text = typeof content === 'string' ? content : ''
+        const counted = typeof revisionCount === 'number' ? revisionCount : 0
+        const decided = MemoView.overviewState( { found, readable, 'revisionCount': counted, 'contentLength': text.trim().length } )
+        const outline = MemoView.extractOverviewHeadings( { 'content': text, 'limit': headingLimit } )
+        const noted = MemoView.overviewNote( { 'state': decided[ 'state' ] } )
+
+        return {
+            'overview': {
+                'kind': 'document-overview',
+                'readOnly': true,
+                'state': decided[ 'state' ],
+                'reason': decided[ 'reason' ],
+                'note': noted[ 'note' ],
+                'documentId': documentId,
+                'projectId': found === true ? ( document[ 'projectId' ] || null ) : null,
+                'memoName': found === true ? ( document[ 'memoName' ] || null ) : null,
+                'documentKind': found === true ? ( document[ 'documentKind' ] || 'memo' ) : null,
+                'memoStatus': found === true ? ( document[ 'memoStatus' ] || null ) : null,
+                'questions': found === true ? ( document[ 'questions' ] || DocumentRegistry.undeclaredQuestionCounts() ) : null,
+                'revisionCount': counted,
+                'latestRevision': revision === null || revision === undefined ? null : {
+                    'fileName': revision[ 'fileName' ],
+                    'sizeKb': revision[ 'sizeKb' ] || 0,
+                    'mtime': revision[ 'mtime' ] || null,
+                    'revisionType': revision[ 'revisionType' ] || null
+                },
+                'headings': outline[ 'headings' ],
+                'headingCount': outline[ 'headingCount' ],
+                'headingLimit': outline[ 'limit' ],
+                'fullViewPath': found === true ? `/doc/${ encodeURIComponent( documentId ) }` : null
+            }
+        }
     }
 
 

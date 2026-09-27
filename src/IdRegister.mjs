@@ -69,8 +69,14 @@ const ID_VOCABULARY = [
     { prefix: 'T', entity: 'topic', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/TopicStore.mjs:471', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
     { prefix: 'B', entity: 'block', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/MemoBlock.mjs:270', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
     { prefix: 'G', entity: 'goal', tier: 1, separator: 'none', digits: { min: 3, max: 4 }, mintedAt: 'src/GoalStore.mjs:691', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
-    { prefix: 'WI', entity: 'work-item', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/WorkItemStore.mjs:1086', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
-    { prefix: 'RES', entity: 'research', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/ResearchStore.mjs:700', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    // ONE `mintedAt`, and it is measured (M082-WC-A). This row carried the key TWICE — `:1086` and `:1182`
+    // in the same object literal, where the LAST one silently wins and the first has been dead since it was
+    // written. It predates this order (it stands so in the merge basis 5341942) and is corrected here rather
+    // than left, because a duplicate key means the next person to update the pointer may edit the half that
+    // has no effect. The value moved 1182 -> 1255 when `WorkItemStore.setGroup` was added above the minter;
+    // the A1.2 case caught it, which is the whole point of holding a pointer against its file and line.
+    { prefix: 'WI', entity: 'work-item', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/WorkItemStore.mjs:1255', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
+    { prefix: 'RES', entity: 'research', tier: 1, separator: 'required', digits: { min: 3, max: 4 }, mintedAt: 'src/ResearchStore.mjs:813', carrier: 'json-record', recognized: true, unrecognizedReason: null, vocabulary: 'v1' },
     // PRD: 1–4, not 3–4. Nothing mints a PRD id — the carrier is the file name, and the real stock
     // runs PRD-1 … PRD-514 unpadded: 3 one-digit, 59 two-digit, 514 three-digit files. A 3-digit
     // floor would fail to recognize 62 real PRDs, this very one (PRD-28) among them.

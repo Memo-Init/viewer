@@ -10,6 +10,7 @@ import { DatabaseSync } from '@dolthub/doltlite'
 import { MemoView } from '../../src/MemoView.mjs'
 import { AnswerWaiter } from '../../src/AnswerWaiter.mjs'
 import { McpEndpoint } from '../../src/McpEndpoint.mjs'
+import { projectRoot } from '../helpers/siblingRepo.mjs'
 
 
 // PRD-V9 (Memo 080, Kap 19 / WI-098, WI-164) — the answer channel WIRED INTO the viewer.
@@ -363,8 +364,8 @@ describe( 'PRD-V9 — the path seam matches the REAL registry, not a convenient 
 } )
 
 
-// A12 — the registration itself. It is a PROJECT file (…/memo-init/.mcp.json), two directories above this
-// repo, and CI checks this repo out ALONE. In CI the basis is therefore missing in 100 % of the runs, so an
+// A12 — the registration itself. It is a PROJECT file (…/memo-init/.mcp.json), above this repo, and CI
+// checks this repo out ALONE. In CI the basis is therefore missing in 100 % of the runs, so an
 // `if( !readable ) return` inside the case would have made this check permanently and invisibly green — the
 // exact "vacuum green" this suite exists to prevent. The case is registered through `withRegistration`
 // instead (the house spelling `existsSync( … ) ? it : it.skip`): it lands in jest's SKIPPED tally, its title
@@ -374,7 +375,19 @@ describe( 'PRD-V9 — the path seam matches the REAL registry, not a convenient 
 // When the file IS there, every rule of A12 is measured on its content: the loopback endpoint, no secret, no
 // absolute user path, no machine name. The patterns are a LIST, so a new forbidden shape is one entry and
 // not a second test.
-const MCP_REGISTRATION = resolve( here, '..', '..', '..', '..', '.mcp.json' )
+//
+// WHERE THE ROOT COMES FROM (Memo 082, M082-09-FX2 class). This used to count four levels up from the test
+// file. That is correct only for `repos/viewer` itself: from `.worktrees/082/viewer-integration/tests/unit`
+// the same count lands on `<root>/.worktrees/.mcp.json`, which does not exist, and A12 went to SKIP with
+// "0 of 1 registration file compared" — a comparison set of nothing, reported as an absent object. The root
+// is now DERIVED from the main repository (`git rev-parse --git-common-dir`, the rule that already carries
+// the three cross-repo suites), so it no longer depends on how deep the tree happens to sit. A derivation
+// that fails is NOT a skip: it leaves a value that cannot end in `.mcp.json`, so the always-running case
+// below turns red and names the reason, instead of a missing apparatus reading like a missing file.
+const PROJECT_ROOT = projectRoot( { from: here } )
+const MCP_REGISTRATION = PROJECT_ROOT.status === true
+    ? resolve( PROJECT_ROOT.root, '.mcp.json' )
+    : `<project root not derivable: ${ PROJECT_ROOT.reason }>`
 
 const FORBIDDEN_IN_REGISTRATION = [
     { 'label': 'secret-ish key name', 'pattern': /(api[_-]?key|secret|token|password|passwd|bearer|authorization|client[_-]?id|private[_-]?key)/i },

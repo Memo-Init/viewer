@@ -443,18 +443,29 @@ describe( 'PRD-16 — AB-8: the renderer seam is named, commented and really plu
     } )
 
 
-    // Not only present — pluggable. The lifted function is evaluated with a PRE-SEEDED map, so the
-    // dispatch itself is measured instead of read.
-    it( 'a registered renderer WINS for its prefix and the generic body stays the fallback (2 kinds)', async () => {
+    // Not only present — pluggable. The lifted function is evaluated with PRE-SEEDED dependencies, so
+    // the dispatch itself is measured instead of read.
+    //
+    // AMENDED BY PRD-17 (Memo 082 Phase 9, WI-238), and the old assertion is INVERTED on purpose. The
+    // unregistered case no longer reaches idRefOverviewBody directly; it goes through
+    // idRefOverviewFallbackBody, which says it IS the general view and then renders exactly that body.
+    // So the contract this case guards is unchanged in substance — a registered renderer wins, an
+    // unregistered kind still gets the generic content — and gained one sentence. That the REAL
+    // fallback keeps the generic body verbatim is measured in TypedRefsEvidenceMarksM082P9.test.mjs
+    // ("AB-8 — the fallback still shows the GENERIC body, unchanged"); here the fallback is a stub,
+    // because what is under test here is the ROUTING, not the wording.
+    it( 'a registered renderer WINS for its prefix and an unregistered kind reaches the NAMED fallback (2 kinds)', async () => {
         const { source } = await extractFunctionSources( [ 'renderIdRefOverview' ] )
-        const factory = new Function( 'idRefOverviewRenderers', 'idRefOverviewBody', source + '\nreturn renderIdRefOverview' )
+        const factory = new Function( 'idRefOverviewRenderers', 'idRefOverviewBody', 'idRefOverviewFallbackBody', source + '\nreturn renderIdRefOverview' )
         const render = factory(
             { 'M': ( overview, entry ) => 'TYPED:' + entry[ 'prefix' ] },
-            () => 'GENERIC'
+            () => 'GENERIC',
+            ( overview, entry ) => 'FALLBACK(' + entry[ 'prefix' ] + '):GENERIC'
         )
 
         expect( render( { 'state': 'ok' }, { 'prefix': 'M' } ) ).toBe( 'TYPED:M' )
-        expect( render( { 'state': 'ok' }, { 'prefix': 'WI' } ) ).toBe( 'GENERIC' )
+        expect( render( { 'state': 'ok' }, { 'prefix': 'WI' } ) ).toBe( 'FALLBACK(WI):GENERIC' )
+        expect( render( { 'state': 'ok' }, { 'prefix': 'WI' } ) ).toContain( 'GENERIC' )
     } )
 } )
 

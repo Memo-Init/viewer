@@ -7098,6 +7098,15 @@
             resetTopicStoreCache()
             resolveWikiLinks()
             resolveIdLinks( currentDocumentId )
+            // PRD-17 (Memo 082 Phase 9, WI-238): the evidence-mark pass runs at exactly ONE call point,
+            // next to the identifier pass it was modelled on, on EVERY content render — a pass that ran
+            // only on the first load would be gone after the next revision click.
+            //
+            // AFTER foldBlockBodySections above, and that order is the reason the tag COUNT is safe
+            // twice over: the figure lines are computed before a single mark exists, and even on a
+            // second run they would read the same textContent, because a mark carries the bracket
+            // syntax verbatim. Sync, unlike resolveIdLinks — nothing is fetched.
+            resolveEvidenceMarks()
             wrapTablesCollapsible()
             // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): the annotation render pass. Runs on EVERY
             // render path (this method is the common post-render hook, incl. after renderDiffView), and
@@ -7304,6 +7313,90 @@
         // the browser cannot resolve at all. Without it every `PRD-42` and `REV-16` in the prose would
         // be handed to the author as HIS broken reference, which is a defect the machine made.
         var ID_STOCK_PREFIXES = [ 'T', 'B', 'WI', 'M' ]
+
+        // ====================================================================================
+        // PRD-17 (Memo 082 Phase 9, WI-238) — S7: ONE SEES WHERE A REFERENCE LEADS.
+        //
+        // The user's words: "Es waere gut, wenn auch Annahmen und Referenzen als Spezial-Links
+        // hinterlegt werden — die Referenz gelb, das andere blau, das andere gruen — und beim Klick
+        // kommt immer das gleiche Popup mit unterschiedlicher Information."
+        //
+        // Before this, a mark was typed by STATE only (local / foreign / unresolved / ambiguous /
+        // no-carrier): `T030`, `B004`, `WI-238` and `M080` looked identical, and the substrate that
+        // would tell them apart — the prefix idSplitToken already returns — was thrown away.
+        //
+        // THE STATE CHANNEL IS NOT TOUCHED. The state owns `color` and `border-bottom` (app.css
+        // :3471-3479); the KIND is given a channel the state never writes, `background-color`. So the
+        // two statements are readable at once and neither overwrites the other — the order said
+        // "ergaenzen, nicht ersetzen", and separate CSS properties are what makes that a fact rather
+        // than a convention.
+        //
+        // THE TABLE IS HAND-KEPT, AND THAT IS THE POINT. Deriving it from ID_VOCABULARY_MIRROR would
+        // give every prefix a colour automatically — and with it, a NEW kind would silently inherit
+        // the look of a considered one. Kept by hand, an unlisted prefix falls to the `other` row:
+        // its own neutral display, never a foreign kind's. A parity case holds the table against the
+        // vocabulary, so growth shows up as a red test instead of as a grey mark nobody ordered.
+        //
+        // Measured over the live store (552 revision files, scratchpad scan): all 14 recognised
+        // prefixes really occur — REV 16568, T 14656, WI 12882, M 6363, RES 1500, B 880, REQ 823,
+        // PRD 677, G 508, SR 127, ANM 65, PLAN 27, LL 10, MNT 8. None may be left without a colour.
+        //
+        // `slug` is the CSS/ARIA token (machine side, ASCII), `label` the German display noun of the
+        // viewer surface, `tint` the exact colour app.css must carry for that kind — a parity case
+        // reads the stylesheet back against this column, so the two cannot drift.
+        // ====================================================================================
+        var ID_REF_KINDS = [
+            { prefix: 'M', slug: 'm', label: 'Memo', tint: 'rgba(88, 166, 255, 0.18)' },
+            { prefix: 'MNT', slug: 'mnt', label: 'Wartungs-Karte', tint: 'rgba(63, 185, 80, 0.18)' },
+            { prefix: 'T', slug: 't', label: 'Topic', tint: 'rgba(210, 153, 34, 0.18)' },
+            { prefix: 'B', slug: 'b', label: 'Block', tint: 'rgba(188, 140, 255, 0.18)' },
+            { prefix: 'G', slug: 'g', label: 'Ziel', tint: 'rgba(255, 123, 114, 0.18)' },
+            { prefix: 'WI', slug: 'wi', label: 'Work-Item', tint: 'rgba(57, 197, 207, 0.18)' },
+            { prefix: 'RES', slug: 'res', label: 'Research-Datensatz', tint: 'rgba(219, 97, 162, 0.18)' },
+            { prefix: 'PRD', slug: 'prd', label: 'Arbeitsauftrag', tint: 'rgba(240, 136, 62, 0.18)' },
+            { prefix: 'REQ', slug: 'req', label: 'Anforderung', tint: 'rgba(163, 113, 247, 0.18)' },
+            { prefix: 'PLAN', slug: 'plan', label: 'Plan', tint: 'rgba(31, 111, 235, 0.18)' },
+            { prefix: 'ANM', slug: 'anm', label: 'Anmerkung', tint: 'rgba(226, 192, 141, 0.18)' },
+            { prefix: 'LL', slug: 'll', label: 'Lehre', tint: 'rgba(126, 231, 135, 0.18)' },
+            { prefix: 'REV', slug: 'rev', label: 'Revision', tint: 'rgba(255, 166, 87, 0.18)' },
+            { prefix: 'SR', slug: 'sr', label: 'Sprech-Regel', tint: 'rgba(121, 192, 255, 0.18)' },
+            { prefix: null, slug: 'other', label: 'unbekannte Art', tint: 'rgba(139, 148, 158, 0.18)' }
+        ]
+
+
+        // idRefKindOf — the row for a prefix, or null. The `prefix !== null` guard is what keeps the
+        // fallback row out of the lookup: a caller passing null asks "what is the row for no kind at
+        // all", and the honest answer is "none of the named ones".
+        function idRefKindOf( prefix ) {
+            var hit = ID_REF_KINDS.filter( function( kind ) { return kind.prefix !== null && kind.prefix === prefix } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
+        }
+
+
+        // idRefKindFallbackRow — the one row that stands for every kind the table does not name.
+        function idRefKindFallbackRow() {
+            var hit = ID_REF_KINDS.filter( function( kind ) { return kind.prefix === null } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
+        }
+
+
+        // idRefKindResolve — the row a mark is rendered with. Never null, and never a NAMED row for
+        // an unnamed kind.
+        function idRefKindResolve( prefix ) {
+            var kind = idRefKindOf( prefix )
+
+            return kind === null ? idRefKindFallbackRow() : kind
+        }
+
+
+        // idRefKindClass — the kind half of a mark's class list. Kept apart from the state half so a
+        // reader of the DOM can see which property came from which decision.
+        function idRefKindClass( prefix ) {
+            return 'id-ref-kind-' + idRefKindResolve( prefix ).slug
+        }
+
 
         // idTokenSource — the alternation, rebuilt from ID_VOCABULARY_MIRROR with the algorithm of
         // IdRegister.buildSource: group by (separator, digit span) in order of first appearance;
@@ -7515,8 +7608,15 @@
         function buildIdMark( entry, verdict, headings ) {
             var target = verdict.state === 'local' ? matchChapterHeading( headings, verdict.chapter ) : null
             var node = ( verdict.state === 'foreign' || target !== null ) ? document.createElement( 'a' ) : document.createElement( 'span' )
-            node.className = 'id-ref id-ref-' + ( target === null && verdict.state === 'local' ? 'resolved' : verdict.state )
+            // PRD-17 (Memo 082 Phase 9, WI-238): the KIND rides next to the state, never instead of
+            // it — two class names, two CSS properties, two statements. `data-ref-prefix` carries the
+            // prefix verbatim as idSplitToken reported it, because a stylesheet class is lossy (it is
+            // lower-cased and slugged) and a measurement wants the raw kind back.
+            var kindRow = idRefKindResolve( entry.prefix )
+            node.className = 'id-ref id-ref-' + ( target === null && verdict.state === 'local' ? 'resolved' : verdict.state ) + ' ' + idRefKindClass( entry.prefix )
             node.setAttribute( 'data-id-ref', entry.key )
+            node.setAttribute( 'data-ref-prefix', entry.prefix )
+            node.setAttribute( 'data-ref-kind', kindRow.slug )
             node.setAttribute( 'title', verdict.hint )
             node.textContent = entry.token
 
@@ -7645,6 +7745,158 @@
             renderIdStockNote( stock, counted.occurrences )
 
             return { ran: true, available: true, reason: null, occurrences: counted.occurrences, distinct: Object.keys( counted.keys ).length, states: counted.states, comparedStockEntries: stock.ids.length, comparedStockPrefixes: stock.prefixes.length, comparedCatalogue: stock.catalogue.length }
+        }
+
+
+        // ====================================================================================
+        // PRD-17 (Memo 082 Phase 9, WI-238) — S7, second half: THE EVIDENCE MARKS BECOME VISIBLE.
+        //
+        // The five tags were already read — but only COUNTED, into the figure line of a folded chapter
+        // section (distributionOf, dimension 'evidence'). In the running text `[FAKT]` and `[VERMUTUNG]`
+        // looked the same as any other bracketed word. A memo system that separates fact from
+        // assumption and then does not SHOW the separation gives it back at reading time.
+        //
+        // BUILT ANALOGOUS TO resolveIdLinks, DELIBERATELY. Same text-node recursion (no while loop),
+        // same CONTENT_SKIP_TAGS, same diagram-container predicate, same "already marked" guard, same
+        // fragment replacement, same counted return. There is no reason for a second mechanism next to
+        // one that works, and two mechanisms would drift the first time one learns something.
+        //
+        // THE COUNT IS NOT TOUCHED, AND THAT IS A COMPUTATION, NOT A PROMISE. A mark's textContent is
+        // the tag VERBATIM, brackets included, so the textContent of every ancestor is unchanged — and
+        // distributionOf reads exactly textContent. The order asked for "rendern" AND "zaehlen wie
+        // bisher"; keeping the bracket syntax inside the mark is what makes both true at once.
+        //
+        // EVIDENCE_TAGS itself is declared further down, next to the chapter-figure code that counts
+        // the tags. The renderer reads THAT list, never a copy: a second list would be a second truth,
+        // and the first divergence would show as a tag that is counted but never marked.
+        // ====================================================================================
+
+        // The five tags as a DISPLAY family: `slug` the CSS/data token, `label` the German noun of the
+        // viewer surface, `tint` the exact colour app.css must carry — held against the stylesheet by
+        // the same kind of parity case as ID_REF_KINDS above. The tags themselves stay in EVIDENCE_TAGS;
+        // this table only says how each is SHOWN, and a parity case keeps the two sets equal.
+        var EVIDENCE_MARK_KINDS = [
+            { tag: 'GEMESSEN', slug: 'gemessen', label: 'gemessen', tint: 'rgba(46, 160, 67, 0.2)' },
+            { tag: 'FAKT', slug: 'fakt', label: 'Fakt', tint: 'rgba(56, 139, 253, 0.2)' },
+            { tag: 'ABGELEITET', slug: 'abgeleitet', label: 'abgeleitet', tint: 'rgba(137, 87, 229, 0.2)' },
+            { tag: 'ANNAHME', slug: 'annahme', label: 'Annahme', tint: 'rgba(187, 128, 9, 0.2)' },
+            { tag: 'VERMUTUNG', slug: 'vermutung', label: 'Vermutung', tint: 'rgba(218, 54, 51, 0.2)' }
+        ]
+
+
+        // evidenceMarkKindOf — the display row for a tag, or null. Null is a real answer: a tag that
+        // EVIDENCE_TAGS carries but this table does not is a finding, not a mark to invent a look for.
+        function evidenceMarkKindOf( tag ) {
+            var hit = EVIDENCE_MARK_KINDS.filter( function( kind ) { return kind.tag === tag } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
+        }
+
+
+        // evidenceTokenPattern — a FRESH global expression per pass, for the reason idTokenPattern
+        // gives: a global regex carries lastIndex, and a shared instance walked by two consumers skips
+        // hits. Built from EVIDENCE_TAGS, so a sixth tag is marked without a second edit here.
+        function evidenceTokenPattern() {
+            return new RegExp( '\\[(?:' + EVIDENCE_TAGS.join( '|' ) + ')\\]', 'g' )
+        }
+
+
+        // evidenceMarkClass — the class list of one mark. Two names: the family and the tag, the same
+        // split buildIdMark uses for state and kind.
+        function evidenceMarkClass( tag ) {
+            var kind = evidenceMarkKindOf( tag )
+
+            return 'evidence-mark evidence-mark-' + ( kind === null ? 'other' : kind.slug )
+        }
+
+
+        // splitEvidenceHits — PURE, and the load-bearing half of this pass. One text into an ordered
+        // segment list. `parts.map( p => p.text ).join( '' )` is the INPUT, character for character —
+        // which is how "the pass does not change the text" becomes a computation a test can run rather
+        // than a sentence in a comment. Reports its comparison set, so a zero is readable as a zero.
+        function splitEvidenceHits( text ) {
+            var source = String( text )
+            var pattern = evidenceTokenPattern()
+            var hits = Array.from( source.matchAll( pattern ) )
+            var walked = hits.reduce( function( acc, hit ) {
+                if( hit.index > acc.cursor ) { acc.parts.push( { kind: 'text', text: source.slice( acc.cursor, hit.index ), tag: null } ) }
+                acc.parts.push( { kind: 'mark', text: hit[ 0 ], tag: hit[ 0 ].slice( 1, hit[ 0 ].length - 1 ) } )
+                acc.cursor = hit.index + hit[ 0 ].length
+
+                return acc
+            }, { parts: [], cursor: 0 } )
+            if( walked.cursor < source.length ) { walked.parts.push( { kind: 'text', text: source.slice( walked.cursor ), tag: null } ) }
+
+            var marks = walked.parts.filter( function( part ) { return part.kind === 'mark' } )
+
+            return { parts: walked.parts, marks: marks.length, tags: marks.map( function( part ) { return part.tag } ), comparedTags: EVIDENCE_TAGS.length, sourceLength: source.length }
+        }
+
+
+        // buildEvidenceMark — one mark. Always a span: an evidence tag is a STATEMENT ABOUT the
+        // sentence it stands in, not a jump target, and an anchor that does not move is a promise the
+        // display cannot keep (the same reason buildIdMark spans its non-jumping states).
+        function buildEvidenceMark( part ) {
+            var kind = evidenceMarkKindOf( part.tag )
+            var node = document.createElement( 'span' )
+            node.className = evidenceMarkClass( part.tag )
+            node.setAttribute( 'data-evidence-tag', part.tag )
+            node.setAttribute( 'title', kind === null
+                ? ( part.tag + ' — diese Marke fuehrt die Anzeige nicht als eigene Art.' )
+                : ( 'Evidenz: ' + kind.label ) )
+            // The bracket syntax STAYS inside the mark. It is what keeps every ancestor's textContent
+            // unchanged, and with it the tag count of the chapter figure lines.
+            node.textContent = part.text
+
+            return node
+        }
+
+
+        // resolveEvidenceMarks — THE second pass. Sync, because nothing arrives over the network: the
+        // tags stand in the text that is already rendered. Idempotent — a node already inside a mark
+        // is not descended into, so a second render produces no nested marks.
+        function resolveEvidenceMarks() {
+            var pattern = evidenceTokenPattern()
+            var textNodes = []
+            var collect = function( node ) {
+                node.childNodes.forEach( function( child ) {
+                    if( child.nodeType === 3 ) {
+                        pattern.lastIndex = 0
+                        if( pattern.test( child.nodeValue || '' ) ) { textNodes.push( child ) }
+
+                        return
+                    }
+                    if( child.nodeType !== 1 ) { return }
+                    if( CONTENT_SKIP_TAGS[ child.tagName ] ) { return }
+                    if( isDiagramContainer( child ) ) { return }
+                    if( child.classList && child.classList.contains( 'evidence-mark' ) ) { return }
+                    if( child.classList && child.classList.contains( 'id-ref' ) ) { return }
+                    collect( child )
+                } )
+            }
+            collect( contentEl )
+
+            var counted = textNodes.reduce( function( acc, node ) {
+                var split = splitEvidenceHits( node.nodeValue )
+                var frag = document.createDocumentFragment()
+                split.parts.forEach( function( part ) {
+                    frag.appendChild( part.kind === 'mark' ? buildEvidenceMark( part ) : document.createTextNode( part.text ) )
+                } )
+                node.parentNode.replaceChild( frag, node )
+                split.tags.forEach( function( tag ) { acc.perTag[ tag ] = ( acc.perTag[ tag ] || 0 ) + 1 } )
+                acc.occurrences = acc.occurrences + split.marks
+
+                return acc
+            }, { occurrences: 0, perTag: {} } )
+
+            // The NULL SET IS NAMED. "Nothing was marked" and "everything was marked" must not read
+            // the same: a document without a single evidence tag is a statement about that document,
+            // not a successful pass over nothing.
+            if( counted.occurrences === 0 ) {
+                return { ran: true, occurrences: 0, distinct: 0, perTag: {}, reason: 'no evidence tag in this document — nothing was marked', comparedTextNodes: textNodes.length, comparedTags: EVIDENCE_TAGS.length }
+            }
+
+            return { ran: true, occurrences: counted.occurrences, distinct: Object.keys( counted.perTag ).length, perTag: counted.perTag, reason: null, comparedTextNodes: textNodes.length, comparedTags: EVIDENCE_TAGS.length }
         }
 
 
@@ -9099,8 +9351,85 @@
 
             if( typeof renderer === 'function' ) { return renderer( overview, entry ) }
 
-            return idRefOverviewBody( overview )
+            // PRD-17 (Memo 082 Phase 9, WI-238): the ONE line of this function the typed renderers
+            // needed. The unregistered case used to fall through to idRefOverviewBody SILENTLY, so a
+            // kind without a renderer looked exactly like a kind with one — a fallback that reads as a
+            // result. idRefOverviewFallbackBody says it IS the general view and then shows exactly the
+            // same generic body, unchanged. No second overlay, no second body: one added sentence.
+            return idRefOverviewFallbackBody( overview, entry )
         }
+
+
+        // ====================================================================================
+        // PRD-17 (Memo 082 Phase 9, WI-238) — S7, third part: ONE POPUP, TYPED CONTENT.
+        //
+        // The user's words: "beim Klick kommt immer das gleiche Popup mit unterschiedlicher
+        // Information." That is the architecture, and it is the right one — so nothing here opens an
+        // overlay. Every renderer below is registered into idRefOverviewRenderers, THE seam PRD-16
+        // named, and the popup, the route and the close wiring stay untouched (WI-237).
+        // ====================================================================================
+
+        // idRefOverviewHead — the typed head line, and the only part that differs by kind. For a
+        // QUALIFIED reference (`M080-T096`) it names the item INSIDE the foreign memo: the overview
+        // below describes the memo, and without this line the reader would be shown a memo and left to
+        // guess which of its topics he had clicked. That gap is the whole reason a kind needs a
+        // renderer of its own.
+        function idRefOverviewHead( entry, kind ) {
+            var token = entry && typeof entry.token === 'string' ? entry.token : ''
+            var id = entry && typeof entry.id === 'string' ? entry.id : token
+            var scope = entry && typeof entry.scope === 'string' ? entry.scope : null
+            var where = scope === null
+                ? ''
+                : ( ' in Memo ' + scope.slice( 1 ) )
+
+            return '<p class="idref-overlay-kind idref-overlay-kind-' + escapeAttr( kind.slug ) + '" data-ref-kind="' + escapeAttr( kind.slug ) + '" data-ref-prefix="' + escapeAttr( String( kind.prefix ) ) + '">'
+                + escapeHtml( kind.label ) + ' ' + escapeHtml( id ) + escapeHtml( where )
+                + '</p>'
+        }
+
+
+        // idRefTypedOverviewBody — the typed head plus the GENERIC body, verbatim. The generic half is
+        // not re-implemented per kind: the overview payload is the same shape for every kind, and a
+        // second body per kind would be fourteen copies of one rendering waiting to drift.
+        function idRefTypedOverviewBody( overview, entry, kind ) {
+            return idRefOverviewHead( entry, kind ) + '\n' + idRefOverviewBody( overview )
+        }
+
+
+        // idRefOverviewFallbackBody — the renderer for a kind the table does not name. It SAYS SO. A
+        // fallback that quietly shows the general view is indistinguishable from a renderer that was
+        // built for this kind, and the reader would take a default for an answer.
+        function idRefOverviewFallbackBody( overview, entry ) {
+            var fallback = idRefKindFallbackRow()
+            var prefix = entry && typeof entry.prefix === 'string' && entry.prefix.length > 0 ? entry.prefix : '—'
+
+            return '<p class="idref-overlay-kind idref-overlay-kind-' + escapeAttr( fallback.slug ) + '" data-ref-kind="' + escapeAttr( fallback.slug ) + '" data-ref-fallback="true">'
+                + escapeHtml( fallback.label ) + ' ' + escapeHtml( prefix )
+                + ' — fuer diese Art fuehrt die Ansicht keine eigene Darstellung. Unten steht die allgemeine Uebersicht.'
+                + '</p>\n' + idRefOverviewBody( overview )
+        }
+
+
+        // registerIdRefTypedRenderers — the registration itself: one assignment per named kind, exactly
+        // as PRD-16 described the seam. The fallback row is NOT registered — it has no prefix to
+        // register under, and that is precisely what keeps it reachable for a kind the table does not
+        // know instead of being shadowed by one that is.
+        //
+        // A NAMED FUNCTION, NOT A LOOSE STATEMENT, so a test can run the REAL registration against the
+        // real seam rather than a replica of it. It returns what it did together with its comparison
+        // set: a registration that registered nothing must not be readable as a success.
+        function registerIdRefTypedRenderers( target ) {
+            var named = ID_REF_KINDS.filter( function( kind ) { return kind.prefix !== null } )
+            named.forEach( function( kind ) {
+                target[ kind.prefix ] = function( overview, entry ) {
+                    return idRefTypedOverviewBody( overview, entry, kind )
+                }
+            } )
+
+            return { registered: named.length, prefixes: named.map( function( kind ) { return kind.prefix } ), comparedKinds: ID_REF_KINDS.length }
+        }
+
+        registerIdRefTypedRenderers( idRefOverviewRenderers )
 
 
         function isIdRefOverlayOpen() {

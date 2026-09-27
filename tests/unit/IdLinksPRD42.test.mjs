@@ -202,6 +202,15 @@ const LIFTED_FUNCTIONS = [
     // Without both, the lift threw a ReferenceError on every memo-foreign verdict — measured as T-G and
     // T-N going red, which is how this suite found the gap.
     'idRefOverlayDecision',
+    // M082-09-17 (PRD-17, WI-238): buildIdMark now also asks which KIND the reference is, so the mark
+    // can carry its type next to its state. The four lookups are pure and read only ID_REF_KINDS, so
+    // they belong with the pass and are lifted here — the same gap PRD-16 hit one line above, found the
+    // same way: without them the lift threw `ReferenceError: idRefKindResolve is not defined` on EVERY
+    // mark, and fifteen cases of this suite went red at once.
+    'idRefKindOf',
+    'idRefKindFallbackRow',
+    'idRefKindResolve',
+    'idRefKindClass',
     'buildIdMark',
     'renderIdStockNote',
     'resolveIdLinks',
@@ -209,7 +218,11 @@ const LIFTED_FUNCTIONS = [
     'resetTopicStoreCache'
 ]
 
-const LIFTED_DECLARATIONS = [ 'CONTENT_SKIP_TAGS', 'ID_VOCABULARY_MIRROR', 'ID_SEPARATOR_SOURCE', 'ID_STOCK_PREFIXES', 'topicStorePending' ]
+// M082-09-17 (PRD-17, WI-238): ID_REF_KINDS joins the lifted declarations so the kind lookups close
+// over the REAL table. A copy here would keep this suite green exactly when the production table grows
+// and the marks start behaving differently — the same reasoning the helper's own comment gives for
+// lifting declarations at all.
+const LIFTED_DECLARATIONS = [ 'CONTENT_SKIP_TAGS', 'ID_VOCABULARY_MIRROR', 'ID_SEPARATOR_SOURCE', 'ID_STOCK_PREFIXES', 'ID_REF_KINDS', 'topicStorePending' ]
 
 
 // The one mirrored constant that is NOT a bracketed literal, so sliceDeclaration cannot take it. Read

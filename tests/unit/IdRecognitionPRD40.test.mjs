@@ -13,7 +13,7 @@ import { readFileSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { resolveSiblingFile, assertSiblingResolved } from '../helpers/siblingRepo.mjs'
+import { resolveSiblingFile, assertSiblingResolved, siblingOriginLine } from '../helpers/siblingRepo.mjs'
 import { IdRegister, ID_VOCABULARY, MIRROR_MARKERS } from '../../src/IdRegister.mjs'
 import { MemoValidator } from '../../src/MemoValidator.mjs'
 
@@ -464,6 +464,7 @@ describe( 'PRD-40 — the vocabulary is a MIRROR, not a second expression', () =
 
         // The case SAYS which two files it compared and how much — a parity check that cannot name its
         // comparison basis is the vacuum-green gate again.
+        console.log( siblingOriginLine( { label: 'mirror', twin: TWIN } ) )
         console.log( `[mirror] viewer=${ resolve( repoRoot, 'src', 'IdRegister.mjs' ) }\n         core=${ corePath }\n         lines=${ mine.lines }/${ theirs.lines } bytes=${ mine.region.length }/${ theirs.region.length }` )
 
         expect( mine.status ).toBe( true )

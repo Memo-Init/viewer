@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { resolveSiblingFile, siblingFilePath, mainRepoRoot, assertSiblingResolved } from '../helpers/siblingRepo.mjs'
+import { resolveSiblingFile, siblingFilePath, mainRepoRoot, assertSiblingResolved, siblingOriginLine } from '../helpers/siblingRepo.mjs'
 import { DoltDbAssembler } from '../../src/DoltDbAssembler.mjs'
 
 
@@ -297,6 +297,7 @@ describe( 'M082-09-08 — the provenance line, and the twin it is shared with', 
         // them equal would be a condition that can only be satisfied by making the documentation wrong.
         withCore( `every member of the answered family reads identically on both sides — code, not comments (${ TWIN_MEMBERS.length } members + ${ TWIN_CONSTANTS.length } registers)`, async () => {
             assertSiblingResolved( { twin: TWIN } )
+            console.log( siblingOriginLine( { label: 'twin', twin: TWIN } ) )
 
             const mine = ( await readFile( resolve( VIEWER_ROOT, 'src', 'DoltDbAssembler.mjs' ), 'utf8' ) ).split( '\n' )
             const theirs = ( await readFile( CORE_TWIN, 'utf8' ) ).split( '\n' )
@@ -374,10 +375,13 @@ describe( 'M082-09-08 — the provenance line, and the twin it is shared with', 
             expect( String( broken.reason ).length ).toBeGreaterThan( 10 )
             expect( helper.includes( 'no such git directory' ) ).toBe( true )
 
-            // ... and the tree this suite really runs in names what it derived, under its own main repo.
+            // ... and the tree this suite really runs in names what it derived and WHICH of the two twins it
+            // took. The twin must lie inside the root that was chosen — the own-branch worktree when the
+            // preference fired, the sibling repository otherwise — never somewhere a reader has to guess at.
             expect( TWIN.mainRepo === null ).toBe( false )
             expect( CORE_TWIN.endsWith( 'cli/src/RevisionAssembler.mjs' ) ).toBe( true )
-            expect( CORE_TWIN.startsWith( resolve( TWIN.mainRepo, '..' ) ) ).toBe( true )
+            expect( [ 'own-branch', 'main' ] ).toContain( TWIN.origin )
+            expect( CORE_TWIN.startsWith( TWIN.origin === 'own-branch' ? TWIN.worktree : TWIN.repoRoot ) ).toBe( true )
             expect( [ 'resolved', 'standalone', 'missing-repo', 'missing-file', 'derivation' ] ).toContain( TWIN.kind )
         } )
     } )

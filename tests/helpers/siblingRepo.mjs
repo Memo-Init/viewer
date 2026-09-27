@@ -133,30 +133,140 @@ function siblingRepoLayout( { mainRepo } ) {
 }
 
 
+// The project root — the directory holding `repos/`, and with it the workbench `.memo/` store. Derived
+// from the main repository for the same reason the twin is: counting levels up from a test file broke the
+// moment the rollout moved its worktrees (`.memo/memos` then resolved under `.worktrees/`, where nothing
+// of the kind exists, and three cases went quietly to skip).
+function projectRoot( { from } ) {
+    const main = mainRepoRoot( { from } )
+
+    if( main.status === false ) {
+        return { status: false, root: null, mainRepo: null, reason: main.reason }
+    }
+
+    return { status: true, root: dirname( dirname( main.root ) ), mainRepo: main.root, reason: null }
+}
+
+
+// Pure: the `worktree`/`branch` pairs out of `git worktree list --porcelain`. A parse of a documented
+// machine format — not an inference from a directory name, which is the thing that broke.
+function parseWorktreePorcelain( { text } ) {
+    return text
+        .split( '\n' )
+        .reduce( ( acc, line ) => {
+            if( line.startsWith( 'worktree ' ) === true ) {
+                return acc.concat( [ { path: line.slice( 'worktree '.length ).trim(), branch: null } ] )
+            }
+            if( line.startsWith( 'branch ' ) === true && acc.length > 0 ) {
+                const ref = line.slice( 'branch '.length ).trim()
+                acc[ acc.length - 1 ].branch = ref.startsWith( 'refs/heads/' ) === true ? ref.slice( 'refs/heads/'.length ) : ref
+
+                return acc
+            }
+
+            return acc
+        }, [] )
+}
+
+
+// Pure: the sibling worktree checked out on the SAME BRANCH NAME. This restores what PRD-39 wanted — a
+// test reads the boundary belonging to its OWN work — without the fragility it used: the branch is a fact
+// about the work, the directory name was only a fact about where a rollout happened to put it.
+function siblingWorktreeForBranch( { entries, branch } ) {
+    const hit = entries
+        .filter( ( entry ) => entry.branch === branch )
+
+    return { status: hit.length > 0, path: hit.length > 0 ? hit[ 0 ].path : null, candidates: entries.length }
+}
+
+
+// The branch this tree is on, or null when it is detached. A detached tree has no own work to match, so
+// it falls back to the sibling's main line — and the fallback is NAMED, never silent.
+function currentBranch( { from } ) {
+    const answer = runGit( { args: [ 'symbolic-ref', '--short', '-q', 'HEAD' ], cwd: from } )
+
+    if( answer.status === false || answer.text === '' ) {
+        return { status: false, branch: null, reason: `no branch (detached HEAD) in ${ from }` }
+    }
+
+    return { status: true, branch: answer.text.split( '\n' )[ 0 ].trim(), reason: null }
+}
+
+
+// The own-branch sibling worktree, measured against the sibling repository's own worktree list.
+function ownBranchTwin( { from, repoRoot, segments } ) {
+    const branch = currentBranch( { from } )
+
+    if( branch.status === false ) {
+        return { status: false, path: null, branch: null, reason: branch.reason }
+    }
+
+    const listed = runGit( { args: [ 'worktree', 'list', '--porcelain' ], cwd: repoRoot } )
+
+    if( listed.status === false ) {
+        return { status: false, path: null, branch: branch.branch, reason: listed.reason }
+    }
+
+    const entries = parseWorktreePorcelain( { text: listed.text } )
+    const hit = siblingWorktreeForBranch( { entries, branch: branch.branch } )
+
+    if( hit.status === false ) {
+        return { status: false, path: null, branch: branch.branch, reason: `no worktree of ${ repoRoot } is on branch ${ branch.branch } (${ hit.candidates } checked)` }
+    }
+
+    const path = segments.reduce( ( acc, segment ) => resolve( acc, segment ), hit.path )
+
+    return { status: true, path, branch: branch.branch, worktree: hit.path, reason: null }
+}
+
+
 // The one entry point the suites use. Returns the resolved path in EVERY case — including the red ones,
 // because a message that cannot name the path it failed on is the defect this replaces.
+//
+// TWO CANDIDATES, IN ORDER, AND THE CHOICE IS DECLARED. (1) the sibling worktree on the SAME BRANCH NAME,
+// (2) the sibling repository's main line as the fallback. `origin` says which one was taken, and every
+// caller prints it — because a green against the own branch and a green against main are two DIFFERENT
+// statements, and whoever reads the number has to know which one they got. Measured reason for the order:
+// `repos/core` main carries 0 members of the answered-provenance family while the branch `p9-prd08`
+// carries 5, and main holds 0 M082 commits at all — comparing always against main would make the case red
+// for the whole rollout, which is noise, and noise gets read away.
 function resolveSiblingFile( { from, repo, segments } ) {
     const main = mainRepoRoot( { from } )
 
     if( main.status === false ) {
-        return { status: false, kind: 'derivation', path: null, mainRepo: null, repoRoot: null, layout: null, reason: main.reason }
+        return { status: false, kind: 'derivation', origin: null, path: null, mainRepo: null, repoRoot: null, layout: null, branch: null, reason: main.reason }
     }
 
     const layout = siblingRepoLayout( { mainRepo: main.root } )
     const repoRoot = resolve( dirname( main.root ), repo )
-    const path = siblingFilePath( { mainRepo: main.root, repo, segments } )
+    const mainPath = siblingFilePath( { mainRepo: main.root, repo, segments } )
 
     if( layout.status === false ) {
-        return { status: false, kind: 'standalone', path, mainRepo: main.root, repoRoot, layout, reason: `${ layout.count } repository under ${ layout.parent } — this checkout stands outside a multi-repo tree, the ${ repo } boundary does not exist here` }
+        return { status: false, kind: 'standalone', origin: 'main', path: mainPath, mainRepo: main.root, repoRoot, layout, branch: null, reason: `${ layout.count } repository under ${ layout.parent } — this checkout stands outside a multi-repo tree, the ${ repo } boundary does not exist here` }
     }
     if( existsSync( repoRoot ) === false ) {
-        return { status: false, kind: 'missing-repo', path, mainRepo: main.root, repoRoot, layout, reason: `the sibling repository root is absent although ${ layout.count } repositories share ${ layout.parent } — the path into the boundary is broken, the twin is not` }
-    }
-    if( existsSync( path ) === false ) {
-        return { status: false, kind: 'missing-file', path, mainRepo: main.root, repoRoot, layout, reason: `the sibling repository ${ repoRoot } exists and the twin file inside it does not — a parity finding, not a path problem` }
+        return { status: false, kind: 'missing-repo', origin: 'main', path: mainPath, mainRepo: main.root, repoRoot, layout, branch: null, reason: `the sibling repository root is absent although ${ layout.count } repositories share ${ layout.parent } — the path into the boundary is broken, the twin is not` }
     }
 
-    return { status: true, kind: 'resolved', path, mainRepo: main.root, repoRoot, layout, reason: null }
+    const own = ownBranchTwin( { from, repoRoot, segments } )
+    const origin = own.status === true ? 'own-branch' : 'main'
+    const path = own.status === true ? own.path : mainPath
+    const fallbackReason = own.status === true ? null : own.reason
+
+    if( existsSync( path ) === false ) {
+        return { status: false, kind: 'missing-file', origin, path, mainRepo: main.root, repoRoot, layout, branch: own.branch, reason: `the ${ origin } twin is absent although its repository is present — a parity finding, not a path problem${ origin === 'main' ? ` (fell back to main: ${ fallbackReason })` : '' }` }
+    }
+
+    return { status: true, kind: 'resolved', origin, path, mainRepo: main.root, repoRoot, layout, branch: own.branch, worktree: own.status === true ? own.worktree : repoRoot, fallbackReason, reason: null }
+}
+
+
+// The one line a cross-repo case prints so its number is readable: WHICH twin was compared, and whether
+// that twin is the own branch or the sibling's main line.
+function siblingOriginLine( { label, twin } ) {
+    const where = twin.origin === 'own-branch' ? `own branch ${ twin.branch }` : `sibling main line (${ twin.fallbackReason === null || twin.fallbackReason === undefined ? 'no branch to match' : twin.fallbackReason })`
+
+    return `[${ label }] twin=${ twin.path } origin=${ twin.origin } via ${ where }`
 }
 
 
@@ -167,6 +277,7 @@ function siblingFailureMessage( { twin } ) {
     const lines = [
         `cross-repo twin unusable [${ twin.kind }] — ${ twin.reason }`,
         `  derived twin file : ${ twin.path === null ? '<not derivable>' : twin.path }`,
+        `  twin chosen from  : ${ twin.origin === null ? '<not derivable>' : twin.origin }${ twin.branch === null || twin.branch === undefined ? '' : ` (branch ${ twin.branch })` }`,
         `  main repository   : ${ twin.mainRepo === null ? '<not derivable>' : twin.mainRepo }`,
         `  sibling repo root : ${ twin.repoRoot === null ? '<not derivable>' : twin.repoRoot }`,
         `  repositories seen : ${ layout }`
@@ -188,4 +299,4 @@ function assertSiblingResolved( { twin } ) {
 }
 
 
-export { resolveSiblingFile, siblingFilePath, siblingRepoLayout, mainRepoRoot, assertSiblingResolved, siblingFailureMessage }
+export { resolveSiblingFile, siblingFilePath, siblingRepoLayout, mainRepoRoot, projectRoot, parseWorktreePorcelain, siblingWorktreeForBranch, currentBranch, assertSiblingResolved, siblingFailureMessage, siblingOriginLine }

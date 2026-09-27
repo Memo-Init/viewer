@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 
-import { resolveSiblingFile, siblingFilePath, assertSiblingResolved } from '../helpers/siblingRepo.mjs'
+import { resolveSiblingFile, siblingFilePath, projectRoot, parseWorktreePorcelain, siblingWorktreeForBranch, assertSiblingResolved, siblingOriginLine } from '../helpers/siblingRepo.mjs'
 import { readEmittedScript, extractFunctionSources, sliceDeclaration } from '../helpers/extractFunction.mjs'
 import { makeNode, makeRoot, makeDocument } from '../helpers/domSurrogate.mjs'
 import { BlockSections, KINDS, SUFFIX_SEPARATORS } from '../../src/BlockSections.mjs'
@@ -42,14 +42,25 @@ const VIEWER_ROOT = resolve( HERE, '..', '..' )
 const REGISTER_SEGMENTS = [ 'cli', 'src', 'BlockSections.mjs' ]
 const CORE_TWIN = resolveSiblingFile( { from: VIEWER_ROOT, repo: 'core', segments: REGISTER_SEGMENTS } )
 const CORE_REGISTER = CORE_TWIN.path
-const MEMO_ROOT = resolve( HERE, '..', '..', '..', '..', '.memo', 'memos' )
-const REAL_REV18 = join( MEMO_ROOT, '080-db-vollausbau-und-laufzeit-transparenz', 'revisions', 'REV-18.md' )
+
+// M082-09-FX2: the workbench `.memo/` store used to be reached by counting four levels up from this test
+// file. That is the SAME defect class as the twin derivation and it had already struck: after the rollout
+// moved its worktrees, the count landed on `.worktrees/.memo/memos`, which does not exist, and the three
+// REAL_REV18 cases below went to skip without anybody asking for it. The project root is now derived from
+// the main repository, so the path no longer depends on how deep the tree happens to sit.
+const PROJECT = projectRoot( { from: VIEWER_ROOT } )
+const MEMO_ROOT = PROJECT.status === true ? join( PROJECT.root, '.memo', 'memos' ) : null
+const REAL_REV18 = MEMO_ROOT === null ? null : join( MEMO_ROOT, '080-db-vollausbau-und-laufzeit-transparenz', 'revisions', 'REV-18.md' )
 
 // Only the ONE absence that breaks no path stays a skip: a checkout standing outside a multi-repo tree,
 // where this boundary does not exist (CI checks each repo out alone). A failed derivation, an absent
 // sibling repo and an absent register file are RED, with the resolved path in the message.
 const withCore = CORE_TWIN.kind === 'standalone' ? it.skip : it
-const withTree = existsSync( REAL_REV18 ) ? it : it.skip
+
+// REAL_REV18 stays an existsSync skip-guard, and legitimately so: the workbench `.memo/` tree is never
+// part of this repository, so in CI the object is genuinely absent. What changed is only the PATH it is
+// looked for at — a skip must rest on an absent object, never on a mis-derived location.
+const withTree = REAL_REV18 !== null && existsSync( REAL_REV18 ) === true ? it : it.skip
 
 
 // The declared shape of the register, written out in FULL. The core repo carries the same table in its
@@ -529,14 +540,60 @@ describe( 'BlockSections register + the three lists derived from it — Memo 080
         expect( CORE_REGISTER.endsWith( 'cli/src/BlockSections.mjs' ) ).toBe( true )
         expect( CORE_TWIN.layout === null ).toBe( false )
         expect( CORE_TWIN.layout.count ).toBeGreaterThan( 0 )
+        expect( [ 'own-branch', 'main' ] ).toContain( CORE_TWIN.origin )
+    } )
+
+
+    // The OWN-BRANCH PREFERENCE, over named inputs. PRD-39 wanted a test to read the boundary belonging to
+    // its own work and derived it from the directory name; M082-09-FX2 keeps the intent and drops the
+    // fragility — the branch is a fact about the work, the directory name was a fact about where a rollout
+    // put it. Both halves are pure here, so this measures the rule and not the environment.
+    it( 'the own-branch sibling worktree wins over the sibling main line, and the branch is what matches', () => {
+        // A real `git worktree list --porcelain` shape: the main line first, then two linked worktrees whose
+        // DIRECTORY NAMES would not help (the second one carries no repo prefix at all).
+        const porcelain = [
+            'worktree /w/repos/core',
+            'HEAD 1111111111111111111111111111111111111111',
+            'branch refs/heads/main',
+            '',
+            'worktree /w/.worktrees/082/core-p9-prd08',
+            'HEAD 2222222222222222222222222222222222222222',
+            'branch refs/heads/MEMO-082-x/p9-prd08',
+            '',
+            'worktree /w/.worktrees/082/p9-prd01',
+            'HEAD 3333333333333333333333333333333333333333',
+            'branch refs/heads/MEMO-082-x/p9-prd01',
+            ''
+        ].join( '\n' )
+
+        const entries = parseWorktreePorcelain( { text: porcelain } )
+        expect( entries.length ).toBe( 3 )
+        expect( entries.map( ( entry ) => entry.branch ) ).toEqual( [ 'main', 'MEMO-082-x/p9-prd08', 'MEMO-082-x/p9-prd01' ] )
+
+        // The own branch wins — and it wins for the tree whose NAME carries no prefix too, which is exactly
+        // what the replaced rule could not do.
+        expect( siblingWorktreeForBranch( { entries, branch: 'MEMO-082-x/p9-prd08' } ).path ).toBe( '/w/.worktrees/082/core-p9-prd08' )
+        expect( siblingWorktreeForBranch( { entries, branch: 'MEMO-082-x/p9-prd01' } ).path ).toBe( '/w/.worktrees/082/p9-prd01' )
+
+        // GEGENPROBE, both directions: a branch nobody is on does NOT silently take the main line here — it
+        // reports no match, and only the caller turns that into the named fallback.
+        const miss = siblingWorktreeForBranch( { entries, branch: 'MEMO-082-x/p9-fx2-twin-derivation' } )
+        expect( miss.status ).toBe( false )
+        expect( miss.path ).toBe( null )
+        expect( miss.candidates ).toBe( 3 )
+        // ... and the match is by BRANCH, not by a path that merely contains the name.
+        expect( siblingWorktreeForBranch( { entries, branch: 'core-p9-prd08' } ).status ).toBe( false )
     } )
 
     withCore( 'the viewer register and the core register are byte-identical below the header', async () => {
         assertSiblingResolved( { twin: CORE_TWIN } )
 
         // A parity check that does not say WHICH two files it compared cannot be told apart from one that
-        // compared nothing — or from one that compared a stand nobody asked for.
-        console.log( `[parity] viewer=${ resolve( HERE, '..', '..', 'src', 'BlockSections.mjs' ) } core=${ CORE_REGISTER } (main repo: ${ CORE_TWIN.mainRepo }, ${ CORE_TWIN.layout.count } repositories under ${ CORE_TWIN.layout.parent })` )
+        // compared nothing — or from one that compared a stand nobody asked for. A green against the own
+        // branch and a green against the sibling's main line are two different statements, so the origin
+        // is printed with the path.
+        console.log( siblingOriginLine( { label: 'parity', twin: CORE_TWIN } ) )
+        console.log( `[parity] viewer=${ resolve( HERE, '..', '..', 'src', 'BlockSections.mjs' ) } (main repo: ${ CORE_TWIN.mainRepo }, ${ CORE_TWIN.layout.count } repositories under ${ CORE_TWIN.layout.parent })` )
 
         const mirror = await import( CORE_REGISTER )
         const here = BlockSections.all().sections

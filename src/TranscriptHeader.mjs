@@ -496,7 +496,17 @@ class TranscriptHeader {
     }
 
 
-    // Reads the Schema-Version marker. Missing or deviating marker → isLegacy = true (PRD-003).
+    // Reads the Schema-Version marker. A missing marker stays legacy (PRD-003); a version BELOW
+    // SCHEMA_VERSION is legacy, a HIGHER one is a forward schema of the same producer and passes
+    // (Memo 082 WI-187). Lower bound, not equality: the producer bumps SCHEMA_VERSION on its own
+    // schedule, and an equality check would turn every valid header into a legacy header on the
+    // next bump. The memo-input-processing skill parser has checked the lower bound since Memo 081
+    // WI-018 (its SKILL.md hard-errors downwards only) — that fix closed the case there and left
+    // this one open. This is the same class, closed on the viewer side.
+    // The NaN guard is load-bearing BECAUSE of the lower bound, and only because of it: the old
+    // `NaN !== SCHEMA_VERSION` answered true (legacy, safe), `NaN < SCHEMA_VERSION` answers false
+    // (not legacy). SCHEMA_DETECT_REGEX captures a digit run, so NaN is unreachable today; the
+    // guard keeps the safe answer if that regex is ever relaxed, instead of leaning on it.
     static detectSchema( { content } ) {
         if( typeof content !== 'string' || content.length === 0 ) {
             return { 'schemaVersion': null, 'isLegacy': true }
@@ -509,7 +519,7 @@ class TranscriptHeader {
         }
 
         const schemaVersion = parseInt( match[ 1 ], 10 )
-        const isLegacy = schemaVersion !== SCHEMA_VERSION
+        const isLegacy = Number.isNaN( schemaVersion ) || schemaVersion < SCHEMA_VERSION
 
         return { schemaVersion, isLegacy }
     }

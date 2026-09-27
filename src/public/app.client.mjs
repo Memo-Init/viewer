@@ -328,6 +328,22 @@
         const contentEl = document.getElementById( 'content' )
         const statusEl = document.getElementById( 'status' )
 
+        // S5 (Memo 082, WI-236): the sitemap's element handles are resolved HERE, beside #content, and
+        // not further down where `var tocListEl` used to sit. MEASURED, and it cost one red tool probe:
+        // the sitemap is now coupled to every path that replaces #content, and some of those run during
+        // boot — earlier than the old declaration line. A handle that is still undefined when the first
+        // coupling call fires throws inside the render, and the whole surface stops building. Content
+        // area and sitemap are two halves of one layout; their handles belong in one place.
+        var tocListEl = document.getElementById( 'toc-list' )
+        var tocSidebarEl = document.getElementById( 'toc-sidebar' )
+        var tocNoteEl = document.getElementById( 'toc-note' )
+
+        // The panel that currently owns #content. buildTOC stamps it on every entry it creates, which
+        // is what lets a later click tell two different failures apart: "the target is gone from the
+        // content you are looking at" and "the target belongs to a panel you have since left". The old
+        // check merged both into the same silent no-op.
+        var currentContentPanel = 'Prosa'
+
         let reconnectTimer = null
         let currentWs = null
         const history = []
@@ -2546,6 +2562,8 @@
 
             if( !lastContent ) {
                 contentEl.innerHTML = '<p class="content-placeholder">Dokument auswaehlen...</p>'
+                // S5 (Memo 082, WI-236): the placeholder replaces #content as much as a panel does.
+                syncTOCToContent( contentEl, 'Kein Dokument' )
             }
         }
 
@@ -2717,6 +2735,7 @@
 
             if( !lastContent && contentEl ) {
                 contentEl.innerHTML = '<p style="color:#888">Transcript auswaehlen...</p>'
+                syncTOCToContent( contentEl, 'Kein Transcript' )
             }
 
             var treeEl = document.getElementById( 'transcript-sb-tree' )
@@ -2892,12 +2911,14 @@
                 var resp = await fetch( '/api/transcripts/' + transcriptId )
                 if( !resp.ok ) {
                     contentEl.innerHTML = '<p style="color:#f85149">Transcript konnte nicht geladen werden.</p>'
+                    syncTOCToContent( contentEl, 'Transcript' )
                     return
                 }
                 var raw = await resp.text()
                 renderTranscriptContent( { transcriptId: transcriptId, raw: raw } )
             } catch {
                 contentEl.innerHTML = '<p style="color:#f85149">Transcript konnte nicht geladen werden.</p>'
+                syncTOCToContent( contentEl, 'Transcript' )
             }
         }
 
@@ -2957,6 +2978,9 @@
             html += '</div>'
 
             contentEl.innerHTML = html
+            // S5 (Memo 082, WI-236): a transcript is a different document in the same area — the
+            // memo's entries stop applying the moment it lands.
+            syncTOCToContent( contentEl, 'Transcript' )
         }
 
         // PRD-006 (Kap 9, AC-04): split persisted "## Antwort auf F{N} ..." answer blocks out
@@ -3219,11 +3243,14 @@
 
             if( !currentDocumentId ) {
                 content.innerHTML = '<div class="dbtables-view"><div class="dbtables-error">Kein Memo gewählt — die Rohtabellen-Ansicht zeigt die Datenbank des ausgewählten Memos.</div></div>'
+                // S5 (Memo 082, WI-236): this branch replaces #content too, so the sitemap follows.
+                syncTOCToContent( content, 'Rohtabellen' )
 
                 return
             }
 
             content.innerHTML = '<div class="dbtables-view"><div class="dbtables-loading">Lade Tabellen …</div></div>'
+            syncTOCToContent( content, 'Rohtabellen' )
 
             fetch( '/api/db/tables?documentId=' + encodeURIComponent( currentDocumentId ) )
                 .then( function( res ) {
@@ -3238,6 +3265,7 @@
                 .then( function( payload ) { renderDbTableList( payload ) } )
                 .catch( function( err ) {
                     content.innerHTML = '<div class="dbtables-view"><div class="dbtables-error">Rohtabellen konnten nicht geladen werden: ' + escapeHtml( String( err && err.message ? err.message : err ) ) + '</div></div>'
+                    syncTOCToContent( content, 'Rohtabellen' )
                 } )
         }
 
@@ -3253,6 +3281,7 @@
 
             if( tables.length === 0 ) {
                 content.innerHTML = '<div class="dbtables-view">' + head + '<div class="dbtables-error">Diese Datenbank führt keine Tabelle.</div></div>'
+                syncTOCToContent( content, 'Rohtabellen' )
 
                 return
             }
@@ -3272,6 +3301,9 @@
             Array.prototype.slice.call( content.querySelectorAll( '.dbtables-table-link' ) ).forEach( function( btn ) {
                 btn.addEventListener( 'click', function() { selectDbTable( btn.getAttribute( 'data-db-table' ), 0 ) } )
             } )
+            // S5 (Memo 082, WI-236): this view carries its own heading, so the sitemap shows the
+            // PANEL's outline here rather than being greyed out — measured, not declared.
+            syncTOCToContent( content, 'Rohtabellen' )
 
             selectDbTable( tables[ 0 ].name, 0 )
         }
@@ -3465,6 +3497,9 @@
             var content = document.getElementById( 'content' )
             if( !content ) { return }
             content.innerHTML = '<div class="folder-view-loading">Lade Ordner "' + escapeHtml( d.folder ) + '" …</div>'
+            // S5 (Memo 082, WI-236): the loading state already replaced #content, so the memo's
+            // entries stop being in force here — not only once the folder has arrived.
+            syncTOCToContent( content, 'Ordner' )
 
             fetch( '/api/folder?id=' + encodeURIComponent( d.id ) )
                 .then( function( res ) {
@@ -3474,6 +3509,7 @@
                 .then( function( payload ) { renderFolderDocList( d, payload ) } )
                 .catch( function( err ) {
                     content.innerHTML = '<div class="folder-view-error" style="color:#f85149">Ordner "' + escapeHtml( d.folder ) + '" konnte nicht geladen werden: ' + escapeHtml( String( err && err.message ? err.message : err ) ) + '</div>'
+                    syncTOCToContent( content, 'Ordner' )
                 } )
         }
 
@@ -3502,6 +3538,7 @@
                 empty.textContent = 'Keine Markdown-Dokumente in diesem Ordner.'
                 wrap.appendChild( empty )
                 content.appendChild( wrap )
+                syncTOCToContent( content, 'Ordner' )
 
                 return
             }
@@ -3524,6 +3561,7 @@
             wrap.appendChild( body )
 
             content.appendChild( wrap )
+            syncTOCToContent( content, 'Ordner' )
 
             // auto-open the first doc so the view never renders an empty body (mirrors autoSelectFirstSpecPage).
             selectFolderDoc( d, docs[ 0 ].stem )
@@ -3549,9 +3587,15 @@
                 .then( function( payload ) {
                     body.innerHTML = marked.parse( ( payload && payload.content ) || '' )
                     renderAllDiagrams()
+                    // S5 (Memo 082, WI-236) — found while counting the #content writers, reported with
+                    // the rest: this one swaps a REGION of #content rather than #content itself, and it
+                    // carries the folder document's own headings. Leaving it out would have kept
+                    // exactly the defect this order closes, one level down.
+                    syncTOCToContent( contentEl, 'Ordner' )
                 } )
                 .catch( function( err ) {
                     body.innerHTML = '<div style="color:#f85149">Dokument konnte nicht geladen werden: ' + escapeHtml( String( err && err.message ? err.message : err ) ) + '</div>'
+                    syncTOCToContent( contentEl, 'Ordner' )
                 } )
         }
 
@@ -4048,6 +4092,9 @@
                 .then( function( payload ) { renderSpecPage( payload ) } )
                 .catch( function( err ) {
                     contentEl.innerHTML = '<p style="color:#f85149">Konnte Spec-Seite nicht laden: ' + escapeHtml( String( err && err.message ? err.message : err ) ) + '</p>'
+                    // S5 (WI-236): a failed load replaces #content too — the sitemap must not keep
+                    // pointing into the page that did NOT arrive.
+                    syncTOCToContent( contentEl, 'Spec-Seite' )
                 } )
         }
 
@@ -4102,7 +4149,9 @@
             renderAllDiagrams()
             specHighlightRfc()
             interceptRelativeSpecLinks()
-            buildTOC( null )
+            // S5 (Memo 082, WI-236): through the shared seam, so the spec page's own outline replaces
+            // the memo's instead of the memo's entries surviving into a page that never had them.
+            syncTOCToContent( contentEl, 'Spec-Seite' )
             window.scrollTo( { top: 0 } )
         }
 
@@ -5409,14 +5458,22 @@
                     var reqMsg = ( payload && payload.error ) ? payload.error : ( 'HTTP ' + resp.status )
                     renderViewError( contentTarget, 'Requirements konnten nicht geladen werden: ' + reqMsg )
                     syncContentViewToggles()
+                    syncTOCToContent( contentTarget, 'Requirements' )
 
                     return
                 }
                 renderRequirementsView( payload, contentTarget )
                 syncContentViewToggles()
+                // S5 (Memo 082, WI-236): the LOADER owns the panel transition, so the sitemap is
+                // re-coupled here and not inside the renderer. MEASURED, and it cost five red suites:
+                // the renderers are lifted out of this module by their unit suites and driven against a
+                // narrow DOM shim, where a module-scope reference inside them throws. The loader is the
+                // honest place anyway — it is what switches the panel; the renderer only draws.
+                syncTOCToContent( contentTarget, 'Requirements' )
             } catch( err ) {
                 renderViewError( contentTarget, 'Requirements konnten nicht geladen werden.' )
                 syncContentViewToggles()
+                syncTOCToContent( contentTarget, 'Requirements' )
             }
         }
 
@@ -5831,14 +5888,17 @@
                     var blockMsg = ( payload && payload.error ) ? payload.error : ( 'HTTP ' + resp.status )
                     renderViewError( contentTarget, 'Blöcke konnten nicht geladen werden: ' + blockMsg )
                     syncContentViewToggles()
+                    syncTOCToContent( contentTarget, 'Blöcke' )
 
                     return
                 }
                 renderBlockView( payload, contentTarget )
                 syncContentViewToggles()
+                syncTOCToContent( contentTarget, 'Blöcke' )
             } catch( err ) {
                 renderViewError( contentTarget, 'Blöcke konnten nicht geladen werden.' )
                 syncContentViewToggles()
+                syncTOCToContent( contentTarget, 'Blöcke' )
             }
         }
 
@@ -6321,14 +6381,17 @@
                     var graphMsg = ( payload && payload.error ) ? payload.error : ( 'HTTP ' + resp.status )
                     renderViewError( contentTarget, 'Graph konnte nicht geladen werden: ' + graphMsg )
                     syncContentViewToggles()
+                    syncTOCToContent( contentTarget, 'Graph' )
 
                     return
                 }
                 renderGraphView( payload, contentTarget )
                 syncContentViewToggles()
+                syncTOCToContent( contentTarget, 'Graph' )
             } catch( err ) {
                 renderViewError( contentTarget, 'Graph konnte nicht geladen werden.' )
                 syncContentViewToggles()
+                syncTOCToContent( contentTarget, 'Graph' )
             }
         }
 
@@ -7529,7 +7592,6 @@
             } )
         }
 
-        var tocListEl = document.getElementById( 'toc-list' )
 
         // PRD-009: enforce the interactive-area structure inside the rendered content.
         // Order: Metatags -> Kontext -> Topics -> interaktiver Bereich (Vorwort OBEN, dann Fragen).
@@ -9691,10 +9753,16 @@
                         } )
                     }
                     renderAllDiagrams()
+                    // S5 (Memo 082, WI-236, AB-4): the research path is the SECOND coupling break and a
+                    // different one — it rendered a whole new document into #content and never rebuilt
+                    // the sitemap at all, so every entry still addressed the memo behind it. A research
+                    // document carries its own headings, so this panel gets its OWN outline.
+                    syncTOCToContent( contentEl, 'Research-Dokument' )
                     refreshAnnotations()
                 } )
                 .catch( function() {
                     contentEl.innerHTML = '<p style="color:#f85149">Research-Dokument konnte nicht geladen werden: ' + escapeHtml( researchFile ) + '</p>'
+                    syncTOCToContent( contentEl, 'Research-Dokument' )
                 } )
         }
 
@@ -12526,7 +12594,144 @@
             buttons[ next ].focus()
         }
 
-        function buildTOC( diffData ) {
+        // S5 (Memo 082, WI-236) — the three lages of a sitemap click, decided as a PURE function over
+        // what the lookup found. Pure on purpose: the three messages can be pinned without a browser,
+        // and the DOM lookup stays where it belongs, in the handler.
+        //
+        // What was here before was `if( target ) { scroll }` with NO else branch. A target that could
+        // not be found produced exactly nothing — indistinguishable from a broken surface. Three
+        // different causes were collapsed into one silence, and a single collected "nicht gefunden"
+        // would be that same mistake in smaller print: it is the DIFFERENCE between the three that
+        // tells the reader what to do next.
+        function tocClickVerdict( payload ) {
+            var targetFound = payload.targetFound === true
+            var reachable = payload.reachable === true
+            var entryPanel = ( typeof payload.entryPanel === 'string' ) ? payload.entryPanel : ''
+            var activePanel = ( typeof payload.activePanel === 'string' ) ? payload.activePanel : ''
+            var blockedReason = ( typeof payload.blockedReason === 'string' && payload.blockedReason.length > 0 )
+                ? payload.blockedReason
+                : 'im aktuellen Inhalt verborgen'
+
+            if( targetFound === true && reachable === true ) {
+                return { lage: 'resolved', message: '' }
+            }
+
+            if( targetFound === true ) {
+                return { lage: 'blocked', message: 'Ziel nicht erreichbar: ' + blockedReason }
+            }
+
+            if( entryPanel.length > 0 && entryPanel !== activePanel ) {
+                return { lage: 'foreign', message: 'Ziel gehört zu ' + entryPanel }
+            }
+
+            return { lage: 'absent', message: 'Ziel nicht im aktuellen Inhalt' }
+        }
+
+
+        function showTOCNote( text ) {
+            if( !tocNoteEl ) { return { shown: false, text: '' } }
+            tocNoteEl.textContent = text
+            tocNoteEl.classList.remove( 't-hidden' )
+
+            return { shown: true, text: text }
+        }
+
+
+        function clearTOCNote() {
+            if( !tocNoteEl ) { return { shown: false, text: '' } }
+            tocNoteEl.textContent = ''
+            tocNoteEl.classList.add( 't-hidden' )
+
+            return { shown: false, text: '' }
+        }
+
+
+        // S5 (WI-236): in force = the entries describe the content on screen. Out of force = they
+        // describe something else, are greyed out, and SAY which panel they do not apply to. There is
+        // no third state — and above all there is no longer a sitemap that looks in force while every
+        // click on it does nothing.
+        function setTOCInForce( inForce ) {
+            var entries = tocListEl.children.length
+            if( tocSidebarEl ) { tocSidebarEl.classList.toggle( 'toc-not-applicable', inForce !== true ) }
+
+            if( inForce === true ) {
+                clearTOCNote()
+
+                return { inForce: true, entries: entries, panel: currentContentPanel }
+            }
+
+            showTOCNote( 'Diese Gliederung gilt nicht für: ' + currentContentPanel )
+
+            return { inForce: false, entries: entries, panel: currentContentPanel }
+        }
+
+
+        // S5 (Memo 082, WI-236): the ONE seam between #content and the sitemap. Every path that
+        // replaces #content ends here and names the panel it just rendered. Two outcomes, and which
+        // one applies is MEASURED on the new content instead of read off a hand-kept list of panels
+        // — a list is the thing the next panel author forgets:
+        //   the panel carries headings -> the sitemap shows the PANEL's own outline
+        //   the panel carries none     -> the sitemap is greyed out with the reason in words; no
+        //                                 outline is invented for a panel that has none
+        // The container argument keeps the call safe inside a renderer that is reused for a target
+        // other than #content — there it is a no-op rather than a wrong rebuild.
+        function syncTOCToContent( container, panelLabel ) {
+            if( container && container !== contentEl ) {
+                return { synced: false, panel: currentContentPanel, entries: tocListEl.children.length }
+            }
+
+            var panel = ( typeof panelLabel === 'string' && panelLabel.length > 0 ) ? panelLabel : 'Prosa'
+
+            if( contentEl.querySelectorAll( 'h2, h3' ).length > 0 ) {
+                buildTOC( null, panel )
+
+                return { synced: true, panel: currentContentPanel, entries: tocListEl.children.length }
+            }
+
+            currentContentPanel = panel
+            var state = setTOCInForce( false )
+
+            return { synced: true, panel: currentContentPanel, entries: state.entries }
+        }
+
+
+        // S5 (WI-236): ONE click path for every sitemap entry — the chapter entries and the two
+        // appended anchor entries share it, so a repair here cannot reach only half of them. It never
+        // navigates: a sitemap click SAYS where the target lives, it does not move the user into
+        // another panel unasked (that would trade a silent failure for a surprising one).
+        function handleTOCEntryClick( entry ) {
+            var targetId = entry.getAttribute( 'data-target' )
+            var target = targetId ? document.getElementById( targetId ) : null
+            // getClientRects() is empty for a node that is display:none, sits in a closed fold, or is
+            // detached. "Exists in the document" and "can be scrolled to" are not the same question,
+            // and answering only the first is how a click ends up doing nothing in silence.
+            var reachable = !!( target && target.getClientRects && target.getClientRects().length > 0 )
+            var verdict = tocClickVerdict( {
+                targetFound: !!target,
+                reachable: reachable,
+                entryPanel: entry.getAttribute( 'data-toc-panel' ) || '',
+                activePanel: currentContentPanel
+            } )
+
+            if( verdict.lage === 'resolved' ) {
+                clearTOCNote()
+                var top = target.getBoundingClientRect().top + window.scrollY - 52
+                window.scrollTo( { top: top, behavior: 'smooth' } )
+
+                return verdict
+            }
+
+            showTOCNote( verdict.message )
+
+            return verdict
+        }
+
+
+        function buildTOC( diffData, panelLabel ) {
+            // S5 (Memo 082, WI-236): the panel these entries are being built FOR. It rides as a second
+            // argument so the three prose call sites keep their exact one-argument shape — a direct
+            // call IS the prose path, and the default says so instead of a flag saying it elsewhere.
+            currentContentPanel = ( typeof panelLabel === 'string' && panelLabel.length > 0 ) ? panelLabel : 'Prosa'
             // PRD-015 (D11): index BOTH h2 AND h3 (was h2-only), so sub-sections are navigable. The
             // function is already re-run after every re-render (content handler, bindDiffToggle D2,
             // renderProseContent), so the list never goes stale on a diff-toggle.
@@ -12576,14 +12781,11 @@
                 var headingId = heading.id || ( 'toc-heading-' + idx )
                 if( !heading.id ) { heading.id = headingId }
                 li.setAttribute( 'data-target', headingId )
+                // S5 (WI-236): stamp the panel this entry was built FOR. Without it a later click
+                // cannot tell "the target is gone" from "the target belongs to a panel you left".
+                li.setAttribute( 'data-toc-panel', currentContentPanel )
 
-                li.addEventListener( 'click', function() {
-                    var target = document.getElementById( this.getAttribute( 'data-target' ) )
-                    if( target ) {
-                        var top = target.getBoundingClientRect().top + window.scrollY - 52
-                        window.scrollTo( { top: top, behavior: 'smooth' } )
-                    }
-                } )
+                li.addEventListener( 'click', function() { handleTOCEntryClick( this ) } )
 
                 tocListEl.appendChild( li )
             } )
@@ -12601,16 +12803,16 @@
                 li.textContent = extra.label
                 li.title = extra.label
                 li.setAttribute( 'data-target', extra.id )
-                li.addEventListener( 'click', function() {
-                    var t = document.getElementById( this.getAttribute( 'data-target' ) )
-                    if( t ) {
-                        var top = t.getBoundingClientRect().top + window.scrollY - 52
-                        window.scrollTo( { top: top, behavior: 'smooth' } )
-                    }
-                } )
+                li.setAttribute( 'data-toc-panel', currentContentPanel )
+                li.addEventListener( 'click', function() { handleTOCEntryClick( this ) } )
                 tocListEl.appendChild( li )
             } )
 
+            // S5 (WI-236): the entries just built describe the content that is on screen right now,
+            // so the sitemap is in force again — and whatever note the previous panel left is gone
+            // with it. An empty list is NOT a quiet pass: it means this panel has no outline, and the
+            // sitemap says so instead of standing there looking usable.
+            setTOCInForce( tocListEl.children.length > 0 )
             updateActiveTOC()
         }
 

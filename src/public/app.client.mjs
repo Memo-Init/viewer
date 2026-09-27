@@ -13639,6 +13639,45 @@
         }
 
 
+        // M082-09-FX (F-8): DER ADRESSAT DER SPIEGEL-MELDUNG.
+        //
+        // Die Spiegelung in die Memo-Datenbank laeuft best-effort NACH der Antwort (richtig so — die
+        // Transcript-Datei ist die primaere Aufzeichnung und darf nicht auf einen Kindprozess warten).
+        // Ihr Fehlschlag ging bisher ausschliesslich auf die Standard-Fehlerausgabe des Servers.
+        //
+        // ZWEI LAGEN, ZWEI SAETZE, und der Unterschied wird NICHT eingeebnet: ist die Datei geschrieben
+        // und nur die Datenbank-Zeile fehlt, dann ist "gespeichert" nicht falsch, sondern unvollstaendig.
+        // Deshalb Warn-Farbe statt Gefahr-Farbe und deshalb nennt der Satz beides — was da ist und was
+        // fehlt. Das Memo wird benannt, weil die Rundmeldung alle Ansichten erreicht und nicht jede
+        // gerade dieses Memo zeigt.
+        function renderUserInputMirror( data ) {
+            var band = document.getElementById( 'mirror-banner' )
+            if( !band ) { return }
+            var messages = ( data && Array.isArray( data.messages ) ) ? data.messages : []
+            var mirrored = !!( data && data.status === true )
+
+            if( mirrored === true && messages.length === 0 ) {
+                band.textContent = ''
+                band.classList.add( 'mirror-banner-hidden' )
+                band.setAttribute( 'aria-hidden', 'true' )
+
+                return
+            }
+
+            var memo = ( data && data.memoId ) ? String( data.memoId ) : 'unbenanntes Memo'
+            var answers = ( data && typeof data.answersRecorded === 'number' ) ? data.answersRecorded : 0
+            var kopf = mirrored === true
+                ? ( '⚠ ' + memo + ': gespeichert und gespiegelt, aber NICHT vollständig — ' + answers + ' Antworten in der Datenbank' )
+                : ( '⚠ ' + memo + ': gespeichert, aber NUR als Datei — die Zeile in der Memo-Datenbank fehlt' )
+
+            band.textContent = kopf + ' (' + messages.join( '; ' ) + ').'
+                + ' Der Transcript-Text steht vollständig auf der Platte; die Datenbank-Auswertung dieses'
+                + ' Memos ist unvollständig.'
+            band.classList.remove( 'mirror-banner-hidden' )
+            band.setAttribute( 'aria-hidden', 'false' )
+        }
+
+
         function connect() {
             const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
             // Memo 081, WI-066: the socket carries the CURRENT path so the server can honour a document
@@ -13832,6 +13871,14 @@
                     if( !data.documentId || data.documentId === currentDocumentId ) {
                         renderRuntimeStatus( data )
                     }
+                }
+
+                // M082-09-FX (F-8): die Spiegel-Meldung. KEIN Dokument-Filter wie oben, und das ist
+                // Absicht: die Nachricht traegt eine Memo-Kennung, kein Dokument, und der Nutzer, der
+                // gerade "Übernehmen" gedrueckt hat, kann die Ansicht danach gewechselt haben. Der Satz
+                // nennt das Memo, statt die Meldung an der aktuellen Ansicht zu verlieren.
+                if( data.type === 'userInputMirror' ) {
+                    renderUserInputMirror( data )
                 }
 
                 if( data.type === 'content' ) {

@@ -953,6 +953,70 @@ class MemoView {
     }
 
 
+    // M082-09-FX (F-8, Rest-Befund der Abnahme PRD-18): THE WIRE SHAPE OF THE MIRROR REPORT, declared
+    // ONCE — same rule as buildRuntimeStatusMessage above, so no path can hand out a message with a field
+    // missing.
+    //
+    // `status` is the MIRROR's verdict, never the save's: the transcript MD is written and answered long
+    // before this runs. That separation is the whole point of the message — see broadcastUserInputMirror.
+    static buildUserInputMirrorMessage( { memoId, transcriptType, outcome } ) {
+        const report = ( outcome !== null && typeof outcome === 'object' ) ? outcome : {}
+
+        return {
+            'type': 'userInputMirror', memoId, transcriptType,
+            'status': report[ 'status' ] === true,
+            'inputId': report[ 'inputId' ] === undefined ? null : report[ 'inputId' ],
+            'kind': report[ 'kind' ] === undefined ? null : report[ 'kind' ],
+            'answersRecorded': typeof report[ 'answersRecorded' ] === 'number' ? report[ 'answersRecorded' ] : 0,
+            'messages': Array.isArray( report[ 'messages' ] ) ? report[ 'messages' ] : []
+        }
+    }
+
+
+    // M082-09-FX (F-8): THE MIRROR FAILURE REACHES THE SURFACE.
+    //
+    // The finding: #captureUserInput runs best-effort AFTER the response, so a failed mirror wrote a WARN
+    // to the SERVER's stderr, the answer stayed 200, and the user read "Gespeichert." — the file was there
+    // and the database row was not, with nobody to tell. Same class as the nine client-side lines of this
+    // bundle, one layer down: the finding was made, the addressee was missing.
+    //
+    // WHAT IS NOT CHANGED, and it is deliberate: the mirror still runs after the response, it is still
+    // best-effort, and the stderr lines are untouched. Awaiting it before answering would put a
+    // child_process spawn in front of every save — the transcript MD is the primary record and must not
+    // wait on the mirror. So the report travels the way every other late fact in this viewer travels: as
+    // its own broadcast.
+    //
+    // THE QUITTANCE STAYS TRUE. A written file with a missing database row is not a failed save, it is an
+    // INCOMPLETE one, and the client renders exactly that difference rather than levelling it into an
+    // error (`renderUserInputMirror`).
+    //
+    // It sends ONLY when there is something to report. A message on every successful save would be one
+    // nobody reads after three days — the rule the rebind notice, the carry notice and the discard notice
+    // all follow. Returns { sent, reason } so a check can state WHY nothing went out instead of guessing.
+    static broadcastUserInputMirror( { memoId, transcriptType, outcome } ) {
+        const message = MemoView.buildUserInputMirrorMessage( { memoId, transcriptType, outcome } )
+
+        if( message[ 'status' ] === true && message[ 'messages' ].length === 0 ) {
+            return { 'sent': false, 'reason': 'nothing-to-report' }
+        }
+
+        if( !MemoView.#wssInstance ) {
+            return { 'sent': false, 'reason': 'no-clients' }
+        }
+
+        const payload = JSON.stringify( message )
+
+        MemoView.#wssInstance.clients
+            .forEach( ( ws ) => {
+                if( ws.readyState === 1 ) {
+                    ws.send( payload )
+                }
+            } )
+
+        return { 'sent': true, 'reason': null }
+    }
+
+
     // The GATE of the runtime feed: did the ledger's sequence grow since the last message for this document?
     // Public + side-effecting on purpose — it is the one place the marker is written, so the rule can be
     // measured on its own instead of only through a running server. A first sighting always advances.
@@ -2397,6 +2461,14 @@ class MemoView {
          faintly visible after 2 failed attempts; this banner is shown from the FIRST failed
          attempt so a disconnected server is immediately obvious. Hidden while connected. -->
     <div id="offline-banner" class="offline-banner offline-banner-hidden" role="alert" aria-live="assertive" aria-hidden="true">Offline — Server nicht erreichbar. Verbindung wird wiederhergestellt…</div>
+    <!-- M082-09-FX (F-8, Rest-Befund der Abnahme PRD-18): die Spiegelung in die Memo-Datenbank laeuft
+         best-effort NACH der Antwort. Ein Fehlschlag ging bisher nur auf die Standard-Fehlerausgabe des
+         Servers, die Antwort blieb 200 und der Nutzer las "Gespeichert." — Datei da, Datenbank-Zeile
+         nicht. Dieses Band ist der fehlende Adressat. EIGENES Element neben dem Offline-Band und
+         ausdruecklich NICHT die Laufzeit-Status-Zeile: die traegt schon eine Aussage, und zwei Aussagen
+         in einem Feld heissen, dass eine von beiden verloren geht. Leer und verborgen, bis es etwas zu
+         sagen gibt (eine Meldung auf jedem Speichervorgang liest nach drei Tagen niemand). -->
+    <div id="mirror-banner" class="mirror-banner mirror-banner-hidden" role="status" aria-live="polite" aria-hidden="true"></div>
     <div id="transcript-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="t-modal-title">
         <div class="t-modal-content">
             <div class="t-modal-header">
@@ -6137,6 +6209,12 @@ ${ VendorAssets.scriptTags().tags }
             } )
         } catch ( err ) {
             process.stderr.write( `  WARN USERINPUT-CAPTURE-001: user_inputs capture threw (transcript MD unaffected): ${ err.message }\n` )
+            // M082-09-FX (F-8): the LOUDEST case used to end here, on the server's stderr. It is the one a
+            // user can least afford to miss, so it takes the same road as every other outcome below.
+            MemoView.broadcastUserInputMirror( {
+                memoId, transcriptType,
+                'outcome': { 'status': false, 'messages': [ `USERINPUT-CAPTURE-001: ${ err.message }` ] }
+            } )
 
             return
         }
@@ -6147,6 +6225,12 @@ ${ VendorAssets.scriptTags().tags }
         }
 
         outcome[ 'messages' ].forEach( ( message ) => process.stderr.write( `  WARN ${ message }\n` ) )
+        // M082-09-FX (F-8): ...and the same report goes to the SURFACE. The stderr lines above are
+        // untouched — this is an additional addressee, not a replacement, because the server log is the
+        // right place for the operator and the wrong place for the person who just pressed "Übernehmen".
+        // Sent from the ONE function every mirror call site passes through (five of them), so a new call
+        // site is covered by joining the existing path rather than by remembering this line.
+        MemoView.broadcastUserInputMirror( { memoId, transcriptType, outcome } )
     }
 
 

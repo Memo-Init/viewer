@@ -1,9 +1,9 @@
 import { describe, it, expect } from '@jest/globals'
 import { readFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { resolveSiblingFile, siblingFilePath, mainRepoRoot, assertSiblingResolved } from '../helpers/siblingRepo.mjs'
 import { DoltDbAssembler } from '../../src/DoltDbAssembler.mjs'
 
 
@@ -25,30 +25,28 @@ import { DoltDbAssembler } from '../../src/DoltDbAssembler.mjs'
 //       two OUTPUTS character for character by importing this renderer. Two different failure modes,
 //       one on each side of the boundary — a twin that drifts is red whichever half a reader runs.
 //
-// Both cross-repo cases are existsSync-guarded and SKIP with a stated reason rather than passing
-// silently, and every number states the basis it was measured over.
+// The cross-repo case reaches outside this repository. It is SKIPPED only where the boundary does not
+// exist at all (a lone checkout — CI checks each repo out alone) and is RED for every path-related
+// absence, and every number states the basis it was measured over.
 const HERE = dirname( fileURLToPath( import.meta.url ) )
 const VIEWER_ROOT = resolve( HERE, '..', '..' )
+const TWIN_SEGMENTS = [ 'cli', 'src', 'RevisionAssembler.mjs' ]
 
 
-// WHICH core this compares against. A test that reads ACROSS the repo boundary reads the boundary that
-// belongs to ITS OWN tree — resolving the plain name first would compare this branch against the MAIN
-// tree and be red by construction, with a reason that looks like a broken twin instead of a broken path.
-// Same derivation as BlockSectionsParityPRDB1, one rule for the whole boundary.
-const coreTwinCandidates = ( { viewerRoot } ) => {
-    const name = basename( viewerRoot )
-    const suffix = name.startsWith( 'viewer' ) === true ? name.slice( 'viewer'.length ) : ''
-    const names = [ 'core' + suffix, 'core' ]
-        .filter( ( entry, index, all ) => all.indexOf( entry ) === index )
+// WHICH core this compares against — derived ONCE for the whole boundary in tests/helpers/siblingRepo.mjs
+// (one rule, shared with BlockSectionsParityPRDB1 and IdRecognitionPRD40). The former rule read the NAME
+// of the directory this suite runs in; when the rollout moved its worktrees and that name lost its
+// prefix, the candidate collapsed to a neighbour that did not exist and 22 cases were skipped under a
+// green suite. `git rev-parse --git-common-dir` answers with the MAIN repository from every worktree, so
+// the name of the tree carries no weight any more.
+const TWIN = resolveSiblingFile( { from: VIEWER_ROOT, repo: 'core', segments: TWIN_SEGMENTS } )
+const CORE_TWIN = TWIN.path
 
-    return names
-        .map( ( entry ) => resolve( viewerRoot, '..', entry, 'cli', 'src', 'RevisionAssembler.mjs' ) )
-}
-
-
-const CANDIDATES = coreTwinCandidates( { viewerRoot: VIEWER_ROOT } )
-const CORE_TWIN = CANDIDATES.find( ( candidate ) => existsSync( candidate ) ) ?? CANDIDATES[ CANDIDATES.length - 1 ]
-const withCore = existsSync( CORE_TWIN ) ? it : it.skip
+// `it.skip` stays for exactly ONE absence — the one that breaks no path: a checkout standing outside a
+// multi-repo tree, where this boundary does not exist. A derivation that fails, an absent sibling repo
+// and an absent twin file are all RED, with the resolved path in the message, so "broken twin" and
+// "broken path" never again look the same.
+const withCore = TWIN.kind === 'standalone' ? it.skip : it
 
 
 // ── The shared stock — IDENTICAL to the table in the core suite ─────────────────────────────────────
@@ -298,6 +296,8 @@ describe( 'M082-09-08 — the provenance line, and the twin it is shared with', 
         // other ("byte-identical to <the other class>") and are therefore DIFFERENT by design. Holding
         // them equal would be a condition that can only be satisfied by making the documentation wrong.
         withCore( `every member of the answered family reads identically on both sides — code, not comments (${ TWIN_MEMBERS.length } members + ${ TWIN_CONSTANTS.length } registers)`, async () => {
+            assertSiblingResolved( { twin: TWIN } )
+
             const mine = ( await readFile( resolve( VIEWER_ROOT, 'src', 'DoltDbAssembler.mjs' ), 'utf8' ) ).split( '\n' )
             const theirs = ( await readFile( CORE_TWIN, 'utf8' ) ).split( '\n' )
 
@@ -322,6 +322,8 @@ describe( 'M082-09-08 — the provenance line, and the twin it is shared with', 
         } )
 
         withCore( 'counter-probe — ONE changed character in the compared source shows up as a drift', async () => {
+            assertSiblingResolved( { twin: TWIN } )
+
             const mine = ( await readFile( resolve( VIEWER_ROOT, 'src', 'DoltDbAssembler.mjs' ), 'utf8' ) ).split( '\n' )
             const theirs = ( await readFile( CORE_TWIN, 'utf8' ) ).split( '\n' )
             const tampered = mine
@@ -333,26 +335,50 @@ describe( 'M082-09-08 — the provenance line, and the twin it is shared with', 
             expect( drifted ).toEqual( [ '#answeredProvenance' ] )
         } )
 
-        // The derivation rule itself, over NAMED inputs. Asserting only that the resolved path ends in
-        // the file name would be true by construction and would measure nothing; what has to hold is
-        // that a rollout tree reaches its OWN sibling first and the plain name is only the fallback.
-        it( 'derives the core sibling from THIS tree name, with the plain name as the fallback', () => {
+        // The derivation rule itself, over NAMED inputs. Asserting that the resolved path ends in the
+        // file name would be true by construction and would measure nothing. What has to hold is the
+        // property the defect broke: the DIRECTORY NAME must not reach the derivation. The old rule
+        // turned the name into the sibling ('viewer-p9-prd17' -> 'core-p9-prd17') and therefore answered
+        // differently after every rename; the new rule answers with the neighbour of the MAIN repository,
+        // so all three inputs below — whose names differ — land on the same sibling name.
+        it( 'derives the core twin from the MAIN repository, never from the name of the tree it runs in', async () => {
             const cases = [
-                { viewerRoot: '/w/repos/viewer-p9-prd08', sibling: 'core-p9-prd08' },
-                { viewerRoot: '/w/repos/viewer-wt-081', sibling: 'core-wt-081' },
-                { viewerRoot: '/w/repos/viewer', sibling: 'core' }
+                { mainRepo: '/w/repos/viewer', twin: '/w/repos/core/cli/src/RevisionAssembler.mjs' },
+                { mainRepo: '/w/repos/viewer-p9-prd08', twin: '/w/repos/core/cli/src/RevisionAssembler.mjs' },
+                { mainRepo: '/elsewhere/repos/p9-prd17', twin: '/elsewhere/repos/core/cli/src/RevisionAssembler.mjs' }
             ]
             expect( cases.length ).toBeGreaterThanOrEqual( 3 )
 
             const wrong = cases
-                .map( ( entry ) => ( { entry, resolved: coreTwinCandidates( { viewerRoot: entry.viewerRoot } ) } ) )
-                .filter( ( row ) => row.resolved[ 0 ] !== `/w/repos/${ row.entry.sibling }/cli/src/RevisionAssembler.mjs` || row.resolved[ row.resolved.length - 1 ] !== '/w/repos/core/cli/src/RevisionAssembler.mjs' )
-                .map( ( row ) => `${ row.entry.viewerRoot } -> ${ JSON.stringify( row.resolved ) }` )
+                .map( ( entry ) => ( { entry, resolved: siblingFilePath( { mainRepo: entry.mainRepo, repo: 'core', segments: TWIN_SEGMENTS } ) } ) )
+                .filter( ( row ) => row.resolved !== row.entry.twin )
+                .map( ( row ) => `${ row.entry.mainRepo } -> ${ row.resolved }` )
             expect( wrong ).toEqual( [] )
 
-            // ... and the tree this suite really runs in names the file it compared against.
-            expect( CANDIDATES.length ).toBeGreaterThanOrEqual( 1 )
+            // ANTI-REGRESSION on the CLASS, not on this case: the shared helper must not compute a
+            // directory name at all. These two expressions are the ones the defect lived in, and a
+            // suite that only checked its own resolved path would let them come back.
+            const helper = await readFile( resolve( HERE, '..', 'helpers', 'siblingRepo.mjs' ), 'utf8' )
+            expect( helper.length ).toBeGreaterThan( 500 )
+            expect( helper.includes( 'startsWith( \'viewer\'' ) ).toBe( false )
+            expect( helper.includes( 'slice( \'viewer\'' ) ).toBe( false )
+            expect( helper.includes( 'rev-parse' ) ).toBe( true )
+
+            // The answer from git is VERIFIED, not trusted — a counter-probe found this the hard way:
+            // `git rev-parse` ECHOES an argument it does not recognise instead of failing, and the echoed
+            // flag then resolved to a plausible-looking directory that was never a git directory. A
+            // derivation that cannot name an EXISTING git directory must fail with a reason.
+            const broken = mainRepoRoot( { from: resolve( VIEWER_ROOT, 'no-such-directory-zzz' ) } )
+            expect( broken.status ).toBe( false )
+            expect( broken.root ).toBe( null )
+            expect( String( broken.reason ).length ).toBeGreaterThan( 10 )
+            expect( helper.includes( 'no such git directory' ) ).toBe( true )
+
+            // ... and the tree this suite really runs in names what it derived, under its own main repo.
+            expect( TWIN.mainRepo === null ).toBe( false )
             expect( CORE_TWIN.endsWith( 'cli/src/RevisionAssembler.mjs' ) ).toBe( true )
+            expect( CORE_TWIN.startsWith( resolve( TWIN.mainRepo, '..' ) ) ).toBe( true )
+            expect( [ 'resolved', 'standalone', 'missing-repo', 'missing-file', 'derivation' ] ).toContain( TWIN.kind )
         } )
     } )
 } )

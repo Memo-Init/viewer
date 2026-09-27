@@ -5570,10 +5570,39 @@
             { kind: 'T', fill: '#1f3a5f', stroke: '#4a90d9', text: '#e6f0fa' },
             { kind: 'W', fill: '#24402b', stroke: '#5aa75a', text: '#e8f5e8' },
             { kind: 'P', fill: '#4a3a1f', stroke: '#c9a227', text: '#faf3e0' },
-            { kind: 'R', fill: '#3f2b4a', stroke: '#9b6ad9', text: '#f2e8fa' }
+            { kind: 'R', fill: '#3f2b4a', stroke: '#9b6ad9', text: '#f2e8fa' },
+            { kind: 'B', fill: '#4a1f2b', stroke: '#d9557a', text: '#fae6ec' }
         ]
 
-        var GRAPH_KIND_LABELS = { T: 'Topic', W: 'Work-Item', P: 'Phase', R: 'PRD' }
+        var GRAPH_KIND_LABELS = { T: 'Topic', W: 'Work-Item', P: 'Phase', R: 'PRD', B: 'Block' }
+
+        // WI-233 (Memo 082 Kap 33, S2) — the toolbar. The user's words were "ich kann das fast nicht
+        // lesen"; the measurement said the data are NOT empty. A graph that shows everything at once in
+        // one fixed arrangement is, for the reader, indistinguishable from an empty one — both answer no
+        // question. These three lists are the instruments that narrow it down to one.
+        //
+        // Every instrument works in BOTH directions: what is switched off can be switched on again, and
+        // the starting state is reachable. `cose` stays the first preset, so the arrangement the view had
+        // before this order is still one of the choices and nothing was taken away.
+        var GRAPH_LAYOUT_PRESETS = [
+            { key: 'cose', label: 'Kräfte', options: { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 120, padding: 30 } },
+            { key: 'concentric', label: 'Ringe', options: { name: 'concentric', animate: false, padding: 30, minNodeSpacing: 24 } },
+            { key: 'breadthfirst', label: 'Ebenen', options: { name: 'breadthfirst', animate: false, padding: 30, spacingFactor: 1.1 } },
+            { key: 'grid', label: 'Raster', options: { name: 'grid', animate: false, padding: 30 } }
+        ]
+
+        var GRAPH_GROUP_MODES = [
+            { key: 'none', label: 'nicht gruppieren' },
+            { key: 'topic', label: 'nach Topic' },
+            { key: 'block', label: 'nach Block' }
+        ]
+
+        // How many node positions the canvas publishes as a machine-readable probe. Positions live inside
+        // the drawing library and the canvas is a <canvas>, so there is no per-node DOM a check could read
+        // — without this probe "the two presets arrange differently" would not be measurable at all. It is
+        // a sample by design, sorted by id so the SAME nodes are compared across presets, and capped so a
+        // large inventory cannot turn one attribute into a payload.
+        var GRAPH_POSITION_PROBE_CAP = 24
 
         var GRAPH_CY_STYLE = [
             {
@@ -5595,6 +5624,21 @@
                 }
             },
             { selector: 'edge[kind = "topic-prd"]', style: { 'line-style': 'dashed', 'line-color': '#9b6ad9', 'target-arrow-color': '#9b6ad9' } },
+            // WI-233: the fourth edge family, the one `topic.block` was carrying all along.
+            { selector: 'edge[kind = "block-topic"]', style: { 'line-style': 'dotted', 'line-color': '#d9557a', 'target-arrow-color': '#d9557a', 'width': 1.8 } },
+            // WI-233: a GROUP node is a compound parent, not a row of the database. It carries `isGroup`
+            // and nothing else does, so no kind selector and no click handler mistakes it for a record.
+            // Its size is left to the library — a compound parent is sized by its children, and the fixed
+            // box of the generic node rule would cut them off.
+            {
+                selector: 'node[isGroup]',
+                style: {
+                    'label': 'data(label)', 'font-size': '12px', 'text-valign': 'top', 'text-halign': 'center',
+                    'background-color': '#2b2f36', 'background-opacity': 0.35, 'border-color': '#8b95a3',
+                    'border-width': 1, 'shape': 'round-rectangle', 'padding': 18, 'color': '#dfe5ec',
+                    'text-max-width': '260px'
+                }
+            },
             { selector: 'node:selected', style: { 'border-width': 3, 'border-color': '#ffffff' } }
         ].concat( GRAPH_KIND_STYLES.map( function( entry ) {
             return {
@@ -5612,6 +5656,71 @@
             if( graphInstance === null ) { return }
             try { graphInstance.destroy() } catch( err ) { /* an already-destroyed instance is not an error */ }
             graphInstance = null
+        }
+
+        // WI-233 — the toolbar rule, kept PURE and separate from the drawing so it can be reasoned about
+        // and tested without a browser. In: the full element set from the server plus the toolbar state.
+        // Out: the element set to draw. It never mutates the base elements — a rebuild starts from the
+        // same answer every time, which is what makes "switch it off and on again" return to the exact
+        // starting picture instead of to something that merely looks like it.
+        //
+        // Grouping goes through COMPOUND NODES, not through a different arrangement: a group is a real
+        // parent element that contains its members. That is the difference between "the same 348 dots
+        // moved somewhere else" and "the graph is now divided into readable territories".
+        function buildGraphDrawSet( baseNodes, baseEdges, state ) {
+            var keptNodes = baseNodes.filter( function( node ) {
+                return state.kinds[ node.data.kind ] !== false
+            } )
+            var keptIds = {}
+            keptNodes.forEach( function( node ) { keptIds[ node.data.id ] = true } )
+
+            var keptEdges = baseEdges.filter( function( edge ) {
+                return keptIds[ edge.data.source ] === true && keptIds[ edge.data.target ] === true
+            } )
+
+            if( state.group === 'none' ) {
+                return { nodes: keptNodes.map( graphPlainNode ), edges: keptEdges, groupNodes: [] }
+            }
+
+            var groupField = state.group === 'topic' ? 'groupTopic' : 'groupBlock'
+            var used = {}
+            var drawNodes = keptNodes.map( function( node ) {
+                var key = node.data[ groupField ]
+                if( !key ) { return graphPlainNode( node ) }
+                var parentId = 'G__' + state.group + '__' + key
+                used[ key ] = true
+
+                return graphPlainNode( node, parentId )
+            } )
+
+            // The label of a group is taken from the node that OWNS the key — the topic node for a topic
+            // group, the block node for a block group — so a group never invents a name of its own. If
+            // that node is filtered away, the bare identifier stands there; that is honest, and it is
+            // better than a group whose caption claims more than is on screen.
+            var groupNodes = Object.keys( used ).sort().map( function( key ) {
+                var ownerKind = state.group === 'topic' ? 'T' : 'B'
+                var owner = baseNodes.filter( function( node ) {
+                    return node.data.kind === ownerKind && node.data.rawId === key
+                } )[ 0 ]
+                var caption = owner && owner.data.title ? key + ' — ' + owner.data.title : key
+
+                return { data: { id: 'G__' + state.group + '__' + key, isGroup: 1, label: caption, groupKey: key, groupMode: state.group } }
+            } )
+
+            return { nodes: groupNodes.concat( drawNodes ), edges: keptEdges, groupNodes: groupNodes }
+        }
+
+        // A fresh element object per draw. Cytoscape takes ownership of what it is handed, so reusing the
+        // server's objects across rebuilds would let one arrangement leak into the next.
+        function graphPlainNode( node, parentId ) {
+            var data = {
+                id: node.data.id, kind: node.data.kind, rawId: node.data.rawId,
+                label: node.data.label, title: node.data.title,
+                groupTopic: node.data.groupTopic, groupBlock: node.data.groupBlock
+            }
+            if( parentId ) { data.parent = parentId }
+
+            return { data: data }
         }
 
         // PRD-V2 (Memo 080 Kap 15, WI-102): render the knowledge graph answer into #content. The head
@@ -5636,9 +5745,11 @@
                 + ' · Work-Items ' + num( counts.workItems )
                 + ' · Phasen ' + num( counts.phases )
                 + ' · PRDs ' + num( counts.prds )
+                + ' · Blöcke ' + num( counts.blocks )
                 + ' — Kanten: Topic→Work-Item ' + num( counts.edgesTopicWorkItem )
                 + ' · Phase→PRD ' + num( counts.edgesPhasePrd )
                 + ' · Topic→PRD ' + num( counts.edgesTopicPrd )
+                + ' · Block→Topic ' + num( counts.edgesBlockTopic )
             var head = document.createElement( 'div' )
             head.className = 'graph-counts'
             head.setAttribute( 'data-graph-counts', '1' )
@@ -5673,6 +5784,61 @@
                 return wrap
             }
 
+            // WI-233 — the toolbar. It is built ONCE and survives every redraw, so a control never goes
+            // stale under the hand that is using it.
+            var state = { kinds: {}, group: 'none', layout: 'cose' }
+            var presentKinds = []
+            elementNodes.forEach( function( node ) {
+                if( presentKinds.indexOf( node.data.kind ) === -1 ) { presentKinds.push( node.data.kind ) }
+            } )
+            presentKinds.sort()
+            presentKinds.forEach( function( kind ) { state.kinds[ kind ] = true } )
+
+            var bar = document.createElement( 'div' )
+            bar.className = 'graph-toolbar'
+            bar.setAttribute( 'data-graph-toolbar', '1' )
+
+            var groupSelect = document.createElement( 'select' )
+            groupSelect.id = 'graph-group-mode'
+            groupSelect.className = 'graph-tool-select'
+            GRAPH_GROUP_MODES.forEach( function( mode ) {
+                var option = document.createElement( 'option' )
+                option.value = mode.key
+                option.textContent = mode.label
+                groupSelect.appendChild( option )
+            } )
+            groupSelect.value = state.group
+            bar.appendChild( graphToolGroup( 'Gruppieren', groupSelect ) )
+
+            var kindBox = document.createElement( 'span' )
+            kindBox.className = 'graph-tool-kinds'
+            var kindButtons = presentKinds.map( function( kind ) {
+                var button = document.createElement( 'button' )
+                button.type = 'button'
+                button.className = 'graph-kind-toggle'
+                button.setAttribute( 'data-graph-kind-filter', kind )
+                button.setAttribute( 'aria-pressed', 'true' )
+                button.textContent = kind + ' ' + ( GRAPH_KIND_LABELS[ kind ] || kind )
+                kindBox.appendChild( button )
+
+                return button
+            } )
+            bar.appendChild( graphToolGroup( 'Arten', kindBox ) )
+
+            var layoutSelect = document.createElement( 'select' )
+            layoutSelect.id = 'graph-layout-preset'
+            layoutSelect.className = 'graph-tool-select'
+            GRAPH_LAYOUT_PRESETS.forEach( function( preset ) {
+                var option = document.createElement( 'option' )
+                option.value = preset.key
+                option.textContent = preset.label
+                layoutSelect.appendChild( option )
+            } )
+            layoutSelect.value = state.layout
+            bar.appendChild( graphToolGroup( 'Anordnung', layoutSelect ) )
+
+            wrap.appendChild( bar )
+
             // The detail panel a node click fills. It exists BEFORE the graph is drawn and starts with the
             // instruction, so the interaction is discoverable instead of hidden.
             var detail = document.createElement( 'div' )
@@ -5681,54 +5847,168 @@
             detail.textContent = 'Knoten anklicken für Details · Knoten ziehen zum Umordnen · Mausrad zoomt'
             wrap.appendChild( detail )
 
+            // S3 — a view that shows nothing SAYS so, with the figure. An unexplained empty area is
+            // exactly the state that set this order off; the toolbar must not be able to produce it
+            // silently. The message names N, so "nothing matches" and "nothing was read" stay apart.
+            var filterEmpty = document.createElement( 'div' )
+            filterEmpty.className = 'graph-empty'
+            filterEmpty.setAttribute( 'data-graph-empty', 'filter' )
+            filterEmpty.hidden = true
+            wrap.appendChild( filterEmpty )
+
             var box = document.createElement( 'div' )
             box.className = 'graph-canvas'
             box.setAttribute( 'data-graph-canvas', '1' )
             wrap.appendChild( box )
             contentTarget.appendChild( wrap )
 
-            // A previous instance keeps listeners and a render loop alive on a container that is no longer
-            // in the document. Destroy it BEFORE the new one exists — the view is re-entered often.
-            destroyGraphInstance()
+            var renderSeq = 0
+            var detailInstruction = 'Knoten anklicken für Details · Knoten ziehen zum Umordnen · Mausrad zoomt'
 
-            try {
-                graphInstance = cytoscape( {
-                    container: box,
-                    elements: { nodes: elementNodes, edges: elementEdges },
-                    style: GRAPH_CY_STYLE,
-                    layout: { name: 'cose', animate: false, nodeRepulsion: 12000, idealEdgeLength: 120, padding: 30 },
-                    // The three properties that make this a GRAPH and not a picture. Spelled out rather than
-                    // left to defaults so a later cytoscape release cannot quietly turn interaction off.
-                    userZoomingEnabled: true,
-                    userPanningEnabled: true,
-                    autoungrabify: false
-                } )
-            } catch( err ) {
-                renderViewError( contentTarget, 'Graph konnte nicht gezeichnet werden: ' + ( err && err.message ? err.message : String( err ) ) + ' — gemessen: ' + headText )
-
-                return wrap
+            // The machine-readable state of the drawing, written on the wrapper after every redraw. The
+            // drawing itself is a <canvas>, so without these figures there is nothing a check could read
+            // — and "the filter changed the picture" would stay an assertion instead of a measurement.
+            function publishGraphProbe( drawSet, realNodeCount ) {
+                wrap.setAttribute( 'data-graph-total-nodes', String( elementNodes.length ) )
+                wrap.setAttribute( 'data-graph-visible-nodes', String( realNodeCount ) )
+                wrap.setAttribute( 'data-graph-visible-edges', String( drawSet.edges.length ) )
+                wrap.setAttribute( 'data-graph-group-nodes', String( drawSet.groupNodes.length ) )
+                wrap.setAttribute( 'data-graph-group-mode', state.group )
+                wrap.setAttribute( 'data-graph-layout', state.layout )
+                wrap.setAttribute( 'data-graph-kinds-on', presentKinds.filter( function( kind ) { return state.kinds[ kind ] !== false } ).join( ',' ) )
+                wrap.setAttribute( 'data-graph-render-seq', String( renderSeq ) )
             }
 
-            graphInstance.on( 'tap', 'node', function( event ) {
-                var data = event.target.data()
-                var kindLabel = GRAPH_KIND_LABELS[ data.kind ] || data.kind
-                detail.setAttribute( 'data-graph-detail', 'node' )
-                detail.setAttribute( 'data-graph-detail-id', data.rawId || '' )
-                detail.textContent = kindLabel + ' ' + ( data.rawId || '' )
-                    + ( data.title ? ' — ' + data.title : '' )
-                    + ' · Kanten: ' + event.target.degree( false )
-            } )
+            function publishGraphPositions() {
+                if( graphInstance === null ) { return }
+                var probe = {}
+                graphInstance.nodes().filter( function( node ) { return node.data( 'isGroup' ) !== 1 } )
+                    .map( function( node ) { return node.id() } )
+                    .sort()
+                    .slice( 0, GRAPH_POSITION_PROBE_CAP )
+                    .forEach( function( id ) {
+                        var position = graphInstance.getElementById( id ).position()
+                        probe[ id ] = Math.round( position.x ) + ',' + Math.round( position.y )
+                    } )
+                box.setAttribute( 'data-graph-positions', JSON.stringify( probe ) )
+            }
 
-            // Tapping the empty background returns the panel to its instruction — the panel never keeps
-            // stating a selection that is no longer highlighted.
-            graphInstance.on( 'tap', function( event ) {
-                if( event.target !== graphInstance ) { return }
+            function drawGraph() {
+                var drawSet = buildGraphDrawSet( elementNodes, elementEdges, state )
+                var realNodes = drawSet.nodes.filter( function( node ) { return node.data.isGroup !== 1 } )
+                renderSeq = renderSeq + 1
+
+                destroyGraphInstance()
                 detail.setAttribute( 'data-graph-detail', 'empty' )
                 detail.removeAttribute( 'data-graph-detail-id' )
-                detail.textContent = 'Knoten anklicken für Details · Knoten ziehen zum Umordnen · Mausrad zoomt'
+                detail.textContent = detailInstruction
+
+                if( realNodes.length === 0 ) {
+                    filterEmpty.hidden = false
+                    filterEmpty.textContent = '0 von ' + elementNodes.length + ' Knoten sichtbar — alle Arten sind ausgeschaltet oder die Auswahl ist leer.'
+                    box.hidden = true
+                    box.removeAttribute( 'data-graph-positions' )
+                    publishGraphProbe( drawSet, 0 )
+
+                    return
+                }
+
+                filterEmpty.hidden = true
+                box.hidden = false
+
+                try {
+                    graphInstance = cytoscape( {
+                        container: box,
+                        elements: { nodes: drawSet.nodes, edges: drawSet.edges },
+                        style: GRAPH_CY_STYLE,
+                        layout: graphLayoutOptions( state.layout ),
+                        // The three properties that make this a GRAPH and not a picture. Spelled out rather than
+                        // left to defaults so a later cytoscape release cannot quietly turn interaction off.
+                        userZoomingEnabled: true,
+                        userPanningEnabled: true,
+                        autoungrabify: false
+                    } )
+                } catch( err ) {
+                    renderViewError( contentTarget, 'Graph konnte nicht gezeichnet werden: ' + ( err && err.message ? err.message : String( err ) ) + ' — gemessen: ' + headText )
+
+                    return
+                }
+
+                graphInstance.on( 'tap', 'node', function( event ) {
+                    var data = event.target.data()
+                    if( data.isGroup === 1 ) {
+                        detail.setAttribute( 'data-graph-detail', 'group' )
+                        detail.setAttribute( 'data-graph-detail-id', data.groupKey || '' )
+                        detail.textContent = 'Gruppe ' + ( data.label || '' ) + ' · Knoten: ' + event.target.children().length
+
+                        return
+                    }
+                    var kindLabel = GRAPH_KIND_LABELS[ data.kind ] || data.kind
+                    detail.setAttribute( 'data-graph-detail', 'node' )
+                    detail.setAttribute( 'data-graph-detail-id', data.rawId || '' )
+                    detail.textContent = kindLabel + ' ' + ( data.rawId || '' )
+                        + ( data.title ? ' — ' + data.title : '' )
+                        + ' · Kanten: ' + event.target.degree( false )
+                } )
+
+                // Tapping the empty background returns the panel to its instruction — the panel never keeps
+                // stating a selection that is no longer highlighted.
+                graphInstance.on( 'tap', function( event ) {
+                    if( event.target !== graphInstance ) { return }
+                    detail.setAttribute( 'data-graph-detail', 'empty' )
+                    detail.removeAttribute( 'data-graph-detail-id' )
+                    detail.textContent = detailInstruction
+                } )
+
+                // The positions are published twice on purpose: once straight away, so the attribute is
+                // never missing, and once when the arrangement has settled, so it states the final one.
+                graphInstance.one( 'layoutstop', function() { publishGraphPositions() } )
+                publishGraphProbe( drawSet, realNodes.length )
+                publishGraphPositions()
+            }
+
+            groupSelect.addEventListener( 'change', function() {
+                state.group = groupSelect.value
+                drawGraph()
+            } )
+            layoutSelect.addEventListener( 'change', function() {
+                state.layout = layoutSelect.value
+                drawGraph()
+            } )
+            kindButtons.forEach( function( button ) {
+                button.addEventListener( 'click', function() {
+                    var kind = button.getAttribute( 'data-graph-kind-filter' )
+                    state.kinds[ kind ] = state.kinds[ kind ] === false
+                    button.setAttribute( 'aria-pressed', state.kinds[ kind ] === false ? 'false' : 'true' )
+                    drawGraph()
+                } )
             } )
 
+            drawGraph()
+
             return wrap
+        }
+
+        // One labelled cell of the toolbar. Split out so the three instruments read the same way and the
+        // caption belongs to its control instead of floating beside it.
+        function graphToolGroup( caption, control ) {
+            var cell = document.createElement( 'label' )
+            cell.className = 'graph-tool'
+            var text = document.createElement( 'span' )
+            text.className = 'graph-tool-label'
+            text.textContent = caption
+            cell.appendChild( text )
+            cell.appendChild( control )
+
+            return cell
+        }
+
+        // The named preset, or the first one. An unknown key never silently becomes "no layout at all" —
+        // that would leave every node stacked at the origin and look like a drawing failure.
+        function graphLayoutOptions( key ) {
+            var found = GRAPH_LAYOUT_PRESETS.filter( function( preset ) { return preset.key === key } )[ 0 ]
+
+            return ( found || GRAPH_LAYOUT_PRESETS[ 0 ] ).options
         }
 
         // PRD-V2 (Memo 080 Kap 15, WI-102): fetch the knowledge graph for the active memo and render it

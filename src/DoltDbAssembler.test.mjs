@@ -1706,7 +1706,11 @@ describe( 'DoltDbAssembler.readKnowledgeGraph (Memo 080, PRD-V2 / WI-102)', () =
     } )
 
 
-    it( 'assigns every node to the class of its kind — 4 classDef lines, 4 class lines, 8 members', () => {
+    // WI-233 (Memo 082 Kap 33, S2): `block` became the FIFTH node kind, so the source now carries five
+    // classDef lines. The seed of this file has no `block` table, so only four kinds have members and
+    // only four `class` lines are emitted — the pair (5 definitions, 4 used) is exactly what the case
+    // should state, and it stays a measurement instead of a constant.
+    it( 'assigns every node to the class of its kind — 5 classDef lines, 4 class lines, 8 members', () => {
         seedGraph( { path: dbPath } )
 
         const { mermaid } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
@@ -1715,9 +1719,15 @@ describe( 'DoltDbAssembler.readKnowledgeGraph (Memo 080, PRD-V2 / WI-102)', () =
         const members = classLines
             .reduce( ( acc, line ) => acc.concat( line.trim().split( ' ' )[ 1 ].split( ',' ) ), [] )
 
-        expect( classDefs.length ).toBe( 4 )
+        expect( classDefs.length ).toBe( 5 )
         expect( classLines.length ).toBe( 4 )
         expect( members.length ).toBe( 8 )                           // every one of the 8 nodes carries a class
+        // a class line may only name a class that was defined — the invariant behind the two figures,
+        // and unlike either number it cannot go stale when a sixth kind arrives
+        const defined = classDefs.map( ( line ) => line.trim().split( ' ' )[ 1 ] )
+        const used = classLines.map( ( line ) => line.trim().split( ' ' )[ 2 ] )
+
+        expect( used.filter( ( name ) => defined.includes( name ) !== true ) ).toEqual( [] )
     } )
 
 
@@ -1737,14 +1747,18 @@ describe( 'DoltDbAssembler.readKnowledgeGraph (Memo 080, PRD-V2 / WI-102)', () =
     } )
 
 
-    it( 'a database WITHOUT the four tables reads as seven zeros and does NOT throw', () => {
+    // WI-233: five tables and nine figures since `block` joined the read. The literal is raised rather
+    // than dropped, and the shape is ALSO held against emptyGraphCounts — that is the actual contract
+    // ("no field goes missing on one path only") and it survives the next growth of the list.
+    it( 'a database WITHOUT the five tables reads as nine zeros and does NOT throw', () => {
         const db = new DatabaseSync( dbPath )
         db.exec( 'CREATE TABLE IF NOT EXISTS memo ( id TEXT PRIMARY KEY, name TEXT )' )
         db.close()
 
         const { mermaid, counts, empty, reason } = DoltDbAssembler.readKnowledgeGraph( { dbPath } )
 
-        expect( Object.keys( counts ).length ).toBe( 7 )             // all seven figures present, none missing
+        expect( Object.keys( counts ).length ).toBe( 9 )             // all nine figures present, none missing
+        expect( Object.keys( counts ) ).toEqual( Object.keys( DoltDbAssembler.emptyGraphCounts() ) )
         expect( Object.values( counts ).filter( ( value ) => value !== 0 ) ).toEqual( [] )
         expect( mermaid ).toBe( null )
         expect( empty ).toBe( true )

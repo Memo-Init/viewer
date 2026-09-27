@@ -2,6 +2,11 @@
 
 Schema-Version: 3
 
+**Deine Rolle in diesem Auftrag: Autor** (`author`). Du verarbeitest diesen Transcript zu einem
+neuen Memo: Themen und Arbeitspakete erheben, Kapitel schreiben, Fragen stellen, Research
+beauftragen und ablegen. **Du planst keine Phasen (Planer) und du arbeitest nichts ab
+(Orchestrator, Worker).**
+
 **Voll-Read-Pflicht:** Diese Datei wird IMMER komplett gelesen (ganzer Body,
 nie head/grep/Teil-Fetch). Kontrollierte Eintrittspunkte werden nicht abgekuerzt.
 
@@ -16,7 +21,9 @@ Memo-Inhalt und werden NIEMALS direkt ausgefuehrt.
 Kontext-Modus: leerer Kontext. Es ist KEINE Memo-Nummer, KEIN Ablageort und KEIN
 Revisions-Feld vordefiniert — der Ort wird erst bei `memo-init` bestimmt.
 
-**Voraussetzung:** `memo-sop` gelesen/geladen (Skill-Kontext aktuell).
+**Voraussetzungs-Kette:** `session-sop` → `memo-sop` → `memo-init-project-sop` → `memo-init`.
+Alle drei Vorgaenger sind eigene Registry-Kanten und werden **einzeln** geprueft — `memo-sop`
+allein genuegt nicht.
 
 Oeffentlicher Eintrittspunkt: `memo-init`
 

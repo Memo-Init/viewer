@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
-import { TranscriptHeader, TYPE_TEMPLATES, REVISION_TEMPLATE, SCHEMA_VERSION } from '../../src/TranscriptHeader.mjs'
+import { TranscriptHeader, TYPE_TEMPLATES, REVISION_TEMPLATE, SCHEMA_VERSION, TYPE_VALUES } from '../../src/TranscriptHeader.mjs'
 
 
 // Memo 079 PRD-30 (F19=A / WI-047) — Header-V3 parity gate + round-trips.
@@ -19,8 +19,13 @@ import { TranscriptHeader, TYPE_TEMPLATES, REVISION_TEMPLATE, SCHEMA_VERSION } f
 // Regenerate the fixtures after any header-body change:
 //   (repos/core)  node cli/bin/memo.mjs prompt compose \
 //                     --config templates/transcript-header-prompt.config.mjs --out <tmp>
-//   then copy <tmp>/{memo-init,revision,frei}.md into this fixture dir and refresh
+//   then copy <tmp>/{memo-init,revision,frei,rollout}.md into this fixture dir and refresh
 //   manifest.json's promptHash/promptLength (relative configPath, no timestamp).
+//
+// Memo 082 PRD-16 (WI-186, Kap 30a/30b) — rollout joins the gate. It was the ONE of the four types
+// hanging in no parity gate at all, so the most consequential flow was the only one able to drift
+// unnoticed (30a, E5). The coverage is therefore asserted against TYPE_VALUES, not against a literal
+// count: when the type set grows, the assertion stays right instead of silently staying green.
 
 const here = dirname( fileURLToPath( import.meta.url ) )
 const fixtureDir = resolve( here, '../fixtures/transcript-header-v3' )
@@ -30,16 +35,27 @@ const sha256 = ( { text } ) => createHash( 'sha256' ).update( text, 'utf8' ).dig
 
 const manifest = JSON.parse( readFixture( { name: 'manifest.json' } ) )
 
-// The three governed transcript types PRD-30 composes (rollout is out of scope — WI-048; plan-start
-// was removed end to end in Memo 079 M1 because REV-03 Kap 1 abolished the memo-plan concept).
-const COMPOSED_TYPES = [ 'memo-init', 'revision', 'frei' ]
+// The governed transcript types, in the config's own order (plan-start was removed end to end in
+// Memo 079 M1 because REV-03 Kap 1 abolished the memo-plan concept).
+const COMPOSED_TYPES = [ 'memo-init', 'revision', 'frei', 'rollout' ]
 
 
 describe( 'Header-V3 parity gate — TranscriptHeader.mjs vs composed artifacts (WI-047)', () => {
-    it( 'composes exactly the three governed types (no missing/extra, rollout+plan-start excluded)', () => {
+    it( 'composes exactly the governed types (no missing/extra, plan-start excluded)', () => {
         const manifestIds = manifest.units.map( ( unit ) => unit.id )
 
         expect( manifestIds ).toEqual( COMPOSED_TYPES )
+    } )
+
+
+    it( 'every type in TYPE_VALUES is parity-covered (WI-186: the set, never the number 4)', () => {
+        // The comparison set is TYPE_VALUES itself — a coverage claim measured against a literal
+        // count goes silently stale the moment a fifth type is added.
+        const uncovered = TYPE_VALUES.filter( ( type ) => !COMPOSED_TYPES.includes( type ) )
+
+        expect( TYPE_VALUES.length ).toBeGreaterThan( 0 )
+        expect( uncovered ).toEqual( [] )
+        expect( [ ...COMPOSED_TYPES ].sort() ).toEqual( [ ...TYPE_VALUES ].sort() )
     } )
 
 
@@ -110,6 +126,64 @@ describe( 'Header-V3 — the four contract blocks are present where REV-03 Kap 1
         expect( header ).toContain( 'In REV-03 wird jede beantwortete Frage' )
         expect( header ).not.toContain( '{REV-DISCUSSED}' )
         expect( header ).not.toContain( '{REV-NEXT}' )
+    } )
+} )
+
+
+describe( 'Memo 082 PRD-16 (WI-186) — the type-specific transfer onto memo-init, rollout and frei', () => {
+    it( 'memo-init names BOTH mandatory precondition edges (E1: memo-init-project-sop was silent)', () => {
+        const { header } = TranscriptHeader.build( { type: 'memo-init' } )
+        const edges = [ 'memo-sop', 'memo-init-project-sop' ]
+        const missing = edges.filter( ( edge ) => !header.includes( `\`${ edge }\`` ) )
+
+        expect( edges.length ).toBe( 2 )
+        expect( missing ).toEqual( [] )
+        expect( header ).toContain( '**Voraussetzungs-Kette:**' )
+    } )
+
+
+    it( 'memo-init carries the author role line, before the first obligation', () => {
+        const { header } = TranscriptHeader.build( { type: 'memo-init' } )
+
+        expect( header ).toContain( '**Deine Rolle in diesem Auftrag: Autor** (`author`)' )
+        // Position, not mere presence: the role must precede the first duty of the header.
+        expect( header.indexOf( 'Deine Rolle in diesem Auftrag' ) ).toBeLessThan( header.indexOf( '**Voll-Read-Pflicht:**' ) )
+    } )
+
+
+    it( 'rollout carries the orchestrator role line and the data/instruction boundary (E5)', () => {
+        const { header } = TranscriptHeader.build( { type: 'rollout' } )
+
+        expect( header ).toContain( '**Deine Rolle in diesem Auftrag: Orchestrator** (`orchestrator`)' )
+        expect( header ).toContain( '**Daten/Instruktions-Grenze:**' )
+        // The Abgrenzung is the useful half — the line must also say what the role is NOT.
+        expect( header ).toContain( 'Du schreibst kein Memo (Autor) und du planst keine Phasen' )
+    } )
+
+
+    it( 'frei carries the boundary (E4) but deliberately NO role line — it starts no workflow', () => {
+        const { header } = TranscriptHeader.build( { type: 'frei' } )
+
+        expect( header ).toContain( '**Daten/Instruktions-Grenze:**' )
+        // 30b: a role on `frei` would be a claim, so its absence is a decision, not an omission.
+        expect( header ).not.toContain( 'Deine Rolle in diesem Auftrag' )
+    } )
+
+
+    it( 'both boundary-carrying types are covered, and the role line is on exactly the right ones', () => {
+        const withBoundary = [ 'frei', 'rollout' ]
+            .filter( ( type ) => TranscriptHeader.build( { type } ).header.includes( '**Daten/Instruktions-Grenze:**' ) )
+        const withRole = TYPE_VALUES
+            .filter( ( type ) => {
+                const built = type === 'revision'
+                    ? TranscriptHeader.build( { type, memoId: '082-x', maxRevNumber: 1 } )
+                    : TranscriptHeader.build( { type } )
+
+                return built.header.includes( 'Deine Rolle in diesem Auftrag' )
+            } )
+
+        expect( withBoundary ).toEqual( [ 'frei', 'rollout' ] )
+        expect( withRole.sort() ).toEqual( [ 'memo-init', 'revision', 'rollout' ] )
     } )
 } )
 

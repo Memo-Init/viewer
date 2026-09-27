@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll } from '@jest/globals'
 import vm from 'node:vm'
+import { readFile } from 'node:fs/promises'
 
 import { extractFunctions, extractFunctionSources, readEmittedScript } from '../helpers/extractFunction.mjs'
+import { MemoView } from '../../src/MemoView.mjs'
 
 
 // M082-09-FX (Memo 082 Kap 20, Rest-Befund der Abnahme PRD-18) — EINE Defektklasse an neun Stellen.
@@ -35,6 +37,7 @@ const POPUP_FUNCTIONS = [
 ]
 
 let clientScript = ''
+let serverSource = ''
 let stateSource = ''
 let popupSource = ''
 
@@ -180,6 +183,7 @@ const boxText = ( widgets, id ) => {
 
 beforeAll( async () => {
     clientScript = await readEmittedScript()
+    serverSource = await readFile( new URL( '../../src/MemoView.mjs', import.meta.url ), 'utf-8' )
     stateSource = ( await extractFunctionSources( STATE_FUNCTIONS ) ).source
     popupSource = ( await extractFunctionSources( POPUP_FUNCTIONS ) ).source
 } )
@@ -199,7 +203,11 @@ describe( 'F-1 — refreshQuestionState liest einen Fehlschlag nicht als leeren 
     } )
 
 
-    it( 'AB-F1a: HTTP 503 ueberschreibt den Bestand NICHT, meldet sichtbar und gibt den Schluessel frei (1 Abruf, 1 Eintrag)', async () => {
+    // ETIKETTEN-REGEL (M082-09-FX, Nachtrag): eine Kennung, eine Bedingung. Die drei Lagen von F-1
+    // hiessen AB-F1a/b/c, und `AB-F1b` war damit ZWEIMAL vergeben — hier fuer die Ausnahme und unten fuer
+    // die Kennung F-1b. Eine doppelt vergebene Nummer macht jede Deckungs-Tabelle mehrdeutig, also
+    // tragen die Lagen von F-1 jetzt ihren Fall im Namen und die Kennung F-1b ihr eigenes Etikett.
+    it( 'AB-F1-nichtOK: HTTP 503 ueberschreibt den Bestand NICHT, meldet sichtbar und gibt den Schluessel frei (1 Abruf, 1 Eintrag)', async () => {
         const before = stored()
         const { sandbox, widgets, calls } = buildStateSandbox( {
             'fetchImpl': () => Promise.resolve( { 'ok': false, 'status': 503, 'json': () => Promise.resolve( {} ) } ),
@@ -224,7 +232,7 @@ describe( 'F-1 — refreshQuestionState liest einen Fehlschlag nicht als leeren 
     } )
 
 
-    it( 'AB-F1b: die Ausnahme landet im selben Kanal statt in einem leeren catch (1 Abruf, 1 Ausnahme)', async () => {
+    it( 'AB-F1-Ausnahme: die Ausnahme landet im selben Kanal statt in einem leeren catch (1 Abruf, 1 Ausnahme)', async () => {
         const { sandbox, widgets, calls } = buildStateSandbox( {
             'fetchImpl': () => Promise.reject( new TypeError( 'Failed to fetch' ) ),
             'stored': stored()
@@ -241,7 +249,7 @@ describe( 'F-1 — refreshQuestionState liest einen Fehlschlag nicht als leeren 
     } )
 
 
-    it( 'AB-F1c: `status false` wird mit der Begruendung des Servers gemeldet, nicht als leerer Speicher (1 Antwort, 1 Begruendung)', async () => {
+    it( 'AB-F1-statusFalse: `status false` wird mit der Begruendung des Servers gemeldet, nicht als leerer Speicher (1 Antwort, 1 Begruendung)', async () => {
         const { sandbox, widgets } = buildStateSandbox( {
             'fetchImpl': () => Promise.resolve( {
                 'ok': true,
@@ -844,6 +852,160 @@ describe( 'F-7 — die verweigerte Vorbefuellung sagt, dass sie verweigert', () 
 
         expect( input.value ).toBe( 'Eine Zeile, und sie wird angeboten.' )
         expect( hint.length ).toBe( 0 )
+    } )
+} )
+
+
+// =================================================================================================
+// F-8 — die Spiegelung in die Memo-Datenbank hat einen Adressaten.
+// Dieselbe Regel eine Schicht tiefer: die Spiegelung laeuft best-effort NACH der Antwort, ein
+// Fehlschlag ging auf die Standard-Fehlerausgabe des SERVERS, die Antwort blieb 200 und der Nutzer las
+// „Gespeichert.". Die Quittung darf dabei nicht falsch werden — Datei geschrieben und
+// Datenbank-Zeile fehlt ist nicht „gescheitert", sondern UNVOLLSTAENDIG, und die beiden Lagen
+// tragen deshalb zwei Saetze.
+// =================================================================================================
+describe( 'F-8 — eine unvollstaendige Spiegelung erreicht die Oberflaeche', () => {
+    const buildBandSandbox = () => {
+        const band = makeNode( 'div', 'mirror-banner' )
+        band.classList.add( 'mirror-banner-hidden' )
+        const sandbox = { 'document': makeDocument( { 'mirror-banner': band } ), console }
+
+        vm.createContext( sandbox )
+
+        return { sandbox, band }
+    }
+
+
+    it( 'AB-F8-Form: die Drahtform wird an EINER Stelle gebaut und traegt alle sieben Felder (1 Bauplatz)', () => {
+        const message = MemoView.buildUserInputMirrorMessage( {
+            'memoId': '082-orchestrator',
+            'transcriptType': 'revision',
+            'outcome': { 'status': false, 'inputId': null, 'kind': 'revision', 'answersRecorded': 0, 'messages': [ 'USERINPUT-EXEC-002: record exited non-zero' ] }
+        } )
+
+        expect( Object.keys( message ).sort() ).toEqual(
+            [ 'answersRecorded', 'inputId', 'kind', 'memoId', 'messages', 'status', 'transcriptType', 'type' ].sort()
+        )
+        expect( message.type ).toBe( 'userInputMirror' )
+        expect( message.status ).toBe( false )
+        expect( message.messages.length ).toBe( 1 )
+        // EIN Bauplatz: eine zweite Stelle koennte ein Feld weglassen, und niemand saehe es.
+        expect( serverSource.split( 'static buildUserInputMirrorMessage(' ).length - 1 ).toBe( 1 )
+        // Ein Ergebnis ohne Felder wird nicht zu einer halben Nachricht — `status` ist dann false, nicht
+        // „unbekannt als harmlos gelesen".
+        expect( MemoView.buildUserInputMirrorMessage( { 'memoId': null, 'transcriptType': null, 'outcome': null } ).status ).toBe( false )
+    } )
+
+
+    it( 'AB-F8-Schweigen: ueber einer sauberen Spiegelung geht NICHTS hinaus, ueber einer gemeldeten schon (2 Lagen)', () => {
+        const sauber = MemoView.broadcastUserInputMirror( {
+            'memoId': '082', 'transcriptType': 'revision',
+            'outcome': { 'status': true, 'inputId': 'UI-7', 'kind': 'revision', 'answersRecorded': 3, 'messages': [] }
+        } )
+        const gemeldet = MemoView.broadcastUserInputMirror( {
+            'memoId': '082', 'transcriptType': 'revision',
+            'outcome': { 'status': false, 'messages': [ 'USERINPUT-MEMO-001: empty memo id' ] }
+        } )
+
+        // Eine Meldung auf jedem Speichervorgang liest niemand — die Stille ist eine BEDINGUNG, kein Zufall.
+        expect( sauber ).toEqual( { 'sent': false, 'reason': 'nothing-to-report' } )
+        // Und die gemeldete Lage kommt bis an die Sendestelle: hier ohne Sockel, also mit benanntem Grund
+        // statt mit einem stillen Nichts. Das ist die Vergleichsmenge, die die Stille oben erst zu einer
+        // Aussage macht.
+        expect( gemeldet ).toEqual( { 'sent': false, 'reason': 'no-clients' } )
+    } )
+
+
+    it( 'AB-F8-Naht: BEIDE Ausgaenge melden, die stderr-Zeilen bleiben, und alle Aufrufstellen gehen durch EINE Funktion (Quelltext, 5 Stellen)', () => {
+        // Zwei Sendestellen: der Ausnahme-Zweig und der normale Ausgang.
+        expect( serverSource.split( 'MemoView.broadcastUserInputMirror( {' ).length - 1 ).toBe( 2 )
+        // Die bestehende Server-Protokollierung ist NICHT ersetzt — der Operator behaelt seinen Kanal.
+        expect( serverSource ).toContain( 'WARN USERINPUT-CAPTURE-001: user_inputs capture threw (transcript MD unaffected)' )
+        expect( serverSource ).toContain( "outcome[ 'messages' ].forEach( ( message ) => process.stderr.write( `  WARN ${ message }\\n` ) )" )
+        // Und die Spiegelung bleibt HINTER der Antwort: waere sie davor, haette jeder Speichervorgang
+        // einen Kindprozess im Weg.
+        const antwort = serverSource.indexOf( "sendJson( res, 200, { 'status': 'ok' } )" )
+        const spiegel = serverSource.indexOf( "await MemoView.#captureUserInput( { 'memoId': result[ 'memoId' ]" )
+
+        expect( antwort ).toBeGreaterThan( -1 )
+        expect( spiegel ).toBeGreaterThan( antwort )
+        // Fuenf Aufrufstellen, EINE Funktion — die Meldung haengt an der Funktion, nicht an der Stelle.
+        expect( serverSource.split( 'MemoView.#captureUserInput( {' ).length - 1 ).toBe( 5 )
+        expect( serverSource.split( 'static async #captureUserInput(' ).length - 1 ).toBe( 1 )
+    } )
+
+
+    it( 'AB-F8-Band-Fehlschlag: Datei da, Datenbank-Zeile fehlt — der Satz sagt BEIDES (1 Meldung)', async () => {
+        const lifted = await extractFunctionSources( [ 'renderUserInputMirror' ] )
+        const { sandbox, band } = buildBandSandbox()
+
+        vm.runInContext( `${ lifted.source }\nglobalThis.__mirror = renderUserInputMirror;`, sandbox )
+        sandbox.__mirror( {
+            'type': 'userInputMirror', 'memoId': '082-orchestrator', 'transcriptType': 'revision',
+            'status': false, 'inputId': null, 'kind': 'revision', 'answersRecorded': 0,
+            'messages': [ 'USERINPUT-EXEC-002: record exited non-zero' ]
+        } )
+
+        expect( band.classList.contains( 'mirror-banner-hidden' ) ).toBe( false )
+        expect( band.getAttribute( 'aria-hidden' ) ).toBe( 'false' )
+        // Das Memo ist benannt — die Rundmeldung erreicht auch Ansichten, die es nicht zeigen.
+        expect( band.textContent ).toContain( '082-orchestrator' )
+        // Was fehlt...
+        expect( band.textContent ).toContain( 'die Zeile in der Memo-Datenbank fehlt' )
+        expect( band.textContent ).toContain( 'USERINPUT-EXEC-002' )
+        // ...und was da ist. Die Quittung wird nicht falsch.
+        expect( band.textContent ).toContain( 'NUR als Datei' )
+        expect( band.textContent ).toContain( 'vollständig auf der Platte' )
+    } )
+
+
+    it( 'AB-F8-Band-Unvollstaendig: gespiegelt, aber nicht vollstaendig ist ein EIGENER Satz (1 Meldung, 2 Antworten)', async () => {
+        const lifted = await extractFunctionSources( [ 'renderUserInputMirror' ] )
+        const { sandbox, band } = buildBandSandbox()
+
+        vm.runInContext( `${ lifted.source }\nglobalThis.__mirror = renderUserInputMirror;`, sandbox )
+        sandbox.__mirror( {
+            'type': 'userInputMirror', 'memoId': '082', 'transcriptType': 'revision',
+            'status': true, 'inputId': 'UI-7', 'kind': 'revision', 'answersRecorded': 2,
+            'messages': [ 'USERINPUT-EXEC-003: record succeeded but no input_id on stdout' ]
+        } )
+
+        // Zwei Lagen, zwei Saetze: eingeebnet waere genau die Klasse, die dieses Buendel schliesst.
+        expect( band.textContent ).toContain( 'gespiegelt, aber NICHT vollständig' )
+        expect( band.textContent ).toContain( '2 Antworten' )
+        expect( band.textContent ).not.toContain( 'NUR als Datei' )
+        expect( band.classList.contains( 'mirror-banner-hidden' ) ).toBe( false )
+    } )
+
+
+    it( 'AB-F8-Band Gegenrichtung: eine saubere Spiegelung zeigt KEIN Band und nimmt ein altes weg (2 Meldungen)', async () => {
+        const lifted = await extractFunctionSources( [ 'renderUserInputMirror' ] )
+        const { sandbox, band } = buildBandSandbox()
+
+        vm.runInContext( `${ lifted.source }\nglobalThis.__mirror = renderUserInputMirror;`, sandbox )
+        sandbox.__mirror( {
+            'status': false, 'memoId': '082', 'answersRecorded': 0,
+            'messages': [ 'USERINPUT-MEMO-001: empty memo id' ]
+        } )
+
+        expect( band.classList.contains( 'mirror-banner-hidden' ) ).toBe( false )
+
+        sandbox.__mirror( { 'status': true, 'memoId': '082', 'answersRecorded': 3, 'messages': [] } )
+
+        expect( band.classList.contains( 'mirror-banner-hidden' ) ).toBe( true )
+        expect( band.textContent ).toBe( '' )
+        expect( band.getAttribute( 'aria-hidden' ) ).toBe( 'true' )
+    } )
+
+
+    it( 'AB-F8-Empfaenger: der Klient hoert auf die Nachricht und das Band steht im Geruest (Quelltext, 2 Naehte)', () => {
+        expect( clientScript ).toContain( "if( data.type === 'userInputMirror' ) {" )
+        expect( clientScript ).toContain( 'renderUserInputMirror( data )' )
+        expect( clientScript.split( 'function renderUserInputMirror(' ).length - 1 ).toBe( 1 )
+        // Das Band ist ein EIGENES Feld und nicht die Laufzeit-Status-Zeile: zwei Aussagen in einem Feld
+        // heisst, dass eine von beiden verloren geht.
+        expect( serverSource ).toContain( 'id="mirror-banner"' )
+        expect( clientScript ).not.toContain( "getElementById( 'runtime-status' )\n            if( !band )" )
     } )
 } )
 

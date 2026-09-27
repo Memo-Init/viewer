@@ -219,6 +219,30 @@
 
         .offline-banner-hidden { display: none; }
 
+        /* M082-09-FX (F-8): das Band fuer eine unvollstaendige Spiegelung in die Memo-Datenbank. Gleiche
+           Geometrie wie das Offline-Band (darunter, damit beide gleichzeitig lesbar bleiben), aber
+           Warn-Farbe statt Gefahr-Farbe: die Datei IST geschrieben, nur die Datenbank-Zeile fehlt. Ein
+           rotes Band waere hier eine falsche Aussage ueber den Speichervorgang. */
+        .mirror-banner {
+            display: block;
+            position: fixed;
+            top: 84px;
+            left: 0;
+            right: 0;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 8px 16px;
+            background: var(--warn, #d08a2c);
+            color: #fff;
+            font-size: 13px;
+            font-weight: 600;
+            text-align: center;
+            letter-spacing: 0.2px;
+            z-index: 998;
+        }
+
+        .mirror-banner-hidden { display: none; }
+
         /* PRD-008: two-line content-sticky-header.
            Line 1: Titel + Memo-Typ-Badge + Status-Pill + Diff-Toggle.
            Line 2: Transcript kopieren + URL + Woerter/Minuten. */

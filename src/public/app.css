@@ -2246,6 +2246,16 @@
             opacity: 0.85;
             font-style: italic;
         }
+        /* M082-09-FX (F-7): the per-row sentence for a stored answer that is NOT offered in the field
+           because it is multi-line. Same warning colour as the unconfirmed marking above — both say "what
+           you see here is not the whole story" — but its own element, because the placeholder may already
+           be carrying the unconfirmed hint and two statements in one slot means one of them is lost. */
+        .pp-question-hint {
+            color: var(--warn, #d08a2c);
+            font-size: 11px;
+            line-height: 1.4;
+            font-style: italic;
+        }
         /* PRD-22 (Memo 081 Kap 19, WI-130): the loud edge before sending. SAME warning colour as the
            placeholder above — field marking and send-edge state one fact, and two colours would read
            as two different things. Deliberately NOT .t-error: an omitted intent is not an error, and

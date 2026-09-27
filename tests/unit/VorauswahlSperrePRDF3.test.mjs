@@ -33,15 +33,59 @@ describe( 'PRD-F3 A1/A3 — der Merker "vom User beruehrt" im Widget-Zustand', (
     }
 
 
-    it( 'A1 — ein Zustand aus einer Frage MIT Vorauswahl ist beruehrt=falsch (1 Frage geprueft)', async () => {
+    it( 'A1 — ein Zustand aus einer Frage MIT Vorauswahl traegt KEINE Auswahl (1 Frage geprueft)', async () => {
         const { seedQuestionState } = await load()
         const state = seedQuestionState( [ questionWithPreselection ], {} )
 
         expect( state.length ).toBe( 1 )
-        // Die Vorauswahl seedet weiterhin die ANZEIGE — das ist ihre Aufgabe …
-        expect( state[ 0 ].selected ).toEqual( [ 0 ] )
-        // … sie ist aber keine getroffene Wahl.
+        // M082-09-03 (Memo 082 Kap 20, Frage F15 = A) — DIESER FALL IST UMGEKEHRT WORDEN, und der
+        // Name dieser Datei wird damit zum ersten Mal wahr. Bis hierher stand an dieser Stelle
+        // `toEqual( [ 0 ] )` mit dem Kommentar "das ist ihre Aufgabe": die Vorauswahl seedete den
+        // AUSWAHL-Zustand. Wer dann nur bestaetigte, unterschrieb die Empfehlung, und die so
+        // entstandene Zeile landete in `## Beantwortete Fragen` als eigenstaendige Entscheidung.
+        //
+        // Ab F15=A gilt: eine Vorauswahl seedet die ANZEIGE und ist nie eine Auswahl.
+        expect( state[ 0 ].selected ).toEqual( [] )
+        // Die Vorauswahl ist nicht verschwunden, sie ist UMGEZOGEN — in ein eigenes Anzeige-Feld,
+        // das niemand erntet. Ohne diese Zusicherung waere eine Fassung, die die Vorauswahl einfach
+        // wegwirft, von der richtigen nicht zu unterscheiden.
+        expect( state[ 0 ].preselected ).toEqual( [ 0 ] )
+        // … und sie ist weiterhin keine getroffene Wahl.
         expect( state[ 0 ].touched ).toBe( false )
+    } )
+
+
+    it( 'A1 — auch der Mehrfach-Zweig uebernimmt die Vorauswahl nicht (2 von 2 Typen geprueft)', async () => {
+        // Der single-Zweig nahm `pre[ 0 ]`, der multi-Zweig die VOLLE Menge — zwei Zweige, zwei
+        // Gelegenheiten. Ein Bau, der nur `single` nachzieht, laesst den anderen stehen; deshalb
+        // nennt AB-1 ausdruecklich 2 Faelle und nicht 1.
+        const { seedQuestionState } = await load()
+        const multi = {
+            ...questionWithPreselection,
+            'id': 'F2', 'typ': 'multi', 'preselected': [ 0, 1 ]
+        }
+        const state = seedQuestionState( [ questionWithPreselection, multi ], {} )
+
+        expect( state.length ).toBe( 2 )
+        expect( state[ 0 ].selected ).toEqual( [] )
+        expect( state[ 1 ].selected ).toEqual( [] )
+        expect( state[ 1 ].preselected ).toEqual( [ 0, 1 ] )
+        expect( state[ 1 ].touched ).toBe( false )
+    } )
+
+
+    it( 'A1 — das Anzeige-Feld ist von der Auswahl unterscheidbar, nicht ihr Zwilling (1 Frage)', async () => {
+        // Positivkontrolle gegen die Nullmenge: das Feld traegt genau dann etwas, wenn die Frage
+        // etwas vorauswaehlt. Ohne diesen Gegenfall koennte `preselected` eine Konstante sein.
+        const { seedQuestionState } = await load()
+        const bare = { ...questionWithPreselection, 'preselected': [] }
+        const [ withPre, withoutPre ] = seedQuestionState( [ questionWithPreselection, { ...bare, 'id': 'F3' } ], {} )
+
+        expect( withPre.preselected ).toEqual( [ 0 ] )
+        expect( withPre.selected ).toEqual( [] )
+        expect( withoutPre.preselected ).toEqual( [] )
+        expect( withoutPre.selected ).toEqual( [] )
+        expect( withPre.selected ).not.toBe( withPre.preselected )
     } )
 
 
@@ -85,6 +129,24 @@ describe( 'PRD-F3 A1/A3 — der Merker "vom User beruehrt" im Widget-Zustand', (
         const carried = seedQuestionState( [ questionWithPreselection ], { 'F1': legacy } )
 
         expect( carried[ 0 ].touched ).toBe( false )
+    } )
+
+
+    it( 'AB-3 — ein ECHTER, beruehrter Zustand ueberlebt die Rundmeldung unveraendert (1 Zustand)', async () => {
+        // M082-09-03: die Gegenprobe zu A1. Ohne sie waere eine Fassung, die JEDE Auswahl leert, von
+        // der richtigen nicht zu unterscheiden — dieser Auftrag entfernt eine erfundene Auswahl, nie
+        // eine gewachsene. Die Indizes liegen gueltig in der heutigen Optionsliste (2 Optionen).
+        const { seedQuestionState } = await load()
+        const real = { 'selected': [ 1 ], 'custom': [ 'eigener Eintrag' ], 'added': false, 'addedText': null, 'rejected': false, 'touched': true }
+        const carried = seedQuestionState( [ questionWithPreselection ], { 'F1': real } )
+
+        expect( carried[ 0 ].selected ).toEqual( [ 1 ] )
+        expect( carried[ 0 ].custom ).toEqual( [ 'eigener Eintrag' ] )
+        expect( carried[ 0 ].touched ).toBe( true )
+        // Der Anzeige-Hinweis gehoert zur FRAGE, nicht zum uebertragenen Zustand: er wird am
+        // uebertragenen Objekt nachgefuehrt, damit die Karte nicht die Vorauswahl einer Nutzlast
+        // zeigt, die es nicht mehr gibt.
+        expect( carried[ 0 ].preselected ).toEqual( [ 0 ] )
     } )
 
 
@@ -146,7 +208,11 @@ describe( 'PRD-F3 A7-Vorstufe — die Provenienz-Marke am Antwort-Kopf', () => {
 
 
 describe( 'PRD-F3 A4/A5/A6 — die Dubletten-Pruefung ueber die Frage-Kennung', () => {
-    const load = () => extractFunctions( [ 'mergeAnswerBlocks', 'scanAnswerBlocks' ] )
+    // M082-09-06 (Memo 082 Kap 20a, Cluster C — WI-120, S1): scanAnswerBlocks bestimmt die
+    // Blockgrenze seit diesem Auftrag ueber scanCodeFences. Die Namensliste wird nachgezogen statt
+    // den Aufruf in der Produktion mit einer typeof-Wache zu umgehen — eine Wache haette die
+    // Zaun-Erkennung in genau dem Lauf uebersprungen, der sie prueft (M082-09-04 O-2, M082-09-05 O-2).
+    const load = () => extractFunctions( [ 'mergeAnswerBlocks', 'scanAnswerBlocks', 'scanCodeFences' ] )
     const block = ( id, text ) => `## Antwort auf ${ id } — Frage ${ id }\n\n${ text }\n`
     const count = ( content, id ) => ( content.match( new RegExp( `## Antwort auf ${ id }`, 'g' ) ) || [] ).length
 
@@ -254,5 +320,189 @@ describe( 'PRD-F3 A4/A5/A6 — die Dubletten-Pruefung ueber die Frage-Kennung', 
         expect( merged.content ).toContain( '### ANM-001 — Anmerkung 1' )
         expect( merged.content ).toContain( 'zwei' )
         expect( count( merged.content, 'F1' ) ).toBe( 1 )
+    } )
+} )
+
+
+// M082-09-03 (Memo 082 Kap 20, Frage F15 = A) — die Tastatur-Wege und der Beleg-Fehler.
+//
+// Die beiden Wege sind EIGENE Faelle, weil sie verschieden lose gebaut waren: das blanke `Enter`
+// bestaetigte die AKTIVE Frage (nach dem Rendern die erste), `Strg/Cmd+L` bestaetigte AUSSERHALB
+// seiner eigenen Auswahl-Bedingung, also auch ohne fokussierte Option. Ein Bau, der nur einen der
+// beiden nachzieht, laesst den anderen fallen.
+//
+// GEWAEHLTE FORM: wirkungslos MIT sichtbarem Hinweis. Die dritte Form — stilles Nichts — ist
+// ausdruecklich nicht gebaut: sie ist von einer geglueckten Bestaetigung an der Tastatur nicht zu
+// unterscheiden, und genau das hat den Fehler so lange getragen.
+describe( 'M082-09-03 (F15=A) — die Tastatur-Wege verlangen eine tatsaechliche Auswahl', () => {
+    // Eine Attrappe des Dokuments, weil die Hinweis-Funktionen echte DOM-Aufrufe machen. Sie hat
+    // genau die vier Methoden, die der gehobene Quelltext benutzt — keine Nachbildung eines Browsers,
+    // sondern die Nennung dessen, was die Funktion anfasst.
+    const buildStubDom = () => {
+        const tracked = { 'hint': null, 'removed': 0, 'insertedInto': null }
+        // GEMESSEN, und es hat einen roten Playwright-Lauf gekostet: `.qw-footer` ist ein NACHFAHRE
+        // der Karte, kein Kind von ihr. Eine Attrappe, in der der Fuss direkt an der Karte haengt,
+        // ist gruen, waehrend der Browser `NotFoundError` wirft — der Hinweis erscheint dann nie,
+        // also genau das stille Nichts, gegen das dieses Tor gebaut ist. Die Attrappe bildet die
+        // Schachtelung deshalb nach: Karte -> Koerper -> Fuss.
+        const inner = {
+            'nodes': [],
+            'insertBefore': function( node ) {
+                node.parentNode = inner
+                inner.nodes.push( node )
+                tracked.hint = node
+                tracked.insertedInto = 'qw-footer-parent'
+            },
+            'removeChild': function( node ) {
+                inner.nodes = inner.nodes.filter( ( entry ) => entry !== node )
+                tracked.hint = null
+                tracked.removed = tracked.removed + 1
+            }
+        }
+        const footer = { 'className': 'qw-footer', 'parentNode': inner }
+        const card = {
+            'nodes': [],
+            'querySelector': ( selector ) => ( selector === '.qw-footer' ? footer : null ),
+            'appendChild': function( node ) {
+                node.parentNode = card
+                card.nodes.push( node )
+                tracked.hint = node
+                tracked.insertedInto = 'card'
+            },
+            'removeChild': function( node ) {
+                card.nodes = card.nodes.filter( ( entry ) => entry !== node )
+                tracked.hint = null
+                tracked.removed = tracked.removed + 1
+            }
+        }
+        const doc = {
+            'createElement': () => ( {
+                'className': '', 'id': '', 'textContent': '', 'attributes': {}, 'parentNode': null,
+                'setAttribute': function( key, value ) { this.attributes[ key ] = value }
+            } ),
+            'querySelector': ( selector ) => ( selector.indexOf( '.qw-card' ) !== -1 ? card : null ),
+            'getElementById': ( id ) => ( tracked.hint !== null && tracked.hint.id === id ? tracked.hint : null )
+        }
+
+        return { doc, card, tracked }
+    }
+
+    const loadGate = async ( state ) => {
+        const lifted = await extractFunctionSources( [ 'hasUserChoice', 'clearNoSelectionHint', 'showNoSelectionHint', 'confirmQuestionByKeyboard' ] )
+        const dom = buildStubDom()
+        const submitted = []
+        const sandbox = {
+            'questionNav': { 'state': state },
+            'document': dom.doc,
+            'submitQuestionAnswer': ( idx ) => { submitted.push( idx ) },
+            console
+        }
+        vm.createContext( sandbox )
+        vm.runInContext( `${ lifted[ 'source' ] }\nglobalThis.__confirm = confirmQuestionByKeyboard;`, sandbox )
+
+        return { 'confirm': sandbox.__confirm, submitted, dom }
+    }
+
+    const seeded = ( extra ) => ( { 'selected': [], 'preselected': [ 0 ], 'custom': [], 'added': false, 'addedText': null, 'rejected': false, 'touched': false, ...( extra || {} ) } )
+
+
+    it( 'AB-6 — `Enter` ohne Auswahl bestaetigt nichts und zeigt einen Hinweis (1 Frage, 1 Druck)', async () => {
+        const { confirm, submitted, dom } = await loadGate( [ seeded() ] )
+
+        const verdict = confirm( 0, 'Enter' )
+
+        expect( verdict ).toBe( false )
+        // Nichts bestaetigt …
+        expect( submitted ).toEqual( [] )
+        // … und nicht still: der Hinweis steht in der Karte und nennt den Weg, der nichts bewirkt hat.
+        expect( dom.tracked.hint ).not.toBeNull()
+        expect( dom.tracked.hint.id ).toBe( 'qw-no-selection-hint' )
+        expect( dom.tracked.hint.attributes[ 'data-qw-no-selection' ] ).toBe( '1' )
+        expect( dom.tracked.hint.textContent ).toContain( 'Enter' )
+        expect( dom.tracked.hint.textContent ).toContain( 'keine Auswahl' )
+        // Er haengt am Elternknoten des Fusses — nicht an der Karte. Der Unterschied ist im Browser
+        // ein `NotFoundError` und damit ein unsichtbarer Hinweis.
+        expect( dom.tracked.insertedInto ).toBe( 'qw-footer-parent' )
+    } )
+
+
+    it( 'AB-7 — `Strg/Cmd+L` ohne fokussierte Option bestaetigt nichts und zeigt einen Hinweis', async () => {
+        const { confirm, submitted, dom } = await loadGate( [ seeded() ] )
+
+        const verdict = confirm( 0, 'Strg/Cmd+L' )
+
+        expect( verdict ).toBe( false )
+        expect( submitted ).toEqual( [] )
+        expect( dom.tracked.hint ).not.toBeNull()
+        expect( dom.tracked.hint.textContent ).toContain( 'Strg/Cmd+L' )
+    } )
+
+
+    it( 'Positivkontrolle: MIT Auswahl bestaetigen beide Wege, und der Hinweis verschwindet (2 Wege)', async () => {
+        // Ohne diese Richtung waere eine Fassung, die NIE bestaetigt, von der richtigen nicht zu
+        // unterscheiden — dieselbe Klasse wie AB-5 zu AB-4.
+        const enter = await loadGate( [ seeded( { 'selected': [ 1 ] } ) ] )
+        expect( enter.confirm( 0, 'Enter' ) ).toBe( true )
+        expect( enter.submitted ).toEqual( [ 0 ] )
+
+        const shortcut = await loadGate( [ seeded( { 'selected': [ 1 ] } ) ] )
+        expect( shortcut.confirm( 0, 'Strg/Cmd+L' ) ).toBe( true )
+        expect( shortcut.submitted ).toEqual( [ 0 ] )
+
+        // Ein eigener Eintrag ohne angeklickte Option ist ebenfalls eine tatsaechliche Aeusserung.
+        const custom = await loadGate( [ seeded( { 'custom': [ 'etwas eigenes' ] } ) ] )
+        expect( custom.confirm( 0, 'Enter' ) ).toBe( true )
+        expect( custom.submitted ).toEqual( [ 0 ] )
+    } )
+
+
+    it( 'die Vorauswahl allein oeffnet das Tor NICHT — sie ist kein Auswahl-Ersatz (1 Frage)', async () => {
+        // Die Schaerfe-Probe: der Zustand traegt eine nicht leere Vorauswahl und sonst nichts. Ein
+        // Tor, das `preselected` mitlesen wuerde, waere hier gruen — und der Befund waere zurueck.
+        const { confirm, submitted } = await loadGate( [ seeded( { 'preselected': [ 0, 1 ] } ) ] )
+
+        expect( confirm( 0, 'Enter' ) ).toBe( false )
+        expect( submitted ).toEqual( [] )
+    } )
+
+
+    it( 'ein bereits bestaetigter Eintrag bleibt per Tastatur ruecknehmbar (Rueckgaengig-Pfad)', async () => {
+        // Eine Ruecknahme ist keine Bestaetigung. Waere sie mitgesperrt, koennte eine ohne Auswahl
+        // bestaetigte Antwort per Tastatur nicht mehr zurueckgenommen werden.
+        const { confirm, submitted } = await loadGate( [ seeded( { 'added': true, 'addedText': '## Antwort auf F1 — Erste Frage\n\n\n' } ) ] )
+
+        expect( confirm( 0, 'Enter' ) ).toBe( true )
+        expect( submitted ).toEqual( [ 0 ] )
+    } )
+
+
+    it( 'beide Tastatur-Wege gehen durch DAS EINE Tor — kein zweiter Weg an ihm vorbei', async () => {
+        // Gehaertet nach demselben Muster wie "markQuestionTouched ist der EINZIGE Setzer": ein
+        // zweiter direkter Aufruf aus dem Tastatur-Handler waere genau die Stelle, an der die
+        // Bindung spaeter still wieder aufgeht. Vergleichsmenge: der ganze ausgelieferte Quelltext.
+        const gateCalls = clientScript.match( /confirmQuestionByKeyboard\( questionNav\.active, /g ) || []
+        const gateDefinition = clientScript.match( /function confirmQuestionByKeyboard\(/g ) || []
+        const predicate = clientScript.match( /function hasUserChoice\(/g ) || []
+
+        expect( clientScript.length ).toBeGreaterThan( 0 )
+        // 2 Aufrufe: `Enter` und `Strg/Cmd+L`. Eine Definition, ein Praedikat.
+        expect( gateCalls.length ).toBe( 2 )
+        expect( gateDefinition.length ).toBe( 1 )
+        expect( predicate.length ).toBe( 1 )
+    } )
+} )
+
+
+describe( 'M082-09-03 (F15=A) — der Kommentar behauptet keine Sperre mehr', () => {
+    it( 'AB-8 — der ausgelieferte Quelltext behauptet keine "Vorauswahl-Sperre" als Systemeigenschaft', () => {
+        // Der Beleg-Fehler war langlebiger als der Logik-Fehler: eine von Hand in EIN Memo
+        // geschriebene Uebergangsmassnahme stand im Kommentar als Systemeigenschaft. Vergleichsmenge:
+        // der ganze ausgelieferte Quelltext, und dass er nicht leer ist, wird zuerst gezeigt.
+        expect( clientScript.length ).toBeGreaterThan( 0 )
+        expect( clientScript ).not.toContain( 'Vorauswahl-Sperre' )
+        // Die Regel steht dafuer als Satz da, und sie ist jetzt auch das, was der Kode tut.
+        expect( clientScript ).toContain( 'THE PRESELECTION SEEDS THE DISPLAY AND IS NOT A DECISION' )
+        // Und die Hand-Mitigation ist ausdruecklich als abgelaufen benannt.
+        expect( clientScript ).toContain( 'THE HAND MITIGATION HAS EXPIRED' )
     } )
 } )

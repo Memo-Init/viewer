@@ -191,6 +191,36 @@ const ANSWERED_PROVENANCE_GROUPS = [
 ]
 
 
+// HOW the decision came about — the line #answeredEntry renders directly below `User-Entscheidung`
+// (Memo 082, REV-10 / WI-122). A merely CONFIRMED recommendation used to stand in the decision record as
+// an independent decision beside the recommendation it agrees with, and the mental-model walk reads
+// exactly that pair — so the record taught that the user is always of one mind with the AI, and the
+// distortion wrote itself forward: every confirmed recommendation made the next recommendation bolder.
+//
+// FOUR states, never three. `not-recorded` is the one that is easy to miss and the one that matters
+// most: the stock written before the ` [Vorauswahl]` mark carries no provenance at all, and an absent
+// mark is NOT a measured "chose it freely" — THE ZERO MEANS NOT MEASURED, NOT NOT HAPPENED. Emitting it
+// as an independent decision would continue the same distortion in the opposite direction.
+//
+// `value` is the machine token (English, without exception), `text` is rendered display text and may
+// follow the reader — the two are different artifacts, which is why a German line stands over an English
+// field here. Byte-identical to RevisionAssembler ANSWERED_PROVENANCE_KINDS (core).
+const ANSWERED_PROVENANCE_KINDS = [
+    { value: 'chosen-diverging', text: 'eigenstaendige Entscheidung — weicht von der AI-Empfehlung ab' },
+    { value: 'chosen-matching', text: 'eigenstaendige Entscheidung — stimmt mit der AI-Empfehlung ueberein' },
+    { value: 'preselection-confirmed', text: 'bestaetigte Vorauswahl — die AI-Empfehlung wurde bestaetigt, nicht gewaehlt' },
+    { value: 'not-recorded', text: 'nicht erhoben — die Herkunft dieser Entscheidung ist nicht aufgezeichnet' }
+]
+
+// The LABEL of that line. Deliberately NOT `Anmerkung (Provenienz)`: that spelling is the HAND-AUTHORED
+// provenance convention of the written stock, and MentalModelStore reads `note` from it. Measured in
+// the authored REV-10 of memo 082 (3393 lines): 17 lines carry `Anmerkung (Provenienz)` and 19 carry
+// some `Anmerkung (Provenienz…` spelling, out of 25 `Anmerkung` lines in all. Two carriers under one
+// label would be two truths about one decision — the very thing this line exists to end.
+// Byte-identical to RevisionAssembler (core).
+const ANSWERED_PROVENANCE_LABEL = 'Entscheidungsweg'
+
+
 // The block toolkit in REGISTER order and the two kinds that are ALWAYS rendered — byte-identical to
 // RevisionAssembler (core). No heading string is typed on this side either.
 const BLOCK_SECTION_ORDER = BlockSections.all().sections
@@ -2367,8 +2397,35 @@ class DoltDbAssembler {
     }
 
 
+    // THE PUBLIC DOOR OF THE TWIN, and the reason it exists is the whole point of this PRD: the
+    // byte-identity of this family was held by TWO COMMENTS that cite each other, and a comment cannot
+    // fail. Exposing the block builder makes the equality PROVABLE instead of asserted —
+    // cli/test/AnsweredEntryTwinParity.test.mjs (core) runs the same inputs through BOTH implementations
+    // and compares them character for character, and both repos additionally hold the same expectation
+    // table so a drift is red even where the sibling repo is absent (CI checks one repo out alone).
+    //
+    // Object in, object out, no silent default: a missing argument fails loud rather than rendering a
+    // block over a guessed empty stock. Byte-identical to RevisionAssembler.answeredEntryLines (core).
+    static answeredEntryLines( { row, questionOptions, answers } ) {
+        if( row === null || typeof row !== 'object' ) {
+            throw new Error( 'answeredEntryLines: "row" is required and must be an object' )
+        }
+        if( Array.isArray( questionOptions ) !== true ) {
+            throw new Error( 'answeredEntryLines: "questionOptions" is required and must be an array' )
+        }
+        if( Array.isArray( answers ) !== true ) {
+            throw new Error( 'answeredEntryLines: "answers" is required and must be an array' )
+        }
+
+        return { lines: DoltDbAssembler.#answeredEntry( { row, questionOptions, answers } ) }
+    }
+
+
     // Byte-identical to RevisionAssembler.#answeredEntry (core). Field order fixed (heading, Frage,
-    // AI-Empfehlung war, User-Entscheidung, optional Wortlaut).
+    // AI-Empfehlung war, User-Entscheidung, Entscheidungsweg, optional Wortlaut) so the emitted bytes are
+    // deterministic. The Entscheidungsweg line is NOT optional and does not sit at the end: a line that
+    // appears only sometimes cannot be told apart from a missing one, and "sometimes" is exactly how the
+    // record lost this distinction in the first place. It stands directly below the field it qualifies.
     static #answeredEntry( { row, questionOptions, answers } ) {
         const id = row[ 'id' ]
         const record = DoltDbAssembler.#latestAnswer( { answers, questionId: id } )
@@ -2377,13 +2434,93 @@ class DoltDbAssembler {
             '',
             `- **Frage (Original):** ${ cell( row[ 'text' ] ) }`,
             `- **AI-Empfehlung war:** ${ DoltDbAssembler.#answeredAi( { row } ) }`,
-            `- **User-Entscheidung:** ${ DoltDbAssembler.#answeredDecision( { record, questionOptions, questionId: id } ) }`
+            `- **User-Entscheidung:** ${ DoltDbAssembler.#answeredDecision( { record, questionOptions, questionId: id } ) }`,
+            DoltDbAssembler.#answeredProvenance( { row, record } )
         ]
 
         return base
             .concat( DoltDbAssembler.#answeredWortlaut( { record } ) )
             .concat( DoltDbAssembler.#answeredContext( { row } ) )
             .concat( [ '' ] )
+    }
+
+
+    // The rendered provenance line. The classifier is total over the four registered kinds, so the
+    // lookup cannot miss — and if a later hand adds a kind to the classifier without adding its text to
+    // the register, THAT is what the throw names. A silent fallback text would hide exactly the drift
+    // this line was built to end. Byte-identical to RevisionAssembler.#answeredProvenance (core).
+    static #answeredProvenance( { row, record } ) {
+        const value = DoltDbAssembler.#provenanceKindOf( { row, record } )
+        const kind = ANSWERED_PROVENANCE_KINDS
+            .find( ( entry ) => entry[ 'value' ] === value )
+        if( kind === undefined ) {
+            throw new Error( `answered provenance: no display text registered for kind "${ value }"` )
+        }
+
+        return `- **${ ANSWERED_PROVENANCE_LABEL }:** ${ kind[ 'text' ] }`
+    }
+
+
+    // WHICH of the four kinds one answered row is. Byte-identical to RevisionAssembler.#provenanceKindOf.
+    static #provenanceKindOf( { row, record } ) {
+        const state = DoltDbAssembler.#preselectionState( { record } )
+        if( state === 'unknown' ) {
+            return 'not-recorded'
+        }
+        if( state === 'confirmed' ) {
+            return 'preselection-confirmed'
+        }
+
+        return DoltDbAssembler.#decisionRepeatsAi( { row, record } ) === true ? 'chosen-matching' : 'chosen-diverging'
+    }
+
+
+    // THE THREE-VALUED reading of the `preselected` column, and the third value is the entire reason this
+    // method exists next to #isPreselected. #isPreselected answers a BOOLEAN question ("did this row
+    // repeat a preselection?") and therefore folds "a stated 0" and "no column at all" into one `false` —
+    // correct there, and fatal here: a large share of the stock predates the ` [Vorauswahl]` mark and
+    // carries no provenance at all (REV-10 counts 1028 such answered blocks — CITED from there, not
+    // measured by this file), and reporting those as freely chosen would be a measurement nobody took.
+    // Any value outside 1/0/true/false is read as NOT STATED for the same reason — an unexpected value
+    // is not evidence of a choice.
+    // Byte-identical to RevisionAssembler.#preselectionState (core).
+    static #preselectionState( { record } ) {
+        if( record === null ) {
+            return 'unknown'
+        }
+
+        const value = record[ 'preselected' ]
+        if( value === 1 || value === true ) {
+            return 'confirmed'
+        }
+
+        return value === 0 || value === false ? 'chosen' : 'unknown'
+    }
+
+
+    // Does the recorded decision REPEAT what the AI recommended? Compared on the token both sides really
+    // carry: the option key. `ai_recommendation` is authored free text whose leading token IS that key
+    // ("A", "A — drei Schichten", "A) Ja"); the record carries `option_key`. A free-text answer without an
+    // option key is held against the whole recommendation instead.
+    //
+    // AN ABSENT RECOMMENDATION CANNOT BE REPEATED, so it counts as diverging — stated here and covered by
+    // a named case, because the alternative is a fifth state the record has no room for and a rule that
+    // decides in silence. Byte-identical to RevisionAssembler.#decisionRepeatsAi (core).
+    static #decisionRepeatsAi( { row, record } ) {
+        const recommendation = row[ 'ai_recommendation' ]
+        if( typeof recommendation !== 'string' || recommendation.trim().length === 0 ) {
+            return false
+        }
+
+        const head = ( recommendation.trim().match( /^[A-Za-z0-9]+/ ) ?? [ '' ] )[ 0 ]
+        const optionKey = record[ 'option_key' ]
+        if( typeof optionKey === 'string' && optionKey.length > 0 ) {
+            return head.toLowerCase() === optionKey.trim().toLowerCase()
+        }
+
+        const verbatim = record[ 'answer_verbatim' ]
+
+        return typeof verbatim === 'string' && verbatim.trim().toLowerCase() === recommendation.trim().toLowerCase()
     }
 
 

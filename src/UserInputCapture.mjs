@@ -131,10 +131,93 @@ class UserInputCapture {
     }
 
 
+    // M082-09-FX1 (Memo 082 Kap 20a, Cluster C — WI-120, follow-up to M082-09-06 O-1): the fence state
+    // the block boundary is derived from STRUCTURALLY instead of from a line pattern.
+    //
+    // THE SERVER TWIN of scanCodeFences in src/public/app.client.mjs. The client is served as a
+    // classic <script src>, not as a module — it can import nothing, so one shared runtime copy would
+    // need a bundler this project does not have. Hence two implementations of ONE rule, and
+    // HeaderSplitParityPRD32 holds their readings against each other line by line over a named set of
+    // inputs. That is a measurement, not a promise.
+    //
+    // NO MARKDOWN PARSER, and that is deliberate: it carries the CHARACTER and the LENGTH of the open
+    // fence and nothing else. A fence closes only with the SAME character and AT LEAST the same
+    // length — which is why three backticks do not close a fence of four, exactly the form in which
+    // this corpus quotes markdown inside markdown. A closing line carries nothing behind it; an info
+    // string exists only on the opening line.
+    //
+    // IT STATES ITS COMPARISON SET: `comparedLines` is 0 over an empty text — a boundary claim over 0
+    // lines is trivially true and is not a pass. And `decidable` is false while a fence is still open
+    // at the end of the text: "not decidable" is not the same as "no boundary found".
+    //
+    // `String( content || '' )` mirrors the client line for line on purpose. The two are compared as
+    // whole readings, so a divergence in the coercion of a non-string would be a divergence in the
+    // rule.
+    static scanCodeFences( { content } ) {
+        const text = String( content || '' )
+        const lines = text.split( '\n' )
+        const scan = lines
+            .reduce( ( acc, line ) => {
+                const fence = line.match( /^ {0,3}(`{3,}|~{3,})/ )
+
+                if( acc[ 'open' ] === null ) {
+                    if( fence !== null ) {
+                        acc[ 'open' ] = { 'char': fence[ 1 ].charAt( 0 ), 'length': fence[ 1 ].length, 'line': acc[ 'inFence' ].length }
+                        acc[ 'fences' ] = acc[ 'fences' ] + 1
+                    }
+                    acc[ 'inFence' ].push( acc[ 'open' ] !== null )
+
+                    return acc
+                }
+
+                const tail = ( fence !== null ) ? line.slice( line.indexOf( fence[ 1 ] ) + fence[ 1 ].length ).trim() : ''
+                const closes = fence !== null
+                    && fence[ 1 ].charAt( 0 ) === acc[ 'open' ][ 'char' ]
+                    && fence[ 1 ].length >= acc[ 'open' ][ 'length' ]
+                    && tail.length === 0
+
+                acc[ 'inFence' ].push( true )
+
+                if( closes === true ) { acc[ 'open' ] = null }
+
+                return acc
+            }, { 'inFence': [], 'open': null, 'fences': 0 } )
+
+        return {
+            'comparedLines': ( text.length === 0 ) ? 0 : lines.length,
+            'fences': scan[ 'fences' ],
+            'inFence': scan[ 'inFence' ],
+            'decidable': scan[ 'open' ] === null,
+            'openFenceLine': ( scan[ 'open' ] === null ) ? null : scan[ 'open' ][ 'line' ]
+        }
+    }
+
+
     // Parse the widget "## Antwort auf F{N} — {title}" answer blocks out of a review transcript body.
     // The block body runs to the NEXT "## " heading, so trailing "## Quality-Checks angefragt" /
-    // "## Anmerkungen" sections (composed by the same "Uebernehmen" flow) are excluded. `^` is
-    // start-or-after-newline; `$` (no m-flag) is end-of-string. Empty answers are dropped.
+    // "## Anmerkungen" sections (composed by the same "Uebernehmen" flow) are excluded. Empty answers
+    // are dropped.
+    //
+    // M082-09-FX1: headings — the answer heading AND the boundary — are read only from lines OUTSIDE
+    // a code fence. Until here this ran as one regex over the whole string, so a "## " line inside a
+    // fence cut the answer body off at that point and an answer heading inside a fence produced a
+    // block that does not exist. The client display path carried the identical defect; both are
+    // repaired here together, because HeaderSplitParityPRD32 binds the two sides and repairing only
+    // one would tear the measured parity apart.
+    //
+    // LINE-BASED NOW, REGEX BEFORE, AND THE DIFFERENCE IS MEASURED, NOT ASSUMED: both forms were run
+    // over the whole recordings stock (3537 markdown files, 241 of them carrying the marker, 38 of
+    // those carrying at least one fence). The old form found 847 blocks, this one finds 844. The
+    // three that fall away are ALL of the same kind — an answer heading quoted INSIDE a fence in a
+    // document that describes the transport format, read by the old pattern as a real answer. No
+    // block that is a real answer changed, in no file.
+    //
+    // Two further places where the two forms could differ at all are cases the old pattern read and
+    // the client never did: `##` followed by a NEWLINE counting as a boundary, and
+    // `## \n Antwort auf F1` spread over two lines counting as a heading. Neither occurs in the
+    // stock, and line-based makes server and client agree on both.
+    //
+    // The heading TAIL is captured (group 2) so the PRD-F3 preselection mark can be read off it.
     static parseAnswerBlocks( { content } ) {
         const struct = { 'answers': [] }
 
@@ -142,18 +225,26 @@ class UserInputCapture {
             return struct
         }
 
-        // The heading TAIL is captured (group 2) so the PRD-F3 preselection mark can be read off it.
-        // It was already skipped by the old `[^\n]*`, so widening it to a capture group changes no
-        // match and no body — an unmarked (old) transcript parses byte-identically and yields false.
-        const pattern = /(?:^|\n)##\s+Antwort auf\s+(F\d+)([^\n]*)\n([\s\S]*?)(?=\n##\s|$)/g
-        const matches = [ ...content.matchAll( pattern ) ]
+        const lines = content.split( '\n' )
+        const { inFence } = UserInputCapture.scanCodeFences( { content } )
+        const boundaries = lines
+            .map( ( line, index ) => ( { line, index } ) )
+            .filter( ( entry ) => inFence[ entry[ 'index' ] ] !== true )
+            .filter( ( entry ) => /^##\s/.test( entry[ 'line' ] ) === true )
 
-        struct[ 'answers' ] = matches
-            .map( ( match ) => {
-                const question = match[ 1 ]
-                const heading = match[ 2 ] || ''
-                const answer = ( match[ 3 ] || '' ).trim()
-                const preselected = heading.includes( UserInputCapture.PRESELECTED_MARK )
+        struct[ 'answers' ] = boundaries
+            .map( ( entry ) => ( { entry, 'heading': entry[ 'line' ].match( /^##\s+Antwort auf\s+(F\d+)(.*)$/ ) } ) )
+            .filter( ( found ) => found[ 'heading' ] !== null )
+            .map( ( found ) => {
+                const start = found[ 'entry' ][ 'index' ]
+                const following = boundaries.filter( ( candidate ) => candidate[ 'index' ] > start )
+                const limit = ( following.length > 0 ) ? following[ 0 ][ 'index' ] : lines.length
+                const question = found[ 'heading' ][ 1 ]
+                const answer = lines
+                    .slice( start + 1, limit )
+                    .join( '\n' )
+                    .trim()
+                const preselected = ( found[ 'heading' ][ 2 ] || '' ).includes( UserInputCapture.PRESELECTED_MARK )
 
                 return { question, answer, preselected }
             } )

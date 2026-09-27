@@ -215,8 +215,11 @@ describe( 'PRD-32 pair 2 — the answer-block split is implemented twice and the
     // The lift happens INSIDE the cases, not in a beforeAll: a lift that throws in setup kills the
     // whole file before a single assertion runs, and a red file with zero evaluated assertions
     // proves as little as a green one over an empty set.
+    // M082-09-FX1: splitAnswerBlocks reads its fence state from scanCodeFences, so the lift carries
+    // BOTH. Lifting only the caller and guarding the call with a `typeof` would skip the fence
+    // detection in exactly the run that checks it — green over an empty set under another name.
     const loadClientSplitter = async () => {
-        const lifted = await extractFunctionSources( [ 'splitAnswerBlocks' ] )
+        const lifted = await extractFunctionSources( [ 'scanCodeFences', 'splitAnswerBlocks' ] )
         const sandbox = { console }
 
         vm.createContext( sandbox )
@@ -235,13 +238,20 @@ describe( 'PRD-32 pair 2 — the answer-block split is implemented twice and the
 
     // The headings are the product's own tokens and stay verbatim — they ARE the thing under test.
     // Everything around them is free text and is written in the code language of this file.
+    //
+    // M082-09-FX1: the last two samples carry a CODE FENCE. Both sides were fence-blind and therefore
+    // agreed while both were wrong, so these two are the cases this pair could not see before the
+    // repair — the equality here is necessary, never sufficient, and AnswerBlockSplitFenceFX1 measures
+    // the CONTENT of the two halves next to it.
     const samples = [
         'Spoken text only, no blocks.',
         [ 'Text.', '', '## Antwort auf F1 — First question', '', 'A) one answer' ].join( '\n' ),
         [ 'Text.', '', '## Antwort auf F1 — First', '', 'A) one', '', '## Antwort auf F2 — Second', '', 'B) two' ].join( '\n' ),
         [ 'Text.', '', '## Antwort auf F3 — Third', '', 'C) three', '', '## Anmerkungen', '', 'A remark.' ].join( '\n' ),
         [ 'Text.', '', '## Antwort auf F1 — First', '', 'A) one', '', '## Quality-Checks angefragt', '', '- evidence' ].join( '\n' ),
-        [ '## Antwort auf F9 — Ninth', '', 'Z) nine' ].join( '\n' )
+        [ '## Antwort auf F9 — Ninth', '', 'Z) nine' ].join( '\n' ),
+        [ 'Text.', '', '```markdown', '## Antwort auf F1 — quoted, not answered', '', 'A) one', '```', '', 'More text.' ].join( '\n' ),
+        [ 'Text.', '', '## Antwort auf F4 — Fourth', '', 'D) four', '', '````text', '## not a heading', '````' ].join( '\n' )
     ]
 
 

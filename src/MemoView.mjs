@@ -190,6 +190,13 @@ const BUNDLE_CHUNK_SIZE = 65536
 // loopback-local, never-committed location instead of inventing a second one.
 const ERROR_LOG_FILE = 'memo-view.log'
 
+// PRD-16 (Memo 082 Phase 9, WI-237): the chapter cap of the READ-ONLY document overview. A preview is
+// a preview — the whole point of GET /api/documents/<id>/overview is to answer "what does that memo
+// carry?" without the render payload of the document itself. The cap is what keeps the answer a
+// fraction of the thing it describes, and extractOverviewHeadings reports the UNCAPPED count next to
+// the capped list so a reader can never mistake the cap for the whole.
+const OVERVIEW_HEADING_LIMIT = 12
+
 const PORT_COLORS = {
     3333: '4493f8',
     4444: '3fb950',
@@ -2130,6 +2137,77 @@ class MemoView {
     }
 
 
+    // M082-09-01 (Memo 082 Kap 20c, WI-115): the ONE source of the port the owner check guards.
+    // cli.mjs asks for it instead of carrying a second literal 3333 — two spellings of the same port
+    // is how a guard and the thing it guards drift apart.
+    static defaultPort() {
+        return { port: PORT_SCHEMA[ 0 ] }
+    }
+
+
+    // M082-09-01 (Memo 082 Kap 20c, WI-115): the public seam of the EXISTING probe. It opens no new
+    // socket and adds no listener — it delegates to #isPortInUse, which the port selection already
+    // uses. Spelled as a delegation on purpose: a second probe implementation would be a second answer
+    // to "is 3333 taken", and two answers to that question is the defect this order closes.
+    static async probePortInUse( { port } ) {
+        const { inUse } = await MemoView.#isPortInUse( { port } )
+
+        return { inUse }
+    }
+
+
+    // M082-09-01 (WI-115): the PURE decision of the owner check. Handed the probe result and whatever
+    // the held port answered on /api/health, it decides whether a start may proceed and what the user
+    // is told. Pure so all three lages are provable without a socket.
+    //
+    // IT NEVER TERMINATES ANYTHING and it never picks another port. Chapter 20c is the record of a
+    // whole review round clicked into a foreign build: the answer to "occupied" is to NAME the owner,
+    // because that is what lets a human decide. A silent move to 4444 would leave the reviewer on the
+    // foreign 3333 — the same defect, one port further.
+    static buildPortOwnerReport( { port, inUse, health } ) {
+        if( inUse !== true ) {
+            return { report: { blocked: false, reason: 'port-free', lines: [] } }
+        }
+
+        const answered = health !== undefined && health !== null && typeof health === 'object'
+
+        if( answered !== true ) {
+            return {
+                report: {
+                    blocked: true,
+                    reason: 'held-without-self-report',
+                    lines: [
+                        `Port ${ port } is held, and the holder does not answer /api/health.`,
+                        '  This is not a memo-view server, or not one that reports its origin.',
+                        `  Identify the holder with: lsof -nP -iTCP:${ port } -sTCP:LISTEN`,
+                        '  Nothing was started and nothing was terminated.'
+                    ]
+                }
+            }
+        }
+
+        const show = ( value ) => value === null || value === undefined ? 'unknown' : String( value )
+
+        return {
+            report: {
+                blocked: true,
+                reason: 'held-by-memo-view',
+                lines: [
+                    `Port ${ port } is held by a running memo-view server:`,
+                    `  pid            ${ show( health[ 'pid' ] ) }`,
+                    `  originRepo     ${ show( health[ 'originRepo' ] ) }`,
+                    `  originBranch   ${ show( health[ 'originBranch' ] ) }`,
+                    `  originWorktree ${ show( health[ 'originWorktree' ] ) }`,
+                    `  startedAt      ${ show( health[ 'startedAt' ] ) }`,
+                    `  bootHash       ${ show( health[ 'bootHash' ] ) }`,
+                    '  Nothing was started and nothing was terminated.',
+                    '  Stop that server yourself if it is not the one you mean to measure.'
+                ]
+            }
+        }
+    }
+
+
     // PRD-017 (Memo 072, Phase 5, F9=A): compose the /api/specs payload. For every auto-discovered
     // namespace, list its versions NEWEST-FIRST (so the client preselects the latest), and for each
     // version resolve its draft-channel left-nav groups + a local publish badge. The badge is a pure
@@ -2380,6 +2458,13 @@ class MemoView {
                     </div>
                     <div id="pp-error" class="t-error t-hidden"></div>
                     <div id="pp-unconfirmed" class="t-notice t-hidden"></div>
+                    <!-- PRD-05 (Memo 082 Kap 20a, Cluster B — WI-119, S1/S2): die Stelle, an der eine
+                         nicht entscheidbare Lage BENANNT wird statt als leeres Feld zu erscheinen, und
+                         an der ein nachgeladener Text ANGEBOTEN statt angewendet wird. Der Knopf
+                         bleibt verborgen, solange es nichts anzubieten gibt — ein Angebot ueber einer
+                         Nullmenge waere dieselbe Unehrlichkeit in die andere Richtung. Kein neuer
+                         CSS-Baustein: .t-notice und .t-btn-primary stehen bereits. -->
+                    <div id="pp-prefill-notice" class="t-notice t-hidden"><span id="pp-prefill-text"></span> <button id="pp-prefill-apply" class="t-btn-primary t-hidden" type="button" data-pp-prefill-apply>Nachgeladenen Text übernehmen</button></div>
                     <div id="pp-success" class="pp-success t-hidden"></div>
                 </div>
                 <div class="t-tab-panel" id="t-panel-new">
@@ -2487,6 +2572,25 @@ class MemoView {
             <div class="t-modal-body" id="research-modal-body"></div>
         </div>
     </div>
+    <!-- PRD-16 (Memo 082 Phase 9, WI-237): the REFERENCE popup. A foreign memo reference used to be a
+         real navigation — the reader clicked a cross-reference and the memo he was reading was gone.
+         It now opens HERE, over the prose, and #content is never touched. Built after the
+         #research-modal pattern directly above and REUSING the same .t-modal / .t-modal-content /
+         .t-modal-header / .t-modal-body classes, so backdrop, dimming, centering and z-index are
+         inherited — NO new overlay/position:fixed CSS, and #research-modal itself is untouched (it is
+         the template, not the subject). "Vollansicht" is the bridge for the case where the reader
+         really does want to go there: then it is a decision instead of the consequence of a click. -->
+    <div id="idref-modal" class="t-modal t-hidden" role="dialog" aria-modal="true" aria-labelledby="idref-modal-title">
+        <div class="t-modal-content">
+            <div class="t-modal-header">
+                <span class="t-title" id="idref-modal-title">Querverweis</span>
+                <span class="t-header-spacer"></span>
+                <button class="t-btn-secondary" id="idref-modal-full" title="Das verwiesene Dokument vollstaendig oeffnen">Vollansicht</button>
+                <button class="t-close" id="idref-modal-close" title="Schliessen"><svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false"><path d="M4 4 L12 12 M12 4 L4 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" fill="none"></path></svg></button>
+            </div>
+            <div class="t-modal-body" id="idref-modal-body"></div>
+        </div>
+    </div>
     <!-- PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): annotation modal. REUSES the existing .t-modal /
          .t-modal-content / .t-modal-header / .t-modal-body classes (centered flex overlay) exactly like
          the requirement + block popups above. NO new overlay CSS. Opened from a text selection or a
@@ -2560,14 +2664,104 @@ ${ VendorAssets.scriptTags().tags }
     }
 
 
+    // M082-09-01 (Memo 082 Kap 20c, WI-115): the PURE half of the origin reading. It decides nothing
+    // by touching the disk — it is handed what the disk said and turns it into the four fields.
+    // Pure on purpose, and for the same reason `stale` is: BOTH directions of `originWorktree` have to
+    // be provable, and a classifier that reached for its own source dir could only ever show the one
+    // direction the test machine happens to be in.
+    //
+    // NO SILENT DEFAULT. An undecidable origin answers `null` for all three values plus an
+    // `originStatus` that NAMES why. A comfortable `false` (or the main tree's path as a guess) would
+    // be exactly the failure the chapter records: reading an undecidable situation as the harmless
+    // case. `originStatus` is therefore ALWAYS a non-empty string, in every branch.
+    static classifyOrigin( { repoDir, markerKind, headText } ) {
+        const branchOf = ( text ) => {
+            if( typeof text !== 'string' ) { return null }
+
+            const line = text.split( '\n' )[ 0 ].trim()
+
+            // A detached HEAD carries a raw sha, not a `ref:` line — that is a real answer of "no
+            // branch", and it is reported as `null`, not as an invented name.
+            return line.startsWith( 'ref: refs/heads/' ) === true ? line.slice( 'ref: refs/heads/'.length ) : null
+        }
+
+        if( markerKind === 'directory' ) {
+            return { originRepo: repoDir, originBranch: branchOf( headText ), originWorktree: false, originStatus: 'main-tree' }
+        }
+
+        if( markerKind === 'file' ) {
+            return { originRepo: repoDir, originBranch: branchOf( headText ), originWorktree: true, originStatus: 'worktree' }
+        }
+
+        if( markerKind === 'unreadable' ) {
+            return { originRepo: repoDir, originBranch: null, originWorktree: null, originStatus: 'git-marker-unreadable' }
+        }
+
+        return { originRepo: null, originBranch: null, originWorktree: null, originStatus: 'no-git-marker' }
+    }
+
+
+    // M082-09-01 (WI-115): the I/O edge of the origin reading — the ONLY place that touches the disk.
+    // It starts from the MODULE address of the running process, never from `process.cwd()`: the working
+    // directory is whatever shell happened to start the server, so a cwd-derived answer would be a
+    // confident lie in exactly the situation this guard exists for.
+    //
+    // A worktree's `.git` is a FILE holding a `gitdir:` pointer; the main tree's is a DIRECTORY. That
+    // is the whole discriminator, and both branches read their HEAD from their own place.
+    static readOriginTree( { startDir } ) {
+        const parts = String( startDir ).split( sep )
+            .filter( ( part ) => part.length > 0 )
+        const chain = parts
+            .reduce( ( acc, part ) => acc.concat( [ join( acc.length === 0 ? sep : acc[ acc.length - 1 ], part ) ] ), [] )
+            .reverse()
+        const repoDir = chain
+            .find( ( dir ) => existsSync( join( dir, '.git' ) ) === true )
+
+        if( repoDir === undefined ) {
+            return { origin: MemoView.classifyOrigin( { repoDir: null, markerKind: 'missing', headText: null } ) }
+        }
+
+        const markerPath = join( repoDir, '.git' )
+
+        try {
+            const isDir = statSync( markerPath ).isDirectory()
+
+            if( isDir === true ) {
+                const headText = existsSync( join( markerPath, 'HEAD' ) ) === true ? readFileSync( join( markerPath, 'HEAD' ), 'utf8' ) : null
+
+                return { origin: MemoView.classifyOrigin( { repoDir, markerKind: 'directory', headText } ) }
+            }
+
+            const pointer = readFileSync( markerPath, 'utf8' ).split( '\n' )[ 0 ].trim()
+            const gitDir = pointer.startsWith( 'gitdir:' ) === true ? pointer.slice( 'gitdir:'.length ).trim() : null
+
+            if( gitDir === null ) {
+                return { origin: MemoView.classifyOrigin( { repoDir, markerKind: 'unreadable', headText: null } ) }
+            }
+
+            const headPath = join( gitDir, 'HEAD' )
+            const headText = existsSync( headPath ) === true ? readFileSync( headPath, 'utf8' ) : null
+
+            return { origin: MemoView.classifyOrigin( { repoDir, markerKind: 'file', headText } ) }
+        } catch {
+            return { origin: MemoView.classifyOrigin( { repoDir, markerKind: 'unreadable', headText: null } ) }
+        }
+    }
+
+
     // The body of GET /api/health as a PURE function of the two readings it compares. Pure on purpose:
     // both directions of `stale` (the green one and the red one) have to be provable, and a builder
     // that reaches for the module's own source dir could only ever show the green one.
     // A process that never recorded a boot answers `status: 'unrecorded'` and `stale: null` — it can
     // not compare, and a comfortable `false` would be an invented answer.
-    static buildHealthPayload( { boot, current, nowMs } ) {
+    //
+    // M082-09-01 (WI-115): `origin` is HANDED IN for the same reason. A caller that omits it gets the
+    // named status `origin-not-provided` — the payload never invents a source tree it was not told.
+    static buildHealthPayload( { boot, current, nowMs, origin } ) {
         const at = Number.isFinite( nowMs ) === true ? nowMs : Date.now()
         const uptimeSeconds = boot.startedAtMs === null ? null : Math.max( 0, Math.round( ( at - boot.startedAtMs ) / 1000 ) )
+        const given = origin !== undefined && origin !== null && typeof origin === 'object'
+        const known = given === true ? origin : { originRepo: null, originBranch: null, originWorktree: null, originStatus: 'origin-not-provided' }
 
         return {
             payload: {
@@ -2581,7 +2775,11 @@ ${ VendorAssets.scriptTags().tags }
                 hashedFiles: current.files,
                 hashComputations: current.hashCount,
                 stale: boot.bootHash === null ? null : boot.bootHash !== current.hash,
-                memoRoot: boot.memoRoot
+                memoRoot: boot.memoRoot,
+                originRepo: known[ 'originRepo' ],
+                originBranch: known[ 'originBranch' ],
+                originWorktree: known[ 'originWorktree' ],
+                originStatus: known[ 'originStatus' ]
             }
         }
     }
@@ -2589,7 +2787,8 @@ ${ VendorAssets.scriptTags().tags }
 
     // The route's call site: the recorded boot against the source tree as it is on disk right now.
     static healthPayload( { nowMs } ) {
-        const { payload } = MemoView.buildHealthPayload( { boot: MemoView.#boot, current: getServerSource(), nowMs } )
+        const { origin } = MemoView.readOriginTree( { startDir: SERVER_SRC_DIR } )
+        const { payload } = MemoView.buildHealthPayload( { boot: MemoView.#boot, current: getServerSource(), nowMs, origin } )
         // Memo 081, WI-106: THE GATE COUNTS, and it says so where a running server already answers what
         // it is doing. A gate without a counter is the send-side twin of a filter that never says how
         // much it removed — the exact class PRD-35 closed for the tree. buildHealthPayload stays pure
@@ -3192,6 +3391,67 @@ ${ VendorAssets.scriptTags().tags }
                 } catch( error ) {
                     sendJson( res, 503, { 'error': `Datenbank vorübergehend nicht verfügbar: ${ error.message }` } )
                 }
+
+                return
+            }
+
+            // PRD-16 (Memo 082 Phase 9, WI-237): the READ-ONLY overview of ONE document — the payload
+            // behind the reference popup. MUST be matched BEFORE the generic /api/documents/<id> GET
+            // below (the suffix is more specific; otherwise the generic route would swallow
+            // "<id>/overview" as the id), the same ordering rule /requirements, /blocks, /topics and
+            // /graph above already follow.
+            //
+            // READ-ONLY, in every lane: it reads the registry entry and ONE revision file and answers.
+            // There is no store call, no registry mutation and no write of any kind here — a preview
+            // endpoint that writes would be a surprise at exactly the place that exists to remove one.
+            //
+            // It answers an OVERVIEW, not the document: the chapter outline is capped at
+            // OVERVIEW_HEADING_LIMIT and the ~443 KB render payload of the revision never leaves here.
+            //
+            // The four states are NAMED (unknown / empty / unreadable / ok) and every one of them
+            // speaks the same key set — see buildDocumentOverview. An unknown identifier answers 404
+            // WITH that named body, because a bare 404 would hand the reader a broken link where the
+            // truth is "this viewer does not know that memo".
+            if( url.startsWith( '/api/documents/' ) && url.endsWith( '/overview' ) && req.method === 'GET' ) {
+
+                const documentId = url.slice( '/api/documents/'.length, url.length - '/overview'.length )
+                const result = MemoView.#registry.getDocument( { documentId } )
+
+                if( !result[ 'status' ] ) {
+                    const missing = MemoView.buildDocumentOverview( {
+                        documentId,
+                        'document': null,
+                        'revision': null,
+                        'revisionCount': 0,
+                        'content': '',
+                        'readable': false,
+                        'headingLimit': OVERVIEW_HEADING_LIMIT
+                    } )
+
+                    sendJson( res, 404, missing[ 'overview' ] )
+
+                    return
+                }
+
+                const doc = result[ 'document' ]
+                const { revision, comparedCount } = MemoView.selectOverviewRevision( { 'revisions': doc[ 'revisions' ] || [] } )
+                const located = revision === null
+                    ? { 'absolutePath': null }
+                    : MemoView.resolveRevisionPath( { documentId, 'fileName': revision[ 'fileName' ] } )
+                const content = located[ 'absolutePath' ] === null
+                    ? null
+                    : await readFile( located[ 'absolutePath' ], 'utf-8' ).catch( () => null )
+                const built = MemoView.buildDocumentOverview( {
+                    documentId,
+                    'document': doc,
+                    revision,
+                    'revisionCount': comparedCount,
+                    'content': content === null ? '' : content,
+                    'readable': content !== null,
+                    'headingLimit': OVERVIEW_HEADING_LIMIT
+                } )
+
+                sendJson( res, 200, built[ 'overview' ] )
 
                 return
             }
@@ -6112,6 +6372,149 @@ ${ VendorAssets.scriptTags().tags }
         struct[ 'absolutePath' ] = resolve( detail[ 'document' ][ 'memoPath' ], fileName )
 
         return struct
+    }
+
+
+    // ── PRD-16 (Memo 082 Phase 9, WI-237): the read-only document overview ─────────────────────────
+    //
+    // The data behind GET /api/documents/<id>/overview. Split into pure statics on purpose: the four
+    // named states, the chapter outline and the payload shape are each decidable without a registry, a
+    // socket or a file, so what the popup shows is measurable without standing a server up.
+
+    // selectOverviewRevision — WHICH revision an overview describes: the highest revision number, and
+    // among equals the plain form before `-prepare` / `-update` (the same ordering #compareRevisionFiles
+    // uses, reached through the public matchRevisionPattern so it stays testable). `comparedCount`
+    // travels with the answer because "no revision at all" and "one revision that happens to sort last"
+    // are two different statements and a caller must be able to tell them apart.
+    static selectOverviewRevision( { revisions } ) {
+        const list = Array.isArray( revisions ) === true ? revisions : []
+        const rank = ( entry ) => {
+            const matched = MemoView.matchRevisionPattern( { 'fileName': String( entry[ 'fileName' ] ) } )
+
+            return {
+                'number': matched[ 'revisionNumber' ] === null ? -1 : matched[ 'revisionNumber' ],
+                'suffix': MemoView.#suffixOrder( { 'suffix': matched[ 'suffix' ] } )
+            }
+        }
+        const picked = list.reduce( ( best, candidate ) => {
+            if( best === null ) { return candidate }
+
+            const a = rank( best )
+            const b = rank( candidate )
+
+            if( b[ 'number' ] !== a[ 'number' ] ) { return b[ 'number' ] > a[ 'number' ] ? candidate : best }
+            if( b[ 'suffix' ] !== a[ 'suffix' ] ) { return b[ 'suffix' ] > a[ 'suffix' ] ? candidate : best }
+
+            return String( candidate[ 'fileName' ] ).localeCompare( String( best[ 'fileName' ] ) ) > 0 ? candidate : best
+        }, null )
+
+        return { 'revision': picked, 'comparedCount': list.length }
+    }
+
+
+    // extractOverviewHeadings — the H2 chapter titles of one revision, fenced lines EXCLUDED. A `## …`
+    // inside a code fence is prose about a heading, not a heading; the M082-09-02 fixture carries
+    // exactly such a line, so the distinction is measured rather than assumed. Returns the capped list
+    // AND the uncapped count — a capped list alone cannot say how much it left out, which is the same
+    // "name your comparison set" rule the routes above follow. `limit` is REQUIRED and refused loudly:
+    // a silent default here would let a caller believe it had asked for a size it never named.
+    static extractOverviewHeadings( { content, limit } ) {
+        if( typeof limit !== 'number' || Number.isFinite( limit ) !== true || limit <= 0 ) {
+            throw new Error( 'extractOverviewHeadings: limit must be a positive finite number — a preview without a stated size is not a preview' )
+        }
+
+        const text = typeof content === 'string' ? content : ''
+        const walked = text
+            .split( '\n' )
+            .reduce( ( acc, line ) => {
+                if( /^\s*```/.test( line ) === true ) {
+                    return { 'fenced': acc[ 'fenced' ] !== true, 'headings': acc[ 'headings' ] }
+                }
+                if( acc[ 'fenced' ] === true ) { return acc }
+                if( /^##\s+\S/.test( line ) !== true ) { return acc }
+
+                return { 'fenced': false, 'headings': acc[ 'headings' ].concat( [ line.replace( /^##\s+/, '' ).trim() ] ) }
+            }, { 'fenced': false, 'headings': [] } )
+
+        return { 'headings': walked[ 'headings' ].slice( 0, limit ), 'headingCount': walked[ 'headings' ].length, 'limit': limit }
+    }
+
+
+    // overviewState — the FOUR named answers of the overview. An empty preview would be
+    // indistinguishable from "that memo carries nothing", and that confusion is the most expensive one
+    // this project knows (same reason renderIdStockNote keeps a fourth state and requirementsEmptyState
+    // exists at all). So every non-ok case is NAMED with its own reason instead of answered with a hull:
+    //
+    //   unknown     the identifier is not registered here      -> not the reader's mistake, and said so
+    //   empty       registered, but nothing readable to show   -> no revision, or a revision with no text
+    //   unreadable  registered, revision known, read refused   -> permission / vanished file, named apart
+    //   ok          an overview follows
+    static overviewState( { found, readable, revisionCount, contentLength } ) {
+        if( found !== true ) { return { 'state': 'unknown', 'reason': 'document-id-not-registered' } }
+        if( typeof revisionCount !== 'number' || revisionCount <= 0 ) { return { 'state': 'empty', 'reason': 'no-revision-in-document' } }
+        if( readable !== true ) { return { 'state': 'unreadable', 'reason': 'revision-source-not-readable' } }
+        if( typeof contentLength !== 'number' || contentLength <= 0 ) { return { 'state': 'empty', 'reason': 'revision-has-no-content' } }
+
+        return { 'state': 'ok', 'reason': null }
+    }
+
+
+    // overviewNote — the DISPLAY sentence of a state. German, because this surface points inward at its
+    // own developer; the fields it sits next to (`state`, `reason`) stay English machine tokens. The
+    // list is closed, and an unrecognised state gets a sentence that SAYS it is unrecognised rather than
+    // an empty string — a silent blank is exactly the hull the state machine above exists to prevent.
+    static overviewNote( { state } ) {
+        const notes = {
+            'ok': 'Uebersicht geladen.',
+            'unknown': 'Diese Kennung kennt der Viewer nicht — sie steht in keinem geladenen Projekt.',
+            'unreadable': 'Die Kennung ist bekannt, ihre Revision laesst sich aber nicht lesen.',
+            'empty': 'Die Kennung ist bekannt, traegt aber keinen lesbaren Inhalt.'
+        }
+        const note = notes[ state ]
+
+        return { 'note': note === undefined ? `Unbekannter Zustand der Uebersicht: ${ String( state ) }` : note }
+    }
+
+
+    // buildDocumentOverview — the payload shape, in ONE place. Every state speaks the SAME key set, so
+    // a reader of the answer can never tell a state apart by which fields are missing — it reads
+    // `state` (and the two unknown-case nulls are values, not absences). `fullViewPath` is the bridge
+    // the overlay offers: sometimes the reader really does want to go there, and then it is a DECISION
+    // instead of the consequence of a click.
+    static buildDocumentOverview( { documentId, document, revision, revisionCount, content, readable, headingLimit } ) {
+        const found = document !== null && document !== undefined
+        const text = typeof content === 'string' ? content : ''
+        const counted = typeof revisionCount === 'number' ? revisionCount : 0
+        const decided = MemoView.overviewState( { found, readable, 'revisionCount': counted, 'contentLength': text.trim().length } )
+        const outline = MemoView.extractOverviewHeadings( { 'content': text, 'limit': headingLimit } )
+        const noted = MemoView.overviewNote( { 'state': decided[ 'state' ] } )
+
+        return {
+            'overview': {
+                'kind': 'document-overview',
+                'readOnly': true,
+                'state': decided[ 'state' ],
+                'reason': decided[ 'reason' ],
+                'note': noted[ 'note' ],
+                'documentId': documentId,
+                'projectId': found === true ? ( document[ 'projectId' ] || null ) : null,
+                'memoName': found === true ? ( document[ 'memoName' ] || null ) : null,
+                'documentKind': found === true ? ( document[ 'documentKind' ] || 'memo' ) : null,
+                'memoStatus': found === true ? ( document[ 'memoStatus' ] || null ) : null,
+                'questions': found === true ? ( document[ 'questions' ] || DocumentRegistry.undeclaredQuestionCounts() ) : null,
+                'revisionCount': counted,
+                'latestRevision': revision === null || revision === undefined ? null : {
+                    'fileName': revision[ 'fileName' ],
+                    'sizeKb': revision[ 'sizeKb' ] || 0,
+                    'mtime': revision[ 'mtime' ] || null,
+                    'revisionType': revision[ 'revisionType' ] || null
+                },
+                'headings': outline[ 'headings' ],
+                'headingCount': outline[ 'headingCount' ],
+                'headingLimit': outline[ 'limit' ],
+                'fullViewPath': found === true ? `/doc/${ encodeURIComponent( documentId ) }` : null
+            }
+        }
     }
 
 

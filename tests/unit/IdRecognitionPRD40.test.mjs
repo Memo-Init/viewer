@@ -6,13 +6,14 @@
 // not measured, it has stayed silent — the exact defect this whole order was built against.
 //
 // REPO BOUNDARY: this file reads only inside repos/viewer. The single cross-repo read (the mirror
-// parity against repos/core) sits behind an existsSync skip-guard with a named reason, because CI
-// checks out this repo ALONE (M080/PRD-V4).
+// parity against repos/core) is skipped ONLY where this repo stands alone, because CI checks it out
+// ALONE (M080/PRD-V4); every path-related absence is RED (M082-09-FX2).
 
-import { readFileSync, existsSync } from 'node:fs'
-import { resolve, dirname, basename } from 'node:path'
+import { readFileSync } from 'node:fs'
+import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { resolveSiblingFile, assertSiblingResolved, siblingOriginLine } from '../helpers/siblingRepo.mjs'
 import { IdRegister, ID_VOCABULARY, MIRROR_MARKERS } from '../../src/IdRegister.mjs'
 import { MemoValidator } from '../../src/MemoValidator.mjs'
 
@@ -443,36 +444,27 @@ describe( 'PRD-40 / P-1 — the five content-send sites carry one key set', () =
 
 
 describe( 'PRD-40 — the vocabulary is a MIRROR, not a second expression', () => {
-    // The core sibling is derived from THIS repo's own directory name (the class repair PRD-39 made),
-    // with the plain name as the fallback.
-    const siblingCandidates = ( () => {
-        const reposDir = dirname( repoRoot )
-        const own = basename( repoRoot )
-        const suffix = own.startsWith( 'viewer' ) ? own.slice( 'viewer'.length ) : ''
+    // M082-09-FX2: the core sibling is derived from the MAIN repository (`git rev-parse
+    // --git-common-dir`), shared with ProvenanceLineTwinsPRD08 and BlockSectionsParityPRDB1. It used to
+    // be computed from THIS repo's own directory name (PRD-39) — and that name stopped carrying the
+    // information the moment the rollout moved its worktrees, at which point the early `return` this
+    // case used to carry turned a broken path into a silent PASS: not even a visible skip.
+    const TWIN = resolveSiblingFile( { from: repoRoot, repo: 'core', segments: [ 'cli', 'src', 'IdVocabulary.mjs' ] } )
+    const corePath = TWIN.path
 
-        return [
-            resolve( reposDir, `core${ suffix }`, 'cli', 'src', 'IdVocabulary.mjs' ),
-            resolve( reposDir, 'core', 'cli', 'src', 'IdVocabulary.mjs' )
-        ]
-    } )()
+    // Skipped ONLY where this repo stands alone and the boundary does not exist; a failed derivation, an
+    // absent sibling repo and an absent mirror file are RED, with the resolved path in the message.
+    const withCore = TWIN.kind === 'standalone' ? test.skip : test
 
-    const corePath = siblingCandidates.find( ( path ) => existsSync( path ) )
-
-    test( 'the mirror region is character-identical to repos/core/cli/src/IdVocabulary.mjs', () => {
-        if( corePath === undefined ) {
-            // SKIP-GUARD with a named reason: CI checks out this repo alone, and the sibling is then
-            // genuinely absent. The candidates are printed so a miss is diagnosable rather than silent.
-            console.log( `[mirror] core sibling absent, case skipped (candidates: ${ siblingCandidates.join( ', ' ) })` )
-            expect( siblingCandidates.length ).toBe( 2 )
-
-            return
-        }
+    withCore( 'the mirror region is character-identical to repos/core/cli/src/IdVocabulary.mjs', () => {
+        assertSiblingResolved( { twin: TWIN } )
 
         const mine = IdRegister.mirrorRegion( { source: readFileSync( resolve( repoRoot, 'src', 'IdRegister.mjs' ), 'utf8' ) } )
         const theirs = IdRegister.mirrorRegion( { source: readFileSync( corePath, 'utf8' ) } )
 
         // The case SAYS which two files it compared and how much — a parity check that cannot name its
         // comparison basis is the vacuum-green gate again.
+        console.log( siblingOriginLine( { label: 'mirror', twin: TWIN } ) )
         console.log( `[mirror] viewer=${ resolve( repoRoot, 'src', 'IdRegister.mjs' ) }\n         core=${ corePath }\n         lines=${ mine.lines }/${ theirs.lines } bytes=${ mine.region.length }/${ theirs.region.length }` )
 
         expect( mine.status ).toBe( true )

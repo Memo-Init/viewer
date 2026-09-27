@@ -45,10 +45,14 @@ Usage: memo-view [options] [path ...]
     { "projectId": "myproject", "memoPath": "/path/to/revisions/" }
 
 Options:
-  --port, -p <number>   Server port (default: 3333, auto-increment: 4444, 5555...)
+  --port, -p <number>   Server port (default: 3333)
   --status              Show running memo-view servers
   --stop                Stop server on port (default: 3333)
   --help, -h            Show this help message
+
+  Before binding, the port is checked for an owner (M082-09-01). A held port
+  is NAMED (pid, originRepo, originBranch, startedAt, bootHash) and the start
+  is refused — never moved to another port and never terminated for you.
 
 Examples:
   memo-view
@@ -143,6 +147,38 @@ const stopServer = () => {
 }
 
 
+// M082-09-01 (Memo 082 Kap 20c, WI-115): ask the held port who it is. A plain probe only proves that
+// SOMETHING listens — the question chapter 20c left open was WHICH build. The timeout is a deadline on
+// a socket, not a pause: a foreign listener that never speaks HTTP would otherwise hold this forever.
+const readPortOwner = async ( { port } ) => {
+    try {
+        const response = await fetch( `http://localhost:${port}/api/health`, { 'signal': AbortSignal.timeout( 2000 ) } )
+
+        if( response.ok !== true ) {
+            return { 'health': null }
+        }
+
+        const health = await response.json()
+
+        return { health }
+    } catch {
+        return { 'health': null }
+    }
+}
+
+
+// M082-09-01 (WI-115): STEP 0 of the start — run BEFORE the bind, never after. The old order let the
+// port selection quietly move a second start to 4444 while the reviewer kept clicking the foreign
+// 3333; that is the 20c defect spelled one port further, and it is exactly what this refuses to do.
+const guardPort = async ( { port } ) => {
+    const { inUse } = await MemoView.probePortInUse( { port } )
+    const { health } = inUse === true ? await readPortOwner( { port } ) : { 'health': null }
+    const { report } = MemoView.buildPortOwnerReport( { port, inUse, health } )
+
+    return { report }
+}
+
+
 const deriveProjectId = ( { absolutePath } ) => {
     const parts = absolutePath.split( '/' )
     const memoIndex = parts.lastIndexOf( '.memo' )
@@ -175,6 +211,15 @@ const run = async () => {
     }
 
     const port = values[ 'port' ] || undefined
+    const { port: fallbackPort } = MemoView.defaultPort()
+    const guardedPort = port === undefined ? fallbackPort : parseInt( port, 10 )
+    const { report } = await guardPort( { 'port': guardedPort } )
+
+    if( report[ 'blocked' ] === true ) {
+        process.stderr.write( `\n${report[ 'lines' ].join( '\n' )}\n\n` )
+        process.exit( 1 )
+    }
+
     const { startResult, registry, port: serverPort } = await MemoView.startServer( { port } )
 
     if( positionals.length === 0 ) {

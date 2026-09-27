@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import vm from 'node:vm'
 
+import { extractFunctions } from '../helpers/extractFunction.mjs'
+
 
 // PRD-006 (Memo 018 Kap 9) widget changes live inside the single inline <script> the page
 // emits as a template literal. There is no jsdom in this project, so — exactly like the
@@ -79,11 +81,20 @@ describe( 'Question widget state — PRD-006 (Memo 018 Kap 9)', () => {
     // AC-06 — full keyboard control.
     it( 'binds Enter to "Hinzufügen" and Tab to footer cycling (AC-06)', () => {
         expect( emittedScript.includes( "if( ev.key === 'Enter' )" ) ).toBe( true )
-        expect( emittedScript.includes( 'submitQuestionAnswer( questionNav.active )' ) ).toBe( true )
+        // M082-09-03 (Memo 082 Kap 20, F15=A): the binding now runs through confirmQuestionByKeyboard
+        // instead of calling submitQuestionAnswer( questionNav.active ) directly. AC-06 is unchanged —
+        // the question is still confirmable from the keyboard — but a question that carries no actual
+        // choice is refused there with a visible hint, because a bare Enter on a freshly rendered page
+        // used to confirm whatever the seed had put into the first card.
+        expect( emittedScript.includes( "confirmQuestionByKeyboard( questionNav.active, 'Enter' )" ) ).toBe( true )
+        // The gate still REACHES the confirmation — AC-06 would be hollow if it only blocked.
+        expect( emittedScript.includes( 'function confirmQuestionByKeyboard' ) ).toBe( true )
+        expect( emittedScript.includes( 'submitQuestionAnswer( qIdx )' ) ).toBe( true )
         expect( emittedScript.includes( "if( ev.key === 'Tab' )" ) ).toBe( true )
         expect( emittedScript.includes( 'function cycleFooterFocus' ) ).toBe( true )
         // The "log in via keyboard" shortcut (Ctrl/Cmd+L).
         expect( emittedScript.includes( "ev.key === 'l' && ( ev.ctrlKey || ev.metaKey )" ) ).toBe( true )
+        expect( emittedScript.includes( "confirmQuestionByKeyboard( questionNav.active, 'Strg/Cmd+L' )" ) ).toBe( true )
     } )
 
 
@@ -127,21 +138,16 @@ describe( 'Question widget state — PRD-006 (Memo 018 Kap 9)', () => {
 
     // splitAnswerBlocks is a PURE string function — extract its definition from the emitted
     // browser script and execute it in isolation to prove the AC-04 split actually works.
-    it( 'splitAnswerBlocks separates persisted answer blocks from the body (AC-04, executable)', () => {
-        const start = emittedScript.indexOf( 'function splitAnswerBlocks' )
-        expect( start ).toBeGreaterThan( -1 )
+    //
+    // M082-09-FX1: the hand-rolled slice here (find the comment marker, then the first line that is
+    // eight spaces and a brace) was replaced by the shared extractFunctions helper, and the lift now
+    // carries scanCodeFences ALONGSIDE, because splitAnswerBlocks reads its fence state from it. A
+    // `typeof` guard around that call would have been the cheap way out and would have skipped the
+    // fence detection in precisely the run that exercises it.
+    it( 'splitAnswerBlocks separates persisted answer blocks from the body (AC-04, executable)', async () => {
+        expect( emittedScript.indexOf( 'function splitAnswerBlocks' ) ).toBeGreaterThan( -1 )
 
-        // Slice up to the matching closing brace of the function (it ends just before the
-        // next top-level "// PRD-006" comment block following it in the source).
-        const tailMarker = '// PRD-006 (Kap 9, AC-04): split persisted'
-        const beforeTail = emittedScript.indexOf( tailMarker )
-        const region = emittedScript.slice( beforeTail )
-        const fnStart = region.indexOf( 'function splitAnswerBlocks' )
-        const afterFn = region.indexOf( '\n        }', fnStart )
-        const fnSource = region.slice( fnStart, afterFn + '\n        }'.length )
-
-        const factory = new Function( fnSource + '\n        return splitAnswerBlocks' )
-        const splitAnswerBlocks = factory()
+        const { splitAnswerBlocks } = await extractFunctions( [ 'scanCodeFences', 'splitAnswerBlocks' ] )
 
         const body = [
             'Hier steht der echte Transcript-Text.',

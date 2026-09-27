@@ -3056,6 +3056,30 @@
         #research-modal .research-overlay-loading { color: var(--text-muted); }
         #research-modal .research-overlay-error { color: var(--danger); }
 
+        /* PRD-16 (Memo 082 Phase 9, WI-237): geometry of the REFERENCE popup, nothing more. Backdrop,
+           dimming, centering and z-index come from the shared .t-modal rules — NO second overlay block.
+           Narrower than the research plate on purpose: this one shows an OVERVIEW, not a document. */
+        #idref-modal .t-modal-content { width: 640px; }
+        #idref-modal .t-modal-body { display: block; }
+        #idref-modal .idref-overlay-loading { color: var(--text-muted); }
+        #idref-modal .idref-overlay-error { color: var(--danger); }
+        #idref-modal .idref-overlay-note { color: var(--text-muted); font-size: 12px; }
+        #idref-modal .idref-overlay-meta {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        /* PRD-17 (Memo 082 Phase 9, WI-238) — S7, third part: the typed head line of the ONE popup.
+           No second overlay and no geometry of its own: the head sits inside the body PRD-16 built.
+           A fallback head is dimmed AND says so in words — a look alone would be a hint, not a
+           statement. */
+        #idref-modal .idref-overlay-kind {
+            margin: 0 0 8px;
+            font-weight: 600;
+        }
+        #idref-modal .idref-overlay-kind-other { color: var(--text-muted); font-weight: 400; }
+
         /* PRD-018 (WI-T013-7): [[wiki-link]] rendered as a navigable link, no longer literal text. */
         #content a.wiki-link {
             color: var(--accent);
@@ -3466,3 +3490,43 @@
         /* The fourth state of the memo, made visible: "no stock loaded" and "everything resolved" must
            not look the same, so the absence gets a line of its own instead of silence. */
         #content .id-ref-note { margin: 0 0 12px; padding: 6px 10px; border: 1px solid var(--border, #30363d); border-radius: 6px; background: rgba(110, 118, 129, .08); color: var(--text-muted, #8b949e); font-size: 12px; }
+
+        /* PRD-17 (Memo 082 Phase 9, WI-238) — S7: the KIND of a reference, next to its state.
+           The state rules above own `color` and `border-bottom`; the kind is given `background-color`,
+           a property none of them writes. So both statements are legible at once and neither can
+           overwrite the other — "ergaenzen, nicht ersetzen" as a property split rather than a habit.
+           ONE KIND, ONE COLOUR: the fifteen tints below are pairwise different, and a parity case in
+           tests/unit/TypedRefsEvidenceMarksM082P9.test.mjs reads them back against ID_REF_KINDS in
+           app.client.mjs, so a hand-edit on either side turns a test red instead of drifting.
+           `.id-ref-kind-other` is the unknown kind and is NEUTRAL on purpose — painting it like a
+           named kind would render an undecidable case as the harmless one. */
+        #content .id-ref-kind-m { background-color: rgba(88, 166, 255, 0.18); }
+        #content .id-ref-kind-mnt { background-color: rgba(63, 185, 80, 0.18); }
+        #content .id-ref-kind-t { background-color: rgba(210, 153, 34, 0.18); }
+        #content .id-ref-kind-b { background-color: rgba(188, 140, 255, 0.18); }
+        #content .id-ref-kind-g { background-color: rgba(255, 123, 114, 0.18); }
+        #content .id-ref-kind-wi { background-color: rgba(57, 197, 207, 0.18); }
+        #content .id-ref-kind-res { background-color: rgba(219, 97, 162, 0.18); }
+        #content .id-ref-kind-prd { background-color: rgba(240, 136, 62, 0.18); }
+        #content .id-ref-kind-req { background-color: rgba(163, 113, 247, 0.18); }
+        #content .id-ref-kind-plan { background-color: rgba(31, 111, 235, 0.18); }
+        #content .id-ref-kind-anm { background-color: rgba(226, 192, 141, 0.18); }
+        #content .id-ref-kind-ll { background-color: rgba(126, 231, 135, 0.18); }
+        #content .id-ref-kind-rev { background-color: rgba(255, 166, 87, 0.18); }
+        #content .id-ref-kind-sr { background-color: rgba(121, 192, 255, 0.18); }
+        #content .id-ref-kind-other { background-color: rgba(139, 148, 158, 0.18); }
+
+        /* PRD-17 (Memo 082 Phase 9, WI-238) — S7, second half: the five evidence tags, SHOWN.
+           They were counted into the chapter figure lines long before they were visible; in running
+           prose `[FAKT]` and `[VERMUTUNG]` read the same. The mark keeps the bracket syntax as its own
+           text, so every ancestor's textContent — and with it the count — is unchanged.
+           `.evidence-mark-other` carries the same neutral as `.id-ref-kind-other` DELIBERATELY: it is
+           the same statement ("this kind is not one the table names"), and one statement gets one
+           colour. */
+        #content .evidence-mark { border-radius: 3px; padding: 0 3px; cursor: help; }
+        #content .evidence-mark-gemessen { background-color: rgba(46, 160, 67, 0.2); }
+        #content .evidence-mark-fakt { background-color: rgba(56, 139, 253, 0.2); }
+        #content .evidence-mark-abgeleitet { background-color: rgba(137, 87, 229, 0.2); }
+        #content .evidence-mark-annahme { background-color: rgba(187, 128, 9, 0.2); }
+        #content .evidence-mark-vermutung { background-color: rgba(218, 54, 51, 0.2); }
+        #content .evidence-mark-other { background-color: rgba(139, 148, 158, 0.18); }

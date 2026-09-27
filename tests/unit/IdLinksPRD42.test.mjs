@@ -196,6 +196,21 @@ const LIFTED_FUNCTIONS = [
     'idMemoCatalogue',
     'buildIdStock',
     'idVerdictOf',
+    // M082-09-16 (PRD-16, WI-237): buildIdMark's foreign branch now asks idRefOverlayDecision whether
+    // the reference opens the reference popup. It is pure and belongs with the pass, so it is lifted
+    // here; its DOM/fetch counterpart openIdRefOverlay is INJECTED in makePass below, like `fetch`.
+    // Without both, the lift threw a ReferenceError on every memo-foreign verdict — measured as T-G and
+    // T-N going red, which is how this suite found the gap.
+    'idRefOverlayDecision',
+    // M082-09-17 (PRD-17, WI-238): buildIdMark now also asks which KIND the reference is, so the mark
+    // can carry its type next to its state. The four lookups are pure and read only ID_REF_KINDS, so
+    // they belong with the pass and are lifted here — the same gap PRD-16 hit one line above, found the
+    // same way: without them the lift threw `ReferenceError: idRefKindResolve is not defined` on EVERY
+    // mark, and fifteen cases of this suite went red at once.
+    'idRefKindOf',
+    'idRefKindFallbackRow',
+    'idRefKindResolve',
+    'idRefKindClass',
     'buildIdMark',
     'renderIdStockNote',
     'resolveIdLinks',
@@ -203,7 +218,11 @@ const LIFTED_FUNCTIONS = [
     'resetTopicStoreCache'
 ]
 
-const LIFTED_DECLARATIONS = [ 'CONTENT_SKIP_TAGS', 'ID_VOCABULARY_MIRROR', 'ID_SEPARATOR_SOURCE', 'ID_STOCK_PREFIXES', 'topicStorePending' ]
+// M082-09-17 (PRD-17, WI-238): ID_REF_KINDS joins the lifted declarations so the kind lookups close
+// over the REAL table. A copy here would keep this suite green exactly when the production table grows
+// and the marks start behaving differently — the same reasoning the helper's own comment gives for
+// lifting declarations at all.
+const LIFTED_DECLARATIONS = [ 'CONTENT_SKIP_TAGS', 'ID_VOCABULARY_MIRROR', 'ID_SEPARATOR_SOURCE', 'ID_STOCK_PREFIXES', 'ID_REF_KINDS', 'topicStorePending' ]
 
 
 // The one mirrored constant that is NOT a bracketed literal, so sliceDeclaration cannot take it. Read
@@ -230,9 +249,19 @@ async function makePass( { contentEl, currentDocumentId, lastTree, fetchImpl } )
         .join( '\n' )
     const { source } = await extractFunctionSources( LIFTED_FUNCTIONS )
     const tail = '\nreturn { ' + LIFTED_FUNCTIONS.join( ', ' ) + ', setDocument: function( value ) { currentDocumentId = value } }'
-    const factory = new Function( 'document', 'fetch', 'contentEl', 'currentDocumentId', 'lastTree', 'diagramRegistry', declarations + '\n' + source + tail )
+    // M082-09-16 (PRD-16, WI-237): openIdRefOverlay is a SURROUNDING of the pass (it touches the DOM and
+    // fetches), so it is injected here exactly like `document` and `fetch` rather than lifted. The
+    // recorder makes the popup visible to this suite instead of invisible to it: `overlayCalls` says
+    // which references would have opened it.
+    const overlayCalls = []
+    const factory = new Function( 'document', 'fetch', 'contentEl', 'currentDocumentId', 'lastTree', 'diagramRegistry', 'openIdRefOverlay', declarations + '\n' + source + tail )
+    const pass = factory(
+        makeDocument(), fetchImpl, contentEl, currentDocumentId, lastTree, { mermaid: true, 'vega-lite': true },
+        ( documentId, entry ) => overlayCalls.push( { documentId, 'token': entry === undefined || entry === null ? null : entry.token } )
+    )
+    pass[ 'overlayCalls' ] = overlayCalls
 
-    return factory( makeDocument(), fetchImpl, contentEl, currentDocumentId, lastTree, { mermaid: true, 'vega-lite': true } )
+    return pass
 }
 
 

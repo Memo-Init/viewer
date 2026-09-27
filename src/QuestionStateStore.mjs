@@ -13,7 +13,9 @@
 //
 // So `user_input_answers` stays the ledger of SUBMITTED DECISIONS and is untouched. This store holds
 // what comes before it, and it holds INTENT and CONFIRMED ANSWER in two SEPARATE shapes:
-//   intent    — selected / custom / rejected / touched. NO answer text field exists here AT ALL.
+//   intent    — selected / custom / rejected / touched, and since M082-09-07 the optional selectedKeys:
+//               the NAMES of the chosen options beside their positions. NO answer text field exists here
+//               AT ALL.
 //   confirmed — answerText, present or absent. Never an empty string.
 // The separation is therefore not a rule that must be obeyed but a statement that cannot be made: a
 // restored intent yields addedText:null because its record carries no text to take it from, so it
@@ -240,12 +242,39 @@ class QuestionStateStore {
             return { status: false, entry: null, reason: 'intent.custom: required array of strings' }
         }
 
+        // M082-09-07 (Memo 082 Kap 20a, Cluster E, WI-121): the NAMES of the chosen options, and the reason
+        // this field had to reach the disk at all. `selected` is a list of POSITIONS in an option list the
+        // record does not carry, so after the list moves the store holds a number whose meaning is gone —
+        // measured as case V3 of M082-09-02, where a stored `selected [6]` outlived the option it named and
+        // the next load dropped the whole entry to be rid of it.
+        //
+        // OPTIONAL BY DESIGN, not by leniency: every record written before this order has none, and an
+        // absent field is exactly what tells the client to fall back to the old index rule instead of
+        // reinterpreting an old record. Present, it is held to the SAME standard as `selected` — and to one
+        // more: the two lists describe the same selection, so a length mismatch is a half-record and the
+        // whole record is rejected. A store that passed a half-record through would hand the client a name
+        // list that does not match its own indices, which is worse than no names at all.
+        const selectedKeys = intent[ 'selectedKeys' ]
+        const keysGiven = selectedKeys !== undefined && selectedKeys !== null
+
+        if( keysGiven === true ) {
+            if( Array.isArray( selectedKeys ) !== true || selectedKeys.every( ( key ) => typeof key === 'string' && key.trim().length > 0 ) !== true ) {
+                return { status: false, entry: null, reason: 'intent.selectedKeys: present but not an array of non-empty strings' }
+            }
+            if( selectedKeys.length !== selected.length ) {
+                return { status: false, entry: null, reason: `intent.selectedKeys: ${ selectedKeys.length } names against ${ selected.length } selected indices — the two describe one selection and must pair` }
+            }
+        }
+
         const normalized = {
             selected: selected.slice(),
             custom: custom.slice(),
             rejected: intent[ 'rejected' ] === true,
             touched: intent[ 'touched' ] === true
         }
+
+        if( keysGiven === true ) { normalized[ 'selectedKeys' ] = selectedKeys.slice() }
+
         const confirmed = record[ 'confirmed' ]
 
         if( confirmed === undefined || confirmed === null ) {

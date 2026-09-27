@@ -2749,25 +2749,50 @@
         // PRD-006 (Kap 9, AC-04): split persisted "## Antwort auf F{N} ..." answer blocks out
         // of the transcript body so they can be re-attached as a dedicated section. Returns
         // the body with those blocks removed plus the answer markdown collected separately.
+        //
+        // M082-09-FX1 (Memo 082 Kap 20a, Cluster C — WI-120, follow-up to M082-09-06 O-1): THE SAME
+        // cut rule as scanAnswerBlocks, and therefore the same fence state. Until here this path read
+        // EVERY "## " line as a heading — including one that sits INSIDE a markdown fence, where it is
+        // content. Measured on four fence forms: a fence inside an answer section was TORN APART
+        // between the two halves (opening line in one, inner and closing line in the other), and an
+        // answer heading INSIDE a fence opened a section that does not exist, which pulled the rest of
+        // the body over with it. This is the DISPLAY path, so nothing was lost — but it was filed in
+        // the wrong half, and the defect is the same one the write path carried.
+        //
+        // scanCodeFences IS USED, NOT REBUILT: a second fence detector of its own would be exactly the
+        // parallel path this repair removes. The server twin is UserInputCapture.scanCodeFences, and
+        // HeaderSplitParityPRD32 holds the two readings against each other line by line.
+        //
+        // AN OPEN FENCE AT THE END OF THE TEXT IS NOT DECIDED: everything behind it counts as content,
+        // so nothing is cut. For a display that is the lossless reading — the writing path refuses at
+        // the same point instead (mergeAnswerBlocks, code unclosed-fence), because there a wrong guess
+        // would destroy text rather than misfile it.
         function splitAnswerBlocks( bodyMd ) {
             var text = String( bodyMd || '' )
             var lines = text.split( '\n' )
+            var fences = scanCodeFences( text )
             var bodyLines = []
             var answerLines = []
             var inAnswer = false
 
-            lines.forEach( function( line ) {
-                var isAnswerHeading = /^##\s+Antwort auf\s+F\d+/.test( line )
+            lines.forEach( function( line, index ) {
+                var outside = fences.inFence[ index ] !== true
+                var isAnswerHeading = outside && /^##\s+Antwort auf\s+F\d+/.test( line )
                 if( isAnswerHeading ) { inAnswer = true }
-                else if( /^##\s/.test( line ) ) { inAnswer = false }
+                else if( outside && /^##\s/.test( line ) ) { inAnswer = false }
 
                 if( inAnswer ) { answerLines.push( line ) }
                 else { bodyLines.push( line ) }
             } )
 
+            // The two halves plus the comparison set they were cut against: a caller (and a test) can
+            // state HOW MUCH was read instead of trusting that something was.
             return {
                 bodyWithoutAnswers: bodyLines.join( '\n' ).trim(),
-                answersMd: answerLines.join( '\n' )
+                answersMd: answerLines.join( '\n' ),
+                fences: fences.fences,
+                comparedLines: fences.comparedLines,
+                decidable: fences.decidable
             }
         }
 
@@ -5901,7 +5926,13 @@
         // ONE combined popup with BOTH prompt parts (Transcript-Abschnitt + Fragen-Abschnitt).
         // Re-bound on each updateSidebarSticky render (header is rebuilt), mirroring the other
         // sticky binders. Zone 2 itself stays a pure status overview — every input lives here.
-        var promptEditState = { memoName: null, projectId: null, memoId: null, revisionId: null, transcriptId: null, questions: [] }
+        // PRD-05 (Memo 082 Kap 20a, Cluster B — WI-119): vier Felder kommen dazu, und sie gehoeren
+        // hierher und nicht in einen zweiten Modul-Zustand. Es ist Zustand EINES geoeffneten Popups,
+        // genau wie transcriptId: `pristineValue` traegt den zuletzt VOM KODE geschriebenen Feldwert,
+        // `baselineLength` die Laenge des Textes, den der Server zu diesem Transcript haelt,
+        // `prefillStatus` die Lage, in der das Nachladen geendet ist, und `offeredBody` den
+        // nachgeladenen Text, der angeboten statt angewendet wurde.
+        var promptEditState = { memoName: null, projectId: null, memoId: null, revisionId: null, transcriptId: null, questions: [], pristineValue: null, baselineLength: null, prefillStatus: null, offeredBody: null }
 
         function bindPromptEdit( opts ) {
             opts = opts || {}
@@ -5913,6 +5944,201 @@
             btn.addEventListener( 'click', function() {
                 openPromptModal( { memoEntry: opts.memoEntry, memoName: opts.memoName } )
             } )
+        }
+
+        // PRD-05 (Memo 082 Kap 20a, Cluster B — WI-119, S2): VIER Lagen, VIER unterscheidbare
+        // Rueckgaben. Bis hierher endeten alle vier in demselben leeren Zeichenkettenwert: ein nicht
+        // gefundener Marker, ein Abruf, der nicht `ok` ist, eine Ausnahme und ein echt leeres
+        // Transcript waren am Feld nicht auseinanderzuhalten — und genau das ist der Befund, nicht
+        // eine seiner Folgen. `body === null` heisst "nicht entscheidbar" und ist ausdruecklich NICHT
+        // dasselbe wie `body === ''` ("entschieden leer"); an dieser einen Gleichsetzung haengt der
+        // ganze Schaden, weil sie eine gescheiterte Lesung als gueltiges Ergebnis ausgibt.
+        // Rein gehalten — ohne DOM und ohne Netz —, damit jede Lage einzeln pruefbar ist.
+        function transcriptPrefillOutcome( opts ) {
+            opts = opts || {}
+
+            if( opts.error ) {
+                return { status: 'exception', body: null, baselineLength: null, message: 'Fehler beim Laden: ' + ( opts.error.name || String( opts.error ) ) }
+            }
+            if( opts.ok !== true ) {
+                var statusText = ( opts.status === undefined || opts.status === null ) ? 'ohne Status' : String( opts.status )
+
+                return { status: 'fetch-failed', body: null, baselineLength: null, message: 'Abruf gescheitert: ' + statusText }
+            }
+
+            var raw = typeof opts.raw === 'string' ? opts.raw : ''
+            // Dieselbe Server-Form wie in renderTranscriptContent und im alten Nachlade-Zweig: MIT den
+            // beiden abschliessenden Zeilenumbruechen. Nur die Deutung des Fehlschlags aendert sich.
+            var marker = '## Transcript-Inhalt\n\n'
+            var idx = raw.indexOf( marker )
+            if( idx === -1 ) {
+                // Die Meldung nennt die Markierung, zitiert sie aber NICHT ein zweites Mal als
+                // Literal: `HeaderSplitParityPRD32` verlangt, dass jedes Vorkommen der Markierung im
+                // Klienten als Schnittstelle benennbar bleibt, damit kein zweiter Schnittpunkt
+                // unbemerkt hereinkommt. Der Text kommt deshalb aus derselben Variablen, gegen die
+                // auch geschnitten wird — eine Quelle, zwei Verwendungen.
+                return { status: 'marker-missing', body: null, baselineLength: null, message: 'Markierung nicht gefunden: der Abschnitt "' + marker.trim() + '" fehlt in der Antwort des Servers. Das Feld wurde nicht gefüllt.' }
+            }
+
+            var body = raw.slice( idx + marker.length ).trim()
+            if( body.length === 0 ) {
+                return { status: 'empty-transcript', body: '', baselineLength: 0, message: 'Transcript ist leer.' }
+            }
+
+            return { status: 'loaded', body: body, baselineLength: body.length, message: '' }
+        }
+
+        // PRD-05 (S1): die Veraenderungs-Erkennung an EINER benannten Stelle statt verstreut. Sie
+        // vergleicht den Feldwert mit dem zuletzt vom Kode geschriebenen — kein Ereignis-Abonnement,
+        // weil dessen Bindungs-Lebenszyklus selbst eine stille Fehlerquelle waere und der Vergleich
+        // an jedem Punkt nachrechenbar ist.
+        // `pristineValue` ohne Wert heisst "der Kode hat hier nie geschrieben", also ist die Frage
+        // nicht entscheidbar. Die Antwort `false` traegt dabei keinen stillen Default: sie fuehrt in
+        // der Schrumpf-Pruefung zu "nicht erklaert" und damit auf die strengere Seite.
+        function promptFieldChangedByUser() {
+            var el = document.getElementById( 'pp-content' )
+            if( !el ) { return false }
+            if( typeof promptEditState.pristineValue !== 'string' ) { return false }
+
+            return el.value !== promptEditState.pristineValue
+        }
+
+        // PRD-05 (S1/S2): die Lage wird BENANNT statt als "leer" gelesen. `offer === null` blendet den
+        // Uebernahme-Knopf aus; ein Text ohne Angebot ist eine reine Meldung.
+        function renderPrefillNotice( opts ) {
+            var box = document.getElementById( 'pp-prefill-notice' )
+            var textEl = document.getElementById( 'pp-prefill-text' )
+            var btn = document.getElementById( 'pp-prefill-apply' )
+            if( !box || !textEl ) { return }
+
+            textEl.textContent = opts.text
+            if( btn ) {
+                if( opts.offer === null ) { btn.classList.add( 't-hidden' ) }
+                else { btn.classList.remove( 't-hidden' ) }
+            }
+            if( opts.text.length > 0 ) { box.classList.remove( 't-hidden' ) }
+            else { box.classList.add( 't-hidden' ) }
+        }
+
+        // PRD-05 (S1): die EINE Stelle, an der entschieden wird, ob ein eintreffendes Nachladen das
+        // Feld fuellen darf. Bis hierher stand dort `ppContent.value = body` ohne jede Bedingung —
+        // gemessen in M082-09-02 (Fall V1): das Feld ist beim Oeffnen leer, der Fokus steht sofort
+        // darin, der Nutzer tippt, das Nachladen trifft ein und sein Text ist ersatzlos weg, ohne
+        // Nachfrage und ohne Hinweis.
+        //
+        // Drei Lagen, wie S1 sie nennt: unveraendert => fuellen · vom Nutzer veraendert => ANBIETEN,
+        // nie anwenden · nicht entscheidbar => das Feld bleibt, wie es ist, und die Lage wird benannt.
+        // Eine Zusammenfuehrung beider Fassungen entsteht ausdruecklich nicht (S4) — sie waere eine
+        // neue stille Aenderung an genau der Stelle, die dieser Auftrag schliesst.
+        function applyTranscriptPrefill( opts ) {
+            var outcome = opts.outcome
+            var el = document.getElementById( 'pp-content' )
+
+            promptEditState.prefillStatus = outcome.status
+            promptEditState.baselineLength = outcome.baselineLength
+
+            if( !el ) { return { applied: false, reason: 'no-field' } }
+
+            if( outcome.body === null ) {
+                renderPrefillNotice( { text: outcome.message, offer: null } )
+
+                return { applied: false, reason: outcome.status }
+            }
+
+            if( promptFieldChangedByUser() === true ) {
+                promptEditState.offeredBody = outcome.body
+                renderPrefillNotice( {
+                    text: 'Nachgeladener Text NICHT übernommen: das Feld trägt bereits ' + el.value.length
+                        + ' Zeichen eigenen Text, das Nachladen brachte ' + outcome.body.length
+                        + ' Zeichen. Es wurde nichts überschrieben.',
+                    offer: outcome.body
+                } )
+
+                return { applied: false, reason: 'field-changed' }
+            }
+
+            el.value = outcome.body
+            promptEditState.pristineValue = outcome.body
+            updatePromptTranscriptCount()
+            renderPrefillNotice( { text: outcome.message, offer: null } )
+
+            return { applied: true, reason: outcome.status }
+        }
+
+        // PRD-05 (S1, S4): der angebotene Text wird auf ausdrueckliche Nutzer-Handlung uebernommen,
+        // nicht verschmolzen. Danach ist der Feldwert wieder der vom Kode geschriebene, also gilt
+        // jede spaetere Abweichung erneut als Eingabe eines Menschen.
+        function adoptOfferedPrefill() {
+            var el = document.getElementById( 'pp-content' )
+            if( !el ) { return { adopted: false, reason: 'no-field' } }
+            if( typeof promptEditState.offeredBody !== 'string' ) { return { adopted: false, reason: 'nothing-offered' } }
+
+            el.value = promptEditState.offeredBody
+            promptEditState.pristineValue = promptEditState.offeredBody
+            promptEditState.baselineLength = promptEditState.offeredBody.length
+            promptEditState.offeredBody = null
+            updatePromptTranscriptCount()
+            renderPrefillNotice( { text: '', offer: null } )
+
+            return { adopted: true, reason: 'adopted' }
+        }
+
+        function bindPrefillOffer() {
+            var btn = document.getElementById( 'pp-prefill-apply' )
+            if( !btn ) { return }
+            if( btn.dataset.bound === '1' ) { return }
+            btn.dataset.bound = '1'
+
+            btn.addEventListener( 'click', function() { adoptOfferedPrefill() } )
+        }
+
+        // PRD-05 (S3): eine Voll-Ersetzung, die den Text kuerzer macht, ist eine Behauptung, die
+        // belegt werden muss. Dieselbe Regel, die mergeAnswerBlocks schon fuer die Antwort-Abschnitte
+        // ("nichts gefunden ist nie gruen") — dieser Auftrag dehnt sie auf den Transcript-Weg aus,
+        // erfindet sie also nicht. Eine Ablehnung sagt, gegen WELCHE Vergleichsmenge sie ergeht.
+        //
+        // Die beiden ersten Ausgaenge sind der Zaun gegen ein Gruen ueber einer Nullmenge:
+        // `baselineLength` ohne Zahl heisst, dass die Ausgangslaenge UNBEKANNT ist, weil das
+        // Nachladen in einer der drei Fehlerlagen endete — das ist nicht 0 und wird nicht als 0
+        // gelesen. Ein PUT ersetzt dabei gespeicherten Inhalt, dessen Laenge niemand kennt; deshalb
+        // ist das der einzige Ausgang, der ohne Kuerzung ablehnt. `baselineLength === 0` ist dagegen
+        // bekannt, aber trivial: es kann nichts schrumpfen, und die Pruefung meldet die leere
+        // Vergleichsmenge als eigenen Ausgang statt sie als Bestehen auszugeben.
+        function checkTranscriptShrink( opts ) {
+            var baselineLength = typeof opts.baselineLength === 'number' ? opts.baselineLength : null
+            var nextLength = opts.nextLength
+            var explained = Array.isArray( opts.explained ) ? opts.explained : []
+
+            if( opts.isUpdate !== true ) {
+                return { verdict: 'not-applicable', allowed: true, baselineLength: baselineLength, nextLength: nextLength, delta: null, explained: explained, message: '' }
+            }
+            if( baselineLength === null ) {
+                return { verdict: 'unknown-baseline', allowed: false, baselineLength: null, nextLength: nextLength, delta: null, explained: explained, message: 'Schrumpf-Prüfung nicht entscheidbar: die Ausgangslänge ist unbekannt, weil das Nachladen des Transcripts nicht gelungen ist. Es wurde nichts gespeichert.' }
+            }
+            if( baselineLength === 0 ) {
+                return { verdict: 'no-baseline', allowed: true, baselineLength: 0, nextLength: nextLength, delta: nextLength, explained: explained, message: 'Schrumpf-Prüfung: keine Vergleichsmenge — die Ausgangslänge ist 0 Zeichen, es wurde nichts verglichen.' }
+            }
+
+            var delta = nextLength - baselineLength
+            if( delta >= 0 ) {
+                return { verdict: 'pass-not-shorter', allowed: true, baselineLength: baselineLength, nextLength: nextLength, delta: delta, explained: explained, message: '' }
+            }
+            if( explained.length > 0 ) {
+                return { verdict: 'pass-explained', allowed: true, baselineLength: baselineLength, nextLength: nextLength, delta: delta, explained: explained, message: 'Kürzung erklärt (' + explained.join( ', ' ) + '): ' + baselineLength + ' → ' + nextLength + ' Zeichen, ' + delta + '.' }
+            }
+
+            return { verdict: 'reject-unexplained-shrink', allowed: false, baselineLength: baselineLength, nextLength: nextLength, delta: delta, explained: explained, message: 'Kürzung ohne erklärten Grund abgelehnt: ' + baselineLength + ' → ' + nextLength + ' Zeichen, ' + delta + '. Es wurde nichts gespeichert.' }
+        }
+
+        // PRD-05 (S1): der Fokus ist eine eigene Handlung geworden, weil er jetzt an zwei Stellen
+        // faellt — sofort, wenn nichts nachgeladen wird, und im then-/catch-Zweig, sobald der Inhalt
+        // feststeht. Ein Fokus auf ein Feld, dessen Inhalt noch unterwegs ist, ist die Einladung zum
+        // Rennen; er ist nicht dessen Ursache, aber er ist der Grund, warum es ueberhaupt eintritt.
+        function focusPromptContent() {
+            var el = document.getElementById( 'pp-content' )
+            if( !el ) { return }
+
+            el.focus()
         }
 
         // Open #transcript-modal in the combined "Prompt bearbeiten" mode (Kap 9.5). Shows the
@@ -5974,6 +6200,15 @@
             if( ppMemo ) { ppMemo.value = memoId }
             if( ppRevision ) { ppRevision.value = promptEditState.revisionId }
             if( ppContent ) { ppContent.value = '' }
+            // PRD-05 (Memo 082 Kap 20a, WI-119, S1): der Bezugspunkt der Veraenderungs-Erkennung wird
+            // MIT dem Feld gesetzt, nicht davor und nicht danach — sonst misst der spaetere Vergleich
+            // gegen den Stand eines frueheren Popups. Die Ausgangslaenge ist an dieser Stelle noch
+            // unbekannt (null), nicht 0: geladen ist nichts, und "nichts geladen" ist keine Laenge.
+            promptEditState.pristineValue = ''
+            promptEditState.baselineLength = null
+            promptEditState.prefillStatus = null
+            promptEditState.offeredBody = null
+            renderPrefillNotice( { text: '', offer: null } )
             // PRD-008 (Memo 076 H5, WI-072): the quality checkboxes are NOT part of the field reset
             // above, so a check ticked for memo A leaked silently into memo B's payload. Reset them on
             // every open, then restamp the label (WI-078) so the count starts from zero.
@@ -5982,20 +6217,31 @@
             updatePromptTranscriptCount()
 
             // Load the existing transcript body into the field (no header — body only).
+            // PRD-05 (Memo 082 Kap 20a, WI-119, S1/S2): der Zweig traegt die Entscheidung nicht mehr
+            // selbst. Er reicht die Antwort — samt Status und samt Ausnahme — an
+            // transcriptPrefillOutcome weiter, das die vier Lagen auseinanderhaelt, und laesst
+            // applyTranscriptPrefill entscheiden, ob gefuellt oder angeboten wird.
+            // Der gemeinsame leere Sammel-Rueckgabewert, in dem drei Fehlerlagen und ein echt leeres
+            // Transcript ununterscheidbar zusammenfielen, ist damit ersatzlos weg — und mit ihm der
+            // leere Fehler-Zweig, das stillste Stueck des Befundes: er hat eine Ausnahme verschluckt
+            // und dem Nutzer ein leeres Feld als Ergebnis hingestellt.
+            // Die frueheren Schreibweisen werden hier bewusst NICHT zitiert: eine Quelltext-Probe,
+            // die ihr Verschwinden misst, wuerde sonst diesen Kommentar treffen (M082-09-03, O-5).
             if( promptEditState.transcriptId ) {
                 fetch( '/api/transcripts/' + promptEditState.transcriptId )
-                    .then( function( resp ) { return resp.ok ? resp.text() : '' } )
-                    .then( function( raw ) {
-                        // PRD-V5 (Memo 080 Kap 16, WI-133): server form WITH the two trailing newlines
-                        // — same reason as in renderTranscriptContent. This is the split that fed the
-                        // edit field, so it is the one that produced the second header on save.
-                        var marker = '## Transcript-Inhalt\n\n'
-                        var idx = raw.indexOf( marker )
-                        var body = idx === -1 ? '' : raw.slice( idx + marker.length ).trim()
-                        if( ppContent ) { ppContent.value = body }
-                        updatePromptTranscriptCount()
+                    .then( function( resp ) {
+                        if( resp.ok !== true ) { return { ok: false, status: resp.status, raw: '' } }
+
+                        return resp.text().then( function( raw ) { return { ok: true, status: resp.status, raw: raw } } )
                     } )
-                    .catch( function() {} )
+                    .then( function( answer ) {
+                        applyTranscriptPrefill( { outcome: transcriptPrefillOutcome( answer ) } )
+                        focusPromptContent()
+                    } )
+                    .catch( function( err ) {
+                        applyTranscriptPrefill( { outcome: transcriptPrefillOutcome( { error: err } ) } )
+                        focusPromptContent()
+                    } )
             }
 
             // ---- Abschnitt 2: Fragen. Open questions of the viewed memo, each with an answer
@@ -6003,9 +6249,13 @@
             // rendered questionNav — two sets under one heading. Both now come from the schema of the
             // viewed revision, so the label counts what the list shows.
             renderPromptQuestions( memoEntry )
+            bindPrefillOffer()
 
             modal.classList.remove( 't-hidden' )
-            if( ppContent ) { ppContent.focus() }
+            // PRD-05 (Memo 082 Kap 20a, WI-119, S1): der Fokus kommt NACH dem Feststehen des Inhalts.
+            // Laeuft ein Nachladen, setzt ihn dessen then- oder catch-Zweig; laeuft keines, steht der
+            // Inhalt hier bereits fest (das leere Feld ist dann das Ergebnis, nicht ein Zwischenstand).
+            if( !promptEditState.transcriptId ) { focusPromptContent() }
         }
 
         function updatePromptTranscriptCount() {
@@ -6090,8 +6340,32 @@
                 // preselection seeds the display and never reaches this field.
                 var st = questionNav.state[ qIdx ]
                 var stored = storedAnswerFor( q )
-                if( st && st.added === true && st.addedText && st.touched === true ) {
-                    input.value = buildAnswerText( q, st ).answerLine
+                // M082-09-04 (Memo 082 Kap 20, Cluster D, S1): the three conditions of this gate are
+                // DECIDED here, not inherited. After M082-09-03 the preselection no longer seeds the
+                // selection, so not one of them is still here to fend off the recommendation — each had
+                // to name a case of its own or go. All three named one:
+                //   `added`     STAYS — the line between "selected" and "decided". It is the condition
+                //       Memo 079 PRD-24 lacked, and without it an un-confirmed click becomes a recorded
+                //       answer again.
+                //   `addedText` STAYS — deliberately, although every write site today moves it together
+                //       with `added`. A guard is not excess because the current data happens to satisfy
+                //       it; reading it that way is how an unchecked assumption turns into an undeclared
+                //       invariant. It is what makes the coupling checkable at the READER.
+                //   `touched`   STAYS — measured, not assumed: stateFromStoredRecord derives `added`
+                //       from a stored answer text while carrying `touched` straight out of the record,
+                //       so a stored entry can still arrive confirmed-but-untouched. PRD-026's machine
+                //       injection is the same shape.
+                // WHAT DOES FALL is the gate's blind spot: it asked about the STATE and never about the
+                // RESULT. A confirmation carrying no answer line passed all three and produced an EMPTY
+                // field, which the save path then skipped without a word — and on the way it also
+                // suppressed both branches below, the stored read-back and the unconfirmed hint. A
+                // confirmed answer is a value only when it actually carries one; otherwise the chain
+                // continues instead of ending in a blank.
+                var confirmedValue = ( st && st.added === true && st.addedText && st.touched === true )
+                    ? buildAnswerText( q, st ).answerLine
+                    : ''
+                if( confirmedValue.trim().length > 0 ) {
+                    input.value = confirmedValue
                 } else if( stored.found === true ) {
                     // PRD-F3 (S2): an answer ALREADY saved into the transcript is read BACK out of the
                     // content instead of the field starting empty — otherwise a second "Uebernehmen" would
@@ -6108,33 +6382,130 @@
             } )
         }
 
+        // M082-09-06 (Memo 082 Kap 20a, Cluster C — WI-120, S1): der Zaun-Zustand, aus dem die
+        // Blockgrenze STRUKTURELL bestimmt wird statt aus einem Zeilenmuster.
+        //
+        // WARUM ES IHN BRAUCHT: die Grenzsuche las jede Zeile, die mit "## " beginnt, als
+        // Ueberschrift — auch eine, die INNERHALB eines Markdown-Zauns steht und dort Inhalt ist.
+        // Gemessen an der Reproduktion M082-09-02, Fall V2: die Ersetzung endete an dieser Zeile,
+        // riss deshalb die oeffnende Zaun-Zeile mit weg und liess Innen- und Schlusszeile verwaist
+        // zurueck. Derselbe Irrtum kostete den Absatz davor.
+        //
+        // KEIN MARKDOWN-PARSER, und das ist Absicht (S4): gefuehrt werden ausschliesslich Zeichen
+        // und Laenge des offenen Zauns. Ein Zaun schliesst nur mit DEMSELBEN Zeichen und MINDESTENS
+        // derselben Laenge — deshalb schliessen drei Backticks keinen Zaun aus vieren, und genau in
+        // dieser Form zitiert dieser Korpus Markdown in Markdown. Ein Abschluss traegt ausserdem
+        // nichts hinter sich; eine Info-Zeichenkette gibt es nur am Anfang.
+        //
+        // ES NENNT SEINE VERGLEICHSMENGE: `comparedLines` ist 0 ueber einem leeren Text — eine
+        // Grenz-Aussage ueber 0 Zeilen ist trivial wahr und ist kein Bestehen. Und `decidable` ist
+        // false, solange am Textende ein Zaun offen steht: "nicht entscheidbar" ist nicht dasselbe
+        // wie "keine Grenze gefunden", dieselbe Unterscheidung, die checkTranscriptShrink zwischen
+        // unbekannter und leerer Ausgangslaenge zieht.
+        function scanCodeFences( content ) {
+            var text = String( content || '' )
+            var lines = text.split( '\n' )
+            var scan = lines.reduce( function( acc, line ) {
+                var fence = line.match( /^ {0,3}(`{3,}|~{3,})/ )
+                if( acc.open === null ) {
+                    if( fence ) {
+                        acc.open = { char: fence[ 1 ].charAt( 0 ), length: fence[ 1 ].length, line: acc.inFence.length }
+                        acc.fences = acc.fences + 1
+                    }
+                    acc.inFence.push( acc.open !== null )
+
+                    return acc
+                }
+
+                var tail = fence ? line.slice( line.indexOf( fence[ 1 ] ) + fence[ 1 ].length ).trim() : ''
+                var closes = fence !== null
+                    && fence[ 1 ].charAt( 0 ) === acc.open.char
+                    && fence[ 1 ].length >= acc.open.length
+                    && tail.length === 0
+                acc.inFence.push( true )
+                if( closes === true ) { acc.open = null }
+
+                return acc
+            }, { inFence: [], open: null, fences: 0 } )
+
+            return {
+                comparedLines: text.length === 0 ? 0 : lines.length,
+                fences: scan.fences,
+                inFence: scan.inFence,
+                decidable: scan.open === null,
+                openFenceLine: scan.open === null ? null : scan.open.line
+            }
+        }
+
         // PRD-F3 (Memo 080 Kap 18, S3): read EVERY "## Antwort auf …" block out of a content string.
-        // A block runs from its heading to the next "## " heading (exclusive) — the same cut both
-        // server-side parsers make, so client and server see the same blocks.
         //
         // IT REPORTS ITS COMPARISON BASIS. `markers` is how many answer headings the content carries at
         // all; `parsed` is how many of them yielded a question id. The two differ exactly when a heading
         // is malformed — and a check whose comparison set is incomplete is not allowed to report green.
+        //
+        // M082-09-06 (Cluster C — WI-120, S1/S2): die Spanne endet nicht mehr an der naechsten
+        // Ueberschrift, sondern am ENDE DER ANTWORT. Zwei Aenderungen, eine Wurzel:
+        //
+        // 1. Ueberschriften und Grenzen werden nur AUSSERHALB eines Zauns gelesen (S1). `limit` ist
+        //    die naechste echte Ueberschrift — sie bleibt die Obergrenze, damit eine Ersetzung nie
+        //    in den naechsten Abschnitt laeuft.
+        // 2. Die Spanne endet am Ende des ersten Absatzes des Koerpers (S2). Der Erzeuger schreibt
+        //    genau diese Form — Ueberschrift, Leerzeile, eine Antwortzeile —, und alles, was der
+        //    Nutzer DARUNTER geschrieben hat, ist sein Text und wird nicht mehr mitverworfen. Eine
+        //    Leerzeile innerhalb eines Zauns beendet den Absatz nicht; sonst zerschnitte die
+        //    Reparatur genau die Zaeune, die sie schuetzen soll.
+        //
+        // `limit` bleibt im Ergebnis stehen, damit ein Aufrufer die beiden Grenzen unterscheiden
+        // kann: `end` ist, was ersetzt wird, `limit`, was frueher ersetzt worden waere.
         function scanAnswerBlocks( content ) {
             var text = String( content || '' )
             var lines = text.split( '\n' )
+            var fences = scanCodeFences( text )
             var indexed = lines.map( function( line, index ) { return { line: line, index: index } } )
-            var headings = indexed.filter( function( entry ) { return /^##\s+Antwort auf/.test( entry.line ) } )
+            var outside = indexed.filter( function( entry ) { return fences.inFence[ entry.index ] !== true } )
+            var headings = outside.filter( function( entry ) { return /^##\s+Antwort auf/.test( entry.line ) } )
 
             var blocks = headings.map( function( entry ) {
                 var match = entry.line.match( /^##\s+Antwort auf\s+(F\d+)/ )
-                var following = indexed.slice( entry.index + 1 ).filter( function( c ) { return /^##\s/.test( c.line ) } )
-                var end = following.length > 0 ? following[ 0 ].index : lines.length
+                var following = outside.filter( function( c ) { return c.index > entry.index && /^##\s/.test( c.line ) } )
+                var limit = following.length > 0 ? following[ 0 ].index : lines.length
+                var body = indexed.slice( entry.index + 1, limit )
+                var firstFilled = body.reduce( function( found, c ) {
+                    return found === null && c.line.trim().length > 0 ? c.index : found
+                }, null )
+                var paragraph = body
+                    .filter( function( c ) { return firstFilled !== null && c.index >= firstFilled } )
+                    .reduce( function( acc, c ) {
+                        if( acc.done === true ) { return acc }
+                        if( c.line.trim().length === 0 && fences.inFence[ c.index ] !== true ) {
+                            acc.done = true
+
+                            return acc
+                        }
+                        acc.end = c.index + 1
+
+                        return acc
+                    }, { end: entry.index + 1, done: false } )
+                var end = firstFilled === null ? entry.index + 1 : paragraph.end
 
                 return {
                     id: match ? match[ 1 ] : null,
                     start: entry.index,
                     end: end,
+                    limit: limit,
                     body: lines.slice( entry.index + 1, end ).join( '\n' ).trim()
                 }
             } )
 
-            return { markers: headings.length, parsed: blocks.filter( function( b ) { return b.id !== null } ).length, blocks: blocks }
+            return {
+                markers: headings.length,
+                parsed: blocks.filter( function( b ) { return b.id !== null } ).length,
+                blocks: blocks,
+                fences: fences.fences,
+                comparedLines: fences.comparedLines,
+                decidable: fences.decidable,
+                openFenceLine: fences.openFenceLine
+            }
         }
 
         // PRD-F3 (Memo 080 Kap 18, S3): merge fresh answer blocks into a content BY QUESTION ID.
@@ -6155,11 +6526,37 @@
         function mergeAnswerBlocks( content, blocks ) {
             var base = String( content || '' ).trim()
             var scan = scanAnswerBlocks( base )
+            // Ohne Zaun-Zustand gezaehlt, und das ist der Punkt: ein offener Zaun verdeckt jede
+            // Ueberschrift hinter sich, also taugt `scan.markers` genau dann nicht als Mass, wenn
+            // die Lage unklar ist. Diese Zahl sagt, wieviel ueberhaupt auf dem Spiel steht.
+            var rawMarkers = base.split( '\n' ).filter( function( line ) { return /^##\s+Antwort auf/.test( line ) } ).length
             var result = { ok: true, content: base, markers: scan.markers, compared: scan.parsed,
-                replaced: 0, unchanged: 0, dropped: 0, appended: 0, reason: null }
+                replaced: 0, unchanged: 0, dropped: 0, appended: 0, reason: null, code: null,
+                spanLines: 0, keptLines: 0, fences: scan.fences, rawMarkers: rawMarkers }
+
+            // M082-09-06 (Cluster C — WI-120, S3): eine Grenze, die nicht sicher bestimmbar ist,
+            // fuehrt zur VERWEIGERUNG statt zu einer geratenen Spanne. Ein bis zum Textende offener
+            // Zaun ist genau diese Lage. Die Abwaegung ist nicht symmetrisch: eine geratene Grenze
+            // verwirft im Zweifel Text des Nutzers, eine Verweigerung kostet einen Klick.
+            //
+            // Die Ausnahme ist gemessen, nicht bequem: traegt der Text ueberhaupt keine
+            // Antwort-Ueberschrift, gibt es keine Spanne zu bestimmen und nichts zu verlieren — das
+            // reine Anhaengen bleibt erlaubt. Dieselbe Positivkontrolle, die A6 fuer die leere
+            // Vergleichsmenge schon zieht.
+            if( scan.decidable !== true && rawMarkers > 0 ) {
+                result.ok = false
+                result.code = 'unclosed-fence'
+                result.reason = 'ein Code-Zaun ab Zeile ' + ( scan.openFenceLine + 1 )
+                    + ' wird bis zum Textende nicht geschlossen — die Grenze der '
+                    + rawMarkers + ' Antwort-Abschnitt(e) ist nicht sicher bestimmbar. '
+                    + 'Es wurde nichts ersetzt.'
+
+                return result
+            }
 
             if( scan.markers > scan.parsed ) {
                 result.ok = false
+                result.code = 'incomplete-comparison'
                 result.reason = ( scan.markers - scan.parsed ) + ' von ' + scan.markers
                     + ' "## Antwort auf"-Überschriften tragen keine lesbare Frage-Kennung — '
                     + 'die Dubletten-Prüfung hatte keine vollständige Vergleichsmenge.'
@@ -6193,6 +6590,11 @@
                 var planned = planByStart[ idx ]
                 if( planned ) {
                     acc.skipUntil = planned.blk.end
+                    // M082-09-06 (Cluster C — WI-120): die Quittung soll sagen, WIEVIEL angefasst
+                    // wurde, nicht nur wieviele Abschnitte verglichen wurden. `spanLines` und
+                    // `kept` teilen den Text vollstaendig auf — ihre Summe ist die Zeilenzahl des
+                    // Inhalts, und damit ist die Zahl pruefbar statt behauptet.
+                    acc.spanLines = acc.spanLines + ( planned.blk.end - planned.blk.start )
                     if( planned.mode === 'replace' ) {
                         var span = lines.slice( planned.blk.start, planned.blk.end )
                         var fresh = newById[ planned.blk.id ]
@@ -6210,9 +6612,13 @@
                     return acc
                 }
                 acc.out.push( line )
+                acc.kept = acc.kept + 1
 
                 return acc
-            }, { out: [], skipUntil: 0 } )
+            }, { out: [], skipUntil: 0, spanLines: 0, kept: 0 } )
+
+            result.spanLines = rebuilt.spanLines
+            result.keptLines = base.length === 0 ? 0 : rebuilt.kept
 
             var fresh = Object.keys( newById )
                 .filter( function( id ) { return seen[ id ] !== true } )
@@ -6300,9 +6706,15 @@
 
             // A6: an incomplete comparison set is RED — the write is refused rather than appending into a
             // content the check could not read. The message names how much was compared.
+            // M082-09-06 (Cluster C — WI-120, S3): zwei Verweigerungen, zwei Namen. Die erste sagt,
+            // dass die Vergleichsmenge unvollstaendig war, die zweite, dass die GRENZE nicht
+            // bestimmbar war — ein Nutzer, der einen offenen Zaun geschrieben hat, wird sonst nach
+            // einer Dublette suchen, die es nicht gibt. Der Kode entscheidet, nicht der Text.
             if( merge.ok !== true ) {
                 if( ppError ) {
-                    ppError.textContent = 'Dubletten-Prüfung rot: ' + merge.reason
+                    ppError.textContent = ( merge.code === 'unclosed-fence'
+                        ? 'Blockgrenze nicht bestimmbar: '
+                        : 'Dubletten-Prüfung rot: ' ) + merge.reason
                     ppError.classList.remove( 't-hidden' )
                 }
 
@@ -6366,8 +6778,42 @@
                 return
             }
 
+            var isUpdate = !!promptEditState.transcriptId
+
+            // PRD-05 (Memo 082 Kap 20a, WI-119, S3): die Schrumpf-Pruefung sitzt unmittelbar vor der
+            // Voll-Ersetzung und NUR dort, wo eine zu ersetzen ist — beim PUT auf ein bestehendes
+            // Transcript. Ein POST legt an; dort gibt es nichts zu verlieren, und eine Pruefung ohne
+            // Vergleichsmenge waere ein Gruen ueber einer Nullmenge.
+            // Bis hierher war die einzige Bedingung "nicht leer" (der trim-Zaun oben), und damit
+            // konnte ein einziges "Uebernehmen" einen ganzen Transcript-Text durch einen einzelnen
+            // Antwort-Block ersetzen.
+            //
+            // Ein erklaerter Grund ist gemessen, nicht geraten: die Dubletten-Pruefung sagt selbst,
+            // wieviel sie ersetzt und wieviel sie entfernt hat, und eine Eingabe des Nutzers ist die
+            // legitime Kuerzung, die durchgehen MUSS — eine Pruefung, die jede Kuerzung ablehnt, waere
+            // von einer richtigen nicht zu unterscheiden und machte das Werkzeug unbenutzbar.
+            var shrinkExplained = []
+            if( merge.replaced > 0 ) { shrinkExplained.push( 'answer-replaced' ) }
+            if( merge.dropped > 0 ) { shrinkExplained.push( 'duplicate-removed' ) }
+            if( promptFieldChangedByUser() === true ) { shrinkExplained.push( 'user-edit' ) }
+
+            var shrink = checkTranscriptShrink( {
+                isUpdate: isUpdate,
+                baselineLength: promptEditState.baselineLength,
+                nextLength: content.length,
+                explained: shrinkExplained
+            } )
+
+            if( shrink.allowed !== true ) {
+                if( ppError ) {
+                    ppError.textContent = shrink.message
+                    ppError.classList.remove( 't-hidden' )
+                }
+
+                return
+            }
+
             try {
-                var isUpdate = !!promptEditState.transcriptId
                 var url = isUpdate ? '/api/transcripts/' + promptEditState.transcriptId : '/api/transcripts'
                 var method = isUpdate ? 'PUT' : 'POST'
                 var body = isUpdate
@@ -6393,6 +6839,14 @@
                 //    POST (Anlage) — no Karteileichen-Stapel for the same viewed revision.
                 if( data && data.transcriptId ) { promptEditState.transcriptId = data.transcriptId }
 
+                // PRD-05 (Memo 082 Kap 20a, WI-119, S3): was gerade geschrieben wurde, IST ab jetzt
+                // der Ausgangstext. Ohne diese Zeile stuende ein zweites "Uebernehmen" nach einer
+                // Neuanlage vor einer unbekannten Ausgangslaenge und wuerde abgelehnt, obwohl der
+                // Wert genau hier bekannt ist. Der Feldwert ist damit auch wieder der vom Kode
+                // gesetzte Bezugspunkt der Veraenderungs-Erkennung.
+                promptEditState.baselineLength = content.length
+                if( ppContent ) { promptEditState.pristineValue = ppContent.value }
+
                 // b) URL + Clipboard: copy the fresh transcript URL. The clipboard write is a
                 //    Promise; reject (denied permission) must not crash the flow.
                 var savedUrl = data && data.url ? data.url : ''
@@ -6407,9 +6861,22 @@
                     var checked = 'Dubletten-Prüfung: ' + merge.compared + ' Blöcke verglichen, '
                         + merge.replaced + ' ersetzt, ' + merge.dropped + ' Dublette(n) entfernt, '
                         + merge.appended + ' neu.'
+                    // M082-09-06 (Memo 082 Kap 20a, Cluster C — WI-120): die Quittung meldete gruen,
+                    // waehrend Nutzertext verschwand (M082-09-02, N3). Sie nannte ihre
+                    // Vergleichsmenge vorbildlich — aber die waren die verglichenen Abschnitte, nicht
+                    // die ANGEFASSTE SPANNE, und niemand, der sie las, hatte Anlass nachzusehen, ob
+                    // sein Absatz noch da ist. Die Reichweite steht jetzt daneben, gemessen: die
+                    // beiden Zahlen teilen den Inhalt vollstaendig auf.
+                    var reach = 'Reichweite: ' + merge.spanLines + ' Zeilen ersetzt, '
+                        + merge.keptLines + ' Zeilen unverändert übernommen, '
+                        + merge.fences + ' Code-Zäune erkannt.'
+                    // PRD-05 (S3): eine durchgelassene Kuerzung wird protokolliert, nicht verschwiegen
+                    // — und eine leere Vergleichsmenge sagt, dass sie leer war. Der Normalfall
+                    // (gleich lang oder laenger) traegt eine leere Meldung und haengt nichts an.
+                    var shrinkNote = shrink.message.length > 0 ? ( ' · ' + shrink.message ) : ''
                     ppSuccess.textContent = ( savedUrl
                         ? 'Gespeichert · in Zwischenablage kopiert: ' + savedUrl
-                        : 'Gespeichert.' ) + ' · ' + checked
+                        : 'Gespeichert.' ) + ' · ' + checked + ' · ' + reach + shrinkNote
                     ppSuccess.classList.remove( 't-hidden' )
                 }
 
@@ -6631,6 +7098,15 @@
             resetTopicStoreCache()
             resolveWikiLinks()
             resolveIdLinks( currentDocumentId )
+            // PRD-17 (Memo 082 Phase 9, WI-238): the evidence-mark pass runs at exactly ONE call point,
+            // next to the identifier pass it was modelled on, on EVERY content render — a pass that ran
+            // only on the first load would be gone after the next revision click.
+            //
+            // AFTER foldBlockBodySections above, and that order is the reason the tag COUNT is safe
+            // twice over: the figure lines are computed before a single mark exists, and even on a
+            // second run they would read the same textContent, because a mark carries the bracket
+            // syntax verbatim. Sync, unlike resolveIdLinks — nothing is fetched.
+            resolveEvidenceMarks()
             wrapTablesCollapsible()
             // PRD-P3-05/06 (Memo 075 Phase 3, WI-012/013): the annotation render pass. Runs on EVERY
             // render path (this method is the common post-render hook, incl. after renderDiffView), and
@@ -6837,6 +7313,90 @@
         // the browser cannot resolve at all. Without it every `PRD-42` and `REV-16` in the prose would
         // be handed to the author as HIS broken reference, which is a defect the machine made.
         var ID_STOCK_PREFIXES = [ 'T', 'B', 'WI', 'M' ]
+
+        // ====================================================================================
+        // PRD-17 (Memo 082 Phase 9, WI-238) — S7: ONE SEES WHERE A REFERENCE LEADS.
+        //
+        // The user's words: "Es waere gut, wenn auch Annahmen und Referenzen als Spezial-Links
+        // hinterlegt werden — die Referenz gelb, das andere blau, das andere gruen — und beim Klick
+        // kommt immer das gleiche Popup mit unterschiedlicher Information."
+        //
+        // Before this, a mark was typed by STATE only (local / foreign / unresolved / ambiguous /
+        // no-carrier): `T030`, `B004`, `WI-238` and `M080` looked identical, and the substrate that
+        // would tell them apart — the prefix idSplitToken already returns — was thrown away.
+        //
+        // THE STATE CHANNEL IS NOT TOUCHED. The state owns `color` and `border-bottom` (app.css
+        // :3471-3479); the KIND is given a channel the state never writes, `background-color`. So the
+        // two statements are readable at once and neither overwrites the other — the order said
+        // "ergaenzen, nicht ersetzen", and separate CSS properties are what makes that a fact rather
+        // than a convention.
+        //
+        // THE TABLE IS HAND-KEPT, AND THAT IS THE POINT. Deriving it from ID_VOCABULARY_MIRROR would
+        // give every prefix a colour automatically — and with it, a NEW kind would silently inherit
+        // the look of a considered one. Kept by hand, an unlisted prefix falls to the `other` row:
+        // its own neutral display, never a foreign kind's. A parity case holds the table against the
+        // vocabulary, so growth shows up as a red test instead of as a grey mark nobody ordered.
+        //
+        // Measured over the live store (552 revision files, scratchpad scan): all 14 recognised
+        // prefixes really occur — REV 16568, T 14656, WI 12882, M 6363, RES 1500, B 880, REQ 823,
+        // PRD 677, G 508, SR 127, ANM 65, PLAN 27, LL 10, MNT 8. None may be left without a colour.
+        //
+        // `slug` is the CSS/ARIA token (machine side, ASCII), `label` the German display noun of the
+        // viewer surface, `tint` the exact colour app.css must carry for that kind — a parity case
+        // reads the stylesheet back against this column, so the two cannot drift.
+        // ====================================================================================
+        var ID_REF_KINDS = [
+            { prefix: 'M', slug: 'm', label: 'Memo', tint: 'rgba(88, 166, 255, 0.18)' },
+            { prefix: 'MNT', slug: 'mnt', label: 'Wartungs-Karte', tint: 'rgba(63, 185, 80, 0.18)' },
+            { prefix: 'T', slug: 't', label: 'Topic', tint: 'rgba(210, 153, 34, 0.18)' },
+            { prefix: 'B', slug: 'b', label: 'Block', tint: 'rgba(188, 140, 255, 0.18)' },
+            { prefix: 'G', slug: 'g', label: 'Ziel', tint: 'rgba(255, 123, 114, 0.18)' },
+            { prefix: 'WI', slug: 'wi', label: 'Work-Item', tint: 'rgba(57, 197, 207, 0.18)' },
+            { prefix: 'RES', slug: 'res', label: 'Research-Datensatz', tint: 'rgba(219, 97, 162, 0.18)' },
+            { prefix: 'PRD', slug: 'prd', label: 'Arbeitsauftrag', tint: 'rgba(240, 136, 62, 0.18)' },
+            { prefix: 'REQ', slug: 'req', label: 'Anforderung', tint: 'rgba(163, 113, 247, 0.18)' },
+            { prefix: 'PLAN', slug: 'plan', label: 'Plan', tint: 'rgba(31, 111, 235, 0.18)' },
+            { prefix: 'ANM', slug: 'anm', label: 'Anmerkung', tint: 'rgba(226, 192, 141, 0.18)' },
+            { prefix: 'LL', slug: 'll', label: 'Lehre', tint: 'rgba(126, 231, 135, 0.18)' },
+            { prefix: 'REV', slug: 'rev', label: 'Revision', tint: 'rgba(255, 166, 87, 0.18)' },
+            { prefix: 'SR', slug: 'sr', label: 'Sprech-Regel', tint: 'rgba(121, 192, 255, 0.18)' },
+            { prefix: null, slug: 'other', label: 'unbekannte Art', tint: 'rgba(139, 148, 158, 0.18)' }
+        ]
+
+
+        // idRefKindOf — the row for a prefix, or null. The `prefix !== null` guard is what keeps the
+        // fallback row out of the lookup: a caller passing null asks "what is the row for no kind at
+        // all", and the honest answer is "none of the named ones".
+        function idRefKindOf( prefix ) {
+            var hit = ID_REF_KINDS.filter( function( kind ) { return kind.prefix !== null && kind.prefix === prefix } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
+        }
+
+
+        // idRefKindFallbackRow — the one row that stands for every kind the table does not name.
+        function idRefKindFallbackRow() {
+            var hit = ID_REF_KINDS.filter( function( kind ) { return kind.prefix === null } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
+        }
+
+
+        // idRefKindResolve — the row a mark is rendered with. Never null, and never a NAMED row for
+        // an unnamed kind.
+        function idRefKindResolve( prefix ) {
+            var kind = idRefKindOf( prefix )
+
+            return kind === null ? idRefKindFallbackRow() : kind
+        }
+
+
+        // idRefKindClass — the kind half of a mark's class list. Kept apart from the state half so a
+        // reader of the DOM can see which property came from which decision.
+        function idRefKindClass( prefix ) {
+            return 'id-ref-kind-' + idRefKindResolve( prefix ).slug
+        }
+
 
         // idTokenSource — the alternation, rebuilt from ID_VOCABULARY_MIRROR with the algorithm of
         // IdRegister.buildSource: group by (separator, digit span) in order of first appearance;
@@ -7048,8 +7608,15 @@
         function buildIdMark( entry, verdict, headings ) {
             var target = verdict.state === 'local' ? matchChapterHeading( headings, verdict.chapter ) : null
             var node = ( verdict.state === 'foreign' || target !== null ) ? document.createElement( 'a' ) : document.createElement( 'span' )
-            node.className = 'id-ref id-ref-' + ( target === null && verdict.state === 'local' ? 'resolved' : verdict.state )
+            // PRD-17 (Memo 082 Phase 9, WI-238): the KIND rides next to the state, never instead of
+            // it — two class names, two CSS properties, two statements. `data-ref-prefix` carries the
+            // prefix verbatim as idSplitToken reported it, because a stylesheet class is lossy (it is
+            // lower-cased and slugged) and a measurement wants the raw kind back.
+            var kindRow = idRefKindResolve( entry.prefix )
+            node.className = 'id-ref id-ref-' + ( target === null && verdict.state === 'local' ? 'resolved' : verdict.state ) + ' ' + idRefKindClass( entry.prefix )
             node.setAttribute( 'data-id-ref', entry.key )
+            node.setAttribute( 'data-ref-prefix', entry.prefix )
+            node.setAttribute( 'data-ref-kind', kindRow.slug )
             node.setAttribute( 'title', verdict.hint )
             node.textContent = entry.token
 
@@ -7057,6 +7624,20 @@
                 // classifyLinkHref reads a leading "/" as a ROUTE and interceptLinks leaves those
                 // alone, so the deep link navigates natively — no WS message, no second handler.
                 node.setAttribute( 'href', verdict.href )
+
+                // PRD-16 (Memo 082 Phase 9, WI-237): the plain left click no longer navigates. The href
+                // above STAYS — middle-click, "open in new tab" and copy-link keep working, and the
+                // popup's full-view bridge hands the same address on. What is intercepted here is only
+                // the plain click, and only for a FOREIGN reference: idRefOverlayDecision says so, and
+                // every other state keeps the in-document jump it had.
+                var overlay = idRefOverlayDecision( verdict )
+                if( overlay.open === true ) {
+                    node.setAttribute( 'data-id-ref-overlay', overlay.documentId )
+                    node.addEventListener( 'click', function( e ) {
+                        e.preventDefault()
+                        openIdRefOverlay( overlay.documentId, entry, verdict )
+                    } )
+                }
 
                 return node
             }
@@ -7164,6 +7745,158 @@
             renderIdStockNote( stock, counted.occurrences )
 
             return { ran: true, available: true, reason: null, occurrences: counted.occurrences, distinct: Object.keys( counted.keys ).length, states: counted.states, comparedStockEntries: stock.ids.length, comparedStockPrefixes: stock.prefixes.length, comparedCatalogue: stock.catalogue.length }
+        }
+
+
+        // ====================================================================================
+        // PRD-17 (Memo 082 Phase 9, WI-238) — S7, second half: THE EVIDENCE MARKS BECOME VISIBLE.
+        //
+        // The five tags were already read — but only COUNTED, into the figure line of a folded chapter
+        // section (distributionOf, dimension 'evidence'). In the running text `[FAKT]` and `[VERMUTUNG]`
+        // looked the same as any other bracketed word. A memo system that separates fact from
+        // assumption and then does not SHOW the separation gives it back at reading time.
+        //
+        // BUILT ANALOGOUS TO resolveIdLinks, DELIBERATELY. Same text-node recursion (no while loop),
+        // same CONTENT_SKIP_TAGS, same diagram-container predicate, same "already marked" guard, same
+        // fragment replacement, same counted return. There is no reason for a second mechanism next to
+        // one that works, and two mechanisms would drift the first time one learns something.
+        //
+        // THE COUNT IS NOT TOUCHED, AND THAT IS A COMPUTATION, NOT A PROMISE. A mark's textContent is
+        // the tag VERBATIM, brackets included, so the textContent of every ancestor is unchanged — and
+        // distributionOf reads exactly textContent. The order asked for "rendern" AND "zaehlen wie
+        // bisher"; keeping the bracket syntax inside the mark is what makes both true at once.
+        //
+        // EVIDENCE_TAGS itself is declared further down, next to the chapter-figure code that counts
+        // the tags. The renderer reads THAT list, never a copy: a second list would be a second truth,
+        // and the first divergence would show as a tag that is counted but never marked.
+        // ====================================================================================
+
+        // The five tags as a DISPLAY family: `slug` the CSS/data token, `label` the German noun of the
+        // viewer surface, `tint` the exact colour app.css must carry — held against the stylesheet by
+        // the same kind of parity case as ID_REF_KINDS above. The tags themselves stay in EVIDENCE_TAGS;
+        // this table only says how each is SHOWN, and a parity case keeps the two sets equal.
+        var EVIDENCE_MARK_KINDS = [
+            { tag: 'GEMESSEN', slug: 'gemessen', label: 'gemessen', tint: 'rgba(46, 160, 67, 0.2)' },
+            { tag: 'FAKT', slug: 'fakt', label: 'Fakt', tint: 'rgba(56, 139, 253, 0.2)' },
+            { tag: 'ABGELEITET', slug: 'abgeleitet', label: 'abgeleitet', tint: 'rgba(137, 87, 229, 0.2)' },
+            { tag: 'ANNAHME', slug: 'annahme', label: 'Annahme', tint: 'rgba(187, 128, 9, 0.2)' },
+            { tag: 'VERMUTUNG', slug: 'vermutung', label: 'Vermutung', tint: 'rgba(218, 54, 51, 0.2)' }
+        ]
+
+
+        // evidenceMarkKindOf — the display row for a tag, or null. Null is a real answer: a tag that
+        // EVIDENCE_TAGS carries but this table does not is a finding, not a mark to invent a look for.
+        function evidenceMarkKindOf( tag ) {
+            var hit = EVIDENCE_MARK_KINDS.filter( function( kind ) { return kind.tag === tag } )
+
+            return hit.length > 0 ? hit[ 0 ] : null
+        }
+
+
+        // evidenceTokenPattern — a FRESH global expression per pass, for the reason idTokenPattern
+        // gives: a global regex carries lastIndex, and a shared instance walked by two consumers skips
+        // hits. Built from EVIDENCE_TAGS, so a sixth tag is marked without a second edit here.
+        function evidenceTokenPattern() {
+            return new RegExp( '\\[(?:' + EVIDENCE_TAGS.join( '|' ) + ')\\]', 'g' )
+        }
+
+
+        // evidenceMarkClass — the class list of one mark. Two names: the family and the tag, the same
+        // split buildIdMark uses for state and kind.
+        function evidenceMarkClass( tag ) {
+            var kind = evidenceMarkKindOf( tag )
+
+            return 'evidence-mark evidence-mark-' + ( kind === null ? 'other' : kind.slug )
+        }
+
+
+        // splitEvidenceHits — PURE, and the load-bearing half of this pass. One text into an ordered
+        // segment list. `parts.map( p => p.text ).join( '' )` is the INPUT, character for character —
+        // which is how "the pass does not change the text" becomes a computation a test can run rather
+        // than a sentence in a comment. Reports its comparison set, so a zero is readable as a zero.
+        function splitEvidenceHits( text ) {
+            var source = String( text )
+            var pattern = evidenceTokenPattern()
+            var hits = Array.from( source.matchAll( pattern ) )
+            var walked = hits.reduce( function( acc, hit ) {
+                if( hit.index > acc.cursor ) { acc.parts.push( { kind: 'text', text: source.slice( acc.cursor, hit.index ), tag: null } ) }
+                acc.parts.push( { kind: 'mark', text: hit[ 0 ], tag: hit[ 0 ].slice( 1, hit[ 0 ].length - 1 ) } )
+                acc.cursor = hit.index + hit[ 0 ].length
+
+                return acc
+            }, { parts: [], cursor: 0 } )
+            if( walked.cursor < source.length ) { walked.parts.push( { kind: 'text', text: source.slice( walked.cursor ), tag: null } ) }
+
+            var marks = walked.parts.filter( function( part ) { return part.kind === 'mark' } )
+
+            return { parts: walked.parts, marks: marks.length, tags: marks.map( function( part ) { return part.tag } ), comparedTags: EVIDENCE_TAGS.length, sourceLength: source.length }
+        }
+
+
+        // buildEvidenceMark — one mark. Always a span: an evidence tag is a STATEMENT ABOUT the
+        // sentence it stands in, not a jump target, and an anchor that does not move is a promise the
+        // display cannot keep (the same reason buildIdMark spans its non-jumping states).
+        function buildEvidenceMark( part ) {
+            var kind = evidenceMarkKindOf( part.tag )
+            var node = document.createElement( 'span' )
+            node.className = evidenceMarkClass( part.tag )
+            node.setAttribute( 'data-evidence-tag', part.tag )
+            node.setAttribute( 'title', kind === null
+                ? ( part.tag + ' — diese Marke fuehrt die Anzeige nicht als eigene Art.' )
+                : ( 'Evidenz: ' + kind.label ) )
+            // The bracket syntax STAYS inside the mark. It is what keeps every ancestor's textContent
+            // unchanged, and with it the tag count of the chapter figure lines.
+            node.textContent = part.text
+
+            return node
+        }
+
+
+        // resolveEvidenceMarks — THE second pass. Sync, because nothing arrives over the network: the
+        // tags stand in the text that is already rendered. Idempotent — a node already inside a mark
+        // is not descended into, so a second render produces no nested marks.
+        function resolveEvidenceMarks() {
+            var pattern = evidenceTokenPattern()
+            var textNodes = []
+            var collect = function( node ) {
+                node.childNodes.forEach( function( child ) {
+                    if( child.nodeType === 3 ) {
+                        pattern.lastIndex = 0
+                        if( pattern.test( child.nodeValue || '' ) ) { textNodes.push( child ) }
+
+                        return
+                    }
+                    if( child.nodeType !== 1 ) { return }
+                    if( CONTENT_SKIP_TAGS[ child.tagName ] ) { return }
+                    if( isDiagramContainer( child ) ) { return }
+                    if( child.classList && child.classList.contains( 'evidence-mark' ) ) { return }
+                    if( child.classList && child.classList.contains( 'id-ref' ) ) { return }
+                    collect( child )
+                } )
+            }
+            collect( contentEl )
+
+            var counted = textNodes.reduce( function( acc, node ) {
+                var split = splitEvidenceHits( node.nodeValue )
+                var frag = document.createDocumentFragment()
+                split.parts.forEach( function( part ) {
+                    frag.appendChild( part.kind === 'mark' ? buildEvidenceMark( part ) : document.createTextNode( part.text ) )
+                } )
+                node.parentNode.replaceChild( frag, node )
+                split.tags.forEach( function( tag ) { acc.perTag[ tag ] = ( acc.perTag[ tag ] || 0 ) + 1 } )
+                acc.occurrences = acc.occurrences + split.marks
+
+                return acc
+            }, { occurrences: 0, perTag: {} } )
+
+            // The NULL SET IS NAMED. "Nothing was marked" and "everything was marked" must not read
+            // the same: a document without a single evidence tag is a statement about that document,
+            // not a successful pass over nothing.
+            if( counted.occurrences === 0 ) {
+                return { ran: true, occurrences: 0, distinct: 0, perTag: {}, reason: 'no evidence tag in this document — nothing was marked', comparedTextNodes: textNodes.length, comparedTags: EVIDENCE_TAGS.length }
+            }
+
+            return { ran: true, occurrences: counted.occurrences, distinct: Object.keys( counted.perTag ).length, perTag: counted.perTag, reason: null, comparedTextNodes: textNodes.length, comparedTags: EVIDENCE_TAGS.length }
         }
 
 
@@ -8509,6 +9242,289 @@
         }
 
 
+        // ============================================================================================
+        // PRD-16 (Memo 082 Phase 9, WI-237): the REFERENCE popup.
+        //
+        // The user's words: "wenn ich auf so einen gekringelten Memo-Link klicke, oeffnet sich das
+        // andere Memo und das andere ist weg — das ist Quatsch. Ich wuerde erwarten, dass ein
+        // Popup-Fenster aufgeht mit einer Uebersichtsseite, und dass ich bei dem Memo bleibe."
+        //
+        // The old behaviour was not a bug, it was a decision: buildIdMark gives a FOREIGN reference a
+        // real href, classifyLinkHref reads a leading "/" as a ROUTE, and interceptLinks deliberately
+        // leaves routes alone — so the browser navigated, and the memo under the reader's eyes was gone.
+        //
+        // WHAT CHANGES is only the plain left click. The href STAYS: it is what makes middle-click,
+        // "open in new tab" and copy-link work, and it is what the full-view bridge below hands on. The
+        // click is answered here with preventDefault and an overlay, so the page never moves.
+        //
+        // The overlay follows the #research-modal pattern above and reuses the shared .t-modal* classes
+        // — backdrop, dimming, ESC and the full-view bridge are inherited, not reinvented.
+        // #research-modal itself is NOT touched; it is the template, not the subject.
+        // ============================================================================================
+
+        // The document the open popup points at, and the token that opened it. Read by the full-view
+        // bridge BEFORE closing, for the same reason researchOverlayFile is: closing clears it.
+        var idRefOverlayTarget = null
+
+        // idRefOverviewRenderers — THE SEAM, and it is named so the next order does not have to look
+        // for it. A key is a reference PREFIX exactly as idSplitToken reports it ('M', 'T', 'B', 'WI',
+        // …); the value is a function ( overview, entry ) -> HTML string. The map is EMPTY on purpose:
+        // this order builds the seam and the generic rendering, not the typed renderers. Those are
+        // WI-238 (PRD-17 of this phase), and registering one is a single assignment here — there is ONE
+        // popup with a switching renderer, never a second popup per kind.
+        var idRefOverviewRenderers = {}
+
+
+        // idRefOverlayDecision — pure: does THIS reference open the popup, and for which document?
+        // Exactly the `foreign` state does, and exactly it carries a target document. Every other state
+        // (local, resolved, unresolved, ambiguous, no-carrier) is left completely alone: a LOCAL
+        // reference is an in-document jump, and swallowing it would break the very navigation this
+        // popup is not about. A version that intercepted every reference would be indistinguishable
+        // from the right one until the in-document jumps stopped working.
+        function idRefOverlayDecision( verdict ) {
+            if( !verdict || typeof verdict !== 'object' ) { return { open: false, reason: 'no verdict', documentId: null } }
+            if( verdict.state !== 'foreign' ) { return { open: false, reason: 'not a foreign reference: ' + String( verdict.state ), documentId: null } }
+            if( typeof verdict.href !== 'string' || verdict.href.indexOf( '/doc/' ) !== 0 ) { return { open: false, reason: 'foreign reference without a document target', documentId: null } }
+
+            return { open: true, reason: null, documentId: decodeURIComponent( verdict.href.slice( '/doc/'.length ) ) }
+        }
+
+
+        // idRefOverviewBody — the GENERIC rendering of one overview answer. Every state renders, and a
+        // non-ok state renders its NOTE instead of an empty plate: an empty preview would be
+        // indistinguishable from "that memo carries nothing", which is exactly the confusion the named
+        // states on the server exist to prevent. Everything that comes out of the answer goes through
+        // escapeHtml — it is memo content being put into markup.
+        function idRefOverviewBody( overview ) {
+            if( !overview || typeof overview !== 'object' ) {
+                return '<p class="idref-overlay-error">Die Uebersicht kam in einer Form zurueck, die diese Ansicht nicht lesen kann.</p>'
+            }
+
+            var lines = []
+            var state = String( overview.state )
+
+            if( state !== 'ok' ) {
+                lines.push( '<p class="idref-overlay-error">' + escapeHtml( overview.note ) + '</p>' )
+                lines.push( '<p class="idref-overlay-meta">' + escapeHtml( overview.documentId ) + ' · ' + escapeHtml( state ) + ' · ' + escapeHtml( String( overview.reason ) ) + '</p>' )
+
+                return lines.join( '\n' )
+            }
+
+            var latest = overview.latestRevision
+            var questions = overview.questions && typeof overview.questions === 'object' ? overview.questions : null
+
+            lines.push( '<p class="idref-overlay-meta">' + escapeHtml( overview.memoName ) + ' · ' + escapeHtml( String( overview.documentKind ) ) + ' · ' + escapeHtml( String( overview.memoStatus ) ) + '</p>' )
+            lines.push( '<p>Revisionen: ' + escapeHtml( String( overview.revisionCount ) )
+                + ( latest ? ( ' · zuletzt ' + escapeHtml( String( latest.fileName ) ) + ' (' + escapeHtml( String( latest.sizeKb ) ) + ' KB)' ) : '' )
+                + '</p>' )
+
+            // DocumentRegistry.questionCounts has no `total` — it carries open/answered/deferred plus
+            // `basis`, which says whether anything was counted at all. A count without its basis would
+            // read "0 offen" for a memo nobody ever counted, so the basis is printed, not assumed.
+            if( questions && typeof questions.answered === 'number' ) {
+                lines.push( '<p>Fragen: ' + escapeHtml( String( questions.answered ) ) + ' beantwortet · '
+                    + escapeHtml( String( questions.open ) ) + ' offen · ' + escapeHtml( String( questions.deferred ) ) + ' vertagt'
+                    + ( questions.basis === false ? ' (im Dokument nicht gezaehlt)' : '' ) + '</p>' )
+            }
+
+            // The outline states its comparison set: how many chapters are SHOWN and how many the
+            // revision carries. A capped list without its total would read like a complete one.
+            var headings = Array.isArray( overview.headings ) ? overview.headings : []
+            lines.push( '<p class="idref-overlay-note">Kapitel: ' + escapeHtml( String( headings.length ) ) + ' von ' + escapeHtml( String( overview.headingCount ) ) + ' angezeigt</p>' )
+
+            if( headings.length === 0 ) {
+                lines.push( '<p class="idref-overlay-note">Diese Revision fuehrt keine Kapitel-Ueberschriften.</p>' )
+            } else {
+                lines.push( '<ul>' + headings.map( function( title ) { return '<li>' + escapeHtml( title ) + '</li>' } ).join( '' ) + '</ul>' )
+            }
+
+            return lines.join( '\n' )
+        }
+
+
+        // renderIdRefOverview — the dispatch at the seam. A registered renderer for the reference kind
+        // wins; everything else gets idRefOverviewBody. One popup, one entry point, a switching
+        // renderer — which is what makes WI-238 an addition instead of a second overlay.
+        function renderIdRefOverview( overview, entry ) {
+            var prefix = entry && typeof entry.prefix === 'string' ? entry.prefix : ''
+            var renderer = idRefOverviewRenderers[ prefix ]
+
+            if( typeof renderer === 'function' ) { return renderer( overview, entry ) }
+
+            // PRD-17 (Memo 082 Phase 9, WI-238): the ONE line of this function the typed renderers
+            // needed. The unregistered case used to fall through to idRefOverviewBody SILENTLY, so a
+            // kind without a renderer looked exactly like a kind with one — a fallback that reads as a
+            // result. idRefOverviewFallbackBody says it IS the general view and then shows exactly the
+            // same generic body, unchanged. No second overlay, no second body: one added sentence.
+            return idRefOverviewFallbackBody( overview, entry )
+        }
+
+
+        // ====================================================================================
+        // PRD-17 (Memo 082 Phase 9, WI-238) — S7, third part: ONE POPUP, TYPED CONTENT.
+        //
+        // The user's words: "beim Klick kommt immer das gleiche Popup mit unterschiedlicher
+        // Information." That is the architecture, and it is the right one — so nothing here opens an
+        // overlay. Every renderer below is registered into idRefOverviewRenderers, THE seam PRD-16
+        // named, and the popup, the route and the close wiring stay untouched (WI-237).
+        // ====================================================================================
+
+        // idRefOverviewHead — the typed head line, and the only part that differs by kind. For a
+        // QUALIFIED reference (`M080-T096`) it names the item INSIDE the foreign memo: the overview
+        // below describes the memo, and without this line the reader would be shown a memo and left to
+        // guess which of its topics he had clicked. That gap is the whole reason a kind needs a
+        // renderer of its own.
+        function idRefOverviewHead( entry, kind ) {
+            var token = entry && typeof entry.token === 'string' ? entry.token : ''
+            var id = entry && typeof entry.id === 'string' ? entry.id : token
+            var scope = entry && typeof entry.scope === 'string' ? entry.scope : null
+            var where = scope === null
+                ? ''
+                : ( ' in Memo ' + scope.slice( 1 ) )
+
+            return '<p class="idref-overlay-kind idref-overlay-kind-' + escapeAttr( kind.slug ) + '" data-ref-kind="' + escapeAttr( kind.slug ) + '" data-ref-prefix="' + escapeAttr( String( kind.prefix ) ) + '">'
+                + escapeHtml( kind.label ) + ' ' + escapeHtml( id ) + escapeHtml( where )
+                + '</p>'
+        }
+
+
+        // idRefTypedOverviewBody — the typed head plus the GENERIC body, verbatim. The generic half is
+        // not re-implemented per kind: the overview payload is the same shape for every kind, and a
+        // second body per kind would be fourteen copies of one rendering waiting to drift.
+        function idRefTypedOverviewBody( overview, entry, kind ) {
+            return idRefOverviewHead( entry, kind ) + '\n' + idRefOverviewBody( overview )
+        }
+
+
+        // idRefOverviewFallbackBody — the renderer for a kind the table does not name. It SAYS SO. A
+        // fallback that quietly shows the general view is indistinguishable from a renderer that was
+        // built for this kind, and the reader would take a default for an answer.
+        function idRefOverviewFallbackBody( overview, entry ) {
+            var fallback = idRefKindFallbackRow()
+            var prefix = entry && typeof entry.prefix === 'string' && entry.prefix.length > 0 ? entry.prefix : '—'
+
+            return '<p class="idref-overlay-kind idref-overlay-kind-' + escapeAttr( fallback.slug ) + '" data-ref-kind="' + escapeAttr( fallback.slug ) + '" data-ref-fallback="true">'
+                + escapeHtml( fallback.label ) + ' ' + escapeHtml( prefix )
+                + ' — fuer diese Art fuehrt die Ansicht keine eigene Darstellung. Unten steht die allgemeine Uebersicht.'
+                + '</p>\n' + idRefOverviewBody( overview )
+        }
+
+
+        // registerIdRefTypedRenderers — the registration itself: one assignment per named kind, exactly
+        // as PRD-16 described the seam. The fallback row is NOT registered — it has no prefix to
+        // register under, and that is precisely what keeps it reachable for a kind the table does not
+        // know instead of being shadowed by one that is.
+        //
+        // A NAMED FUNCTION, NOT A LOOSE STATEMENT, so a test can run the REAL registration against the
+        // real seam rather than a replica of it. It returns what it did together with its comparison
+        // set: a registration that registered nothing must not be readable as a success.
+        function registerIdRefTypedRenderers( target ) {
+            var named = ID_REF_KINDS.filter( function( kind ) { return kind.prefix !== null } )
+            named.forEach( function( kind ) {
+                target[ kind.prefix ] = function( overview, entry ) {
+                    return idRefTypedOverviewBody( overview, entry, kind )
+                }
+            } )
+
+            return { registered: named.length, prefixes: named.map( function( kind ) { return kind.prefix } ), comparedKinds: ID_REF_KINDS.length }
+        }
+
+        registerIdRefTypedRenderers( idRefOverviewRenderers )
+
+
+        function isIdRefOverlayOpen() {
+            var modal = document.getElementById( 'idref-modal' )
+
+            return !!( modal && !modal.classList.contains( 't-hidden' ) )
+        }
+
+
+        function closeIdRefOverlay() {
+            var modal = document.getElementById( 'idref-modal' )
+            var body = document.getElementById( 'idref-modal-body' )
+            idRefOverlayTarget = null
+            if( body ) { body.innerHTML = '' }
+            if( modal ) { modal.classList.add( 't-hidden' ) }
+        }
+
+
+        // openIdRefOverlay — the popup itself. Positional arguments to match the shape of buildIdMark
+        // and idVerdictOf in this file. The read is the new READ-ONLY route
+        // GET /api/documents/<id>/overview: an overview, never the document — the 443 KB render payload
+        // of a memo has no business in a preview.
+        function openIdRefOverlay( documentId, entry, verdict ) {
+            var modal = document.getElementById( 'idref-modal' )
+            var body = document.getElementById( 'idref-modal-body' )
+            var titleEl = document.getElementById( 'idref-modal-title' )
+            var fullBtn = document.getElementById( 'idref-modal-full' )
+            if( !modal || !body ) { return }
+
+            var token = entry && typeof entry.token === 'string' ? entry.token : String( documentId )
+            idRefOverlayTarget = { documentId: documentId, token: token, prefix: entry && entry.prefix ? entry.prefix : '', fullViewPath: null }
+
+            if( titleEl ) { titleEl.textContent = token }
+            // The bridge is hidden with the shared .t-hidden class, not with the `hidden` attribute:
+            // .t-hidden carries `display: none !important` and is what every other modal in this file
+            // toggles, so a button style that sets its own `display` can never leave it half-visible.
+            if( fullBtn ) { fullBtn.classList.add( 't-hidden' ) }
+            body.innerHTML = '<p class="idref-overlay-loading">Wird geladen: ' + escapeHtml( token ) + '</p>'
+            modal.classList.remove( 't-hidden' )
+
+            fetch( '/api/documents/' + encodeURIComponent( documentId ) + '/overview' )
+                .then( function( res ) {
+                    // A 404 is a NAMED answer here, not a failure: the body says the identifier is
+                    // unknown. So the payload is read in both cases and only a broken body is an error.
+                    return res.json()
+                } )
+                .then( function( overview ) {
+                    // The reader closed the popup or opened another reference while this was in flight —
+                    // rendering now would paint THIS answer into THAT popup.
+                    if( !idRefOverlayTarget || idRefOverlayTarget.documentId !== documentId ) { return }
+
+                    idRefOverlayTarget.fullViewPath = overview && typeof overview.fullViewPath === 'string' ? overview.fullViewPath : null
+                    body.innerHTML = renderIdRefOverview( overview, entry )
+                    if( fullBtn && idRefOverlayTarget.fullViewPath !== null ) { fullBtn.classList.remove( 't-hidden' ) }
+                } )
+                .catch( function() {
+                    // Loud, inside the overlay: no silent failure and no navigation away from the memo.
+                    body.innerHTML = '<p class="idref-overlay-error">Uebersicht konnte nicht geladen werden: '
+                        + escapeHtml( token ) + '</p>'
+                    if( verdict && typeof verdict.hint === 'string' ) {
+                        body.innerHTML = body.innerHTML + '<p class="idref-overlay-meta">' + escapeHtml( verdict.hint ) + '</p>'
+                    }
+                } )
+        }
+
+
+        // Close wiring after the shared .t-modal convention, mirroring the #research-modal block above:
+        // close button, backdrop click, Escape.
+        var idRefModalCloseBtn = document.getElementById( 'idref-modal-close' )
+        if( idRefModalCloseBtn ) { idRefModalCloseBtn.addEventListener( 'click', closeIdRefOverlay ) }
+
+        var idRefModalEl = document.getElementById( 'idref-modal' )
+        if( idRefModalEl ) {
+            idRefModalEl.addEventListener( 'click', function( ev ) {
+                if( ev.target === idRefModalEl ) { closeIdRefOverlay() }
+            } )
+        }
+
+        document.addEventListener( 'keydown', function( ev ) {
+            if( ev.key === 'Escape' && isIdRefOverlayOpen() ) { closeIdRefOverlay() }
+        } )
+
+        // The bridge to the full document. "Manchmal will man doch hin" — and then it is a DECISION of
+        // the reader, not the consequence of a click. The path is read BEFORE closing, because closing
+        // clears idRefOverlayTarget.
+        var idRefModalFullBtn = document.getElementById( 'idref-modal-full' )
+        if( idRefModalFullBtn ) {
+            idRefModalFullBtn.addEventListener( 'click', function() {
+                var path = idRefOverlayTarget ? idRefOverlayTarget.fullViewPath : null
+                closeIdRefOverlay()
+                if( path ) { window.location.assign( path ) }
+            } )
+        }
+
+
         // PRD-018: order-stable de-dup for the cross-link lists (no Set spread — keeps the client
         // classic-script style consistent with the rest of this file). No while-loop.
         function uniqueList( arr ) {
@@ -9152,7 +10168,16 @@
             // all: the load is async, so the restore ALWAYS arrives at a second render that already
             // found a freshly seeded entry under every question id. "Any live entry wins" would make
             // the restore a no-op by construction.
+            // M082-09-07 (Cluster E, WI-121): the selection is named BEFORE the stored state is merged in,
+            // against the list the user clicked in — the only list against which its indices mean anything.
+            // A restored record brings its OWN names and overwrites these, which is right: those names are
+            // older, and older is what the rebind needs.
+            captureSelectedKeys( prevById, questionNav.questions )
             fillPrevFromStoredQuestionState( prevById, questionStateStored.entries )
+            // ...and REBOUND onto today's list before the seed reads the map, so the validity latch below
+            // sees indices that already describe the list about to be rendered. The latch stays — it is now
+            // the last resort for entries that carry no names at all, not the first line of defence.
+            var rebind = rebindQuestionSelections( prevById, open )
             questionNav.questions = open
             questionNav.state = seedQuestionState( open, prevById )
             questionNav.active = open.length > 0 ? 0 : -1
@@ -9216,6 +10241,21 @@
                 container.insertBefore( divergence, container.firstChild )
             }
 
+            // M082-09-07 (Cluster E, WI-121): the rebind SAYS what it did, and THEN cleans up after itself.
+            //
+            // The saying: a selection that falls away without a word is the half of this defect a user can
+            // never find. The surface simply shows one option fewer than they chose.
+            //
+            // The cleaning: the store still holds the indices of the OLD list. Left alone they are orphans —
+            // and on the next load the validity latch would drop the whole entry rather than the one option
+            // that went, taking the custom entries, the rejection, the touched marker and any confirmed
+            // answer with them. Writing the rebound state through turns a permanent silent loss into a
+            // named one. It runs ONLY when something actually moved: an unconditional write would make every
+            // render a save, and a store that is rewritten on every render cannot be told from one that is
+            // broken.
+            renderQuestionStateRebindNotice( container, rebind )
+            if( rebind.changed > 0 || rebind.dropped.length > 0 ) { persistQuestionState() }
+
             // PRD-012 (Memo 076 H8, WI-106): the answers-only bar + mountAnswersOnlyBarInHeader are
             // removed (dead path; the popup's "Übernehmen" persists transcript + answers).
             updateSaveAnswersOnlyState()
@@ -9230,22 +10270,44 @@
         // that separates "the widget shows the AI preselection" from "the user decided", so it has to be
         // testable on its own rather than only through a DOM render.
         //
-        // THE PRESELECTION SEEDS THE DISPLAY AND IS NOT A DECISION. A freshly built state is `touched:
-        // false` even when it already shows a selected option — only markQuestionTouched sets the marker,
-        // and only a real interaction calls it. A carried-over state keeps its marker (a broadcast must
-        // not turn a real choice back into a preselection); a state object from before the field existed
-        // normalises to false, because an absent marker is "not touched", never an assumed touch.
+        // THE PRESELECTION SEEDS THE DISPLAY AND IS NOT A DECISION — and since M082-09-03 (Memo 082
+        // Kap 20, Frage F15 = A) that sentence is also what the code does. It used to be a claim the
+        // line under it broke: `selected` was seeded FROM `q.preselected`, so a user who only confirmed
+        // signed the recommendation, and the resulting line landed in `## Beantwortete Fragen` — the
+        // section this codebase calls the User-Mental-Model source — as a decision of its own.
+        //
+        // THE RULE. `selected` carries EXCLUSIVELY what a human chose. The preselection carried by the
+        // payload lives in its own field, `preselected`, is display-only, and never reaches `selected`.
+        //
+        // WHERE IT IS ENFORCED. Here, by seeding `selected: []` unconditionally; in buildQuestionCard,
+        // which paints the preselection as a hint and reads `st.selected` for the chosen marker; and in
+        // confirmQuestionByKeyboard, which refuses to confirm a question that carries no actual choice.
+        //
+        // THE HAND MITIGATION HAS EXPIRED. Writing `"preselected": []` into every question of a memo
+        // (REV-02/REV-03 of Memo 082) was a transitional measure with a named expiry date, and this is
+        // the date. It is not removed retroactively — it simply has nothing left to prevent.
+        //
+        // `touched` is unchanged: a freshly built state is `touched: false`, only markQuestionTouched
+        // sets the marker, and only a real interaction calls it. A carried-over state keeps its marker
+        // (a broadcast must not turn a real choice back into a preselection); a state object from
+        // before the field existed normalises to false, because an absent marker is "not touched",
+        // never an assumed touch.
         function seedQuestionState( open, prevById ) {
             var previous = prevById || {}
 
             return ( open || [] ).map( function( q ) {
-                // single = first preselected index; multi = full preselected set.
+                // single = first preselected index; multi = full preselected set. This is the DISPLAY
+                // hint from here on — the same two shapes as before, in a field nobody harvests.
                 var pre = Array.isArray( q.preselected ) ? q.preselected.slice() : []
-                var selected = q.typ === 'single' ? ( pre.length > 0 ? [ pre[ 0 ] ] : [] ) : pre
+                var preselected = q.typ === 'single' ? ( pre.length > 0 ? [ pre[ 0 ] ] : [] ) : pre
                 var prev = q.id ? previous[ q.id ] : null
                 var optCount = ( q.options || [] ).length
                 if( prev && prev.selected.every( function( i ) { return i < optCount } ) ) {
                     prev.touched = prev.touched === true
+                    // The hint belongs to the QUESTION as it reads today, not to the state the user
+                    // built earlier — a carried-over state that kept an old hint would show the
+                    // preselection of a payload that no longer exists.
+                    prev.preselected = preselected
 
                     return prev
                 }
@@ -9255,7 +10317,7 @@
                 // the visible "hinzugefügt" quittance stays consistent.
                 // PRD-006 (Kap 9): rejected drives the reversible "Ablehnen" toggle — purely a UI state,
                 // the question data + selection always survive.
-                return { selected: selected, custom: [], added: false, addedText: null, rejected: false, touched: false }
+                return { selected: [], preselected: preselected, custom: [], added: false, addedText: null, rejected: false, touched: false }
             } )
         }
 
@@ -9305,7 +10367,7 @@
                 ? confirmed.answerText
                 : null
 
-            return {
+            var restored = {
                 selected: intent.selected.slice(),
                 custom: Array.isArray( intent.custom ) ? intent.custom.slice() : [],
                 added: answerText !== null,
@@ -9313,6 +10375,18 @@
                 rejected: intent.rejected === true,
                 touched: intent.touched === true
             }
+            // M082-09-07 (Cluster E, WI-121): the option NAMES the record was written with, when it carries
+            // them. A record from before they existed simply has none, and an ABSENT field is what tells the
+            // rebind to stand back and leave the entry to the old index rule — so the legacy case is
+            // recognised by the shape of the record, not by a version flag somebody has to maintain.
+            //
+            // Paired length is checked here as well as in the store, and deliberately: the store guards what
+            // is written to disk, this guards what a payload from any other source could claim.
+            if( Array.isArray( intent.selectedKeys ) && intent.selectedKeys.length === restored.selected.length ) {
+                restored.selectedKeys = intent.selectedKeys.slice()
+            }
+
+            return restored
         }
 
         // Memo 081 WI-118: fill the merge map from the stored state for every question id whose LIVE
@@ -9332,30 +10406,204 @@
             } )
         }
 
+        // M082-09-07 (Memo 082 Kap 20a, Cluster E, WI-121): THE NAME OF AN OPTION.
+        //
+        // A selection has always been a list of INDICES into the rendered option list, and that is the
+        // whole defect: an index is a POSITION, and a position means a different answer as soon as the
+        // list moves. `option:A` means the same answer choice wherever it sits.
+        //
+        // The four injected siblings (custom/topic/reframe/reoption) occur at most once per question, so
+        // their kind IS their name. An author option is named by its key — what the author wrote, and what
+        // the exported answer line already quotes ("B) Beta"), so the name is not a new invention here.
+        //
+        // Returns null when an option CANNOT be named. Null is not a name: it is the not-decidable case,
+        // and optionIdentitiesOf below refuses on it instead of inventing one. Same rule mergeAnswerBlocks,
+        // checkTranscriptShrink and scanCodeFences follow — a case nobody can decide is named, never read
+        // as the harmless one.
+        function optionIdentityOf( opt ) {
+            if( !opt || typeof opt !== 'object' ) { return null }
+            var kind = ( typeof opt.kind === 'string' && opt.kind.length > 0 ) ? opt.kind : 'option'
+            if( kind !== 'option' ) { return kind }
+            var key = typeof opt.key === 'string' ? opt.key.trim() : ''
+
+            return key.length > 0 ? ( 'option:' + key ) : null
+        }
+
+        // The names of a whole option list, plus whether the list can name its options AT ALL.
+        //
+        // IT REPORTS ITS COMPARISON SET (`compared`): a name list built from zero options is not a list in
+        // which nothing matched, it is a list nobody could look at. Two causes make a list undecidable and
+        // they are counted apart — an option that carries no usable key, and two options that would answer
+        // to the same name. Either way a rebind would have to guess, so it refuses.
+        //
+        // The refusal carries a machine `code` and the display sentence is built from it (the form
+        // M082-09-06 introduced for `unclosed-fence`) — never a message text two readers have to compare.
+        function optionIdentitiesOf( optionList ) {
+            var list = Array.isArray( optionList ) ? optionList : []
+            var identities = list.map( function( opt ) { return optionIdentityOf( opt ) } )
+            var named = identities.filter( function( id ) { return id !== null } )
+            var unnamed = identities.length - named.length
+            var duplicated = named.filter( function( id, idx ) { return named.indexOf( id ) !== idx } )
+            var code = unnamed > 0
+                ? 'unnamed-option'
+                : ( duplicated.length > 0 ? 'duplicate-option-name' : null )
+
+            return {
+                identities: identities,
+                compared: identities.length,
+                unnamed: unnamed,
+                duplicated: duplicated,
+                decidable: code === null,
+                code: code
+            }
+        }
+
+        // M082-09-07: stamp every carried entry with the NAMES of the options its selection was taken
+        // against. Mutates the map it is handed, exactly like fillPrevFromStoredQuestionState, and for the
+        // same reason: there is ONE merge map, and everything that has to travel with a state travels on it.
+        //
+        // The questions handed in are the PREVIOUS ones — the list the user actually clicked in. Naming the
+        // selection against today's list would name it against the very list it may no longer fit, which is
+        // the error this whole order exists to remove.
+        //
+        // IT ALWAYS OVERWRITES, and that is not carelessness. A live entry's indices are valid against the
+        // list handed in here by construction, so re-deriving is always right — while KEEPING a name list
+        // from an earlier render would go stale the moment the user clicks a different option, and a stale
+        // name would then restore the selection the user just replaced. The field is transport on the merge
+        // map, never a durable property of the live state. Not derivable => null, never a leftover array.
+        function captureSelectedKeys( prevById, questions ) {
+            var map = prevById || {}
+
+            ;( questions || [] ).forEach( function( q ) {
+                if( !q || !q.id ) { return }
+                var entry = map[ q.id ]
+                if( !entry ) { return }
+                var named = optionIdentitiesOf( q.options )
+                var selected = entry.selected || []
+                var inRange = selected.every( function( i ) { return i >= 0 && i < named.compared } )
+                entry.selectedKeys = ( named.decidable === true && inRange === true )
+                    ? selected.map( function( i ) { return named.identities[ i ] } )
+                    : null
+            } )
+        }
+
+        // M082-09-07: THE REBIND — map every carried selection from the option it NAMES onto the position
+        // that option holds in TODAY's list. Runs between the fill and the seed, so seedQuestionState sees
+        // indices that already describe the list it is about to render.
+        //
+        // Four situations, and only the third loses anything:
+        //   list unchanged   -> the names resolve to the same positions, the selection is identical
+        //   option moved     -> the name resolves to its NEW position, the selection follows it
+        //   option removed   -> the name resolves to nothing; THAT ONE selection falls away, and every
+        //                       other selection of the same question stays
+        //   options added    -> the names resolve unchanged, the selection is untouched
+        //
+        // WHAT IT REPLACES, and the difference IS the finding: seedQuestionState's validity latch drops the
+        // ENTIRE entry as soon as one index outruns the list — selection, custom entries, the rejection,
+        // the touched marker and any confirmed answer with it — and re-seeds silently. Measured as case V3
+        // of M082-09-02: option 6 chosen, list shortened, card shows NOTHING while the store still holds
+        // `selected [6], touched true`. The third situation above costs the one option that really went.
+        //
+        // An entry WITHOUT names is a state written before options had any. It is RECOGNISED and left to
+        // the latch to judge by today's rule — never reinterpreted (S5). A question whose option list
+        // cannot name its options is the same outcome from a different cause, and the two are counted
+        // apart so the report can say which one it hit.
+        function rebindQuestionSelections( prevById, open ) {
+            var map = prevById || {}
+            var report = { compared: 0, rebound: 0, moved: 0, changed: 0, legacy: 0, dropped: [], undecidable: [] }
+
+            ;( open || [] ).forEach( function( q ) {
+                if( !q || !q.id ) { return }
+                var entry = map[ q.id ]
+                if( !entry ) { return }
+                report.compared = report.compared + 1
+                if( !Array.isArray( entry.selectedKeys ) ) {
+                    report.legacy = report.legacy + 1
+
+                    return
+                }
+                var named = optionIdentitiesOf( q.options )
+                if( named.decidable !== true ) {
+                    report.undecidable.push( { question: q.id, code: named.code } )
+
+                    return
+                }
+                var resolved = entry.selectedKeys
+                    .map( function( key ) { return { key: key, index: named.identities.indexOf( key ) } } )
+                var kept = resolved.filter( function( hit ) { return hit.index !== -1 } )
+                var lost = resolved.filter( function( hit ) { return hit.index === -1 } )
+                var next = kept.map( function( hit ) { return hit.index } )
+                var changed = JSON.stringify( next ) !== JSON.stringify( entry.selected || [] )
+
+                lost.forEach( function( hit ) {
+                    report.dropped.push( { question: q.id, option: hit.key, title: q.title || '' } )
+                } )
+                // Assigned unconditionally: when nothing moved the assignment is the identity, and a branch
+                // here would be a second place where "did it change?" is decided.
+                entry.selected = next
+                entry.selectedKeys = kept.map( function( hit ) { return hit.key } )
+                report.rebound = report.rebound + 1
+                if( changed === true ) { report.changed = report.changed + 1 }
+                if( changed === true && lost.length === 0 ) { report.moved = report.moved + 1 }
+            } )
+
+            return report
+        }
+
         function collectAddedAnswers() {
             var entries = questionNav.state || []
             var examined = entries.filter( function( st ) { return !!st } )
-            var blocks = examined
-                .filter( isConfirmedAnswer )
-                .map( function( st ) { return st.addedText } )
 
-            var skipped = entries
-                .map( function( st, idx ) { return { st: st, idx: idx } } )
+            // M082-09-04 (Memo 082 Kap 20, Cluster D, S2): every examined entry is classified ONCE, and
+            // that single classification feeds BOTH halves — what is exported and what is reported.
+            // Before, the export filter and the report filter were two predicates over the same state,
+            // and a third discard reason fell straight between them: a confirmation carrying no answer
+            // text was exported as a bare heading on the transcript path and dropped without a word on
+            // the popup path, while the button said "hinzugefügt ✓".
+            //
+            // THE REASON IS A MACHINE TOKEN (english). Its German sentence is assembled in
+            // unconfirmedNotice — display text and field value are two artefacts, and only one of them
+            // is read by a person.
+            //
+            // The order is not arbitrary. A missing question leaves nothing to form a block from, so it
+            // outranks the content question, which in turn outranks "never confirmed" — the reason a
+            // user is shown has to be the one they can act on. And an entry that carries nothing at all
+            // is NOT a discard: it is the legitimate null case and stays quiet, because a notice that
+            // fires on every save is one nobody reads after three days.
+            var classified = entries
+                .map( function( st, idx ) { return { st: st, idx: idx, q: ( questionNav.questions || [] )[ idx ] } } )
                 .filter( function( entry ) { return !!entry.st } )
-                .filter( function( entry ) { return !isConfirmedAnswer( entry.st ) } )
-                .filter( function( entry ) {
-                    return ( entry.st.selected || [] ).length > 0 || ( entry.st.custom || [] ).length > 0
+                .map( function( entry ) {
+                    // The confirmed block is heading + blank line + answer line, so everything after the
+                    // FIRST blank line is the body. Read out of the text that will really be exported,
+                    // not recomputed from the live selection: the question here is what the export
+                    // carries, not what the widget currently shows.
+                    var body = isConfirmedAnswer( entry.st )
+                        ? String( entry.st.addedText ).split( '\n\n' ).slice( 1 ).join( '\n\n' ).trim()
+                        : ''
+                    var hasIntent = ( entry.st.selected || [] ).length > 0 || ( entry.st.custom || [] ).length > 0
+                    var reason = isConfirmedAnswer( entry.st )
+                        ? ( body.length > 0 ? null : 'empty-content' )
+                        : ( hasIntent === true ? ( entry.q ? 'not-confirmed' : 'no-question' ) : null )
+
+                    return { st: entry.st, idx: entry.idx, q: entry.q, reason: reason }
                 } )
+
+            var blocks = classified
+                .filter( function( entry ) { return entry.reason === null && isConfirmedAnswer( entry.st ) } )
+                .map( function( entry ) { return entry.st.addedText } )
+
+            var skipped = classified
+                .filter( function( entry ) { return entry.reason !== null } )
                 .map( function( entry ) {
                     // The state carries no question id (seedQuestionState), so the name comes from the
                     // index-parallel questions array. A missing question falls back to the 1-based
                     // position — NEVER to an invented id.
-                    var q = ( questionNav.questions || [] )[ entry.idx ]
-
                     return {
-                        id: ( q && q.id ) ? q.id : ( 'Frage ' + ( entry.idx + 1 ) ),
-                        title: ( q && q.title ) ? q.title : '',
-                        intent: q ? buildAnswerText( q, entry.st ).answerLine : ''
+                        id: ( entry.q && entry.q.id ) ? entry.q.id : ( 'Frage ' + ( entry.idx + 1 ) ),
+                        title: ( entry.q && entry.q.title ) ? entry.q.title : '',
+                        intent: entry.q ? buildAnswerText( entry.q, entry.st ).answerLine : '',
+                        reason: entry.reason
                     }
                 } )
 
@@ -9421,16 +10669,70 @@
 
             if( collected.skipped.length === 0 ) { return { count: 0, compared: collected.compared, text: '' } }
 
-            var names = collected.skipped
-                .map( function( entry ) { return entry.id } )
-                .join( ', ' )
-            // Same wording as the placeholder above, so the field and the edge do not give the user
-            // two different instructions for one action.
-            var text = 'Nicht übernommen: ' + collected.skipped.length + ' von ' + collected.compared
-                + ' Fragen sind ausgewählt, aber nicht bestätigt (' + names + ').'
-                + '\nSie werden NICHT gespeichert — im Widget auf "Hinzufügen" klicken, sonst geht die Auswahl verloren.'
+            // M082-09-04 (Memo 082 Kap 20, Cluster D, S2): ONE LINE PER REASON, never one sentence for
+            // all of them. A collective "nicht gespeichert" reads three different situations as one and
+            // hides exactly the difference that tells the user what to do about it — the same mistake
+            // this whole cluster is about, one size smaller.
+            //
+            // EVERY LINE NAMES BOTH NUMBERS ("2 von 7"), for the reason PRD-22 already gave: a message
+            // that says how many were dropped but not how many were checked repeats, in the fix, the
+            // blindness being fixed.
+            //
+            // Machine token -> German sentence, mapped here and nowhere else. The first wording is the
+            // one PRD-22 shipped and is unchanged, so the field placeholder and this edge still give
+            // the user ONE instruction for one action.
+            var wording = [
+                {
+                    reason: 'not-confirmed',
+                    tail: ' Fragen sind ausgewählt, aber nicht bestätigt',
+                    hint: '\nSie werden NICHT gespeichert — im Widget auf "Hinzufügen" klicken, sonst geht die Auswahl verloren.'
+                },
+                {
+                    reason: 'empty-content',
+                    tail: ' Fragen sind bestätigt, tragen aber keinen Antworttext',
+                    hint: '\nSie werden NICHT gespeichert — im Widget eine Option wählen und erneut auf "Hinzufügen" klicken.'
+                },
+                {
+                    reason: 'no-question',
+                    tail: ' Einträge gehören zu keiner Frage der angezeigten Liste',
+                    hint: '\nSie werden NICHT gespeichert — die Fragenliste hat sich geändert; die Revision neu laden.'
+                }
+            ]
 
-            return { count: collected.skipped.length, compared: collected.compared, text: text }
+            var lines = wording
+                .map( function( form ) {
+                    return {
+                        form: form,
+                        hits: collected.skipped.filter( function( entry ) { return entry.reason === form.reason } )
+                    }
+                } )
+                .filter( function( group ) { return group.hits.length > 0 } )
+                .map( function( group ) {
+                    var names = group.hits
+                        .map( function( entry ) { return entry.id } )
+                        .join( ', ' )
+
+                    return 'Nicht übernommen: ' + group.hits.length + ' von ' + collected.compared
+                        + group.form.tail + ' (' + names + ').' + group.form.hint
+                } )
+
+            // A reason without a wording above would otherwise vanish from a message whose whole job is
+            // that nothing vanishes. It is reported with its raw token instead — ugly on purpose, and
+            // visible.
+            var known = wording.map( function( form ) { return form.reason } )
+            var unknown = collected.skipped
+                .filter( function( entry ) { return known.indexOf( entry.reason ) === -1 } )
+            var unknownLines = unknown.length > 0
+                ? [ 'Nicht übernommen: ' + unknown.length + ' von ' + collected.compared
+                    + ' Einträge mit unbekanntem Grund ('
+                    + unknown.map( function( entry ) { return entry.id + ': ' + entry.reason } ).join( ', ' ) + ').' ]
+                : []
+
+            return {
+                count: collected.skipped.length,
+                compared: collected.compared,
+                text: lines.concat( unknownLines ).join( '\n' )
+            }
         }
 
         // PRD-22 (Memo 081 Kap 19, WI-130): render the notice into a field. Its own field, never the
@@ -9644,8 +10946,8 @@
 
             // WI-041 (Memo 081): the AI recommendation is a DISPLAY property, never a selection.
             // Both the option marker (qw-ai + "(KI-Empfehlung)" hint) and the green KI-EMPFEHLUNG
-            // line used to read `preselected` — a field that meant two things at once, so the
-            // Vorauswahl-Sperre of REV-02 (writing preselected:[] into every question) silently
+            // line used to read `preselected` — a field that meant two things at once, so the hand
+            // mitigation of REV-02 (writing preselected:[] into every question) silently
             // switched the whole recommendation display off. WI-025 ends that: the server now ships
             // `aiRecommended` as its own display field and `preselected` carries only what an author
             // explicitly chose. This reads the display field FIRST.
@@ -9676,26 +10978,46 @@
             // Options (may be only the two defaults custom/topic if no A/B/C were found).
             var optsWrap = document.createElement( 'div' )
             optsWrap.className = 'qw-options'
-            var pre = questionNav.state[ qIdx ].selected
+            var chosen = questionNav.state[ qIdx ].selected
+            // M082-09-03 (F15=A): the two readings are now SEPARATE fields, and the card is where the
+            // separation becomes visible — `selected` paints the chosen marker, `preselected` paints a
+            // hint beside the label. Before, a preselection arrived here already disguised as a choice,
+            // so no reader of this card could tell the two apart.
+            //
+            // The hint matters most for `typ: 'multi'`: the aiRecommendedIdx derivation above only runs
+            // for single questions, so a multi preselection had NO display of its own — it was visible
+            // solely through the ☑ boxes it had wrongly seeded. Dropping the seed without this line
+            // would have traded a false decision for an invisible recommendation.
+            var preselectedHint = questionNav.state[ qIdx ].preselected || []
             var optionList = q.options || []
 
             optionList.forEach( function( opt, optIdx ) {
                 var row = document.createElement( 'div' )
                 row.className = 'qw-option'
                 row.setAttribute( 'data-oidx', String( optIdx ) )
-                var isSel = pre.indexOf( optIdx ) !== -1
+                var isSel = chosen.indexOf( optIdx ) !== -1
                 // AI recommendation marker — display only, from the derived index above (WI-041).
                 var isAi = aiRecommendedIdx === optIdx
+                var isPre = preselectedHint.indexOf( optIdx ) !== -1
                 if( isSel ) { row.classList.add( 'qw-selected' ) }
                 if( isAi ) { row.classList.add( 'qw-ai' ) }
+                if( isPre ) {
+                    row.classList.add( 'qw-ai' )
+                    row.setAttribute( 'data-preselected', '1' )
+                }
 
                 // PRD-011 (Memo 076 H7b, WI-101): ☑/☐ (U+2611/2610) render as coloured emoji boxes on
                 // macOS next to the plain text ◉/○ glyphs. The U+FE0E variation selector forces the
                 // text presentation so all four choice markers render as consistent mono glyphs.
                 var marker = q.typ === 'single' ? ( isSel ? '◉' : '○' ) : ( isSel ? '☑︎' : '☐︎' )
                 var keyLabel = ( opt.kind === 'option' ) ? ( '<span class="qw-option-key">' + escHtml( opt.key ) + ')</span> ' ) : ''
+                // One hint per row: a row that is both the AI recommendation and the payload's
+                // preselection says "(KI-Empfehlung)" once, never twice in two spellings.
+                var hint = isAi
+                    ? ' <span class="qw-ai-hint">(KI-Empfehlung)</span>'
+                    : ( isPre ? ' <span class="qw-ai-hint">(Vorauswahl — keine Antwort)</span>' : '' )
                 row.innerHTML = '<span class="qw-marker">' + marker + '</span>' + keyLabel
-                    + '<span class="qw-option-label">' + escHtml( opt.label ) + ( isAi ? ' <span class="qw-ai-hint">(KI-Empfehlung)</span>' : '' ) + '</span>'
+                    + '<span class="qw-option-label">' + escHtml( opt.label ) + hint + '</span>'
 
                 row.addEventListener( 'click', function() {
                     questionNav.active = qIdx
@@ -9902,13 +11224,29 @@
 
                     return
                 }
+                var selected = ( st.selected || [] ).slice()
                 var record = {
                     intent: {
-                        selected: ( st.selected || [] ).slice(),
+                        selected: selected,
                         custom: ( st.custom || [] ).slice(),
                         rejected: st.rejected === true,
                         touched: st.touched === true
                     }
+                }
+                // M082-09-07 (Cluster E, WI-121): the NAMES of the chosen options travel with the record, and
+                // this is the ONE place they are derived for the store — from the question that is already in
+                // hand, so name and index can never describe two different lists. Without them the store keeps
+                // a position whose meaning depends on a list it does not carry, and the next load has nothing
+                // but that position to go on.
+                //
+                // Omitted rather than half-filled when the list cannot name its options or a stored index
+                // already sits outside it: a record with names that do not match its indices would be worse
+                // than one with no names at all, because a reader would believe it.
+                var named = optionIdentitiesOf( q.options )
+                var nameable = named.decidable === true
+                    && selected.every( function( i ) { return i >= 0 && i < named.compared } )
+                if( nameable === true ) {
+                    record.intent.selectedKeys = selected.map( function( i ) { return named.identities[ i ] } )
                 }
                 if( isConfirmedAnswer( st ) ) { record.confirmed = { answerText: st.addedText } }
                 entries[ q.id ] = record
@@ -9934,6 +11272,46 @@
                     showQuestionStateSaveError( data && data.messages ? data.messages : [] )
                 } )
                 .catch( function( err ) { showQuestionStateSaveError( [ String( err && err.message ? err.message : err ) ] ) } )
+        }
+
+        // M082-09-07 (Cluster E, WI-121): the visible half of the rebind. Two sentences, and each fires only
+        // over a comparison set it can name — no notice at all in the normal case, because a warning that
+        // appears on every render is one nobody reads after three days (the same rule collectAddedAnswers
+        // follows for its discard notice).
+        //
+        // The first sentence covers what was LOST and names it per question and option. The second covers
+        // what could not be DECIDED — a question whose option list carries no unique names — and says which
+        // rule applies to it instead, because "nothing happened here" and "here I refused" are two
+        // different statements and a user can act on only one of them.
+        //
+        // German display text over English machine fields, like every other widget message here; the code
+        // in brackets is the machine token the notice is built FROM, not a second wording of it.
+        function renderQuestionStateRebindNotice( container, report ) {
+            if( !container || !report ) { return }
+            var dropped = report.dropped || []
+            var undecidable = report.undecidable || []
+            if( dropped.length === 0 && undecidable.length === 0 ) { return }
+
+            var box = document.createElement( 'div' )
+            box.className = 'qw-parse-warn'
+            box.id = 'qw-state-rebind-warn'
+            box.setAttribute( 'data-qw-rebind-dropped', String( dropped.length ) )
+            box.setAttribute( 'data-qw-rebind-undecidable', String( undecidable.length ) )
+            box.setAttribute( 'data-qw-rebind-compared', String( report.compared ) )
+
+            var sentences = []
+            if( dropped.length > 0 ) {
+                sentences.push( '⚠ ' + dropped.length + ' Auswahl wurde entfernt, weil die gewählte Antwortmöglichkeit nicht mehr angeboten wird: '
+                    + dropped.map( function( hit ) { return hit.question + ' → ' + hit.option } ).join( ', ' )
+                    + '. Alle übrigen Auswahlen dieser Fragen bleiben bestehen, und der gespeicherte Zustand wurde nachgezogen.' )
+            }
+            if( undecidable.length > 0 ) {
+                sentences.push( '⚠ ' + undecidable.length + ' Frage konnte nicht nachgebunden werden, weil ihre Antwortmöglichkeiten keine eindeutigen Namen tragen: '
+                    + undecidable.map( function( hit ) { return hit.question + ' (' + hit.code + ')' } ).join( ', ' )
+                    + '. Für sie gilt weiterhin die Regel über die laufende Nummer.' )
+            }
+            box.textContent = sentences.join( ' ' )
+            container.insertBefore( box, container.firstChild )
         }
 
         // A failed save is VISIBLE. A store that fails quietly is worse than none, because it promises
@@ -10054,6 +11432,9 @@
                 if( !row ) { return }
                 row.style.display = st.selected.indexOf( entry.idx ) !== -1 ? '' : 'none'
             } )
+            // M082-09-03: the "no choice yet" hint is answered by making a choice, so it goes away
+            // here — at the one place every selection change already passes — rather than on a timer.
+            clearNoSelectionHint()
         }
 
         function renderQuestionFocus() {
@@ -10211,6 +11592,79 @@
             persistQuestionState()
         }
 
+        // M082-09-03 (Memo 082 Kap 20, F15=A): the predicate, written ONCE — a question carries an
+        // actual choice when the user selected an option or entered text of their own. `preselected` is
+        // deliberately NOT read here; splitting that field off the selection is the whole point of this
+        // change, and letting it back in one function further on would re-open the defect quietly.
+        function hasUserChoice( st ) {
+            return ( ( st.selected || [] ).length > 0 ) || ( ( st.custom || [] ).length > 0 )
+        }
+
+        // The visible refusal. "Nothing happens" is the one form this must never be: a silent no-op
+        // and a successful confirmation look identical from the keyboard, which is how a confirm that
+        // fired on nothing could stay unnoticed for as long as it did.
+        function clearNoSelectionHint() {
+            var existing = document.getElementById( 'qw-no-selection-hint' )
+            if( existing && existing.parentNode ) { existing.parentNode.removeChild( existing ) }
+        }
+
+        function showNoSelectionHint( qIdx, via ) {
+            clearNoSelectionHint()
+            var card = document.querySelector( '#question-widgets .qw-card[data-qidx="' + qIdx + '"]' )
+            if( !card ) { return }
+            var hint = document.createElement( 'div' )
+            hint.className = 'qw-parse-warn'
+            hint.id = 'qw-no-selection-hint'
+            hint.setAttribute( 'data-qw-no-selection', '1' )
+            hint.textContent = '⚠ ' + via + ' hat nichts bestätigt: diese Frage trägt noch keine Auswahl. '
+                + 'Eine Vorauswahl oder KI-Empfehlung ist keine Antwort — bitte zuerst eine Option wählen.'
+            // MEASURED, and it cost one red run: `.qw-footer` is a DESCENDANT of the card, not a
+            // child of it, so `card.insertBefore( hint, footer )` throws NotFoundError and the hint
+            // never appears — the silent nothing this whole guard exists to prevent, one level down.
+            // Insert into the footer's OWN parent, and fall back to the card only when there is none.
+            var footer = card.querySelector( '.qw-footer' )
+            if( footer && footer.parentNode ) { footer.parentNode.insertBefore( hint, footer ) }
+            else { card.appendChild( hint ) }
+        }
+
+        // M082-09-03 (F15=A) — the ONE gate both keyboard confirms pass, so a third keyboard path is
+        // bound by joining this call rather than by remembering the rule a third time.
+        //
+        // It returns its verdict instead of swallowing it: a caller — and a test — can assert on the
+        // DECISION, not on the absence of a side effect.
+        //
+        // AN UNDO IS NOT A CONFIRMATION. A question that already carries a confirmed answer passes
+        // straight through, so the reversible "hinzugefügt ✓ (rückgängig)" path (PRD-006, AC-07) stays
+        // reachable without the mouse even for an answer that holds no option at all.
+        function confirmQuestionByKeyboard( qIdx, via ) {
+            var st = questionNav.state[ qIdx ]
+            if( !st ) { return false }
+
+            // The truthiness check and not the strict-equality spelling: this is the SAME condition
+            // submitQuestionAnswer keys its own undo branch on, and the gate has to mirror the branch
+            // it delegates to rather than invent a stricter one. It is also NOT the harvest condition
+            // — PRD-22's T7 counts the strict spelling to hold that one at exactly two sites, and a
+            // third spelling here would have read as a new silent copy of it. (Measured twice: the
+            // count runs over the whole file, comments included, so naming the spelling in prose
+            // raises it too — the pattern is counted, never the concept.)
+            if( st.added ) {
+                submitQuestionAnswer( qIdx )
+
+                return true
+            }
+
+            if( hasUserChoice( st ) !== true ) {
+                showNoSelectionHint( qIdx, via )
+
+                return false
+            }
+
+            clearNoSelectionHint()
+            submitQuestionAnswer( qIdx )
+
+            return true
+        }
+
         function submitQuestionAnswer( qIdx ) {
             var q = questionNav.questions[ qIdx ]
             var st = questionNav.state[ qIdx ]
@@ -10225,6 +11679,20 @@
 
                 return
             }
+
+            // M082-09-04 (Memo 082 Kap 20, Cluster D): "Hinzufügen" on a question that carries NO choice
+            // used to confirm anyway. It produced an entry whose answer block is a bare heading —
+            // exported as a phantom answer on the transcript path, dropped without a word on the popup
+            // path — while the button answered "hinzugefügt ✓". That is the silent discard in its
+            // loudest form: the user is told the opposite of what happened.
+            // The SAME visible refusal both keyboard paths use, not a second one: one wording, one
+            // element, one place to change it. An undo is not affected — it returned above.
+            if( hasUserChoice( st ) !== true ) {
+                showNoSelectionHint( qIdx, 'Hinzufügen' )
+
+                return
+            }
+            clearNoSelectionHint()
 
             // PRD-F3 (Memo 080 Kap 18, S1): clicking "Hinzufügen" IS the interaction. A machine injection
             // that reached st.added without this click stays untouched and is therefore never read as a
@@ -10427,9 +11895,13 @@
 
             // PRD-006 (Kap 9, AC-06): Enter on the focused question triggers "Hinzufügen"
             // (identical to the button click, incl. its reversible undo on a second Enter).
+            // M082-09-03 (F15=A): it goes through confirmQuestionByKeyboard, which refuses a question
+            // that carries no actual choice. A bare Enter used to confirm the ACTIVE question — and
+            // active after a render is the first one — so one keystroke on a freshly loaded page
+            // signed whatever the seed had put there.
             if( ev.key === 'Enter' ) {
                 ev.preventDefault()
-                submitQuestionAnswer( questionNav.active )
+                confirmQuestionByKeyboard( questionNav.active, 'Enter' )
 
                 return
             }
@@ -10437,12 +11909,15 @@
             // PRD-006 (Kap 9, AC-06): a keyboard shortcut to "log in" (confirm) the focused
             // option without the mouse. Ctrl/Cmd+Enter selects the focused option AND adds
             // the answer in one keystroke — the "einloggen per Tastatur"-Aktion.
+            // M082-09-03 (F15=A): the toggle stays where it was — with a focused option this shortcut
+            // MAKES the choice and may then confirm it. Without one it used to confirm anyway, i.e.
+            // outside its own selecting condition; now the same guard as Enter catches that branch.
             if( ev.key === 'l' && ( ev.ctrlKey || ev.metaKey ) ) {
                 ev.preventDefault()
                 if( questionNav.lane === 'option' && questionNav.optionFocus >= 0 ) {
                     toggleOption( questionNav.active, questionNav.optionFocus )
                 }
-                submitQuestionAnswer( questionNav.active )
+                confirmQuestionByKeyboard( questionNav.active, 'Strg/Cmd+L' )
 
                 return
             }

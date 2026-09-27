@@ -932,6 +932,42 @@
             margin: 52px 0 0;
         }
 
+        /* PRD-09 (Memo 082 Kap 20b, WI-123): the collapsible sidebars, Xcode pattern.
+           WHY A CLASS ON #layout AND NOT AN INLINE WIDTH: the widths of the two panels are declared
+           once, right below and right above, and #main is flex:1. Collapsing a panel therefore hands
+           the middle EXACTLY the width that panel gives up — the other sidebar is not touched, and no
+           second width can drift away from the declared one. An inline style would put a second
+           authority for the same number into the client script.
+           WHICH FORM OF "still visible" (S3): the BUTTON stays. Both toggles live in the fixed
+           #nav-bar, so a collapsed sidebar is never gone — the way back sits where it always sat, at
+           full size. There is deliberately no narrow remaining strip; a strip would be a second place
+           to look for the same control. */
+        #layout.sidebar-left-collapsed #doc-sidebar { display: none; }
+
+        #layout.sidebar-right-collapsed #toc-sidebar { display: none; }
+
+        .sidebar-toggle {
+            background: var(--bg-2);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            padding: 5px 8px;
+            border-radius: 6px;
+            font-family: inherit;
+            flex-shrink: 0;
+        }
+
+        .sidebar-toggle:hover { color: var(--text-1); border-color: var(--text-muted); }
+
+        /* The collapsed state is readable on the control itself, not only in the layout behind it. */
+        .sidebar-toggle[aria-expanded="false"] {
+            background: var(--bg-4);
+            color: var(--text-1);
+            border-color: var(--text-muted);
+        }
+
         #doc-sidebar {
             position: sticky;
             top: 52px;

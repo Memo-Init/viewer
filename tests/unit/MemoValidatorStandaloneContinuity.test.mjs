@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { projectRoot } from '../helpers/siblingRepo.mjs'
 import { MemoValidator } from '../../src/MemoValidator.mjs'
 
 
@@ -18,8 +19,17 @@ import { MemoValidator } from '../../src/MemoValidator.mjs'
 // "0 losses" over 0 compared chapters and read as a pass.
 
 
+// M082-WC-B (WI-287): `../../../../` was only ever the workbench `.memo/` tree from `repos/viewer`.
+// From `.worktrees/082/<slug>` it lands on `<root>/.worktrees`, which holds no `.memo/`, and the three
+// cases below went to SKIP under a green suite — 12 of the 13 skips of the tip run come from this class
+// over five files. The root is DERIVED from the main repository now (`projectRoot`,
+// tests/helpers/siblingRepo.mjs), so it does not depend on how deep the tree sits; a failed derivation
+// leaves a value that cannot name a file, so the guard states the reason instead of an absent object.
 const here = dirname( fileURLToPath( import.meta.url ) )
-const REV_DIR = resolve( here, '../../../../.memo/memos/080-db-vollausbau-und-laufzeit-transparenz/revisions' )
+const PROJECT = projectRoot( { from: here } )
+const REV_DIR = PROJECT.status === true
+    ? resolve( PROJECT.root, '.memo', 'memos', '080-db-vollausbau-und-laufzeit-transparenz', 'revisions' )
+    : `<project root not derivable: ${ PROJECT.reason }>`
 
 const readRevision = async ( name ) => readFile( resolve( REV_DIR, name ), 'utf-8' )
 

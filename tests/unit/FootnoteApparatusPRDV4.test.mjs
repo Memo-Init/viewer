@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
+import { projectRoot } from '../helpers/siblingRepo.mjs'
 import { extractFunctions } from '../helpers/extractFunction.mjs'
 
 
@@ -17,12 +18,22 @@ import { extractFunctions } from '../helpers/extractFunction.mjs'
 // (jest reports "skipped", never a silent pass) and run as the real proof wherever the tree exists.
 // Everything else in this suite is repo-local and always runs. A run that counts zero definitions is
 // still asserted red — a pass without a comparison basis is no pass.
-const MEMO_REVISIONS = join(
-    '..', '..', '..', '..', '.memo', 'memos', '080-db-vollausbau-und-laufzeit-transparenz', 'revisions'
-)
+//
+// M082-WC-B (WI-287): the four upward steps this file used to count were only ever right from
+// `repos/viewer`. From `.worktrees/082/<slug>` the same count lands on `<root>/.worktrees`, where no
+// `.memo/` exists, and the five cases below went to SKIP under a green suite — measured, 12 of the 13
+// skips of the tip run `viewer-tip-ebd3009-npm-test.log` come from this one class over five files. The
+// root is now DERIVED from the main repository (`projectRoot`, tests/helpers/siblingRepo.mjs, the rule
+// that already carries the cross-repo suites), so it no longer depends on how deep the tree sits. A
+// failed derivation does NOT become a skip: it leaves a value that cannot name a file, so the guard
+// states the reason instead of reading like an absent object.
 const HERE = dirname( fileURLToPath( import.meta.url ) )
-const REAL_REV02 = join( HERE, MEMO_REVISIONS, 'REV-02.md' )
-const REAL_REV18 = join( HERE, MEMO_REVISIONS, 'REV-18.md' )
+const PROJECT = projectRoot( { from: HERE } )
+const MEMO_REVISIONS = PROJECT.status === true
+    ? join( PROJECT.root, '.memo', 'memos', '080-db-vollausbau-und-laufzeit-transparenz', 'revisions' )
+    : `<project root not derivable: ${ PROJECT.reason }>`
+const REAL_REV02 = join( MEMO_REVISIONS, 'REV-02.md' )
+const REAL_REV18 = join( MEMO_REVISIONS, 'REV-18.md' )
 const withTree = existsSync( REAL_REV02 ) && existsSync( REAL_REV18 ) ? it : it.skip
 
 describe( 'footnote apparatus + link interception — Memo 080 PRD-V4 (WI-174, WI-175)', () => {

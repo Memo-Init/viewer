@@ -2,10 +2,11 @@ import { describe, it, expect, beforeAll, afterAll } from '@jest/globals'
 import { mkdtemp, mkdir, writeFile, rm, readdir } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 
+import { projectRoot } from '../helpers/siblingRepo.mjs'
 import { MemoView } from '../../src/MemoView.mjs'
 import { extractFunctionSources, readMemoViewSource, readMemoViewStyles, readEmittedScript } from '../helpers/extractFunction.mjs'
 
@@ -25,7 +26,19 @@ import { extractFunctionSources, readMemoViewSource, readMemoViewStyles, readEmi
 // Deliberately NOT covered: the browser (real click, real collapse). See the unit report.
 
 
-const REAL_MEMO_DIR = resolve( fileURLToPath( new URL( '../../../../.memo/memos/080-db-vollausbau-und-laufzeit-transparenz', import.meta.url ) ) )
+// M082-WC-B (WI-287): the four upward steps this file used to count reached the workbench `.memo/` tree
+// only from `repos/viewer`. From `.worktrees/082/<slug>` they land on `<root>/.worktrees`, which holds no
+// `.memo/`. This file is the SIXTH member of that class and the one the phase-9 report did not name,
+// because it does not skip: the three real-store cases below take an early `return` and assert
+// `expect( present ).toBe( false )`, so a mis-derived location reads as THREE PASSES, not as three skips
+// — invisible in the skip tally the class was found through. The root is DERIVED from the main repository
+// now (`projectRoot`, tests/helpers/siblingRepo.mjs); a failed derivation leaves a value that cannot name
+// a directory. The early-return form itself is left as it stands: it belongs to Memo 080, not here.
+const HERE = dirname( fileURLToPath( import.meta.url ) )
+const PROJECT = projectRoot( { from: HERE } )
+const REAL_MEMO_DIR = PROJECT.status === true
+    ? resolve( PROJECT.root, '.memo', 'memos', '080-db-vollausbau-und-laufzeit-transparenz' )
+    : `<project root not derivable: ${ PROJECT.reason }>`
 
 
 // ---- a minimal DOM, built for exactly the calls the injected display makes ----

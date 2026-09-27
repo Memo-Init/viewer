@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { MemoView } from '../../src/MemoView.mjs'
+import { projectRoot } from '../helpers/siblingRepo.mjs'
 import { extractFunctions } from '../helpers/extractFunction.mjs'
 
 
@@ -39,7 +40,18 @@ const fixturePrevious = readFileSync( join( fixtureDir, 'previous.md' ), 'utf-8'
 const fixtureCurrent = readFileSync( join( fixtureDir, 'current.md' ), 'utf-8' )
 
 // The real revisions of memo 080. Outside the repo by design — guarded, never assumed.
-const revisionsDir = resolve( here, '../../../../.memo/memos/080-db-vollausbau-und-laufzeit-transparenz/revisions' )
+//
+// M082-WC-B (WI-287): `../../../../` reached the workbench `.memo/` tree only from `repos/viewer`. From
+// `.worktrees/082/<slug>` it lands on `<root>/.worktrees`, which holds no `.memo/`, and `runOnRevisions`
+// went to SKIP under a green suite. The pairs list below registers TWO cases from ONE source line, and
+// that is where the 13th skip of the tip run `viewer-tip-ebd3009-npm-test.log` came from: the phase-9
+// report attributed 12 of 13 by counting one case per guarded source line and read this file as 1. The
+// root is DERIVED from the main repository now (`projectRoot`, tests/helpers/siblingRepo.mjs); a failed
+// derivation leaves a value that cannot name a file, so the guard states the reason.
+const PROJECT = projectRoot( { from: here } )
+const revisionsDir = PROJECT.status === true
+    ? resolve( PROJECT.root, '.memo', 'memos', '080-db-vollausbau-und-laufzeit-transparenz', 'revisions' )
+    : `<project root not derivable: ${ PROJECT.reason }>`
 const revisionPath = ( name ) => join( revisionsDir, name )
 const revisionsPresent = [ 'REV-16.md', 'REV-17.md', 'REV-18.md' ]
     .every( ( name ) => existsSync( revisionPath( name ) ) )

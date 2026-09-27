@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
+import { projectRoot } from '../helpers/siblingRepo.mjs'
 import { MemoValidator } from '../../src/MemoValidator.mjs'
 import { BlockSections } from '../../src/BlockSections.mjs'
 
@@ -21,8 +22,17 @@ import { BlockSections } from '../../src/BlockSections.mjs'
 //
 // EVERY CASE STATES HOW MUCH IT COMPARED. A comparison basis of 0 is asserted RED, never green.
 
+// M082-WC-B (WI-287): `../../../../` reached the workbench `.memo/` tree only from `repos/viewer`. From
+// `.worktrees/082/<slug>` it lands on `<root>/.worktrees`, which holds no `.memo/`, and the case below
+// went to SKIP under a green suite — 12 of the 13 skips of the tip run come from this class over five
+// files. The root is DERIVED from the main repository now (`projectRoot`,
+// tests/helpers/siblingRepo.mjs); a failed derivation leaves a value that cannot name a file.
 const here = dirname( fileURLToPath( import.meta.url ) )
-const REAL_PREPARE = resolve( here, '../../../../.memo/memos/080-db-vollausbau-und-laufzeit-transparenz/revisions/REV-17-prepare.md' )
+const PROJECT = projectRoot( { from: here } )
+const REV_DIR = PROJECT.status === true
+    ? resolve( PROJECT.root, '.memo', 'memos', '080-db-vollausbau-und-laufzeit-transparenz', 'revisions' )
+    : `<project root not derivable: ${ PROJECT.reason }>`
+const REAL_PREPARE = resolve( REV_DIR, 'REV-17-prepare.md' )
 const withTree = existsSync( REAL_PREPARE ) ? it : it.skip
 
 

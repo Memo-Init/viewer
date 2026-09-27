@@ -831,8 +831,30 @@
         // than the cards they sit above. `status` (not `!answered`) is the axis PRD-F1 (Memo 080) settled on
         // — a retired question changes column, it is not answered. Two copies of one condition are exactly
         // where the next divergence starts, so both call sites read this one.
+        // M082-09-FX (F-3): THE FILTER READS THE UNDECLARED CASE AS UNDECLARED, not as "not open".
+        //
+        // The condition was purely positive (`status === 'open'`), so a question carrying NO `status` was
+        // "not open" and disappeared — out of the widget set, out of the Zone-2 count and out of the popup
+        // list, without one word. That today's stock sets `status` on both parse paths is a DATA
+        // SITUATION, not an invariant, and the only net (the divergence banner below) needs a declared
+        // registry basis before it can fire at all.
+        //
+        // Undeclared now counts as OPEN — the VISIBLE direction, because a question shown too often costs
+        // a glance while a question silently dropped costs the answer — and it is NAMED by the notice
+        // renderQuestionWidgets renders over the set. `answered` and the two retired values are DECIDED
+        // states and still leave the column; nothing about them changes here.
         function openQuestionsOf( schema ) {
-            return ( schema || [] ).filter( function( q ) { return q && q.status === 'open' } )
+            return ( schema || [] ).filter( function( q ) { return q && ( q.status === 'open' || typeof q.status !== 'string' || q.status.trim().length === 0 ) } )
+        }
+
+        // The undeclared half of the set above, as its own list, so the notice can say how many of how
+        // many — a number that exists only inside a filter is not a statement anybody receives.
+        //
+        // DERIVED FROM THE FILTER, not from a second copy of its condition: "in the open set, but not
+        // DECLARED open". A separate re-test of the same condition is exactly where the two would drift
+        // apart, and then the notice would describe a set the renderer does not render.
+        function undeclaredStatusQuestionsOf( schema ) {
+            return openQuestionsOf( schema ).filter( function( q ) { return q.status !== 'open' } )
         }
 
         // The counted stock of a rendered revision: open + answered elements of its question schema. This is
@@ -7000,6 +7022,21 @@
                 }
                 row.appendChild( input )
 
+                // M082-09-FX (F-7): the refused case gets a sentence, and it gets its OWN element rather
+                // than the placeholder. The placeholder may already carry the unconfirmed hint, and two
+                // statements competing for one slot means one of them is lost — the defect class of this
+                // whole bundle, one size smaller. It names both numbers, like every message on this path.
+                if( stored.multiline > 0 ) {
+                    var hint = document.createElement( 'span' )
+                    hint.className = 'pp-question-hint'
+                    hint.setAttribute( 'data-pp-multiline', String( stored.multiline ) )
+                    hint.textContent = '↳ ' + stored.multiline + ' von ' + stored.compared + ' gespeicherten'
+                        + ' Antwortblöcken dieser Frage sind MEHRZEILIG und werden hier nicht angeboten,'
+                        + ' damit sie nicht in eine Zeile gepresst werden. Sie stehen unverändert im'
+                        + ' Transcript-Text — dieses Feld leer zu lassen ändert daran nichts.'
+                    row.appendChild( hint )
+                }
+
                 list.appendChild( row )
             } )
         }
@@ -7259,14 +7296,30 @@
         // back so a second "Uebernehmen" carries the saved answer instead of starting from an empty field.
         // ONLY a single-line body is offered — the field holds one line, and flattening a multi-line answer
         // would rewrite the user's own text. A multi-line block is therefore left untouched in the content.
+        // M082-09-FX (F-7): IT REPORTS THE CASE IT REFUSES, over a named comparison set.
+        //
+        // The refusal itself is right and stays exactly as it was: a multi-line answer is NOT offered,
+        // because the field holds one line and offering it would flatten the user's own text. Nothing is
+        // lost either — the empty field is skipped on save (applyPromptEdit's `val.length === 0`), so the
+        // stored answer stays in the content untouched. That is why this is the weak form of the pattern
+        // and why the save path is not touched here.
+        //
+        // What was wrong is that the field then simply started EMPTY above an existing answer, and a reader
+        // has no way to tell that from "no answer yet". `multiline` and `compared` are the two numbers the
+        // popup needs to say so; `found` keeps its exact meaning, so every existing reader of it is
+        // unaffected.
         function storedAnswerFor( q ) {
-            var out = { found: false, answer: '' }
+            var out = { found: false, answer: '', multiline: 0, compared: 0 }
             if( !q || !q.id ) { return out }
             var el = document.getElementById( 'pp-content' )
             if( !el ) { return out }
 
-            var hits = scanAnswerBlocks( el.value || '' ).blocks
-                .filter( function( blk ) { return blk.id === q.id && blk.body.length > 0 && blk.body.indexOf( '\n' ) === -1 } )
+            var mine = scanAnswerBlocks( el.value || '' ).blocks
+                .filter( function( blk ) { return blk.id === q.id && blk.body.length > 0 } )
+            var hits = mine
+                .filter( function( blk ) { return blk.body.indexOf( '\n' ) === -1 } )
+            out.compared = mine.length
+            out.multiline = mine.length - hits.length
             if( hits.length === 0 ) { return out }
 
             out.found = true
@@ -10715,7 +10768,10 @@
         // pair it belongs to. `key` is what makes the load happen ONCE per pair — a second broadcast of
         // the same pair must not re-fetch, or a late answer would overwrite a fresh selection. The
         // entries are the raw stored records; stateFromStoredRecord maps them, nothing else reads them.
-        var questionStateStored = { key: null, entries: {}, seen: 0, skipped: 0 }
+        // M082-09-FX (F-1/F-1b): `messages` travels with the rest. The server already sent it — a broken
+        // state file is fail-open WITH a reason — and the client dropped it on the floor, which is how
+        // "unreadable" and "empty" became the same thing on the surface.
+        var questionStateStored = { key: null, entries: {}, seen: 0, skipped: 0, messages: [] }
         var questionStateSaveTimer = null
 
         // Memo 080 (Kap 18, PRD-F2): THE RE-FORMULATION KINDS AND THEIR FREE-TEXT ROWS. `reframe` says the
@@ -10800,13 +10856,20 @@
             // A restored record brings its OWN names and overwrites these, which is right: those names are
             // older, and older is what the rebind needs.
             captureSelectedKeys( prevById, questionNav.questions )
-            fillPrevFromStoredQuestionState( prevById, questionStateStored.entries )
+            // M082-09-FX (F-1b): the fill REPORTS what it left behind, and the report is rendered below.
+            // The call is unchanged in shape — the map is still mutated in place — so the precedence rule
+            // above holds exactly as measured; only the finding now has an addressee.
+            var filled = fillPrevFromStoredQuestionState( prevById, questionStateStored.entries )
             // ...and REBOUND onto today's list before the seed reads the map, so the validity latch below
             // sees indices that already describe the list about to be rendered. The latch stays — it is now
             // the last resort for entries that carry no names at all, not the first line of defence.
             var rebind = rebindQuestionSelections( prevById, open )
             questionNav.questions = open
             questionNav.state = seedQuestionState( open, prevById )
+            // M082-09-FX (F-2): what the validity latch DID, read off the state it just built against the
+            // map it read. The merge map still holds the dropped entry — the seed leaves it alone and
+            // returns a fresh default in its place — so this is the lost content itself, not a guess at it.
+            var latched = latchedCarriedEntries( open, prevById, questionNav.state )
             questionNav.active = open.length > 0 ? 0 : -1
             questionNav.optionFocus = -1
             questionNav.lane = 'option'
@@ -10868,6 +10931,11 @@
                 container.insertBefore( divergence, container.firstChild )
             }
 
+            // M082-09-FX (F-3): the undeclared-status set, named over the whole schema. It renders as open
+            // (see openQuestionsOf), and a card that appears without a word would only move the silence
+            // from "it vanished" to "where does this come from".
+            renderQuestionStatusNotice( container, undeclaredStatusQuestionsOf( schema ), ( schema || [] ).length )
+
             // M082-09-07 (Cluster E, WI-121): the rebind SAYS what it did, and THEN cleans up after itself.
             //
             // The saying: a selection that falls away without a word is the half of this defect a user can
@@ -10881,6 +10949,21 @@
             // render a save, and a store that is rewritten on every render cannot be told from one that is
             // broken.
             renderQuestionStateRebindNotice( container, rebind )
+            // M082-09-FX (F-1b + F-2): the four counters that had no reader, in ONE notice. Every number
+            // here is already measured somewhere on the path — the server's skipped, the fill's unreadable
+            // records, the rebind's legacy entries and the latch's whole-entry drops — so this adds no
+            // measurement, only the addressee that was missing.
+            renderQuestionStateCarryNotice( container, {
+                compared: filled.compared,
+                filled: filled.filled,
+                unreadable: filled.unreadable,
+                seen: questionStateStored.seen,
+                skipped: questionStateStored.skipped,
+                messages: questionStateStored.messages || [],
+                legacy: rebind.legacy,
+                rebindCompared: rebind.compared,
+                latched: latched
+            } )
             if( rebind.changed > 0 || rebind.dropped.length > 0 ) { persistQuestionState() }
 
             // PRD-012 (Memo 076 H8, WI-106): the answers-only bar + mountAnswersOnlyBarInHeader are
@@ -10919,6 +11002,40 @@
         // (a broadcast must not turn a real choice back into a preselection); a state object from
         // before the field existed normalises to false, because an absent marker is "not touched",
         // never an assumed touch.
+        // M082-09-FX (F-2, first half): WHAT THE VALIDITY LATCH DROPPED, READ OFF ITS OWN RESULT.
+        //
+        // The latch in seedQuestionState discards a carried entry WHOLE — selection, custom entries, the
+        // rejection, the touched marker and any confirmed answer together — as soon as one index outruns
+        // today's option list. The discarding is right (a half-applied entry would be worse) and, since the
+        // rebind runs before it, it is the last resort rather than the first line. What was missing is that
+        // the heaviest loss on this path happened without a word.
+        //
+        // IT DOES NOT RE-DECIDE THE CONDITION, IT READS THE OUTCOME. seedQuestionState returns the carried
+        // entry BY REFERENCE when it fits and a fresh default object when it does not, so identity against
+        // the merge map is the latch's own verdict. A second copy of the range condition here could say
+        // something different from what the latch actually did — and a report that disagrees with the event
+        // it reports is worse than no report. This also keeps the latch a self-contained function.
+        function latchedCarriedEntries( open, prevById, seeded ) {
+            var previous = prevById || {}
+            var state = seeded || []
+
+            return ( open || [] )
+                .map( function( q, idx ) {
+                    return { q: q, prev: ( q && q.id ) ? previous[ q.id ] : null, st: state[ idx ] }
+                } )
+                .filter( function( row ) { return !!row.prev && row.st !== row.prev } )
+                .map( function( row ) {
+                    return {
+                        question: row.q.id,
+                        title: row.q.title || '',
+                        selected: ( row.prev.selected || [] ).slice(),
+                        options: ( row.q.options || [] ).length,
+                        confirmed: row.prev.added === true,
+                        custom: ( row.prev.custom || [] ).length
+                    }
+                } )
+        }
+
         function seedQuestionState( open, prevById ) {
             var previous = prevById || {}
 
@@ -11021,16 +11138,40 @@
         // is handed — the same map seedQuestionState then reads, so there is exactly one merge path.
         // Both operands are PARAMETERS, not module state: that is what makes the precedence rule
         // testable on its own instead of only through a render.
+        // M082-09-FX (F-1b): IT REPORTS WHAT IT DID, over a named comparison set.
+        //
+        // A record whose shape stateFromStoredRecord does not recognise was skipped and the freshly seeded
+        // entry stayed — which is right (never a half-filled state) and was invisible. The server had
+        // already COUNTED the same class as `skipped`, and the surface showed that number nowhere: the
+        // finding was made twice and delivered never.
+        //
+        // The return value is additive. The map is still mutated in place, so every existing caller and
+        // every existing case reads exactly what it read before; the report is what lets the ONE notice in
+        // renderQuestionWidgets say "k von n" instead of nothing.
         function fillPrevFromStoredQuestionState( prevById, stored ) {
             var records = stored || {}
+            var report = { compared: 0, filled: 0, ownWork: 0, unreadable: [] }
 
             Object.keys( records ).forEach( function( id ) {
+                report.compared = report.compared + 1
                 var live = prevById[ id ]
                 var isOwnWork = !!( live && ( live.touched === true || live.added === true || live.rejected === true ) )
-                if( isOwnWork ) { return }
+                if( isOwnWork ) {
+                    report.ownWork = report.ownWork + 1
+
+                    return
+                }
                 var restored = stateFromStoredRecord( records[ id ] )
-                if( restored ) { prevById[ id ] = restored }
+                if( !restored ) {
+                    report.unreadable.push( id )
+
+                    return
+                }
+                prevById[ id ] = restored
+                report.filled = report.filled + 1
             } )
+
+            return report
         }
 
         // M082-09-07 (Memo 082 Kap 20a, Cluster E, WI-121): THE NAME OF AN OPTION.
@@ -11828,6 +11969,31 @@
             }, 250 )
         }
 
+        // M082-09-FX (F-5): THE BUNDLING WINDOW IS ALSO A DURABILITY WINDOW.
+        //
+        // The bundling is right — seven clicks in a row must not become seven writes — but a page left
+        // INSIDE those 250 ms took the change with it, and nothing said so. The bundling stays; what was
+        // missing is the unloading, and this is it. The timer is cleared BEFORE the flush, so the pending
+        // callback cannot send the same state a second time.
+        //
+        // Both events are bound because neither covers the other's case: `pagehide` is the reliable one for
+        // a navigation, and `visibilitychange` catches the hidden tab a browser discards without ever
+        // firing pagehide. `keepalive` on the request itself (see flushQuestionState) is the other half —
+        // without it the browser cancels the write together with the document.
+        function flushPendingQuestionState() {
+            if( questionStateSaveTimer === null ) { return false }
+            clearTimeout( questionStateSaveTimer )
+            questionStateSaveTimer = null
+            flushQuestionState()
+
+            return true
+        }
+
+        window.addEventListener( 'pagehide', function() { flushPendingQuestionState() } )
+        document.addEventListener( 'visibilitychange', function() {
+            if( document.visibilityState === 'hidden' ) { flushPendingQuestionState() }
+        } )
+
         // Build the records for the current widget state. The confirmed half is derived from
         // isConfirmedAnswer — THE existing predicate, not a second copy of its condition. If the harvest
         // condition ever narrows or widens, the store follows it automatically; two copies of one
@@ -11883,19 +12049,41 @@
         }
 
         function flushQuestionState() {
-            if( !currentDocumentId ) { return }
+            // M082-09-FX (F-4): the two preconditions still return, and they no longer do it in silence.
+            // "I do not know where to write this" is not "there is nothing to do" — the click is gone in
+            // both readings, and only one of them lets the user act on it. Named with a machine token in
+            // brackets, like every other message on this path.
+            if( !currentDocumentId ) {
+                showQuestionStateSaveError( [ 'kein Dokument bestimmbar (no-document)' ] )
+
+                return
+            }
             var rev = currentRevisionId()
-            if( !rev ) { return }
+            if( !rev ) {
+                showQuestionStateSaveError( [ 'keine Revisions-Kennung bestimmbar (no-revision)' ] )
+
+                return
+            }
             var built = buildQuestionStateRecords()
 
             fetch( '/api/documents/' + encodeURIComponent( currentDocumentId ) + '/question-state', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify( { revisionId: rev, entries: built.entries } )
+                body: JSON.stringify( { revisionId: rev, entries: built.entries } ),
+                // M082-09-FX (F-5): the unload flush is only worth as much as the request that survives the
+                // document. Without this the browser cancels the write it just started.
+                keepalive: true
             } )
                 .then( function( r ) { return r.ok ? r.json() : { status: false, messages: [ 'HTTP ' + r.status ] } } )
                 .then( function( data ) {
-                    if( data && data.status === true ) { return }
+                    if( data && data.status === true ) {
+                        // M082-09-FX (F-6): `status true` does not mean "unchanged". The touched gate's
+                        // demotion and every rejected record travel in `messages` AT status true, and this
+                        // branch used to return without ever reading them.
+                        showQuestionStateSaveOutcome( data )
+
+                        return
+                    }
                     showQuestionStateSaveError( data && data.messages ? data.messages : [] )
                 } )
                 .catch( function( err ) { showQuestionStateSaveError( [ String( err && err.message ? err.message : err ) ] ) } )
@@ -11941,23 +12129,160 @@
             container.insertBefore( box, container.firstChild )
         }
 
+        // M082-09-FX: ONE builder for every box this path speaks through, and the reason it is one is the
+        // same reason there are SEVERAL boxes: the create-or-update block was already typed four times in
+        // this container, and the four statements this bundle adds would have made it eight copies — while
+        // "could not be saved", "could not be loaded", "saved but changed on the way" and "not carried
+        // over" are four different situations with four different actions, so folding them into one box
+        // would read four lages as one. That reading-several-as-one IS the class being closed here.
+        //
+        // An EMPTY text REMOVES the box rather than leaving an empty one standing: a warning that outlives
+        // the situation it described is a false statement, not a harmless leftover.
+        //
+        // The container is a PARAMETER because the two kinds of caller have two different containers in
+        // hand: a render pass holds a container that may not be in the document yet (renderQuestionWidgets
+        // builds it when the id is absent), while an async answer has to look the live one up. A lookup
+        // inside here would have made every render-time notice silently do nothing on a first render.
+        function showQuestionStateBox( container, id, text ) {
+            if( !container ) { return }
+            var box = document.getElementById( id )
+            if( String( text || '' ).length === 0 ) {
+                if( box && box.parentNode ) { box.parentNode.removeChild( box ) }
+
+                return
+            }
+            if( !box ) {
+                box = document.createElement( 'div' )
+                box.className = 'qw-parse-warn'
+                box.id = id
+                container.insertBefore( box, container.firstChild )
+            }
+            box.textContent = text
+        }
+
         // A failed save is VISIBLE. A store that fails quietly is worse than none, because it promises
         // that the restart is harmless — and the user only finds out when the state is already gone.
         // German display text over English fields, like every other widget message here.
         function showQuestionStateSaveError( messages ) {
-            var container = document.getElementById( 'question-widgets' )
-            if( !container ) { return }
-            var box = document.getElementById( 'qw-state-save-warn' )
-            if( !box ) {
-                box = document.createElement( 'div' )
-                box.className = 'qw-parse-warn'
-                box.id = 'qw-state-save-warn'
-                container.insertBefore( box, container.firstChild )
-            }
             var detail = ( messages || [] ).join( '; ' )
-            box.textContent = '⚠ Der Antwort-Zustand konnte nicht gespeichert werden'
+            showQuestionStateBox( document.getElementById( 'question-widgets' ), 'qw-state-save-warn',
+                '⚠ Der Antwort-Zustand konnte nicht gespeichert werden'
                 + ( detail.length > 0 ? ( ' (' + detail + ')' ) : '' )
-                + ' — nach einem Neustart des Servers ist er verloren.'
+                + ' — nach einem Neustart des Servers ist er verloren.' )
+        }
+
+        // M082-09-FX (F-1): A FAILED LOAD IS NOT AN EMPTY STORE.
+        //
+        // The read path answered a non-OK response with `{ entries: {} }` and swallowed the exception in an
+        // empty catch — so a server error, an unreachable server and a genuinely empty store all produced
+        // the same empty widget. The claim "nothing was saved" is the one thing this situation cannot
+        // support, and it is the claim the surface made.
+        //
+        // The sentence therefore says the opposite of what the empty widget suggests, and it says what NOT
+        // to do: a confirmation on top of a state that failed to load overwrites the stored one.
+        function showQuestionStateLoadError( messages ) {
+            var detail = ( messages || [] ).join( '; ' )
+            showQuestionStateBox( document.getElementById( 'question-widgets' ), 'qw-state-load-warn',
+                '⚠ Der gespeicherte Antwort-Zustand konnte NICHT geladen werden'
+                + ( detail.length > 0 ? ( ' (' + detail + ')' ) : '' )
+                + ' — das Widget zeigt deshalb den frischen Ausgangszustand. Das heißt NICHT, dass nichts'
+                + ' gespeichert ist. Bis der Abruf gelingt, nichts bestätigen: ein Speichervorgang'
+                + ' überschreibt den gespeicherten Zustand mit diesem frischen.' )
+        }
+
+        // M082-09-FX (F-6): THE SAVE ANSWERED `status true` AND CARRIED A MESSAGE, AND NOBODY READ IT.
+        //
+        // The store's touched gate demotes a confirmed answer without a touched intent to a mere intent —
+        // named in `messages`, at `status: true`, because the write itself succeeded. The client returned on
+        // `status === true` and read `messages` only in the false branch, so the one situation where
+        // displayed and stored state differ was the one situation nobody was told about. Rejected records
+        // (`skipped`) travel the same way.
+        //
+        // Both numbers are named, like every other message on this path: `written` of `written + skipped`.
+        function showQuestionStateSaveOutcome( data ) {
+            var messages = ( data && Array.isArray( data.messages ) ) ? data.messages : []
+            var container = document.getElementById( 'question-widgets' )
+            if( messages.length === 0 ) {
+                showQuestionStateBox( container, 'qw-state-partial-warn', '' )
+
+                return
+            }
+            var written = ( data && typeof data.written === 'number' ) ? data.written : null
+            var skipped = ( data && typeof data.skipped === 'number' ) ? data.skipped : null
+            var counts = ( written !== null && skipped !== null )
+                ? ( ' — übernommen ' + written + ' von ' + ( written + skipped ) + ' Einträgen' )
+                : ''
+            showQuestionStateBox( container, 'qw-state-partial-warn',
+                '⚠ Gespeichert, aber NICHT unverändert' + counts + '. Der Speicher meldet: '
+                + messages.join( '; ' ) + '. Der angezeigte und der gespeicherte Zustand sind damit nicht'
+                + ' dasselbe — die genannte Frage im Widget erneut bestätigen.' )
+        }
+
+        // M082-09-FX (F-1b + F-2, the visible half): WHAT HAPPENED TO THE CARRIED STATE ON THE WAY IN.
+        //
+        // Four places on this path already COUNTED their own finding and none of them had a reader: the
+        // server's `skipped`, the client-side unreadable record, the rebind's `legacy`, and — the heaviest —
+        // the validity latch that drops a whole entry (selection, custom entries, rejection, touched marker
+        // and confirmed answer together) and re-seeds from scratch. What was missing was never the
+        // measurement, it was the addressee.
+        //
+        // One sentence per situation, each over a comparison set it can name, and nothing at all in the
+        // normal case — the same rule the rebind notice and the discard notice follow, because a warning
+        // that appears on every render is one nobody reads after three days.
+        function renderQuestionStateCarryNotice( container, carry ) {
+            if( !container || !carry ) { return }
+            var unreadable = carry.unreadable || []
+            var latched = carry.latched || []
+            var messages = carry.messages || []
+            var sentences = []
+
+            if( latched.length > 0 ) {
+                sentences.push( '⚠ ' + latched.length + ' von ' + carry.compared + ' gespeicherten Einträgen'
+                    + ' wurden GANZ verworfen, weil die gespeicherte Auswahl außerhalb der heutigen'
+                    + ' Antwortmöglichkeiten liegt: '
+                    + latched
+                        .map( function( hit ) { return hit.question + ' (Auswahl ' + hit.selected.join( ', ' ) + ' bei ' + hit.options + ' Möglichkeiten)' } )
+                        .join( ', ' )
+                    + '. Mit ihnen sind Freitexte, Ablehnung und eine bestätigte Antwort dieser Fragen weg;'
+                    + ' die Karte zeigt wieder den Ausgangszustand.' )
+            }
+            if( unreadable.length > 0 ) {
+                sentences.push( '⚠ ' + unreadable.length + ' von ' + carry.compared + ' gespeicherten Einträgen'
+                    + ' tragen eine unbekannte Form und wurden nicht übernommen: ' + unreadable.join( ', ' )
+                    + '. Für diese Fragen gilt der Ausgangszustand.' )
+            }
+            if( carry.skipped > 0 ) {
+                sentences.push( '⚠ Der Speicher hat ' + carry.skipped + ' von ' + ( carry.seen + carry.skipped )
+                    + ' Datensätzen dieser Revision als unbrauchbar verworfen — sie kommen nicht zurück.' )
+            }
+            if( carry.legacy > 0 ) {
+                sentences.push( 'Hinweis: ' + carry.legacy + ' von ' + carry.rebindCompared + ' übernommenen'
+                    + ' Einträgen tragen keine Options-Namen (Zustand aus der Zeit vor den Namen). Für sie gilt'
+                    + ' weiterhin die Regel über die laufende Nummer, und eine verschobene Antwortmöglichkeit'
+                    + ' kostet den ganzen Eintrag.' )
+            }
+            if( messages.length > 0 ) {
+                sentences.push( 'Der Speicher meldet: ' + messages.join( '; ' ) + '.' )
+            }
+
+            showQuestionStateBox( container, 'qw-state-carry-warn', sentences.join( ' ' ) )
+        }
+
+        // M082-09-FX (F-3, the visible half): a question whose `status` is undeclared is now rendered as
+        // open — and said so. Without the sentence the change would only move the silence: a card would
+        // appear that the memo overview does not count, and nobody could tell why.
+        function renderQuestionStatusNotice( container, undeclared, total ) {
+            if( !container ) { return }
+            var list = undeclared || []
+            var text = list.length === 0
+                ? ''
+                : ( '⚠ ' + list.length + ' von ' + total + ' Fragen dieser Revision tragen kein'
+                    + ' status-Feld (undeclared-status): '
+                    + list.map( function( q ) { return q.id || 'ohne Kennung' } ).join( ', ' )
+                    + '. Sie werden als offen geführt und gerendert, damit sie nicht verschwinden — ob sie'
+                    + ' offen sind, sagt die Nutzlast nicht.' )
+
+            showQuestionStateBox( container, 'qw-status-warn', text )
         }
 
         // Memo 081 WI-118: load the stored working state for THIS document+revision, then render again.
@@ -11974,15 +12299,49 @@
             if( questionStateStored.key === key ) { return }
             questionStateStored.key = key
 
+            // M082-09-FX (F-1): A FAILED READ IS NOT AN EMPTY STORE, AND THE CLAIM IS NEVER MADE SILENTLY.
+            //
+            // This was the strongest form of the pattern this whole phase was built against, at the one
+            // place none of the six clusters looked: a non-OK answer became `{ entries: {} }`, the exception
+            // went into an EMPTY catch, and the server's own `status`/`messages` were never read. The widget
+            // then showed a fresh state over a full store — and because the key is claimed BEFORE the
+            // request, there was no second attempt for this document+revision for the rest of the session.
+            //
+            // Three things change, and the third is the one that makes the other two worth anything:
+            //   a non-OK response THROWS instead of being read as empty,
+            //   a `status: false` answer (no memoPath, rejected scope) throws WITH the server's messages,
+            //   and the catch RELEASES the claimed key and says what happened. Releasing is safe precisely
+            //   because nothing was applied: the claim exists so a late answer cannot overwrite a fresh
+            //   selection, and a failed load has no answer to apply.
+            //
+            // `messages` at status TRUE is carried through instead of thrown — a broken state file is
+            // fail-open by design (empty state, WITH a reason), and the reason is rendered by the carry
+            // notice rather than turned into an error.
             fetch( '/api/documents/' + encodeURIComponent( currentDocumentId ) + '/question-state?revisionId=' + encodeURIComponent( rev ) )
-                .then( function( r ) { return r.ok ? r.json() : { entries: {}, seen: 0, skipped: 0 } } )
+                .then( function( r ) {
+                    if( r.ok !== true ) { throw new Error( 'HTTP ' + r.status ) }
+
+                    return r.json()
+                } )
                 .then( function( data ) {
+                    if( data && data.status === false ) {
+                        var said = ( data.messages || [] ).join( '; ' )
+
+                        throw new Error( said.length > 0 ? said : 'Der Server meldet status false ohne Begründung' )
+                    }
                     questionStateStored.entries = ( data && data.entries ) ? data.entries : {}
                     questionStateStored.seen = ( data && typeof data.seen === 'number' ) ? data.seen : 0
                     questionStateStored.skipped = ( data && typeof data.skipped === 'number' ) ? data.skipped : 0
+                    questionStateStored.messages = ( data && Array.isArray( data.messages ) ) ? data.messages : []
+                    // A load that succeeded takes the earlier failure's box away — a warning that outlives
+                    // its situation is a false statement, and this is the retry the released key allows.
+                    showQuestionStateBox( document.getElementById( 'question-widgets' ), 'qw-state-load-warn', '' )
                     renderQuestionWidgets( lastQuestionSchema )
                 } )
-                .catch( function() {} )
+                .catch( function( err ) {
+                    questionStateStored.key = null
+                    showQuestionStateLoadError( [ String( err && err.message ? err.message : err ) ] )
+                } )
         }
 
         // PRD-F3 (Memo 080 Kap 18, S4): does the CONFIRMED selection say exactly what the AI had

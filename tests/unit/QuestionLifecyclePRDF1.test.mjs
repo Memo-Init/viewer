@@ -73,7 +73,18 @@ describe( 'Question lifecycle — Memo 080, PRD-F1', () => {
     it( 'A14 — the client filters the widget and the prompt list on the STATUS axis, not on the boolean', async () => {
         const src = await readFile( clientPath(), 'utf8' )
 
-        expect( src ).toContain( "return q && q.status === 'open'" )
+        // M082-09-FX (F-3, Rest-Befund der Abnahme PRD-18): DER GEPINNTE WORTLAUT IST ERWEITERT, DIE
+        // AUSSAGE DIESES FALLS IST UNVERAENDERT — und die Aenderung steht hier, statt still zu passieren.
+        //
+        // Die Achse bleibt `status` (der Gegenstand dieses Falls), und die boolesche Achse bleibt weg (die
+        // Suche unten ist unberuehrt). Was das Audit gefunden hat, ist die REIN positive Form: eine Frage
+        // OHNE `status`-Feld war damit "nicht offen" und verschwand aus dem Widget-Satz, aus der Kopfzeile
+        // und aus der Popup-Liste — ohne ein Wort. Dass der Parse-Pfad heute immer einen Status setzt
+        // (siehe den Fall oben), ist eine DATENLAGE, keine Invariante, und das einzige Netz (das
+        // Divergenz-Banner) braucht eine deklarierte Registry-Basis. Der undeklarierte Fall wird deshalb
+        // als undeklariert gefuehrt und sichtbar benannt, nicht als der harmlose Fall gelesen.
+        expect( src ).toContain( "q.status === 'open'" )
+        expect( src ).toContain( "return q && ( q.status === 'open' || typeof q.status !== 'string' || q.status.trim().length === 0 )" )
         // the OLD predicate must be gone as a widget filter — searched over the whole client script, and
         // the number searched is stated so a zero can never come from an empty search.
         const remaining = [ ...src.matchAll( /q\.answered === false/g ) ]
